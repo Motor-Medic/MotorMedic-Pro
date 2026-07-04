@@ -71,6 +71,7 @@ export interface DiagnosticResponse {
   simulationReason?: string;
   failure_stage?: "Incipient" | "Early" | "Advanced" | "Catastrophic" | string;
   baseline_delta?: string | null;
+  db_id?: number;
 }
 
 export interface MaintenanceLog {

@@ -55,6 +55,14 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
   const [errorMsg, setErrorMsg] = useState("");
   const [analysisCache, setAnalysisCache] = useState<Record<string, DiagnosticResponse>>({});
 
+  // QA Testing Mode & Diagnostic Verification Loop
+  const [testingMode, setTestingMode] = useState<boolean>(true);
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState<boolean>(false);
+  const [feedbackStatus, setFeedbackStatus] = useState<"correct" | "incorrect" | null>(null);
+  const [correctedDiagnosis, setCorrectedDiagnosis] = useState<string>("");
+  const [isFeedbackSubmitting, setIsFeedbackSubmitting] = useState<boolean>(false);
+  const [feedbackError, setFeedbackError] = useState<string>("");
+
   // 1. Condition Monitoring Technology Selector
   const [selectedTech, setSelectedTech] = useState<string>("");
 
@@ -373,6 +381,10 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
       const cachedResult = analysisCache[cacheKey];
       setDiagnosticResult(cachedResult);
       setErrorMsg("");
+      setFeedbackSubmitted(false);
+      setFeedbackStatus(null);
+      setCorrectedDiagnosis("");
+      setFeedbackError("");
       if (cachedResult.failure_stage === "Catastrophic") {
         playCatastrophicAlarm();
       }
@@ -382,6 +394,10 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
     setErrorMsg("");
     setIsLoading(true);
     setDiagnosticResult(null);
+    setFeedbackSubmitted(false);
+    setFeedbackStatus(null);
+    setCorrectedDiagnosis("");
+    setFeedbackError("");
 
     // Dynamic rotation of loading statements
     const messages = [
@@ -409,29 +425,52 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
         headers["x-gemini-api-key"] = storedKey;
       }
 
-      const response = await fetch("/api/diagnose", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          category,
-          symptoms,
-          specs,
-          fileData: uploadedFile?.data,
-          fileType: uploadedFile?.type,
-          fileName: uploadedFile?.name,
-          fileMimeType: uploadedFile?.mimeType,
-          technology: selectedTech,
-          baselineData: baselineMode === "text" ? baselineText : (baselineFile ? `${baselineFile.name}: ${baselineFile.content}` : ""),
-          maintenanceHistory: maintenanceLogs
-        }),
-      });
+      const payload = {
+        category,
+        symptoms,
+        specs,
+        fileData: uploadedFile?.data,
+        fileType: uploadedFile?.type,
+        fileName: uploadedFile?.name,
+        fileMimeType: uploadedFile?.mimeType,
+        technology: selectedTech,
+        baselineData: baselineMode === "text" ? baselineText : (baselineFile ? `${baselineFile.name}: ${baselineFile.content}` : ""),
+        maintenanceHistory: maintenanceLogs
+      };
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Server diagnostics failed");
-      }
+      const fetchWithRetryAndTimeout = async (retriesLeft: number): Promise<any> => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-      const result = await response.json();
+        try {
+          const response = await fetch("/api/diagnose", {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+            signal: controller.signal
+          });
+
+          clearTimeout(timeoutId);
+
+          const contentType = response.headers.get("content-type");
+          if (!response.ok || !contentType || !contentType.includes("application/json")) {
+            throw new Error("Invalid response or server error");
+          }
+
+          return await response.json();
+        } catch (err: any) {
+          clearTimeout(timeoutId);
+          if (retriesLeft > 0) {
+            console.warn(`Fetch attempt failed. Retrying in 5 seconds... (${retriesLeft} retries remaining).`, err);
+            setLoadingMessage("Connecting to analysis server... this may take a moment.");
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            return fetchWithRetryAndTimeout(retriesLeft - 1);
+          }
+          throw err;
+        }
+      };
+
+      const result = await fetchWithRetryAndTimeout(3);
       
       // Store in session cache
       setAnalysisCache((prev) => ({ ...prev, [cacheKey]: result }));
@@ -442,10 +481,46 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
       }
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err.message || "An error occurred during diagnosis. Check server logs.");
+      setErrorMsg("Analysis is taking longer than expected. Please try again in a moment.");
     } finally {
       clearInterval(timer);
       setIsLoading(false);
+    }
+  };
+
+  // Submit verification feedback to Neon database ML log
+  const handleSubmitFeedback = async (wasCorrect: boolean, correctedValue?: string) => {
+    if (!diagnosticResult?.db_id) {
+      setFeedbackError("No database tracking ID associated with this analysis. Feedback cannot be saved.");
+      return;
+    }
+
+    setIsFeedbackSubmitting(true);
+    setFeedbackError("");
+
+    try {
+      const response = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: diagnosticResult.db_id,
+          was_correct: wasCorrect,
+          corrected_diagnosis: correctedValue || null
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to submit feedback");
+      }
+
+      setFeedbackSubmitted(true);
+      setFeedbackStatus(wasCorrect ? "correct" : "incorrect");
+    } catch (err: any) {
+      console.error(err);
+      setFeedbackError(err.message || "Failed to submit verification feedback to the server.");
+    } finally {
+      setIsFeedbackSubmitting(false);
     }
   };
 
@@ -511,6 +586,19 @@ Business Impact : ${d.manager_summary.business_impact}
         <div>
           <h2 className="text-xl font-bold text-white font-display">Machinery Fault Diagnosis</h2>
           <p className="text-xs text-slate-400">Provide observations, upload data telemetry, and get a reliability brief</p>
+        </div>
+        <div className="flex items-center gap-2 bg-slate-900/80 p-1.5 rounded-xl border border-slate-800 shrink-0">
+          <span className="text-xs font-semibold text-slate-300 pl-1.5">Testing/QA Mode:</span>
+          <button
+            onClick={() => setTestingMode(!testingMode)}
+            className={`px-3 py-1 text-xs font-bold rounded-lg transition-all ${
+              testingMode 
+                ? "bg-amber-500 text-slate-950 font-extrabold shadow-md hover:bg-amber-400" 
+                : "bg-slate-800 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {testingMode ? "ON" : "OFF"}
+          </button>
         </div>
       </div>
 
@@ -1246,6 +1334,129 @@ Business Impact : ${d.manager_summary.business_impact}
               </button>
             </div>
           </div>
+
+          {/* TESTING / QA VERIFICATION & MACHINE LEARNING FEEDBACK CARD */}
+          {testingMode && (
+            <div className="bg-amber-500/10 border border-dashed border-amber-500/30 rounded-2xl p-5 space-y-4 animate-fade-in">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-amber-500/20">
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-amber-500/20 text-amber-400 rounded-lg text-xs font-bold font-mono">TESTING MODE</span>
+                  <div>
+                    <h4 className="text-sm font-bold text-white uppercase tracking-wider">Diagnostic Verification Panel</h4>
+                    <p className="text-[10px] text-amber-400 font-mono">Active Session ML Loop • Record ID: {diagnosticResult.db_id || "Staged Offline"}</p>
+                  </div>
+                </div>
+                {diagnosticResult.db_id ? (
+                  <span className="text-[9px] font-bold uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                    ⚡ Database Bound
+                  </span>
+                ) : (
+                  <span className="text-[9px] font-bold uppercase text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-md">
+                    ⚠️ Offline Sandbox
+                  </span>
+                )}
+              </div>
+
+              {!feedbackSubmitted ? (
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Verify the accuracy of this AI-generated machinery diagnosis. Your expert validation will be logged in the database to train the fault consensus engine for future diagnostics.
+                  </p>
+
+                  {feedbackError && (
+                    <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-xs text-red-400 font-mono">
+                      {feedbackError}
+                    </div>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={isFeedbackSubmitting}
+                      onClick={() => handleSubmitFeedback(true)}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow-md transition-all shrink-0"
+                    >
+                      {isFeedbackSubmitting && feedbackStatus === null ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <span>✓</span>
+                      )}
+                      <span>Correct Diagnosis</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isFeedbackSubmitting}
+                      onClick={() => {
+                        setFeedbackStatus("incorrect");
+                        setFeedbackError("");
+                      }}
+                      className={`px-4 py-2.5 disabled:opacity-50 font-bold text-xs rounded-xl flex items-center gap-2 transition-all shrink-0 ${
+                        feedbackStatus === "incorrect" 
+                          ? "bg-red-500 text-white shadow-md" 
+                          : "bg-slate-800 hover:bg-slate-700 text-red-400 border border-slate-700"
+                      }`}
+                    >
+                      <span>✗</span>
+                      <span>Incorrect Diagnosis</span>
+                    </button>
+                  </div>
+
+                  {feedbackStatus === "incorrect" && (
+                    <div className="space-y-3 pt-2 border-t border-slate-800/60 animate-fade-in">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                          Provide Correct Diagnosis (Human Expert Overrides AI Consensus):
+                        </label>
+                        <textarea
+                          rows={2}
+                          value={correctedDiagnosis}
+                          onChange={(e) => setCorrectedDiagnosis(e.target.value)}
+                          placeholder="State the correct mechanical fault (e.g. Loose rotor bars, belt slippage, misaligned coupling)..."
+                          className="w-full bg-slate-950 border border-slate-800 focus:border-amber-400/50 rounded-xl p-3 text-xs text-slate-200 focus:outline-none placeholder-slate-600"
+                        />
+                      </div>
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={isFeedbackSubmitting || !correctedDiagnosis.trim()}
+                          onClick={() => handleSubmitFeedback(false, correctedDiagnosis)}
+                          className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-extrabold text-xs rounded-lg transition-all shadow-md flex items-center gap-1.5"
+                        >
+                          {isFeedbackSubmitting ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : null}
+                          <span>Submit Corrected Diagnosis</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="bg-slate-950/40 border border-amber-500/20 p-4 rounded-xl space-y-2 animate-fade-in">
+                  <div className="flex items-center gap-2 text-emerald-400">
+                    <span className="text-base">✓</span>
+                    <h5 className="text-xs font-bold uppercase tracking-wider">Expert Feedback Submitted</h5>
+                  </div>
+                  <p className="text-xs text-slate-300">
+                    Thank you! The AI diagnosis was marked as{" "}
+                    <strong className={feedbackStatus === "correct" ? "text-emerald-400" : "text-red-400"}>
+                      {feedbackStatus === "correct" ? "CORRECT" : "INCORRECT"}
+                    </strong>
+                    .
+                  </p>
+                  {feedbackStatus === "incorrect" && correctedDiagnosis && (
+                    <div className="p-2.5 bg-slate-950 border border-slate-850 rounded-lg mt-1 font-mono text-[10px] text-slate-400">
+                      <span className="text-amber-400 font-bold">Correction Logged:</span> {correctedDiagnosis}
+                    </div>
+                  )}
+                  <p className="text-[10px] text-slate-500 leading-normal font-mono pt-1">
+                    * Saved directly into Neon database. Subsequent diagnostic queries for similar symptoms/assets will learn from this correction.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* FAILURE STAGE CLASSIFICATION GAUGE */}
           {diagnosticResult.failure_stage && (

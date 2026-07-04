@@ -1845,22 +1845,37 @@ app.post("/api/diagnose", async (req, res) => {
 
     console.log("Dispatching sequential multi-model fallback diagnostic analysis...");
 
-    // BEFORE calling the AI models, query the database: SELECT input_data, ai_response FROM diagnosis_history ORDER BY timestamp DESC LIMIT 3;
+    // BEFORE calling the AI models, query the database
     let pastCasesText = "";
     if (pool) {
       try {
         console.log("🔍 Fetching past cases from database...");
+        // Fetch up to 5 most recent entries to construct a high-context historical knowledge base
         const dbResult = await pool.query(
-          "SELECT input_data, ai_response FROM diagnosis_history ORDER BY timestamp DESC LIMIT 3"
+          "SELECT id, input_data, ai_response, was_correct, corrected_diagnosis FROM diagnosis_history ORDER BY timestamp DESC LIMIT 5"
         );
         if (dbResult.rows.length > 0) {
           pastCasesText = "=== PAST CASES TO LEARN FROM ===\n";
           dbResult.rows.forEach((row, i) => {
-            pastCasesText += `[Case #${i + 1}]\n`;
+            pastCasesText += `[Case #${i + 1}] (Database Record ID: ${row.id})\n`;
             pastCasesText += `- Input Profile: ${row.input_data}\n`;
-            pastCasesText += `- AI Response/Diagnosis: ${row.ai_response}\n\n`;
+            
+            if (row.was_correct === true) {
+              pastCasesText += `- Outcome: VERIFIED CORRECT BY RELIABILITY ENGINEER\n`;
+              pastCasesText += `- Verified AI Response Pattern: ${row.ai_response}\n`;
+              pastCasesText += `- Instruction: This is a golden reference case. Prioritize using this pattern if symptoms and specs match.\n`;
+            } else if (row.was_correct === false) {
+              pastCasesText += `- Outcome: FLAGGED INCORRECT BY ENGINEER\n`;
+              pastCasesText += `- Initial AI Response: ${row.ai_response}\n`;
+              pastCasesText += `- Corrected Real-World Diagnosis (Human Expert Override): ${row.corrected_diagnosis || "N/A"}\n`;
+              pastCasesText += `- Instruction: CRITICAL: Do NOT repeat the initial AI response pattern for similar symptoms/specs. Instead, PRIORITIZE the Corrected Real-World Diagnosis (${row.corrected_diagnosis}) and build your analysis using that outcome.\n`;
+            } else {
+              pastCasesText += `- Outcome: Unverified (No engineer feedback yet)\n`;
+              pastCasesText += `- AI Response: ${row.ai_response}\n`;
+            }
+            pastCasesText += `\n`;
           });
-          console.log(`✅ Loaded ${dbResult.rows.length} past cases to provide to the AI.`);
+          console.log(`✅ Loaded ${dbResult.rows.length} past cases with human validation status.`);
         } else {
           console.log("ℹ️ No past cases found in the database.");
         }
@@ -1957,11 +1972,16 @@ app.post("/api/diagnose", async (req, res) => {
         const aiResponseStr = JSON.stringify(result);
 
         console.log("💾 Logging diagnostics record in PostgreSQL...");
-        await pool.query(
-          "INSERT INTO diagnosis_history (input_data, ai_response) VALUES ($1, $2)",
+        const dbRes = await pool.query(
+          "INSERT INTO diagnosis_history (input_data, ai_response) VALUES ($1, $2) RETURNING id",
           [inputDataStr, aiResponseStr]
         );
-        console.log("✅ Diagnostics record stored successfully in database.");
+        if (dbRes.rows && dbRes.rows.length > 0) {
+          result.db_id = dbRes.rows[0].id;
+          console.log(`✅ Diagnostics record stored successfully in database with ID: ${result.db_id}`);
+        } else {
+          console.log("✅ Diagnostics record stored successfully in database.");
+        }
       } catch (dbErr: any) {
         console.error("❌ Failed to log diagnostics history into database:", dbErr.message);
       }
@@ -1972,6 +1992,46 @@ app.post("/api/diagnose", async (req, res) => {
   } catch (error: any) {
     console.error("Diagnosis route fatal error:", error);
     return res.status(503).json({ error: "All AI models are currently unavailable" });
+  }
+});
+
+// API Endpoint to record user verification feedback for machine learning loop
+app.post("/api/feedback", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    const { id, was_correct, corrected_diagnosis } = req.body;
+    if (!pool) {
+      return res.status(400).json({ error: "PostgreSQL Database is not configured." });
+    }
+    if (!id) {
+      return res.status(400).json({ error: "Missing required diagnosis record ID ('id')." });
+    }
+
+    console.log(`📥 Received feedback for diagnosis record ID ${id}: was_correct=${was_correct}, corrected_diagnosis=${corrected_diagnosis}`);
+
+    const updateQuery = `
+      UPDATE diagnosis_history 
+      SET was_correct = $1, 
+          corrected_diagnosis = $2, 
+          user_feedback_timestamp = CURRENT_TIMESTAMP
+      WHERE id = $3
+      RETURNING id;
+    `;
+    
+    const dbResult = await pool.query(updateQuery, [
+      was_correct, 
+      was_correct ? null : (corrected_diagnosis || "N/A"), 
+      id
+    ]);
+
+    if (dbResult.rows.length === 0) {
+      return res.status(404).json({ error: `Diagnosis history record with ID ${id} not found.` });
+    }
+
+    return res.json({ success: true, message: "Feedback saved to machine learning log.", id: dbResult.rows[0].id });
+  } catch (error: any) {
+    console.error("❌ Failed to save user feedback in database:", error);
+    return res.status(500).json({ error: error.message || "Failed to save verification feedback." });
   }
 });
 
@@ -2143,11 +2203,20 @@ async function initializeDatabase() {
         id SERIAL PRIMARY KEY,
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         input_data TEXT,
-        ai_response TEXT
+        ai_response TEXT,
+        was_correct BOOLEAN DEFAULT NULL,
+        corrected_diagnosis TEXT,
+        user_feedback_timestamp TIMESTAMP DEFAULT NULL
       );
     `;
     await pool.query(createTableQuery);
-    console.log("✅ Database initialized: diagnosis_history table verified/created.");
+
+    // Apply migrations for existing tables that might lack the new feedback columns
+    await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS was_correct BOOLEAN DEFAULT NULL;");
+    await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS corrected_diagnosis TEXT;");
+    await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS user_feedback_timestamp TIMESTAMP DEFAULT NULL;");
+
+    console.log("✅ Database initialized: diagnosis_history table and feedback columns verified.");
   } catch (error) {
     console.error("❌ Failed to initialize database table:", error);
   }
