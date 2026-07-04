@@ -1,0 +1,8 @@
+{
+  "name": "MotorMedic Pro",
+  "description": "Professional condition monitoring and mechanical/electrical/hydraulic systems fault diagnosis tool.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
