@@ -2,8 +2,31 @@ import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import pg from "pg";
 
 dotenv.config();
+
+// Initialize Pool using DATABASE_URL
+const { Pool } = pg;
+const dbUrl = process.env.DATABASE_URL;
+let pool: pg.Pool | null = null;
+
+if (dbUrl) {
+  pool = new Pool({
+    connectionString: dbUrl,
+    ssl: dbUrl.includes("sslmode=require") || dbUrl.includes("amazonaws.com") || dbUrl.includes("elephantsql") || dbUrl.includes("supabase") || dbUrl.includes("aistudio")
+      ? { rejectUnauthorized: false }
+      : undefined
+  });
+  console.log("🔋 PostgreSQL connection pool initialized.");
+  
+  // Prevent unhandled pool errors
+  pool.on("error", (err) => {
+    console.error("Unexpected error on idle SQL pool client:", err);
+  });
+} else {
+  console.warn("⚠️ DATABASE_URL is not configured. Database storage will be bypassed.");
+}
 
 // Initialize Express
 const app = express();
@@ -874,7 +897,8 @@ function buildExpertPrompt(
   fileName?: string,
   technology?: string,
   baselineData?: string,
-  maintenanceLogs?: any[]
+  maintenanceLogs?: any[],
+  pastCasesText?: string
 ): string {
   let specDetails = "";
   if (specs && typeof specs === "object" && !Array.isArray(specs)) {
@@ -1036,6 +1060,10 @@ Return ONLY a valid JSON object matching the following structure:
 }
 
 Respond ONLY with a valid JSON document matching the requested schema. Do NOT wrap it in HTML blocks or add any additional conversational text. Your response must be parsed cleanly via JSON.parse().`;
+
+  if (pastCasesText) {
+    systemInstruction += `\n\n=== Past Cases to Learn From ===\n${pastCasesText}\n`;
+  }
 
   return `${systemInstruction}\n\n=== USER ASSIGNMENT ===\n${promptText}`;
 }
@@ -1267,10 +1295,11 @@ async function callModelWithFallback(
   customKey?: string,
   technology?: string,
   baselineData?: string,
-  maintenanceHistory?: any[]
+  maintenanceHistory?: any[],
+  pastCasesText?: string
 ): Promise<any> {
   try {
-    const prompt = promptTextOverride || buildExpertPrompt(category, symptoms, specs, fileData, fileType, undefined, technology, baselineData, maintenanceHistory);
+    const prompt = promptTextOverride || buildExpertPrompt(category, symptoms, specs, fileData, fileType, undefined, technology, baselineData, maintenanceHistory, pastCasesText);
     let responseText = "";
     
     switch (model.provider) {
@@ -1311,7 +1340,7 @@ async function callModelWithFallback(
     if (retryCount < 1) {
       console.log(`Retrying ${model.name}... (${retryCount + 1}/1)`);
       await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1)));
-      return callModelWithFallback(model, symptoms, fileData, fileType, fileMimeType, category, specs, promptTextOverride, retryCount + 1, customKey, technology, baselineData, maintenanceHistory);
+      return callModelWithFallback(model, symptoms, fileData, fileType, fileMimeType, category, specs, promptTextOverride, retryCount + 1, customKey, technology, baselineData, maintenanceHistory, pastCasesText);
     }
     
     // If it fails completely, return null so the app doesn't crash
@@ -1816,6 +1845,30 @@ app.post("/api/diagnose", async (req, res) => {
 
     console.log("Dispatching sequential multi-model fallback diagnostic analysis...");
 
+    // BEFORE calling the AI models, query the database: SELECT input_data, ai_response FROM diagnosis_history ORDER BY timestamp DESC LIMIT 3;
+    let pastCasesText = "";
+    if (pool) {
+      try {
+        console.log("🔍 Fetching past cases from database...");
+        const dbResult = await pool.query(
+          "SELECT input_data, ai_response FROM diagnosis_history ORDER BY timestamp DESC LIMIT 3"
+        );
+        if (dbResult.rows.length > 0) {
+          pastCasesText = "=== PAST CASES TO LEARN FROM ===\n";
+          dbResult.rows.forEach((row, i) => {
+            pastCasesText += `[Case #${i + 1}]\n`;
+            pastCasesText += `- Input Profile: ${row.input_data}\n`;
+            pastCasesText += `- AI Response/Diagnosis: ${row.ai_response}\n\n`;
+          });
+          console.log(`✅ Loaded ${dbResult.rows.length} past cases to provide to the AI.`);
+        } else {
+          console.log("ℹ️ No past cases found in the database.");
+        }
+      } catch (dbErr: any) {
+        console.warn("⚠️ Failed to retrieve past diagnostic cases from PostgreSQL database:", dbErr.message);
+      }
+    }
+
     const fallbackSequence = [
       { config: AI_MODELS.GEMINI_PRO, displayName: 'Gemini 3.1 Pro' },
       { config: AI_MODELS.GEMINI_FLASH, displayName: 'Gemini 3.5 Flash' },
@@ -1844,7 +1897,8 @@ app.post("/api/diagnose", async (req, res) => {
           customKey,
           technology,
           baselineData,
-          maintenanceHistory
+          maintenanceHistory,
+          pastCasesText
         );
         if (parsed && typeof parsed === "object") {
           rawResult = parsed;
@@ -1887,6 +1941,30 @@ app.post("/api/diagnose", async (req, res) => {
       const equipName = specs?.equipmentName || `${category} Asset`;
       const primaryFault = result.probable_faults?.[0]?.fault_name || "Unknown Mechanical Fault";
       sendCriticalEmailAlert(equipName, primaryFault, result.failure_stage || "Incipient", result.baseline_delta);
+    }
+
+    // AFTER the AI generates a response, insert the new input_data and ai_response into the diagnosis_history table.
+    if (pool) {
+      try {
+        const inputDataStr = JSON.stringify({
+          category,
+          symptoms,
+          specs,
+          technology,
+          baselineData,
+          maintenanceHistory
+        });
+        const aiResponseStr = JSON.stringify(result);
+
+        console.log("💾 Logging diagnostics record in PostgreSQL...");
+        await pool.query(
+          "INSERT INTO diagnosis_history (input_data, ai_response) VALUES ($1, $2)",
+          [inputDataStr, aiResponseStr]
+        );
+        console.log("✅ Diagnostics record stored successfully in database.");
+      } catch (dbErr: any) {
+        console.error("❌ Failed to log diagnostics history into database:", dbErr.message);
+      }
     }
 
     return res.json(result);
@@ -2053,7 +2131,32 @@ app.post("/api/sensor-placement", async (req, res) => {
 // Serve static assets or mount Vite middleware
 const isProduction = process.env.NODE_ENV === "production";
 
+// Startup function to verify/create diagnosis_history table
+async function initializeDatabase() {
+  if (!pool) {
+    console.warn("⚠️ Pool not initialized (DATABASE_URL missing). Skipping database table creation.");
+    return;
+  }
+  try {
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS diagnosis_history (
+        id SERIAL PRIMARY KEY,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        input_data TEXT,
+        ai_response TEXT
+      );
+    `;
+    await pool.query(createTableQuery);
+    console.log("✅ Database initialized: diagnosis_history table verified/created.");
+  } catch (error) {
+    console.error("❌ Failed to initialize database table:", error);
+  }
+}
+
 async function setupServer() {
+  // Run database initialization on startup
+  await initializeDatabase();
+
   if (!isProduction) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
