@@ -9,9 +9,135 @@ interface DiagnoseProps {
   onSaveReport: (category: "Mechanical" | "Electrical" | "Hydraulic", symptoms: string, specs: Record<string, string>, data: DiagnosticResponse, fileName?: string, fileType?: string) => void;
   isSandbox?: boolean;
   setIsSandbox?: (val: boolean) => void;
+  targetContext?: {
+    plantId: number | null;
+    routeId: number | null;
+    assetId: number | null;
+    componentId: number | null;
+    technologyType: string | null;
+  } | null;
+  onClearTargetContext?: () => void;
 }
 
-export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox }: DiagnoseProps) {
+const techMap: Record<string, string> = {
+  "Vibration": "Vibration Analysis",
+  "Thermal": "Infrared Thermography",
+  "Oil": "Oil Analysis",
+  "Electrical": "Motor Circuit Analysis (MCA)"
+};
+
+export default function Diagnose({ 
+  onSaveReport, 
+  isSandbox = false, 
+  setIsSandbox,
+  targetContext,
+  onClearTargetContext
+}: DiagnoseProps) {
+  // Cascading dropdown states
+  const [plants, setPlants] = useState<any[]>([]);
+  const [routesList, setRoutesList] = useState<any[]>([]);
+  const [assetsList, setAssetsList] = useState<any[]>([]);
+  const [componentsList, setComponentsList] = useState<any[]>([]);
+
+  const [selectedPlantId, setSelectedPlantId] = useState<number | "">("");
+  const [selectedRouteId, setSelectedRouteId] = useState<number | "">("");
+  const [selectedAssetId, setSelectedAssetId] = useState<number | "">("");
+  const [selectedComponentId, setSelectedComponentId] = useState<number | "">("");
+
+  // Fetch plants list on mount
+  useEffect(() => {
+    const fetchPlants = async () => {
+      try {
+        const res = await fetch("/api/plants");
+        if (res.ok) {
+          const data = await res.json();
+          setPlants(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch plants:", err);
+      }
+    };
+    fetchPlants();
+  }, []);
+
+  // Fetch routes when plant is selected
+  useEffect(() => {
+    if (selectedPlantId) {
+      const fetchRoutes = async () => {
+        try {
+          const res = await fetch(`/api/routes?plant_id=${selectedPlantId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setRoutesList(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch routes:", err);
+        }
+      };
+      fetchRoutes();
+    } else {
+      setRoutesList([]);
+      setAssetsList([]);
+      setComponentsList([]);
+    }
+  }, [selectedPlantId]);
+
+  // Fetch assets when route is selected
+  useEffect(() => {
+    if (selectedRouteId) {
+      const fetchAssets = async () => {
+        try {
+          const res = await fetch(`/api/assets?route_id=${selectedRouteId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setAssetsList(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch assets:", err);
+        }
+      };
+      fetchAssets();
+    } else {
+      setAssetsList([]);
+      setComponentsList([]);
+    }
+  }, [selectedRouteId]);
+
+  // Fetch components when asset is selected
+  useEffect(() => {
+    if (selectedAssetId) {
+      const fetchComponents = async () => {
+        try {
+          const res = await fetch(`/api/components?asset_id=${selectedAssetId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setComponentsList(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch components:", err);
+        }
+      };
+      fetchComponents();
+    } else {
+      setComponentsList([]);
+    }
+  }, [selectedAssetId]);
+
+  // Synchronize targetContext with state
+  useEffect(() => {
+    if (targetContext) {
+      if (targetContext.plantId) setSelectedPlantId(targetContext.plantId);
+      if (targetContext.routeId) setSelectedRouteId(targetContext.routeId);
+      if (targetContext.assetId) setSelectedAssetId(targetContext.assetId);
+      if (targetContext.componentId) setSelectedComponentId(targetContext.componentId);
+      if (targetContext.technologyType) {
+        const rawTech = targetContext.technologyType;
+        const mappedTech = techMap[rawTech] || rawTech;
+        setSelectedTech(mappedTech);
+      }
+    }
+  }, [targetContext]);
+
   // Category state
   const [category, setCategory] = useState<"Mechanical" | "Electrical" | "Hydraulic">("Mechanical");
   
@@ -380,6 +506,10 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
 
   // Diagnose triggering
   const triggerDiagnostics = async () => {
+    if (!selectedComponentId) {
+      setErrorMsg("Mandatory: Please select a Target Plant, Route, Asset, and Component at the top before diagnosing.");
+      return;
+    }
     if (!selectedTech) {
       setErrorMsg("Mandatory: Please select a Condition Monitoring technology at the top before diagnosing.");
       return;
@@ -397,6 +527,7 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
       baselineData: baselineMode === "text" ? baselineText : baselineFile?.name || "",
       uploadedFileName: uploadedFile?.name || "",
       uploadedFileDataLength: uploadedFile?.data ? uploadedFile.data.length : 0,
+      componentId: selectedComponentId,
     });
 
     // Check cache first to avoid redundant live API tokens
@@ -459,7 +590,9 @@ export default function Diagnose({ onSaveReport, isSandbox = false, setIsSandbox
         fileMimeType: uploadedFile?.mimeType,
         technology: selectedTech,
         baselineData: baselineMode === "text" ? baselineText : (baselineFile ? `${baselineFile.name}: ${baselineFile.content}` : ""),
-        maintenanceHistory: maintenanceLogs
+        maintenanceHistory: maintenanceLogs,
+        componentId: selectedComponentId,
+        technologyType: selectedTech,
       };
 
       const fetchWithRetryAndTimeout = async (retriesLeft: number): Promise<any> => {
@@ -639,6 +772,138 @@ Business Impact : ${d.manager_summary.business_impact}
         </div>
       </div>
 
+      {/* TARGET ASSET FOR ANALYSIS (CONTEXT-AWARE NAVIGATION) */}
+      <div className="bg-[#0b1329] border border-slate-800/80 rounded-2xl p-5 space-y-4 shadow-lg">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-yellow-400 text-[10px] font-extrabold text-slate-950">
+              Target
+            </span>
+            <h3 className="text-sm font-bold text-white font-display uppercase tracking-wider">
+              Target Asset for Analysis
+            </h3>
+          </div>
+          {targetContext ? (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded border border-yellow-400/20">
+                🔗 Assets Page Context Active
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onClearTargetContext) onClearTargetContext();
+                  setSelectedPlantId("");
+                  setSelectedRouteId("");
+                  setSelectedAssetId("");
+                  setSelectedComponentId("");
+                }}
+                className="text-[10px] text-rose-400 hover:text-rose-300 underline font-semibold"
+              >
+                Clear / Change Target
+              </button>
+            </div>
+          ) : selectedComponentId ? (
+            <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+              ✓ Component Ready
+            </span>
+          ) : (
+            <span className="text-[10px] font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 animate-pulse">
+              ⚠️ Target Component Required
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Plant Dropdown */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">1. Select Plant</label>
+            <select
+              value={selectedPlantId}
+              disabled={!!targetContext}
+              onChange={(e) => {
+                setSelectedPlantId(e.target.value ? Number(e.target.value) : "");
+                setSelectedRouteId("");
+                setSelectedAssetId("");
+                setSelectedComponentId("");
+              }}
+              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+              <option value="">-- Choose Plant --</option>
+              {plants.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Route Dropdown */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">2. Select Route / Area</label>
+            <select
+              value={selectedRouteId}
+              disabled={!!targetContext || !selectedPlantId}
+              onChange={(e) => {
+                setSelectedRouteId(e.target.value ? Number(e.target.value) : "");
+                setSelectedAssetId("");
+                setSelectedComponentId("");
+              }}
+              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+              <option value="">-- Choose Route --</option>
+              {routesList.map((r) => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Asset Dropdown */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">3. Select Asset</label>
+            <select
+              value={selectedAssetId}
+              disabled={!!targetContext || !selectedRouteId}
+              onChange={(e) => {
+                setSelectedAssetId(e.target.value ? Number(e.target.value) : "");
+                setSelectedComponentId("");
+              }}
+              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+              <option value="">-- Choose Asset --</option>
+              {assetsList.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} {a.tag_number ? `(${a.tag_number})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Component Dropdown */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">4. Select Component</label>
+            <select
+              value={selectedComponentId}
+              disabled={!!targetContext || !selectedAssetId}
+              onChange={(e) => {
+                setSelectedComponentId(e.target.value ? Number(e.target.value) : "");
+              }}
+              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+            >
+              <option value="">-- Choose Component --</option>
+              {componentsList.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} {c.type ? `(${c.type})` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {!selectedComponentId && (
+          <p className="text-[11px] font-mono text-amber-400/80 bg-amber-500/5 border border-amber-500/10 px-3 py-2 rounded-xl">
+            ⚠️ Attention: Universal File Upload, Video Inspection, and the 'Diagnose Machinery Fault' button remain disabled until you select a Target Component. This guarantees context accuracy in the asset management database.
+          </p>
+        )}
+      </div>
+
       {/* MANDATORY CM TECHNOLOGY SELECTOR */}
       <div className="bg-[#0b1329] border border-slate-800/80 rounded-2xl p-5 space-y-4 shadow-lg relative">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
@@ -697,7 +962,7 @@ Business Impact : ${d.manager_summary.business_impact}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Diagnostic Form (Col Span 8) */}
         <div className="lg:col-span-8 space-y-6">
-          {/* Category Picker */}
+          {/* Section 1: Category Picker */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4">
             <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
               <Settings className="w-3.5 h-3.5 text-yellow-400" />
@@ -729,160 +994,175 @@ Business Impact : ${d.manager_summary.business_impact}
             </div>
           </div>
 
-          {/* Observed Symptoms Text Box */}
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 relative">
-            <div className="flex justify-between items-center">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                2. Equipment Symptoms & Observations
-              </h3>
-              <button
-                onClick={toggleDictation}
-                title={isDictating ? "Stop speech-to-text dictation" : "Start speech-to-text dictation"}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  isDictating
-                    ? "bg-red-500 text-white animate-pulse"
-                    : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
-                }`}
-              >
-                {isDictating ? (
-                  <>
-                    <MicOff className="w-3.5 h-3.5" /> Stop Voice
-                  </>
-                ) : (
-                  <>
-                    <Mic className="w-3.5 h-3.5 text-yellow-400" /> Voice Dictate
-                  </>
-                )}
-              </button>
-            </div>
-
-            <div className="relative">
-              <textarea
-                value={symptoms}
-                onChange={(e) => setSymptoms(e.target.value)}
-                placeholder="E.g. Motor frame temperature measured at 85°C. Axial vibration spectrum displays dominant peaks at 1X operating frequency (1800 RPM), with radial vibrations at harmonic frequency ranges..."
-                className="w-full h-36 bg-slate-950 text-slate-100 rounded-xl p-4 border border-slate-800 focus:border-yellow-400 focus:outline-none text-sm placeholder:text-slate-650 resize-none font-sans"
-              />
-              {isDictating && (
-                <div className="absolute bottom-3 right-3 text-[10px] bg-slate-900 text-red-400 font-bold border border-red-500/20 px-2 py-1 rounded animate-pulse">
-                  Listening to microphone...
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Telemetry and Image upload zone */}
+          {/* Section 2: Machine Specifications Panel */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4">
-            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-              3. Diagnostic Telemetry & Media Files
-            </h3>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Universal File upload */}
-              <div 
-                onClick={() => fileInputRef.current?.click()}
-                className="border-2 border-dashed border-slate-800 hover:border-slate-700 bg-slate-950/40 rounded-xl p-5 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 group"
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800 gap-4 flex-wrap">
+              <div className="flex items-center gap-1.5">
+                <Settings className="w-4 h-4 text-yellow-400" />
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">2. Machine Specifications</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => nameplateInputRef.current?.click()}
+                disabled={isScanningNameplate}
+                className="px-2.5 py-1 bg-yellow-400 hover:bg-yellow-500 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-[10px] rounded flex items-center gap-1 shadow transition-all"
+                title="Scan nameplate plate image to auto-fill specs"
               >
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  accept=".csv,.txt,.json,.log,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
-                  className="hidden"
-                />
-                
-                {uploadedFile ? (
-                  <div className="w-full space-y-3" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between bg-slate-900 border border-emerald-500/30 rounded-xl p-2.5">
-                      <div className="flex items-center gap-2 max-w-[70%] text-left">
-                        <FileText className="w-5 h-5 text-emerald-400 shrink-0" />
-                        <div className="truncate text-xs">
-                          <p className="font-bold text-slate-200 truncate">{uploadedFile.name}</p>
-                          <p className="text-[10px] text-slate-400 uppercase">{uploadedFile.type} file loaded</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setUploadedFile(null)}
-                        className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                    {uploadedFile.type === "image" && (
-                      <div className="max-h-32 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
-                        <img 
-                          src={uploadedFile.data} 
-                          alt="Machinery Upload Preview" 
-                          className="max-h-32 mx-auto object-contain"
-                          referrerPolicy="no-referrer"
-                        />
-                      </div>
-                    )}
-                  </div>
+                <Camera className="w-3 h-3" />
+                <span>Auto-Scan Plate</span>
+              </button>
+              <input
+                type="file"
+                ref={nameplateInputRef}
+                onChange={handleNameplateFileChange}
+                accept="image/*"
+                className="hidden"
+              />
+            </div>
+
+            {/* Scanning feedback */}
+            {nameplateScanMessage && (
+              <div className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 ${
+                isScanningNameplate 
+                  ? "bg-yellow-400/10 text-yellow-400 border border-yellow-400/25 animate-pulse" 
+                  : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
+              }`}>
+                {isScanningNameplate ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
                 ) : (
-                  <>
-                    <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-yellow-400 transition-colors" />
-                    <div className="text-xs">
-                      <p className="font-semibold text-slate-300">Telemetry Data or Image</p>
-                      <p className="text-[10px] text-slate-500 mt-1">PNG, JPG, CSV, JSON, TXT</p>
-                    </div>
-                  </>
+                  <Check className="w-3.5 h-3.5 shrink-0" />
                 )}
+                <span className="truncate">{nameplateScanMessage}</span>
+              </div>
+            )}
+
+            {/* Structured Specifications Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+              {/* Group 1: Motor specs */}
+              <div className="bg-slate-950/40 border border-slate-800/60 rounded-xl p-4 space-y-3.5">
+                <div className="border-b border-slate-800 pb-1.5">
+                  <h4 className="text-[10px] font-bold text-yellow-400 uppercase tracking-wider">Motor Specs</h4>
+                </div>
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Base Operating RPM</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={specs.specRpm === "N/A" ? "" : specs.specRpm}
+                        onChange={(e) => handleSpecChange("specRpm", e.target.value || "N/A")}
+                        placeholder="e.g. 1800"
+                        className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 pr-10 text-xs text-slate-200 focus:outline-none font-mono"
+                      />
+                      <span className="absolute right-2.5 top-2 text-[9px] font-bold text-slate-500">RPM</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Shaft Orientation</label>
+                    <select
+                      value={specs.specOrientation}
+                      onChange={(e) => handleSpecChange("specOrientation", e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 text-xs text-slate-200 focus:outline-none font-mono"
+                    >
+                      <option value="N/A">N/A</option>
+                      <option value="Horizontal">Horizontal Mount</option>
+                      <option value="Vertical">Vertical Mount</option>
+                    </select>
+                  </div>
+                </div>
               </div>
 
-              {/* Video Inspection upload */}
-              <div 
-                onClick={() => videoInputRef.current?.click()}
-                className="border-2 border-dashed border-slate-800 hover:border-slate-700 bg-slate-950/40 rounded-xl p-5 text-center cursor-pointer transition-all flex flex-col items-center justify-center space-y-2 group"
-              >
-                <input
-                  type="file"
-                  ref={videoInputRef}
-                  onChange={handleVideoChange}
-                  accept="video/mp4,video/quicktime,video/webm"
-                  className="hidden"
-                />
-
-                {videoFile ? (
-                  <div className="w-full space-y-3" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between bg-slate-900 border border-cyan-500/30 rounded-xl p-2.5">
-                      <div className="flex items-center gap-2 max-w-[70%] text-left">
-                        <Video className="w-5 h-5 text-cyan-400 shrink-0" />
-                        <div className="truncate text-xs">
-                          <p className="font-bold text-slate-200 truncate">{videoFile.name}</p>
-                          <p className="text-[10px] text-slate-400">Inspection video loaded</p>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setVideoFile(null)}
-                        className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <div className="rounded-lg overflow-hidden border border-slate-800">
-                      <video src={videoFile.url} controls className="max-h-32 w-full object-cover" />
+              {/* Group 2: Bearing & Transmission specs */}
+              <div className="bg-slate-950/40 border border-slate-800/60 rounded-xl p-4 space-y-3.5">
+                <div className="border-b border-slate-800 pb-1.5">
+                  <h4 className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">Transmission Specs</h4>
+                </div>
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Drive Coupling Type</label>
+                    <select
+                      value={specs.specDrive}
+                      onChange={(e) => handleSpecChange("specDrive", e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 text-xs text-slate-200 focus:outline-none font-mono"
+                    >
+                      <option value="N/A">N/A</option>
+                      <option value="Direct">Direct Drive</option>
+                      <option value="Belt">Belt-driven</option>
+                      <option value="Gearbox">Gearbox coupled</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Pinion Teeth Count</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={specs.specPinionTeeth === "N/A" ? "" : specs.specPinionTeeth}
+                        onChange={(e) => handleSpecChange("specPinionTeeth", e.target.value || "N/A")}
+                        placeholder="e.g. 17"
+                        className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 pr-12 text-xs text-slate-200 focus:outline-none font-mono"
+                      />
+                      <span className="absolute right-2.5 top-2 text-[9px] font-bold text-slate-500">TEETH</span>
                     </div>
                   </div>
-                ) : (
-                  <>
-                    <Video className="w-8 h-8 text-slate-500 group-hover:text-cyan-400 transition-colors" />
-                    <div className="text-xs">
-                      <p className="font-semibold text-slate-300">Visual Inspection Video</p>
-                      <p className="text-[10px] text-slate-500 mt-1">MP4, WEBM (Max 15MB)</p>
+                </div>
+              </div>
+
+              {/* Group 3: Operating conditions & Geometry */}
+              <div className="bg-slate-950/40 border border-slate-800/60 rounded-xl p-4 space-y-3.5">
+                <div className="border-b border-slate-800 pb-1.5">
+                  <h4 className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Geometry Specs</h4>
+                </div>
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Fan Blade Count</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={specs.specFanBlades === "N/A" ? "" : specs.specFanBlades}
+                        onChange={(e) => handleSpecChange("specFanBlades", e.target.value || "N/A")}
+                        placeholder="e.g. 4"
+                        className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 pr-12 text-xs text-slate-200 focus:outline-none font-mono"
+                      />
+                      <span className="absolute right-2.5 top-2 text-[9px] font-bold text-slate-500">BLADES</span>
                     </div>
-                  </>
-                )}
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Pump Impeller Vanes</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={specs.specPumpImpellers === "N/A" ? "" : specs.specPumpImpellers}
+                        onChange={(e) => handleSpecChange("specPumpImpellers", e.target.value || "N/A")}
+                        placeholder="e.g. 5"
+                        className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 pr-12 text-xs text-slate-200 focus:outline-none font-mono"
+                      />
+                      <span className="absolute right-2.5 top-2 text-[9px] font-bold text-slate-500">VANES</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Gear Teeth Count</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={specs.specGearTeeth === "N/A" ? "" : specs.specGearTeeth}
+                        onChange={(e) => handleSpecChange("specGearTeeth", e.target.value || "N/A")}
+                        placeholder="e.g. 29"
+                        className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 rounded-lg p-2 pr-12 text-xs text-slate-200 focus:outline-none font-mono"
+                      />
+                      <span className="absolute right-2.5 top-2 text-[9px] font-bold text-slate-500">TEETH</span>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Baseline Comparison & Delta Input Card */}
+          {/* Section 3: Baseline Comparison & Delta Input Card */}
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800">
               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                 <FileText className="w-3.5 h-3.5 text-cyan-400" />
-                4. Baseline Comparison Parameters
+                3. Baseline Comparison Parameters
               </h3>
               <div className="flex bg-slate-950 p-0.5 rounded-lg border border-slate-800">
                 <button
@@ -965,6 +1245,176 @@ Business Impact : ${d.manager_summary.business_impact}
             )}
           </div>
 
+          {/* Section 4: Observed Symptoms Text Box */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 relative">
+            <div className="flex justify-between items-center gap-2">
+              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                4. Equipment Symptoms & Observations
+              </h3>
+              <button
+                onClick={toggleDictation}
+                title={isDictating ? "Stop speech-to-text dictation" : "Start speech-to-text dictation"}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+                  isDictating
+                    ? "bg-red-500 text-white animate-pulse"
+                    : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                }`}
+              >
+                {isDictating ? (
+                  <>
+                    <MicOff className="w-3.5 h-3.5" /> Stop Voice
+                  </>
+                ) : (
+                  <>
+                    <Mic className="w-3.5 h-3.5 text-yellow-400" /> Voice Dictate
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="relative">
+              <textarea
+                value={symptoms}
+                onChange={(e) => setSymptoms(e.target.value)}
+                placeholder="E.g. Motor frame temperature measured at 85°C. Axial vibration spectrum displays dominant peaks at 1X operating frequency (1800 RPM), with radial vibrations at harmonic frequency ranges..."
+                className="w-full h-36 bg-slate-950 text-slate-100 rounded-xl p-4 border border-slate-800 focus:border-yellow-400 focus:outline-none text-sm placeholder:text-slate-650 resize-none font-sans"
+              />
+              {isDictating && (
+                <div className="absolute bottom-3 right-3 text-[10px] bg-slate-900 text-red-400 font-bold border border-red-500/20 px-2 py-1 rounded animate-pulse">
+                  Listening to microphone...
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Section 5: Telemetry and Image upload zone */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4">
+            <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+              5. Diagnostic Telemetry & Media Files
+            </h3>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Universal File upload */}
+              <div 
+                onClick={() => {
+                  if (selectedComponentId) {
+                    fileInputRef.current?.click();
+                  } else {
+                    setErrorMsg("Please select a Target Component at the top before uploading telemetry files.");
+                  }
+                }}
+                className={`border-2 border-dashed rounded-xl p-5 text-center transition-all flex flex-col items-center justify-center space-y-2 group ${
+                  selectedComponentId 
+                    ? "border-slate-800 hover:border-slate-700 bg-slate-950/40 cursor-pointer" 
+                    : "border-slate-900/60 bg-slate-950/10 cursor-not-allowed opacity-40"
+                }`}
+              >
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  accept=".csv,.txt,.json,.log,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
+                  className="hidden"
+                  disabled={!selectedComponentId}
+                />
+                
+                {uploadedFile ? (
+                  <div className="w-full space-y-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between bg-slate-900 border border-emerald-500/30 rounded-xl p-2.5">
+                      <div className="flex items-center gap-2 max-w-[70%] text-left">
+                        <FileText className="w-5 h-5 text-emerald-400 shrink-0" />
+                        <div className="truncate text-xs">
+                          <p className="font-bold text-slate-200 truncate">{uploadedFile.name}</p>
+                          <p className="text-[10px] text-slate-400 uppercase">{uploadedFile.type} file loaded</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setUploadedFile(null)}
+                        className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    {uploadedFile.type === "image" && (
+                      <div className="max-h-32 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
+                        <img 
+                          src={uploadedFile.data} 
+                          alt="Machinery Upload Preview" 
+                          className="max-h-32 mx-auto object-contain"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-yellow-400 transition-colors" />
+                    <div className="text-xs">
+                      <p className="font-semibold text-slate-300">Telemetry Data or Image</p>
+                      <p className="text-[10px] text-slate-500 mt-1">PNG, JPG, CSV, JSON, TXT</p>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Video Inspection upload */}
+              <div 
+                onClick={() => {
+                  if (selectedComponentId) {
+                    videoInputRef.current?.click();
+                  } else {
+                    setErrorMsg("Please select a Target Component at the top before uploading inspection videos.");
+                  }
+                }}
+                className={`border-2 border-dashed rounded-xl p-5 text-center transition-all flex flex-col items-center justify-center space-y-2 group ${
+                  selectedComponentId 
+                    ? "border-slate-800 hover:border-slate-700 bg-slate-950/40 cursor-pointer" 
+                    : "border-slate-900/60 bg-slate-950/10 cursor-not-allowed opacity-40"
+                }`}
+              >
+                <input
+                  type="file"
+                  ref={videoInputRef}
+                  onChange={handleVideoChange}
+                  accept="video/mp4,video/quicktime,video/webm"
+                  className="hidden"
+                  disabled={!selectedComponentId}
+                />
+
+                {videoFile ? (
+                  <div className="w-full space-y-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between bg-slate-900 border border-cyan-500/30 rounded-xl p-2.5">
+                      <div className="flex items-center gap-2 max-w-[70%] text-left">
+                        <Video className="w-5 h-5 text-cyan-400 shrink-0" />
+                        <div className="truncate text-xs">
+                          <p className="font-bold text-slate-200 truncate">{videoFile.name}</p>
+                          <p className="text-[10px] text-slate-400">Inspection video loaded</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setVideoFile(null)}
+                        className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="rounded-lg overflow-hidden border border-slate-800">
+                      <video src={videoFile.url} controls className="max-h-32 w-full object-cover" />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Video className="w-8 h-8 text-slate-500 group-hover:text-cyan-400 transition-colors" />
+                    <div className="text-xs">
+                      <p className="font-semibold text-slate-300">Visual Inspection Video</p>
+                      <p className="text-[10px] text-slate-500 mt-1">MP4, WEBM (Max 15MB)</p>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
           {/* Error Message */}
           {errorMsg && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 text-xs text-red-400">
@@ -986,7 +1436,12 @@ Business Impact : ${d.manager_summary.business_impact}
             ) : (
               <button
                 onClick={triggerDiagnostics}
-                className="w-full bg-yellow-400 hover:bg-yellow-500 text-slate-950 font-bold py-4 rounded-xl shadow-lg transition-all text-sm flex items-center justify-center gap-2"
+                disabled={!selectedComponentId}
+                className={`w-full font-bold py-4 rounded-xl shadow-lg transition-all text-sm flex items-center justify-center gap-2 ${
+                  selectedComponentId 
+                    ? "bg-yellow-400 hover:bg-yellow-500 text-slate-950 cursor-pointer" 
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
+                }`}
               >
                 <Wrench className="w-4 h-4" />
                 <span>DIAGNOSE MACHINERY FAULT</span>
@@ -995,342 +1450,183 @@ Business Impact : ${d.manager_summary.business_impact}
           </div>
         </div>
 
-        {/* Specifications & Calculated Frequencies Panel (Col Span 4) */}
+        {/* Real-time Diagnostics Reference Columns (Col Span 4) */}
         <div className="lg:col-span-4 space-y-6">
-          {/* Tab buttons for Specs vs Maintenance */}
-          <div className="flex bg-slate-900/60 p-1 rounded-xl border border-slate-800">
-            <button
-              type="button"
-              onClick={() => setSidebarTab("specs")}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                sidebarTab === "specs" 
-                  ? "bg-yellow-400 text-slate-950 shadow" 
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Specs & Physics
-            </button>
-            <button
-              type="button"
-              onClick={() => setSidebarTab("maintenance")}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-                sidebarTab === "maintenance" 
-                  ? "bg-yellow-400 text-slate-950 shadow" 
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Maintenance History ({maintenanceLogs.length})
-            </button>
-          </div>
-
-          {sidebarTab === "specs" ? (
-            <div className="space-y-6 animate-fade-in">
-              {/* Specifications Panel */}
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                  <div className="flex items-center gap-1.5">
-                    <Settings className="w-4 h-4 text-slate-400" />
-                    <h3 className="text-sm font-bold text-white font-display">Machinery Specs</h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => nameplateInputRef.current?.click()}
-                    disabled={isScanningNameplate}
-                    className="px-2 py-1 bg-yellow-400 hover:bg-yellow-500 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-bold text-[10px] rounded flex items-center gap-1 shadow transition-all"
-                    title="Scan nameplate plate image to auto-fill specs"
-                  >
-                    <Camera className="w-3 h-3" />
-                    <span>Auto-Scan</span>
-                  </button>
-                  <input
-                    type="file"
-                    ref={nameplateInputRef}
-                    onChange={handleNameplateFileChange}
-                    accept="image/*"
-                    className="hidden"
-                  />
-                </div>
-
-                {/* Scanning feedback */}
-                {nameplateScanMessage && (
-                  <div className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 ${
-                    isScanningNameplate 
-                      ? "bg-yellow-400/10 text-yellow-400 border border-yellow-400/25 animate-pulse" 
-                      : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/25"
-                  }`}>
-                    {isScanningNameplate ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
-                    ) : (
-                      <Check className="w-3.5 h-3.5 shrink-0" />
-                    )}
-                    <span className="truncate">{nameplateScanMessage}</span>
-                  </div>
-                )}
-
-                <div className="space-y-4">
-                  {/* Base RPM */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Base Operating RPM</label>
-                    <select
-                      value={specs.specRpm}
-                      onChange={(e) => handleSpecChange("specRpm", e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400"
-                    >
-                      <option value="N/A">N/A (Not Specified)</option>
-                      <option value="900">900 RPM (Low Speed Motor)</option>
-                      <option value="1200">1200 RPM (6-pole induction)</option>
-                      <option value="1800">1800 RPM (Standard 4-pole motor)</option>
-                      <option value="3600">3600 RPM (High Speed / 2-pole)</option>
-                      <option value="10000">10000 RPM (Turbine / Expander)</option>
-                    </select>
-                  </div>
-
-                  {/* Orientation */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Shaft Orientation</label>
-                    <select
-                      value={specs.specOrientation}
-                      onChange={(e) => handleSpecChange("specOrientation", e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400"
-                    >
-                      <option value="N/A">N/A</option>
-                      <option value="Horizontal">Horizontal Shaft Mount</option>
-                      <option value="Vertical">Vertical Shaft Mount</option>
-                    </select>
-                  </div>
-
-                  {/* Drive Type */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Drive Coupling Type</label>
-                    <select
-                      value={specs.specDrive}
-                      onChange={(e) => handleSpecChange("specDrive", e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400"
-                    >
-                      <option value="N/A">N/A</option>
-                      <option value="Direct">Direct Drive (Flexible Coupling)</option>
-                      <option value="Belt">Belt-driven (V-Belts/Sheaves)</option>
-                      <option value="Gearbox">Gearbox coupled</option>
-                    </select>
-                  </div>
-
-                  {/* Fan Blades */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Fan Blade Count</label>
-                    <select
-                      value={specs.specFanBlades}
-                      onChange={(e) => handleSpecChange("specFanBlades", e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400"
-                    >
-                      <option value="N/A">N/A</option>
-                      <option value="4">4 Blades (BPF = 4X)</option>
-                      <option value="6">6 Blades (BPF = 6X)</option>
-                      <option value="8">8 Blades (BPF = 8X)</option>
-                      <option value="12">12 Blades (BPF = 12X)</option>
-                    </select>
-                  </div>
-
-                  {/* Impeller count */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Pump Impeller Vanes</label>
-                    <select
-                      value={specs.specPumpImpellers}
-                      onChange={(e) => handleSpecChange("specPumpImpellers", e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400"
-                    >
-                      <option value="N/A">N/A</option>
-                      <option value="3">3 Vanes</option>
-                      <option value="5">5 Vanes</option>
-                      <option value="7">7 Vanes</option>
-                    </select>
-                  </div>
-
-                  {/* Gear pinion teeth */}
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Pinion Teeth (Gearing)</label>
-                    <select
-                      value={specs.specPinionTeeth}
-                      onChange={(e) => handleSpecChange("specPinionTeeth", e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400"
-                    >
-                      <option value="N/A">N/A</option>
-                      <option value="17">17 Teeth</option>
-                      <option value="23">23 Teeth</option>
-                      <option value="29">29 Teeth</option>
-                    </select>
-                  </div>
-                </div>
+          {/* Physics Frequency Bands */}
+          {machineryFrequencies ? (
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-3">
+              <div className="flex items-center gap-1.5 pb-2 border-b border-slate-800">
+                <Info className="w-4 h-4 text-cyan-400" />
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider">Physics Frequency Bands</h4>
               </div>
-
-              {/* Calculated Frequencies Widget */}
-              {machineryFrequencies && (
-                <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-3">
-                  <div className="flex items-center gap-1.5 pb-2 border-b border-slate-800">
-                    <Info className="w-4 h-4 text-cyan-400" />
-                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">Physics Frequency Bands</h4>
+              <div className="space-y-2">
+                {Object.entries(machineryFrequencies).map(([label, val]) => (
+                  <div key={label} className="flex justify-between items-center text-xs bg-slate-950/60 px-3 py-2 rounded-lg border border-slate-800">
+                    <span className="text-slate-400 font-medium">{label}</span>
+                    <span className="text-yellow-400 font-mono font-bold">{val}</span>
                   </div>
-                  <div className="space-y-2">
-                    {Object.entries(machineryFrequencies).map(([label, val]) => (
-                      <div key={label} className="flex justify-between items-center text-xs bg-slate-950/60 px-3 py-2 rounded-lg border border-slate-800">
-                        <span className="text-slate-400 font-medium">{label}</span>
-                        <span className="text-yellow-400 font-mono font-bold">{val}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-[10px] text-slate-500 leading-normal">
-                    Frequency bounds calculated utilizing fundamental mechanical rotordynamics formulas. These frequencies form the anchor bands evaluated during AI vibration diagnostic correlations.
-                  </p>
-                </div>
-              )}
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 leading-normal">
+                Frequency bounds calculated utilizing fundamental mechanical rotordynamics formulas. These frequencies form the anchor bands evaluated during AI vibration diagnostic correlations.
+              </p>
             </div>
           ) : (
-            /* Maintenance Timeline Panel */
-            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 animate-fade-in text-xs">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                <div className="flex items-center gap-1.5">
-                  <Wrench className="w-4 h-4 text-slate-400" />
-                  <h3 className="text-sm font-bold text-white font-display">Maintenance Logs</h3>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowAddLog(!showAddLog)}
-                  className="px-2.5 py-1 bg-yellow-400 hover:bg-yellow-500 text-slate-950 font-bold text-[10px] rounded shadow transition-all"
-                >
-                  {showAddLog ? "Cancel" : "+ Log Event"}
-                </button>
-              </div>
-
-              {showAddLog && (
-                <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-3 animate-fade-in">
-                  <p className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest">Add New Log Entry</p>
-                  <div className="space-y-2">
-                    <div>
-                      <label className="text-[9px] font-bold text-slate-400 uppercase">Action / Repair Description</label>
-                      <input
-                        type="text"
-                        required
-                        value={newLogAction}
-                        onChange={(e) => setNewLogAction(e.target.value)}
-                        placeholder="E.g., Bearing replaced, shaft balanced"
-                        className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-[9px] font-bold text-slate-400 uppercase">Parts Used</label>
-                        <input
-                          type="text"
-                          value={newLogParts}
-                          onChange={(e) => setNewLogParts(e.target.value)}
-                          placeholder="SKF bearing, belt"
-                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[9px] font-bold text-slate-400 uppercase">Technician Name</label>
-                        <input
-                          type="text"
-                          value={newLogTech}
-                          onChange={(e) => setNewLogTech(e.target.value)}
-                          placeholder="J. Doe"
-                          className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-bold text-slate-400 uppercase">Date</label>
-                      <input
-                        type="date"
-                        value={newLogDate}
-                        onChange={(e) => setNewLogDate(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-bold text-slate-400 uppercase">Technical Notes / Comments</label>
-                      <textarea
-                        value={newLogNotes}
-                        onChange={(e) => setNewLogNotes(e.target.value)}
-                        placeholder="Laser aligned coupling to <0.02mm clearance tolerance..."
-                        rows={2}
-                        className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400 resize-none"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!newLogAction) return;
-                        const newEntry = {
-                          id: "m-" + Date.now(),
-                          date: newLogDate,
-                          action: newLogAction,
-                          partsUsed: newLogParts || "N/A",
-                          technician: newLogTech || "Operator",
-                          notes: newLogNotes || "N/A"
-                        };
-                        saveMaintenanceLogs([newEntry, ...maintenanceLogs]);
-                        setNewLogAction("");
-                        setNewLogParts("");
-                        setNewLogTech("");
-                        setNewLogNotes("");
-                        setShowAddLog(false);
-                      }}
-                      className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 font-bold text-white rounded text-[10px]"
-                    >
-                      Save to Maintenance Records
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Maintenance Timeline View */}
-              <div className="space-y-4">
-                {maintenanceLogs.length === 0 ? (
-                  <p className="text-center py-6 text-slate-500 font-mono text-[10px]">No logged maintenance events found.</p>
-                ) : (
-                  <div className="relative border-l border-slate-800 pl-4 ml-2 space-y-4">
-                    {maintenanceLogs.map((log) => (
-                      <div key={log.id} className="relative space-y-1">
-                        {/* Dot marker */}
-                        <div className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-yellow-400 border-2 border-[#080c14] shadow" />
-                        
-                        <div className="flex items-center justify-between">
-                          <span className="font-mono text-[9px] text-yellow-400 font-bold">{log.date}</span>
-                          <span className="text-[8px] text-slate-500 font-bold">Tech: {log.technician}</span>
-                        </div>
-                        
-                        <p className="font-bold text-slate-200 text-[11px] leading-tight">{log.action}</p>
-                        
-                        {log.partsUsed && log.partsUsed !== "N/A" && (
-                          <p className="text-[9px] text-slate-400 font-mono">🔧 Parts: {log.partsUsed}</p>
-                        )}
-                        
-                        {log.notes && log.notes !== "N/A" && (
-                          <p className="text-[10px] text-slate-400 leading-normal bg-slate-950/40 p-1.5 rounded border border-slate-900 font-mono">{log.notes}</p>
-                        )}
-
-                        <div className="flex justify-end pt-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const updated = maintenanceLogs.filter(l => l.id !== log.id);
-                              saveMaintenanceLogs(updated);
-                            }}
-                            className="text-[9px] text-red-500/85 hover:text-red-400 font-bold bg-red-500/5 px-2 py-0.5 rounded border border-red-500/10"
-                          >
-                            Delete entry
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-500 italic mt-3 font-mono leading-normal">
-                * When a diagnostics analysis is triggered, this historical log timeline is auto-injected. The fallback sequence evaluates recently replaced parts against active wear signatures to detect poor installation or recurring root causes.
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 text-center py-8">
+              <Info className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Physics Frequency Bands</h4>
+              <p className="text-[10px] text-slate-500 mt-2 leading-normal">
+                Enter Base Operating RPM in Machine Specifications to calculate mechanical Rotordynamics bounds.
               </p>
             </div>
           )}
+
+          {/* Maintenance Timeline Panel */}
+          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 text-xs">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-1.5">
+                <Wrench className="w-4 h-4 text-slate-400" />
+                <h3 className="text-sm font-bold text-white font-display">Maintenance Logs</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddLog(!showAddLog)}
+                className="px-2.5 py-1 bg-yellow-400 hover:bg-yellow-500 text-slate-950 font-bold text-[10px] rounded shadow transition-all"
+              >
+                {showAddLog ? "Cancel" : "+ Log Event"}
+              </button>
+            </div>
+
+            {showAddLog && (
+              <div className="bg-slate-950/60 p-3 rounded-xl border border-slate-800/80 space-y-3 animate-fade-in">
+                <p className="text-[10px] font-bold text-yellow-400 uppercase tracking-widest">Add New Log Entry</p>
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase">Action / Repair Description</label>
+                    <input
+                      type="text"
+                      required
+                      value={newLogAction}
+                      onChange={(e) => setNewLogAction(e.target.value)}
+                      placeholder="E.g., Bearing replaced, shaft balanced"
+                      className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">Parts Used</label>
+                      <input
+                        type="text"
+                        value={newLogParts}
+                        onChange={(e) => setNewLogParts(e.target.value)}
+                        placeholder="SKF bearing, belt"
+                        className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-bold text-slate-400 uppercase">Technician Name</label>
+                      <input
+                        type="text"
+                        value={newLogTech}
+                        onChange={(e) => setNewLogTech(e.target.value)}
+                        placeholder="J. Doe"
+                        className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase">Date</label>
+                    <input
+                      type="date"
+                      value={newLogDate}
+                      onChange={(e) => setNewLogDate(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase">Technical Notes / Comments</label>
+                    <textarea
+                      value={newLogNotes}
+                      onChange={(e) => setNewLogNotes(e.target.value)}
+                      placeholder="Laser aligned coupling to <0.02mm clearance tolerance..."
+                      rows={2}
+                      className="w-full bg-slate-900 border border-slate-800 rounded p-1.5 text-xs text-white focus:outline-none focus:border-yellow-400 resize-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newLogAction) return;
+                      const newEntry = {
+                        id: "m-" + Date.now(),
+                        date: newLogDate,
+                        action: newLogAction,
+                        partsUsed: newLogParts || "N/A",
+                        technician: newLogTech || "Operator",
+                        notes: newLogNotes || "N/A"
+                      };
+                      saveMaintenanceLogs([newEntry, ...maintenanceLogs]);
+                      setNewLogAction("");
+                      setNewLogParts("");
+                      setNewLogTech("");
+                      setNewLogNotes("");
+                      setShowAddLog(false);
+                    }}
+                    className="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 font-bold text-white rounded text-[10px]"
+                  >
+                    Save to Maintenance Records
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Maintenance Timeline View */}
+            <div className="space-y-4">
+              {maintenanceLogs.length === 0 ? (
+                <p className="text-center py-6 text-slate-500 font-mono text-[10px]">No logged maintenance events found.</p>
+              ) : (
+                <div className="relative border-l border-slate-800 pl-4 ml-2 space-y-4">
+                  {maintenanceLogs.map((log) => (
+                    <div key={log.id} className="relative space-y-1">
+                      {/* Dot marker */}
+                      <div className="absolute -left-[21px] top-1.5 h-2.5 w-2.5 rounded-full bg-yellow-400 border-2 border-[#080c14] shadow" />
+                      
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-[9px] text-yellow-400 font-bold">{log.date}</span>
+                        <span className="text-[8px] text-slate-500 font-bold">Tech: {log.technician}</span>
+                      </div>
+                      
+                      <p className="font-bold text-slate-200 text-[11px] leading-tight">{log.action}</p>
+                      
+                      {log.partsUsed && log.partsUsed !== "N/A" && (
+                        <p className="text-[9px] text-slate-400 font-mono">🔧 Parts: {log.partsUsed}</p>
+                      )}
+                      
+                      {log.notes && log.notes !== "N/A" && (
+                        <p className="text-[10px] text-slate-400 leading-normal bg-slate-950/40 p-1.5 rounded border border-slate-900 font-mono">{log.notes}</p>
+                      )}
+
+                      <div className="flex justify-end pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = maintenanceLogs.filter(l => l.id !== log.id);
+                            saveMaintenanceLogs(updated);
+                          }}
+                          className="text-[9px] text-red-500/85 hover:text-red-400 font-bold bg-red-500/5 px-2 py-0.5 rounded border border-red-500/10"
+                        >
+                          Delete entry
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <p className="text-[10px] text-slate-500 italic mt-3 font-mono leading-normal">
+              * When a diagnostics analysis is triggered, this historical log timeline is auto-injected. The fallback sequence evaluates recently replaced parts against active wear signatures to detect poor installation or recurring root causes.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -1355,6 +1651,13 @@ Business Impact : ${d.manager_summary.business_impact}
               >
                 {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{isCopied ? "Copied!" : "Copy CMMS Work Order"}</span>
+              </button>
+              <button
+                onClick={() => console.log('Export to PDF clicked')}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-rose-400 border border-slate-700 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Export to PDF</span>
               </button>
             </div>
           </div>

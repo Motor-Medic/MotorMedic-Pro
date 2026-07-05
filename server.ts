@@ -1,4 +1,3 @@
-// Force Git to detect changes - database update
 import express from "express";
 import path from "path";
 import { GoogleGenAI, Type } from "@google/genai";
@@ -2184,15 +2183,1693 @@ app.post("/api/sensor-placement", async (req, res) => {
       return res.json(fallbackResult);
     } catch (fallbackErr) {
       console.error("Fallback generator failed:", fallbackErr);
-      return res.status(500).json({ error: error.message || "An unknown error occurred during sensor placement analysis." });
+      return res.status(500).json({ error: error.message || "Live Sensor Placement Failed" });
     }
   }
 });
 
+// ============================================
+// CMMS EQUIPMENT DATABASE ENDPOINTS
+// ============================================
+
+// Local In-Memory Storage for Fallback/Sandbox Demo Mode
+let memoryPlants: any[] = [
+  { id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
+  { id: 2, name: "Chicago Manufacturing Facility", location: "1350 E 89th St, Chicago, IL", created_at: new Date() }
+];
+
+let memoryRoutes: any[] = [
+  { id: 1, plant_id: 1, name: "North Line Compressors", description: "Primary air compressors for North assembly line.", created_at: new Date() },
+  { id: 2, plant_id: 1, name: "Wastewater Treatment Area", description: "Pumps and blowers in primary filtration plant.", created_at: new Date() }
+];
+
+let memoryEquipment: any[] = [
+  { id: 1, route_id: 1, name: "Screw Compressor C-101", type: "Compressor", manufacturer: "Ingersoll Rand", model: "RS37i", serial_number: "IR-987123", install_date: "2023-01-15", criticality: "High", status: "Active", tag_number: "TAG-C101", description: "Primary air supply line.", created_at: new Date() },
+  { id: 2, route_id: 1, name: "Exhaust Fan EF-204", type: "Fan", manufacturer: "Twin City Fan", model: "BAV-36", serial_number: "TCF-77412", install_date: "2022-06-10", criticality: "Medium", status: "Active", tag_number: "TAG-EF204", description: "Secondary ventilation extraction.", created_at: new Date() }
+];
+
+// Alias memoryAssets to memoryEquipment to keep back-compatibility
+let memoryAssets: any[] = memoryEquipment;
+
+let memoryComponents: any[] = [
+  { id: 1, asset_id: 1, equipment_id: 1, name: "Drive End Bearing", type: "Bearing", manufacturer: "SKF", model: "6210", specifications: { part_number: "SKF 6210", dynamic_load_rating: "35kN" }, notes: "Greased monthly.", created_at: new Date() },
+  { id: 2, asset_id: 1, equipment_id: 1, name: "Non-Drive End Bearing", type: "Bearing", manufacturer: "SKF", model: "6208", specifications: { part_number: "SKF 6208" }, notes: "Greased monthly.", created_at: new Date() },
+  { id: 3, asset_id: 2, equipment_id: 2, name: "Flexible Coupling", type: "Coupling", manufacturer: "Falk", model: "1070G", specifications: { manufacturer: "Falk", gap_tolerance: "0.05mm" }, notes: "Check elastomer star elements.", created_at: new Date() }
+];
+
+let memoryCollectionPoints: any[] = [
+  { id: 1, component_id: 1, name: "Bearing 1 Housing", location_order: 1, notes: "Inboard housing near rotor cage.", created_at: new Date() },
+  { id: 2, component_id: 3, name: "Coupling Input Shroud", location_order: 1, notes: "Monitor radial paths.", created_at: new Date() }
+];
+
+let memoryMeasurementPoints: any[] = [
+  // Auto-created points for collection_point_id: 1
+  { id: 1, collection_point_id: 1, direction: "Horizontal", technology_type: "Vibration", units: "in/Sec", created_at: new Date() },
+  { id: 2, collection_point_id: 1, direction: "Vertical", technology_type: "Vibration", units: "in/Sec", created_at: new Date() },
+  { id: 3, collection_point_id: 1, direction: "Axial", technology_type: "Vibration", units: "in/Sec", created_at: new Date() },
+  // Auto-created points for collection_point_id: 2
+  { id: 4, collection_point_id: 2, direction: "Horizontal", technology_type: "Vibration", units: "in/Sec", created_at: new Date() },
+  { id: 5, collection_point_id: 2, direction: "Vertical", technology_type: "Vibration", units: "in/Sec", created_at: new Date() },
+  { id: 6, collection_point_id: 2, direction: "Axial", technology_type: "Vibration", units: "in/Sec", created_at: new Date() }
+];
+
+let memoryAnalysisHistory: any[] = [
+  {
+    id: 1,
+    measurement_point_id: 1,
+    data_point_name: "DE Horizontal RMS",
+    state: "Data Collected",
+    op_speed: 1785.00,
+    measurement_value: 0.125000,
+    units: "in/Sec",
+    measurement_date: new Date(),
+    notes: "Slight 1x vibration peak observed.",
+    waveform_data: { sample_rate: 2000, length: 1024 },
+    alarm_status: false,
+    diagnosis_result: { health: "Healthy", details: "Vibration within ISO Class I Zone A allowable threshold." },
+    was_correct: true,
+    corrected_diagnosis: null,
+    created_at: new Date()
+  }
+];
+
+// Helper to generate a unique sequential ID for memory fallback
+let nextId = 100;
+function getNextId() {
+  return nextId++;
+}
+
+// --------------------------------------------------------
+// PLANTS ENDPOINTS
+// --------------------------------------------------------
+
+// GET /api/plants - List all plants
+app.get("/api/plants", async (req, res) => {
+  try {
+    if (pool) {
+      const result = await pool.query("SELECT * FROM plants ORDER BY name ASC");
+      return res.json(result.rows);
+    } else {
+      return res.json(memoryPlants);
+    }
+  } catch (error: any) {
+    console.error("GET /api/plants failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch plants" });
+  }
+});
+
+// GET /api/plants/:id - Get a single plant
+app.get("/api/plants/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid ID parameter" });
+    }
+
+    if (pool) {
+      const result = await pool.query("SELECT * FROM plants WHERE id = $1", [id]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Plant not found" });
+      }
+      return res.json(result.rows[0]);
+    } else {
+      const plant = memoryPlants.find(p => p.id === id);
+      if (!plant) {
+        return res.status(404).json({ error: "Plant not found" });
+      }
+      return res.json(plant);
+    }
+  } catch (error: any) {
+    console.error("GET /api/plants/:id failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch plant" });
+  }
+});
+
+// POST /api/plants - Create new plant
+app.post("/api/plants", async (req, res) => {
+  try {
+    const { name, location } = req.body;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        "INSERT INTO plants (name, location) VALUES ($1, $2) RETURNING *",
+        [name.trim(), location ? location.trim() : null]
+      );
+      return res.status(201).json(result.rows[0]);
+    } else {
+      const newPlant = {
+        id: getNextId(),
+        name: name.trim(),
+        location: location ? location.trim() : null,
+        created_at: new Date()
+      };
+      memoryPlants.push(newPlant);
+      return res.status(201).json(newPlant);
+    }
+  } catch (error: any) {
+    console.error("POST /api/plants failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create plant" });
+  }
+});
+
+// PUT /api/plants/:id - Update a plant
+app.put("/api/plants/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const { name, location } = req.body;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        "UPDATE plants SET name = $1, location = $2 WHERE id = $3 RETURNING *",
+        [name.trim(), location ? location.trim() : null, id]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Plant not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const plant = memoryPlants.find(p => p.id === id);
+      if (!plant) return res.status(404).json({ error: "Plant not found" });
+      plant.name = name.trim();
+      plant.location = location ? location.trim() : null;
+      return res.json(plant);
+    }
+  } catch (error: any) {
+    console.error("PUT /api/plants failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update plant" });
+  }
+});
+
+// DELETE /api/plants/:id - Delete a plant
+app.delete("/api/plants/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM plants WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Plant not found" });
+      return res.json({ message: "Plant deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryPlants.findIndex(p => p.id === id);
+      if (index === -1) return res.status(404).json({ error: "Plant not found" });
+      const deleted = memoryPlants.splice(index, 1)[0];
+      // Cascade delete routes
+      memoryRoutes = memoryRoutes.filter(r => r.plant_id !== id);
+      return res.json({ message: "Plant deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE /api/plants failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete plant" });
+  }
+});
+
+// --------------------------------------------------------
+// ROUTES ENDPOINTS
+// --------------------------------------------------------
+
+// GET /api/routes and GET /api/routes/:plantId - Get routes
+app.get(["/api/routes", "/api/routes/:plantId"], async (req, res) => {
+  try {
+    const plantIdParam = req.params.plantId ? parseInt(req.params.plantId, 10) : undefined;
+    const plantIdQuery = req.query.plant_id ? parseInt(req.query.plant_id as string, 10) : undefined;
+    const plantId = plantIdParam || plantIdQuery;
+
+    if (pool) {
+      if (plantId !== undefined) {
+        if (isNaN(plantId)) {
+          return res.status(400).json({ error: "Invalid plant ID parameter" });
+        }
+        const result = await pool.query("SELECT * FROM routes WHERE plant_id = $1 ORDER BY name ASC", [plantId]);
+        return res.json(result.rows);
+      } else {
+        const result = await pool.query("SELECT * FROM routes ORDER BY name ASC");
+        return res.json(result.rows);
+      }
+    } else {
+      if (plantId !== undefined) {
+        if (isNaN(plantId)) {
+          return res.status(400).json({ error: "Invalid plant ID parameter" });
+        }
+        const filtered = memoryRoutes.filter(r => r.plant_id === plantId);
+        return res.json(filtered);
+      } else {
+        return res.json(memoryRoutes);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET /api/routes failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch routes" });
+  }
+});
+
+// GET /api/routes/single/:id - Get single route details
+app.get("/api/routes/single/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid route ID" });
+
+    if (pool) {
+      const result = await pool.query("SELECT * FROM routes WHERE id = $1", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Route not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const route = memoryRoutes.find(r => r.id === id);
+      if (!route) return res.status(404).json({ error: "Route not found" });
+      return res.json(route);
+    }
+  } catch (error: any) {
+    console.error("GET /api/routes/single/:id failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch route" });
+  }
+});
+
+// POST /api/routes - Create new route
+app.post("/api/routes", async (req, res) => {
+  try {
+    const { plant_id, name, description } = req.body;
+    if (plant_id === undefined || isNaN(parseInt(plant_id, 10))) {
+      return res.status(400).json({ error: "Missing or invalid required field: plant_id (integer)" });
+    }
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    const pId = parseInt(plant_id, 10);
+
+    if (pool) {
+      const result = await pool.query(
+        "INSERT INTO routes (plant_id, name, description) VALUES ($1, $2, $3) RETURNING *",
+        [pId, name.trim(), description ? description.trim() : null]
+      );
+      return res.status(201).json(result.rows[0]);
+    } else {
+      const newRoute = {
+        id: getNextId(),
+        plant_id: pId,
+        name: name.trim(),
+        description: description ? description.trim() : null,
+        created_at: new Date()
+      };
+      memoryRoutes.push(newRoute);
+      return res.status(201).json(newRoute);
+    }
+  } catch (error: any) {
+    console.error("POST /api/routes failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create route" });
+  }
+});
+
+// PUT /api/routes/:id - Update route
+app.put("/api/routes/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const { name, description } = req.body;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        "UPDATE routes SET name = $1, description = $2 WHERE id = $3 RETURNING *",
+        [name.trim(), description ? description.trim() : null, id]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Route not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const route = memoryRoutes.find(r => r.id === id);
+      if (!route) return res.status(404).json({ error: "Route not found" });
+      route.name = name.trim();
+      route.description = description ? description.trim() : null;
+      return res.json(route);
+    }
+  } catch (error: any) {
+    console.error("PUT /api/routes failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update route" });
+  }
+});
+
+// DELETE /api/routes/:id - Delete route
+app.delete("/api/routes/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM routes WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Route not found" });
+      return res.json({ message: "Route deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryRoutes.findIndex(r => r.id === id);
+      if (index === -1) return res.status(404).json({ error: "Route not found" });
+      const deleted = memoryRoutes.splice(index, 1)[0];
+      // Cascade delete equipment/assets
+      memoryEquipment = memoryEquipment.filter(e => e.route_id !== id);
+      memoryAssets = memoryEquipment;
+      return res.json({ message: "Route deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE /api/routes failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete route" });
+  }
+});
+
+// --------------------------------------------------------
+// ASSETS/EQUIPMENT ENDPOINTS
+// --------------------------------------------------------
+
+// GET all assets/equipment or filter by route
+app.get(["/api/assets", "/api/equipment", "/api/equipments", "/api/equipment/:routeId", "/api/assets/route/:routeId"], async (req, res) => {
+  try {
+    const routeIdParam = req.params.routeId ? parseInt(req.params.routeId, 10) : undefined;
+    const routeIdQuery = req.query.route_id ? parseInt(req.query.route_id as string, 10) : undefined;
+    const routeId = routeIdParam || routeIdQuery;
+
+    if (pool) {
+      if (routeId !== undefined) {
+        if (isNaN(routeId)) {
+          return res.status(400).json({ error: "Invalid route ID parameter" });
+        }
+        const result = await pool.query("SELECT * FROM assets WHERE route_id = $1 ORDER BY name ASC", [routeId]);
+        return res.json(result.rows);
+      } else {
+        const result = await pool.query("SELECT * FROM assets ORDER BY name ASC");
+        return res.json(result.rows);
+      }
+    } else {
+      if (routeId !== undefined) {
+        if (isNaN(routeId)) {
+          return res.status(400).json({ error: "Invalid route ID parameter" });
+        }
+        const filtered = memoryAssets.filter(e => e.route_id === routeId);
+        return res.json(filtered);
+      } else {
+        return res.json(memoryAssets);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET /api/assets failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch equipment" });
+  }
+});
+
+// GET single asset/equipment
+app.get(["/api/assets/:id", "/api/equipment/single/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: "Invalid asset ID parameter" });
+    }
+
+    if (pool) {
+      const result = await pool.query("SELECT * FROM assets WHERE id = $1", [id]);
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Equipment not found" });
+      }
+      return res.json(result.rows[0]);
+    } else {
+      const asset = memoryAssets.find(e => e.id === id);
+      if (!asset) {
+        return res.status(404).json({ error: "Equipment not found" });
+      }
+      return res.json(asset);
+    }
+  } catch (error: any) {
+    console.error("GET single asset failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch asset" });
+  }
+});
+
+// POST create asset/equipment
+app.post(["/api/assets", "/api/equipment"], async (req, res) => {
+  try {
+    const {
+      route_id,
+      name,
+      tag_number,
+      type,
+      manufacturer,
+      model,
+      serial_number,
+      install_date,
+      criticality,
+      status,
+      description
+    } = req.body;
+
+    if (route_id === undefined || isNaN(parseInt(route_id, 10))) {
+      return res.status(400).json({ error: "Missing or invalid required field: route_id (integer)" });
+    }
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    const rId = parseInt(route_id, 10);
+    const equipStatus = status || 'Active';
+
+    if (pool) {
+      const result = await pool.query(
+        `INSERT INTO assets 
+         (route_id, name, tag_number, type, manufacturer, model, serial_number, install_date, criticality, status, description) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+         RETURNING *`,
+        [
+          rId,
+          name.trim(),
+          tag_number ? tag_number.trim() : null,
+          type ? type.trim() : null,
+          manufacturer ? manufacturer.trim() : null,
+          model ? model.trim() : null,
+          serial_number ? serial_number.trim() : null,
+          install_date ? install_date : null,
+          criticality ? criticality.trim() : null,
+          equipStatus,
+          description ? description.trim() : null
+        ]
+      );
+      return res.status(201).json(result.rows[0]);
+    } else {
+      const newAsset = {
+        id: getNextId(),
+        route_id: rId,
+        name: name.trim(),
+        tag_number: tag_number ? tag_number.trim() : null,
+        type: type ? type.trim() : null,
+        manufacturer: manufacturer ? manufacturer.trim() : null,
+        model: model ? model.trim() : null,
+        serial_number: serial_number ? serial_number.trim() : null,
+        install_date: install_date || null,
+        criticality: criticality ? criticality.trim() : null,
+        status: equipStatus,
+        description: description ? description.trim() : null,
+        created_at: new Date()
+      };
+      memoryAssets.push(newAsset);
+      return res.status(201).json(newAsset);
+    }
+  } catch (error: any) {
+    console.error("POST create asset failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create equipment" });
+  }
+});
+
+// PUT update asset/equipment
+app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const {
+      name,
+      tag_number,
+      type,
+      manufacturer,
+      model,
+      serial_number,
+      install_date,
+      criticality,
+      status,
+      description
+    } = req.body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE assets SET 
+         name = $1, tag_number = $2, type = $3, manufacturer = $4, model = $5, serial_number = $6, install_date = $7, criticality = $8, status = $9, description = $10 
+         WHERE id = $11 RETURNING *`,
+        [
+          name.trim(),
+          tag_number ? tag_number.trim() : null,
+          type ? type.trim() : null,
+          manufacturer ? manufacturer.trim() : null,
+          model ? model.trim() : null,
+          serial_number ? serial_number.trim() : null,
+          install_date || null,
+          criticality ? criticality.trim() : null,
+          status || 'Active',
+          description ? description.trim() : null,
+          id
+        ]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Equipment not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const asset = memoryAssets.find(e => e.id === id);
+      if (!asset) return res.status(404).json({ error: "Equipment not found" });
+      asset.name = name.trim();
+      asset.tag_number = tag_number ? tag_number.trim() : null;
+      asset.type = type ? type.trim() : null;
+      asset.manufacturer = manufacturer ? manufacturer.trim() : null;
+      asset.model = model ? model.trim() : null;
+      asset.serial_number = serial_number ? serial_number.trim() : null;
+      asset.install_date = install_date || null;
+      asset.criticality = criticality ? criticality.trim() : null;
+      asset.status = status || 'Active';
+      asset.description = description ? description.trim() : null;
+      return res.json(asset);
+    }
+  } catch (error: any) {
+    console.error("PUT update asset failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update equipment" });
+  }
+});
+
+// DELETE delete asset/equipment
+app.delete(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM assets WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Equipment not found" });
+      return res.json({ message: "Equipment deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryAssets.findIndex(e => e.id === id);
+      if (index === -1) return res.status(404).json({ error: "Equipment not found" });
+      const deleted = memoryAssets.splice(index, 1)[0];
+      // Cascade delete components
+      memoryComponents = memoryComponents.filter(c => c.asset_id !== id && c.equipment_id !== id);
+      return res.json({ message: "Equipment deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE asset failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete equipment" });
+  }
+});
+
+// --------------------------------------------------------
+// COMPONENTS ENDPOINTS
+// --------------------------------------------------------
+
+// GET components for specific asset/equipment
+app.get(["/api/components", "/api/components/:equipmentId", "/api/components/asset/:assetId"], async (req, res) => {
+  try {
+    const equipIdParam = req.params.equipmentId ? parseInt(req.params.equipmentId, 10) : undefined;
+    const assetIdParam = req.params.assetId ? parseInt(req.params.assetId, 10) : undefined;
+    const equipIdQuery = req.query.equipment_id ? parseInt(req.query.equipment_id as string, 10) : undefined;
+    const assetIdQuery = req.query.asset_id ? parseInt(req.query.asset_id as string, 10) : undefined;
+
+    const finalAssetId = equipIdParam || assetIdParam || equipIdQuery || assetIdQuery;
+
+    if (pool) {
+      if (finalAssetId !== undefined) {
+        if (isNaN(finalAssetId)) {
+          return res.status(400).json({ error: "Invalid asset/equipment ID parameter" });
+        }
+        // Return both asset_id and equipment_id aliases to prevent client-side failures
+        const result = await pool.query(
+          "SELECT id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at FROM components WHERE asset_id = $1 ORDER BY name ASC",
+          [finalAssetId]
+        );
+        return res.json(result.rows);
+      } else {
+        const result = await pool.query("SELECT id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at FROM components ORDER BY name ASC");
+        return res.json(result.rows);
+      }
+    } else {
+      if (finalAssetId !== undefined) {
+        if (isNaN(finalAssetId)) {
+          return res.status(400).json({ error: "Invalid asset/equipment ID parameter" });
+        }
+        const filtered = memoryComponents
+          .filter(c => c.asset_id === finalAssetId || c.equipment_id === finalAssetId)
+          .map(c => ({ ...c, asset_id: finalAssetId, equipment_id: finalAssetId }));
+        return res.json(filtered);
+      } else {
+        return res.json(memoryComponents);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET /api/components failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch components" });
+  }
+});
+
+// POST create new component
+app.post(["/api/components", "/api/component"], async (req, res) => {
+  try {
+    const { asset_id, equipment_id, name, type, manufacturer, model, specifications, notes } = req.body;
+
+    const incomingId = asset_id !== undefined ? asset_id : equipment_id;
+    if (incomingId === undefined || isNaN(parseInt(incomingId, 10))) {
+      return res.status(400).json({ error: "Missing or invalid required field: asset_id or equipment_id (integer)" });
+    }
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    const astId = parseInt(incomingId, 10);
+    let parsedSpecs: any = null;
+    if (specifications) {
+      if (typeof specifications === "object") {
+        parsedSpecs = specifications;
+      } else {
+        try {
+          parsedSpecs = JSON.parse(specifications);
+        } catch (e) {
+          parsedSpecs = { raw: specifications };
+        }
+      }
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        `INSERT INTO components (asset_id, name, type, manufacturer, model, specifications, notes) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7) 
+         RETURNING id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at`,
+        [astId, name.trim(), type ? type.trim() : null, manufacturer ? manufacturer.trim() : null, model ? model.trim() : null, parsedSpecs, notes ? notes.trim() : null]
+      );
+      return res.status(201).json(result.rows[0]);
+    } else {
+      const newComp = {
+        id: getNextId(),
+        asset_id: astId,
+        equipment_id: astId,
+        name: name.trim(),
+        type: type ? type.trim() : null,
+        manufacturer: manufacturer ? manufacturer.trim() : null,
+        model: model ? model.trim() : null,
+        specifications: parsedSpecs,
+        notes: notes ? notes.trim() : null,
+        created_at: new Date()
+      };
+      memoryComponents.push(newComp);
+      return res.status(201).json(newComp);
+    }
+  } catch (error: any) {
+    console.error("POST /api/components failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create component" });
+  }
+});
+
+// PUT update component
+app.put("/api/components/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const { name, type, manufacturer, model, specifications, notes } = req.body;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    let parsedSpecs: any = null;
+    if (specifications) {
+      if (typeof specifications === "object") {
+        parsedSpecs = specifications;
+      } else {
+        try {
+          parsedSpecs = JSON.parse(specifications);
+        } catch (e) {
+          parsedSpecs = { raw: specifications };
+        }
+      }
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE components SET name = $1, type = $2, manufacturer = $3, model = $4, specifications = $5, notes = $6 
+         WHERE id = $7 
+         RETURNING id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at`,
+        [name.trim(), type ? type.trim() : null, manufacturer ? manufacturer.trim() : null, model ? model.trim() : null, parsedSpecs, notes ? notes.trim() : null, id]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Component not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const comp = memoryComponents.find(c => c.id === id);
+      if (!comp) return res.status(404).json({ error: "Component not found" });
+      comp.name = name.trim();
+      comp.type = type ? type.trim() : null;
+      comp.manufacturer = manufacturer ? manufacturer.trim() : null;
+      comp.model = model ? model.trim() : null;
+      comp.specifications = parsedSpecs;
+      comp.notes = notes ? notes.trim() : null;
+      return res.json(comp);
+    }
+  } catch (error: any) {
+    console.error("PUT /api/components failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update component" });
+  }
+});
+
+// DELETE component
+app.delete("/api/components/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM components WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Component not found" });
+      return res.json({ message: "Component deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryComponents.findIndex(c => c.id === id);
+      if (index === -1) return res.status(404).json({ error: "Component not found" });
+      const deleted = memoryComponents.splice(index, 1)[0];
+      return res.json({ message: "Component deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE /api/components failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete component" });
+  }
+});
+
+
+// --------------------------------------------------------
+// COLLECTION POINTS ENDPOINTS (WITH MP AUTO-GENERATION)
+// --------------------------------------------------------
+
+// GET /api/collection-points - List all or filter by component_id
+app.get(["/api/collection-points", "/api/collection_points", "/api/collection-points/component/:componentId", "/api/collection_points/component/:componentId"], async (req, res) => {
+  try {
+    const compIdParam = req.params.componentId ? parseInt(req.params.componentId, 10) : undefined;
+    const compIdQuery = req.query.component_id ? parseInt(req.query.component_id as string, 10) : undefined;
+    const compId = compIdParam || compIdQuery;
+
+    if (pool) {
+      if (compId !== undefined) {
+        if (isNaN(compId)) return res.status(400).json({ error: "Invalid component_id" });
+        const result = await pool.query("SELECT * FROM collection_points WHERE component_id = $1 ORDER BY location_order ASC, name ASC", [compId]);
+        return res.json(result.rows);
+      } else {
+        const result = await pool.query("SELECT * FROM collection_points ORDER BY name ASC");
+        return res.json(result.rows);
+      }
+    } else {
+      if (compId !== undefined) {
+        if (isNaN(compId)) return res.status(400).json({ error: "Invalid component_id" });
+        const filtered = memoryCollectionPoints.filter(cp => cp.component_id === compId);
+        return res.json(filtered);
+      } else {
+        return res.json(memoryCollectionPoints);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET collection points failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch collection points" });
+  }
+});
+
+// GET /api/collection-points/:id - Single collection point
+app.get(["/api/collection-points/:id", "/api/collection_points/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("SELECT * FROM collection_points WHERE id = $1", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Collection point not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const cp = memoryCollectionPoints.find(item => item.id === id);
+      if (!cp) return res.status(404).json({ error: "Collection point not found" });
+      return res.json(cp);
+    }
+  } catch (error: any) {
+    console.error("GET single collection point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch collection point" });
+  }
+});
+
+// POST /api/collection-points - Create collection point (and auto-generate Horizontal, Vertical, Axial)
+app.post(["/api/collection-points", "/api/collection_points"], async (req, res) => {
+  try {
+    const { component_id, name, location_order, notes } = req.body;
+    if (component_id === undefined || isNaN(parseInt(component_id, 10))) {
+      return res.status(400).json({ error: "Missing or invalid required field: component_id (integer)" });
+    }
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    const compId = parseInt(component_id, 10);
+    const locOrder = location_order !== undefined ? parseInt(location_order, 10) : 0;
+
+    if (pool) {
+      // Create collection point & auto-create 3 measurement points
+      await pool.query("BEGIN");
+      try {
+        const cpResult = await pool.query(
+          "INSERT INTO collection_points (component_id, name, location_order, notes) VALUES ($1, $2, $3, $4) RETURNING *",
+          [compId, name.trim(), locOrder, notes ? notes.trim() : null]
+        );
+        const cp = cpResult.rows[0];
+
+        const directions = ["Horizontal", "Vertical", "Axial"];
+        const mps: any[] = [];
+        for (const dir of directions) {
+          const mpResult = await pool.query(
+            "INSERT INTO measurement_points (collection_point_id, direction, technology_type, units) VALUES ($1, $2, 'Vibration', 'in/Sec') RETURNING *",
+            [cp.id, dir]
+          );
+          mps.push(mpResult.rows[0]);
+        }
+
+        await pool.query("COMMIT");
+        return res.status(201).json({ ...cp, measurement_points: mps });
+      } catch (err) {
+        await pool.query("ROLLBACK");
+        throw err;
+      }
+    } else {
+      const cpId = getNextId();
+      const cp = {
+        id: cpId,
+        component_id: compId,
+        name: name.trim(),
+        location_order: locOrder,
+        notes: notes ? notes.trim() : null,
+        created_at: new Date()
+      };
+      memoryCollectionPoints.push(cp);
+
+      const directions = ["Horizontal", "Vertical", "Axial"];
+      const mps: any[] = [];
+      for (const dir of directions) {
+        const mp = {
+          id: getNextId(),
+          collection_point_id: cpId,
+          direction: dir,
+          technology_type: "Vibration",
+          units: "in/Sec",
+          created_at: new Date()
+        };
+        memoryMeasurementPoints.push(mp);
+        mps.push(mp);
+      }
+
+      return res.status(201).json({ ...cp, measurement_points: mps });
+    }
+  } catch (error: any) {
+    console.error("POST collection point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create collection point" });
+  }
+});
+
+// PUT /api/collection-points/:id - Update collection point
+app.put(["/api/collection-points/:id", "/api/collection_points/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const { name, location_order, notes } = req.body;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+
+    const locOrder = location_order !== undefined ? parseInt(location_order, 10) : 0;
+
+    if (pool) {
+      const result = await pool.query(
+        "UPDATE collection_points SET name = $1, location_order = $2, notes = $3 WHERE id = $4 RETURNING *",
+        [name.trim(), locOrder, notes ? notes.trim() : null, id]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Collection point not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const cp = memoryCollectionPoints.find(item => item.id === id);
+      if (!cp) return res.status(404).json({ error: "Collection point not found" });
+      cp.name = name.trim();
+      cp.location_order = locOrder;
+      cp.notes = notes ? notes.trim() : null;
+      return res.json(cp);
+    }
+  } catch (error: any) {
+    console.error("PUT collection point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update collection point" });
+  }
+});
+
+// DELETE /api/collection-points/:id - Delete collection point
+app.delete(["/api/collection-points/:id", "/api/collection_points/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM collection_points WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Collection point not found" });
+      return res.json({ message: "Collection point deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryCollectionPoints.findIndex(item => item.id === id);
+      if (index === -1) return res.status(404).json({ error: "Collection point not found" });
+      const deleted = memoryCollectionPoints.splice(index, 1)[0];
+      // Cascade delete measurement points in memory
+      memoryMeasurementPoints = memoryMeasurementPoints.filter(mp => mp.collection_point_id !== id);
+      return res.json({ message: "Collection point deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE collection point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete collection point" });
+  }
+});
+
+
+// --------------------------------------------------------
+// MEASUREMENT POINTS ENDPOINTS
+// --------------------------------------------------------
+
+// GET /api/measurement-points - List all or filter by collection_point_id
+app.get(["/api/measurement-points", "/api/measurement_points", "/api/measurement-points/collection-point/:cpId", "/api/measurement_points/collection_point/:cpId"], async (req, res) => {
+  try {
+    const cpIdParam = req.params.cpId ? parseInt(req.params.cpId, 10) : undefined;
+    const cpIdQuery = req.query.collection_point_id ? parseInt(req.query.collection_point_id as string, 10) : undefined;
+    const cpId = cpIdParam || cpIdQuery;
+
+    if (pool) {
+      if (cpId !== undefined) {
+        if (isNaN(cpId)) return res.status(400).json({ error: "Invalid collection_point_id" });
+        const result = await pool.query("SELECT * FROM measurement_points WHERE collection_point_id = $1 ORDER BY direction ASC", [cpId]);
+        return res.json(result.rows);
+      } else {
+        const result = await pool.query("SELECT * FROM measurement_points ORDER BY id ASC");
+        return res.json(result.rows);
+      }
+    } else {
+      if (cpId !== undefined) {
+        if (isNaN(cpId)) return res.status(400).json({ error: "Invalid collection_point_id" });
+        const filtered = memoryMeasurementPoints.filter(mp => mp.collection_point_id === cpId);
+        return res.json(filtered);
+      } else {
+        return res.json(memoryMeasurementPoints);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET measurement points failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch measurement points" });
+  }
+});
+
+// GET /api/measurement-points/:id - Get single
+app.get(["/api/measurement-points/:id", "/api/measurement_points/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("SELECT * FROM measurement_points WHERE id = $1", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Measurement point not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const mp = memoryMeasurementPoints.find(item => item.id === id);
+      if (!mp) return res.status(404).json({ error: "Measurement point not found" });
+      return res.json(mp);
+    }
+  } catch (error: any) {
+    console.error("GET measurement point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch measurement point" });
+  }
+});
+
+// POST /api/measurement-points - Create single measurement point
+app.post(["/api/measurement-points", "/api/measurement_points"], async (req, res) => {
+  try {
+    const { collection_point_id, direction, technology_type, units } = req.body;
+    if (collection_point_id === undefined || isNaN(parseInt(collection_point_id, 10))) {
+      return res.status(400).json({ error: "Missing or invalid required field: collection_point_id (integer)" });
+    }
+    if (!direction || typeof direction !== "string" || !direction.trim()) {
+      return res.status(400).json({ error: "Missing required field: direction (string)" });
+    }
+
+    const cpId = parseInt(collection_point_id, 10);
+    const tech = technology_type || "Vibration";
+    const unitVal = units || "in/Sec";
+
+    if (pool) {
+      const result = await pool.query(
+        "INSERT INTO measurement_points (collection_point_id, direction, technology_type, units) VALUES ($1, $2, $3, $4) RETURNING *",
+        [cpId, direction.trim(), tech.trim(), unitVal.trim()]
+      );
+      return res.status(201).json(result.rows[0]);
+    } else {
+      const newMp = {
+        id: getNextId(),
+        collection_point_id: cpId,
+        direction: direction.trim(),
+        technology_type: tech.trim(),
+        units: unitVal.trim(),
+        created_at: new Date()
+      };
+      memoryMeasurementPoints.push(newMp);
+      return res.status(201).json(newMp);
+    }
+  } catch (error: any) {
+    console.error("POST measurement point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create measurement point" });
+  }
+});
+
+// PUT /api/measurement-points/:id - Update measurement point
+app.put(["/api/measurement-points/:id", "/api/measurement_points/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const { direction, technology_type, units } = req.body;
+
+    if (!direction || typeof direction !== "string" || !direction.trim()) {
+      return res.status(400).json({ error: "Missing required field: direction (string)" });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        "UPDATE measurement_points SET direction = $1, technology_type = $2, units = $3 WHERE id = $4 RETURNING *",
+        [direction.trim(), technology_type ? technology_type.trim() : "Vibration", units ? units.trim() : "in/Sec", id]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Measurement point not found" });
+      return res.json(result.rows[0]);
+    } else {
+      const mp = memoryMeasurementPoints.find(item => item.id === id);
+      if (!mp) return res.status(404).json({ error: "Measurement point not found" });
+      mp.direction = direction.trim();
+      mp.technology_type = technology_type ? technology_type.trim() : "Vibration";
+      mp.units = units ? units.trim() : "in/Sec";
+      return res.json(mp);
+    }
+  } catch (error: any) {
+    console.error("PUT measurement point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update measurement point" });
+  }
+});
+
+// DELETE /api/measurement-points/:id - Delete measurement point
+app.delete(["/api/measurement-points/:id", "/api/measurement_points/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM measurement_points WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Measurement point not found" });
+      return res.json({ message: "Measurement point deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryMeasurementPoints.findIndex(item => item.id === id);
+      if (index === -1) return res.status(404).json({ error: "Measurement point not found" });
+      const deleted = memoryMeasurementPoints.splice(index, 1)[0];
+      return res.json({ message: "Measurement point deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE measurement point failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete measurement point" });
+  }
+});
+
+
+// --------------------------------------------------------
+// ANALYSIS HISTORY ENDPOINTS
+// --------------------------------------------------------
+
+// GET /api/analysis-history - List all or filter by measurement_point_id
+app.get(["/api/analysis-history", "/api/analysis_history", "/api/analysis-history/measurement-point/:mpId", "/api/analysis_history/measurement-point/:mpId"], async (req, res) => {
+  try {
+    const mpIdParam = req.params.mpId ? parseInt(req.params.mpId, 10) : undefined;
+    const mpIdQuery = req.query.measurement_point_id ? parseInt(req.query.measurement_point_id as string, 10) : undefined;
+    const mpId = mpIdParam || mpIdQuery;
+
+    if (pool) {
+      if (mpId !== undefined) {
+        if (isNaN(mpId)) return res.status(400).json({ error: "Invalid measurement_point_id" });
+        const result = await pool.query("SELECT * FROM analysis_history WHERE measurement_point_id = $1 ORDER BY measurement_date DESC, created_at DESC", [mpId]);
+        return res.json(result.rows);
+      } else {
+        const result = await pool.query("SELECT * FROM analysis_history ORDER BY measurement_date DESC, created_at DESC");
+        return res.json(result.rows);
+      }
+    } else {
+      if (mpId !== undefined) {
+        if (isNaN(mpId)) return res.status(400).json({ error: "Invalid measurement_point_id" });
+        const filtered = memoryAnalysisHistory.filter(ah => ah.measurement_point_id === mpId);
+        return res.json(filtered);
+      } else {
+        return res.json(memoryAnalysisHistory);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET analysis history failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch analysis history" });
+  }
+});
+
+// Helper: Seed analysis history in database for a component if none exists
+async function seedAnalysisHistoryForComponent(componentId: number, dbTech: string): Promise<any[]> {
+  if (!pool) return [];
+  
+  try {
+    // 1. Get or create collection point
+    let colPointId: number;
+    const colPointCheck = await pool.query(
+      "SELECT id FROM collection_points WHERE component_id = $1 LIMIT 1",
+      [componentId]
+    );
+    if (colPointCheck.rows.length > 0) {
+      colPointId = colPointCheck.rows[0].id;
+    } else {
+      const insertCol = await pool.query(
+        "INSERT INTO collection_points (component_id, name, location_order, notes) VALUES ($1, 'DE Inboard Bearing', 1, 'Drive End location for historical trends') RETURNING id",
+        [componentId]
+      );
+      colPointId = insertCol.rows[0].id;
+    }
+
+    // 2. Get or create measurement point
+    let measPointId: number;
+    const measPointCheck = await pool.query(
+      "SELECT id FROM measurement_points WHERE collection_point_id = $1 AND technology_type = $2 LIMIT 1",
+      [colPointId, dbTech]
+    );
+    if (measPointCheck.rows.length > 0) {
+      measPointId = measPointCheck.rows[0].id;
+    } else {
+      let defaultUnits = "in/sec";
+      if (dbTech === "Thermal") defaultUnits = "°F";
+      else if (dbTech === "Ultrasound") defaultUnits = "dBμV";
+      else if (dbTech === "Electrical") defaultUnits = "Ohms";
+      else if (dbTech === "Oil") defaultUnits = "ppm";
+
+      const insertMeas = await pool.query(
+        "INSERT INTO measurement_points (collection_point_id, direction, technology_type, units) VALUES ($1, 'Radial Horizontal', $2, $3) RETURNING id",
+        [colPointId, dbTech, defaultUnits]
+      );
+      measPointId = insertMeas.rows[0].id;
+    }
+
+    // 3. Define parameters
+    const params: { name: string; units: string; alarm_val: number; is_lower_alarm?: boolean; get_val: (f: number) => number }[] = [];
+
+    if (dbTech === "Vibration") {
+      params.push(
+        { name: "Velocity RMS", units: "in/sec", alarm_val: 0.25, get_val: (f) => 0.05 + f * 0.18 + Math.random() * 0.03 },
+        { name: "Acceleration True Peak", units: "g's", alarm_val: 3.0, get_val: (f) => 0.3 + f * 2.2 + Math.random() * 0.4 },
+        { name: "Displacement Peak-to-Peak", units: "mils", alarm_val: 4.5, get_val: (f) => 0.6 + f * 3.0 + Math.random() * 0.5 },
+        { name: "1X Running Speed amplitude", units: "in/sec", alarm_val: 0.15, get_val: (f) => 0.02 + f * 0.10 + Math.random() * 0.02 },
+        { name: "2X Running Speed amplitude", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
+        { name: "Bearing Frequencies (BPFO)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.6 ? (f - 0.6) * 0.4 : 0) + Math.random() * 0.01 },
+        { name: "Bearing Frequencies (BPFI)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.5 ? (f - 0.5) * 0.5 : 0) + Math.random() * 0.01 },
+        { name: "Gear Mesh Frequency", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
+        { name: "Sub-synchronous frequencies", units: "in/sec", alarm_val: 0.08, get_val: (f) => 0.005 + f * 0.03 + Math.random() * 0.005 }
+      );
+    } else if (dbTech === "Thermal") {
+      params.push(
+        { name: "Overall Temperature", units: "°F", alarm_val: 175.0, get_val: (f) => 98.0 + f * 65.0 + Math.random() * 5.0 },
+        { name: "Temperature Delta", units: "°F", alarm_val: 30.0, get_val: (f) => 1.5 + f * 24.0 + Math.random() * 2.0 },
+        { name: "Temperature Rate of Change", units: "°F/day", alarm_val: 4.0, get_val: (f) => 0.05 + f * 3.5 + Math.random() * 0.4 }
+      );
+    } else if (dbTech === "Ultrasound") {
+      params.push(
+        { name: "Overall dB Level", units: "dBμV", alarm_val: 36.0, get_val: (f) => 14.0 + f * 19.0 + Math.random() * 3.0 },
+        { name: "RMS Ultrasound Level", units: "dBμV", alarm_val: 30.0, get_val: (f) => 11.0 + f * 16.0 + Math.random() * 2.0 },
+        { name: "Crest Factor", units: "ratio", alarm_val: 6.0, get_val: (f) => 1.6 + f * 3.8 + Math.random() * 0.5 },
+        { name: "Bearing fault frequency amplitudes", units: "dBμV", alarm_val: 25.0, get_val: (f) => 3.0 + f * 18.0 + Math.random() * 2.0 }
+      );
+    } else if (dbTech === "Electrical") {
+      params.push(
+        { name: "Phase-to-Phase Resistance U-V", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
+        { name: "Phase-to-Phase Resistance V-W", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + f * 0.012 + Math.random() * 0.002 },
+        { name: "Phase-to-Phase Resistance W-U", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
+        { name: "Phase Impedance", units: "Ohms", alarm_val: 15.0, get_val: (f) => 12.1 + f * 0.4 + Math.random() * 0.05 },
+        { name: "Phase Unbalance (%)", units: "%", alarm_val: 5.0, get_val: (f) => 0.3 + f * 4.2 + Math.random() * 0.3 },
+        { name: "Insulation Resistance", units: "MegOhm", alarm_val: 20.0, is_lower_alarm: true, get_val: (f) => 3800.0 - f * 3700.0 - Math.random() * 100.0 },
+        { name: "Tan Delta / Power Factor", units: "%", alarm_val: 4.0, get_val: (f) => 0.6 + f * 3.2 + Math.random() * 0.2 }
+      );
+    } else if (dbTech === "Oil") {
+      params.push(
+        { name: "Viscosity @ 40°C", units: "cSt", alarm_val: 41.4, is_lower_alarm: true, get_val: (f) => 45.8 - f * 7.5 + Math.random() * 0.5 },
+        { name: "Water Content", units: "ppm", alarm_val: 300.0, get_val: (f) => 30.0 + f * 250.0 + Math.random() * 15.0 },
+        { name: "Particle Count Cleanliness Index", units: "index", alarm_val: 22.0, get_val: (f) => 14.0 + f * 8.0 + Math.random() * 1.0 },
+        { name: "Ferrous Density", units: "ppm", alarm_val: 100.0, get_val: (f) => 6.0 + f * 92.0 + Math.random() * 6.0 },
+        { name: "Iron Wear Metal", units: "ppm", alarm_val: 75.0, get_val: (f) => 10.0 + f * 80.0 + Math.random() * 5.0 },
+        { name: "Copper Wear Metal", units: "ppm", alarm_val: 25.0, get_val: (f) => 3.0 + f * 26.0 + Math.random() * 2.0 },
+        { name: "Aluminum Wear Metal", units: "ppm", alarm_val: 12.0, get_val: (f) => 1.5 + f * 11.0 + Math.random() * 1.0 },
+        { name: "Chromium Wear Metal", units: "ppm", alarm_val: 3.0, get_val: (f) => 0.2 + f * 2.8 + Math.random() * 0.2 },
+        { name: "Acid Number (AN)", units: "mg KOH/g", alarm_val: 0.8, get_val: (f) => 0.12 + f * 0.64 + Math.random() * 0.04 },
+        { name: "Zinc levels", units: "ppm", alarm_val: 700.0, is_lower_alarm: true, get_val: (f) => 1150.0 - f * 480.0 - Math.random() * 20.0 },
+        { name: "Phosphorus levels", units: "ppm", alarm_val: 600.0, is_lower_alarm: true, get_val: (f) => 950.0 - f * 420.0 - Math.random() * 15.0 }
+      );
+    }
+
+    // 4. Insert 30 readings for each parameter
+    const seededRows: any[] = [];
+    for (let i = 0; i < 30; i++) {
+      const factor = i / 29.0;
+      const measurementDate = new Date(Date.now() - (29 - i) * 24 * 3600 * 1000);
+      const op_speed = 1785.0 + Math.random() * 30.0; // Running around 1800 RPM
+
+      for (const param of params) {
+        const val = param.get_val(factor);
+        let isAlarm = false;
+        if (param.is_lower_alarm) {
+          isAlarm = val <= param.alarm_val;
+        } else {
+          isAlarm = val >= param.alarm_val;
+        }
+
+        const notes = isAlarm 
+          ? `⚠️ Warning limit exceeded for ${param.name}. Immediate inspection and re-greasing recommended.` 
+          : `Sensor telemetry within nominal operating limits for ${param.name}.`;
+
+        const stateVal = isAlarm ? "Alarm Active" : "Data Collected";
+
+        // Diagnose recommendations
+        const recommendedActions = isAlarm 
+          ? `Verify alignment, check mechanical coupling clearances, inspect for lubricant quality, and schedule repair action soon.`
+          : `No immediate actions required. Continue routine monitoring intervals.`;
+
+        const diagnosis_result = {
+          current_value: val,
+          alarm_threshold: param.alarm_val,
+          status: isAlarm ? "ALARM" : "NORMAL",
+          recommendation: recommendedActions,
+          diagnostic_brief: isAlarm 
+            ? `Critical deterioration observed in ${param.name} parameter. Standard operating tolerances violated.` 
+            : `System parameter ${param.name} is functioning normally.`
+        };
+
+        const result = await pool.query(
+          `INSERT INTO analysis_history 
+           (measurement_point_id, data_point_name, state, op_speed, measurement_value, units, measurement_date, notes, alarm_status, diagnosis_result) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+           RETURNING *`,
+          [
+            measPointId,
+            param.name,
+            stateVal,
+            op_speed,
+            parseFloat(val.toFixed(6)),
+            param.units,
+            measurementDate,
+            notes,
+            isAlarm,
+            JSON.stringify(diagnosis_result)
+          ]
+        );
+        
+        const row = result.rows[0];
+        // Add technology_type for frontend compatibility
+        row.technology_type = dbTech;
+        seededRows.push(row);
+      }
+    }
+
+    return seededRows;
+  } catch (err) {
+    console.error("Failed to seed analysis history in DB:", err);
+    return [];
+  }
+}
+
+// Helper: Seed analysis history in-memory for a component if none exists
+async function seedAnalysisHistoryMemory(componentId: number, dbTech: string): Promise<any[]> {
+  try {
+    const params: { name: string; units: string; alarm_val: number; is_lower_alarm?: boolean; get_val: (f: number) => number }[] = [];
+
+    if (dbTech === "Vibration") {
+      params.push(
+        { name: "Velocity RMS", units: "in/sec", alarm_val: 0.25, get_val: (f) => 0.05 + f * 0.18 + Math.random() * 0.03 },
+        { name: "Acceleration True Peak", units: "g's", alarm_val: 3.0, get_val: (f) => 0.3 + f * 2.2 + Math.random() * 0.4 },
+        { name: "Displacement Peak-to-Peak", units: "mils", alarm_val: 4.5, get_val: (f) => 0.6 + f * 3.0 + Math.random() * 0.5 },
+        { name: "1X Running Speed amplitude", units: "in/sec", alarm_val: 0.15, get_val: (f) => 0.02 + f * 0.10 + Math.random() * 0.02 },
+        { name: "2X Running Speed amplitude", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
+        { name: "Bearing Frequencies (BPFO)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.6 ? (f - 0.6) * 0.4 : 0) + Math.random() * 0.01 },
+        { name: "Bearing Frequencies (BPFI)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.5 ? (f - 0.5) * 0.5 : 0) + Math.random() * 0.01 },
+        { name: "Gear Mesh Frequency", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
+        { name: "Sub-synchronous frequencies", units: "in/sec", alarm_val: 0.08, get_val: (f) => 0.005 + f * 0.03 + Math.random() * 0.005 }
+      );
+    } else if (dbTech === "Thermal") {
+      params.push(
+        { name: "Overall Temperature", units: "°F", alarm_val: 175.0, get_val: (f) => 98.0 + f * 65.0 + Math.random() * 5.0 },
+        { name: "Temperature Delta", units: "°F", alarm_val: 30.0, get_val: (f) => 1.5 + f * 24.0 + Math.random() * 2.0 },
+        { name: "Temperature Rate of Change", units: "°F/day", alarm_val: 4.0, get_val: (f) => 0.05 + f * 3.5 + Math.random() * 0.4 }
+      );
+    } else if (dbTech === "Ultrasound") {
+      params.push(
+        { name: "Overall dB Level", units: "dBμV", alarm_val: 36.0, get_val: (f) => 14.0 + f * 19.0 + Math.random() * 3.0 },
+        { name: "RMS Ultrasound Level", units: "dBμV", alarm_val: 30.0, get_val: (f) => 11.0 + f * 16.0 + Math.random() * 2.0 },
+        { name: "Crest Factor", units: "ratio", alarm_val: 6.0, get_val: (f) => 1.6 + f * 3.8 + Math.random() * 0.5 },
+        { name: "Bearing fault frequency amplitudes", units: "dBμV", alarm_val: 25.0, get_val: (f) => 3.0 + f * 18.0 + Math.random() * 2.0 }
+      );
+    } else if (dbTech === "Electrical") {
+      params.push(
+        { name: "Phase-to-Phase Resistance U-V", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
+        { name: "Phase-to-Phase Resistance V-W", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + f * 0.012 + Math.random() * 0.002 },
+        { name: "Phase-to-Phase Resistance W-U", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
+        { name: "Phase Impedance", units: "Ohms", alarm_val: 15.0, get_val: (f) => 12.1 + f * 0.4 + Math.random() * 0.05 },
+        { name: "Phase Unbalance (%)", units: "%", alarm_val: 5.0, get_val: (f) => 0.3 + f * 4.2 + Math.random() * 0.3 },
+        { name: "Insulation Resistance", units: "MegOhm", alarm_val: 20.0, is_lower_alarm: true, get_val: (f) => 3800.0 - f * 3700.0 - Math.random() * 100.0 },
+        { name: "Tan Delta / Power Factor", units: "%", alarm_val: 4.0, get_val: (f) => 0.6 + f * 3.2 + Math.random() * 0.2 }
+      );
+    } else if (dbTech === "Oil") {
+      params.push(
+        { name: "Viscosity @ 40°C", units: "cSt", alarm_val: 41.4, is_lower_alarm: true, get_val: (f) => 45.8 - f * 7.5 + Math.random() * 0.5 },
+        { name: "Water Content", units: "ppm", alarm_val: 300.0, get_val: (f) => 30.0 + f * 250.0 + Math.random() * 15.0 },
+        { name: "Particle Count Cleanliness Index", units: "index", alarm_val: 22.0, get_val: (f) => 14.0 + f * 8.0 + Math.random() * 1.0 },
+        { name: "Ferrous Density", units: "ppm", alarm_val: 100.0, get_val: (f) => 6.0 + f * 92.0 + Math.random() * 6.0 },
+        { name: "Iron Wear Metal", units: "ppm", alarm_val: 75.0, get_val: (f) => 10.0 + f * 80.0 + Math.random() * 5.0 },
+        { name: "Copper Wear Metal", units: "ppm", alarm_val: 25.0, get_val: (f) => 3.0 + f * 26.0 + Math.random() * 2.0 },
+        { name: "Aluminum Wear Metal", units: "ppm", alarm_val: 12.0, get_val: (f) => 1.5 + f * 11.0 + Math.random() * 1.0 },
+        { name: "Chromium Wear Metal", units: "ppm", alarm_val: 3.0, get_val: (f) => 0.2 + f * 2.8 + Math.random() * 0.2 },
+        { name: "Acid Number (AN)", units: "mg KOH/g", alarm_val: 0.8, get_val: (f) => 0.12 + f * 0.64 + Math.random() * 0.04 },
+        { name: "Zinc levels", units: "ppm", alarm_val: 700.0, is_lower_alarm: true, get_val: (f) => 1150.0 - f * 480.0 - Math.random() * 20.0 },
+        { name: "Phosphorus levels", units: "ppm", alarm_val: 600.0, is_lower_alarm: true, get_val: (f) => 950.0 - f * 420.0 - Math.random() * 15.0 }
+      );
+    }
+
+    const seededRows: any[] = [];
+    const baseId = Date.now() + Math.floor(Math.random() * 1000000);
+    
+    for (let i = 0; i < 30; i++) {
+      const factor = i / 29.0;
+      const measurementDate = new Date(Date.now() - (29 - i) * 24 * 3600 * 1000);
+      const op_speed = 1785.0 + Math.random() * 30.0;
+
+      for (let pIdx = 0; pIdx < params.length; pIdx++) {
+        const param = params[pIdx];
+        const val = param.get_val(factor);
+        let isAlarm = false;
+        if (param.is_lower_alarm) {
+          isAlarm = val <= param.alarm_val;
+        } else {
+          isAlarm = val >= param.alarm_val;
+        }
+
+        const notes = isAlarm 
+          ? `⚠️ Warning limit exceeded for ${param.name}. Immediate inspection and re-greasing recommended.` 
+          : `Sensor telemetry within nominal operating limits for ${param.name}.`;
+
+        const stateVal = isAlarm ? "Alarm Active" : "Data Collected";
+
+        const recommendedActions = isAlarm 
+          ? `Verify alignment, check mechanical coupling clearances, inspect for lubricant quality, and schedule repair action soon.`
+          : `No immediate actions required. Continue routine monitoring intervals.`;
+
+        const diagnosis_result = {
+          current_value: val,
+          alarm_threshold: param.alarm_val,
+          status: isAlarm ? "ALARM" : "NORMAL",
+          recommendation: recommendedActions,
+          diagnostic_brief: isAlarm 
+            ? `Critical deterioration observed in ${param.name} parameter. Standard operating tolerances violated.` 
+            : `System parameter ${param.name} is functioning normally.`
+        };
+
+        const item = {
+          id: baseId + i * 100 + pIdx,
+          measurement_point_id: 1, // dummy
+          component_id: componentId,
+          technology_type: dbTech,
+          technology: dbTech,
+          data_point_name: param.name,
+          state: stateVal,
+          op_speed,
+          measurement_value: parseFloat(val.toFixed(6)),
+          units: param.units,
+          measurement_date: measurementDate.toISOString(),
+          notes,
+          alarm_status: isAlarm,
+          diagnosis_result,
+          created_at: new Date().toISOString()
+        };
+
+        memoryAnalysisHistory.push(item);
+        seededRows.push(item);
+      }
+    }
+
+    return seededRows;
+  } catch (err) {
+    console.error("Failed to seed analysis history memory:", err);
+    return [];
+  }
+}
+
+// GET /api/analysis-history/:id - Single record OR component analysis history
+app.get(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    const technologyQuery = req.query.technology as string | undefined;
+    const isComponent = req.query.isComponent === "true" || technologyQuery !== undefined;
+
+    if (isComponent) {
+      // Map user-facing technology tab name to database technology_type
+      let dbTech: string | null = null;
+      if (technologyQuery) {
+        const t = technologyQuery.toLowerCase();
+        if (t.includes("vibration")) dbTech = "Vibration";
+        else if (t.includes("infrared") || t.includes("thermal") || t.includes("temp") || t.includes("heat")) dbTech = "Thermal";
+        else if (t.includes("ultrasound")) dbTech = "Ultrasound";
+        else if (t.includes("mca") || t.includes("electrical")) dbTech = "Electrical";
+        else if (t.includes("oil")) dbTech = "Oil";
+      }
+
+      if (pool) {
+        let query = `
+          SELECT ah.*, mp.technology_type 
+          FROM analysis_history ah
+          JOIN measurement_points mp ON ah.measurement_point_id = mp.id
+          JOIN collection_points cp ON mp.collection_point_id = cp.id
+          WHERE cp.component_id = $1
+        `;
+        const params: any[] = [id];
+        if (dbTech) {
+          query += " AND mp.technology_type = $2";
+          params.push(dbTech);
+        }
+        query += " ORDER BY ah.measurement_date ASC, ah.id ASC";
+
+        const result = await pool.query(query, params);
+
+        if (result.rows.length === 0) {
+          const seeded = await seedAnalysisHistoryForComponent(id, dbTech || "Vibration");
+          return res.json(seeded);
+        }
+        return res.json(result.rows);
+      } else {
+        let filtered = memoryAnalysisHistory.filter(ah => ah.component_id === id);
+
+        if (dbTech) {
+          filtered = filtered.filter(ah => ah.technology_type === dbTech || ah.technology === dbTech);
+        }
+
+        if (filtered.length === 0) {
+          const seeded = await seedAnalysisHistoryMemory(id, dbTech || "Vibration");
+          return res.json(seeded);
+        }
+        return res.json(filtered);
+      }
+    } else {
+      if (pool) {
+        const result = await pool.query("SELECT * FROM analysis_history WHERE id = $1", [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: "Analysis history record not found" });
+        return res.json(result.rows[0]);
+      } else {
+        const ah = memoryAnalysisHistory.find(item => item.id === id);
+        if (!ah) return res.status(404).json({ error: "Analysis history record not found" });
+        return res.json(ah);
+      }
+    }
+  } catch (error: any) {
+    console.error("GET analysis record failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch analysis history record" });
+  }
+});
+
+// POST /api/analysis-history - Create new analysis entry
+app.post(["/api/analysis-history", "/api/analysis_history"], async (req, res) => {
+  try {
+    const {
+      measurement_point_id,
+      data_point_name,
+      state,
+      op_speed,
+      measurement_value,
+      units,
+      measurement_date,
+      notes,
+      waveform_data,
+      alarm_status,
+      diagnosis_result,
+      was_correct,
+      corrected_diagnosis
+    } = req.body;
+
+    if (measurement_point_id === undefined || isNaN(parseInt(measurement_point_id, 10))) {
+      return res.status(400).json({ error: "Missing or invalid required field: measurement_point_id (integer)" });
+    }
+
+    const mpId = parseInt(measurement_point_id, 10);
+    const speed = op_speed !== undefined ? parseFloat(op_speed) : null;
+    const valueVal = measurement_value !== undefined ? parseFloat(measurement_value) : null;
+    const isAlarm = alarm_status !== undefined ? !!alarm_status : false;
+    const stateVal = state || "Data Collected";
+    const dateVal = measurement_date ? new Date(measurement_date) : new Date();
+
+    let parsedWaveform: any = null;
+    if (waveform_data) {
+      if (typeof waveform_data === "object") parsedWaveform = waveform_data;
+      else {
+        try { parsedWaveform = JSON.parse(waveform_data); }
+        catch (e) { parsedWaveform = { raw: waveform_data }; }
+      }
+    }
+
+    let parsedDiag: any = null;
+    if (diagnosis_result) {
+      if (typeof diagnosis_result === "object") parsedDiag = diagnosis_result;
+      else {
+        try { parsedDiag = JSON.parse(diagnosis_result); }
+        catch (e) { parsedDiag = { raw: diagnosis_result }; }
+      }
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        `INSERT INTO analysis_history 
+         (measurement_point_id, data_point_name, state, op_speed, measurement_value, units, measurement_date, notes, waveform_data, alarm_status, diagnosis_result, was_correct, corrected_diagnosis) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+         RETURNING *`,
+        [
+          mpId,
+          data_point_name ? data_point_name.trim() : null,
+          stateVal.trim(),
+          speed,
+          valueVal,
+          units ? units.trim() : null,
+          dateVal,
+          notes ? notes.trim() : null,
+          parsedWaveform,
+          isAlarm,
+          parsedDiag,
+          was_correct !== undefined ? !!was_correct : null,
+          corrected_diagnosis ? corrected_diagnosis.trim() : null
+        ]
+      );
+      return res.status(201).json(result.rows[0]);
+    } else {
+      const newAh = {
+        id: getNextId(),
+        measurement_point_id: mpId,
+        data_point_name: data_point_name ? data_point_name.trim() : null,
+        state: stateVal.trim(),
+        op_speed: speed,
+        measurement_value: valueVal,
+        units: units ? units.trim() : null,
+        measurement_date: dateVal,
+        notes: notes ? notes.trim() : null,
+        waveform_data: parsedWaveform,
+        alarm_status: isAlarm,
+        diagnosis_result: parsedDiag,
+        was_correct: was_correct !== undefined ? !!was_correct : null,
+        corrected_diagnosis: corrected_diagnosis ? corrected_diagnosis.trim() : null,
+        created_at: new Date()
+      };
+      memoryAnalysisHistory.push(newAh);
+      return res.status(201).json(newAh);
+    }
+  } catch (error: any) {
+    console.error("POST analysis history failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create analysis history record" });
+  }
+});
+
+// PUT /api/analysis-history/:id - Update analysis entry (feedback and correctness updates)
+app.put(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    const {
+      data_point_name,
+      state,
+      op_speed,
+      measurement_value,
+      units,
+      notes,
+      alarm_status,
+      was_correct,
+      corrected_diagnosis
+    } = req.body;
+
+    if (pool) {
+      // Build dynamic update to only overwrite provided fields
+      const currentRes = await pool.query("SELECT * FROM analysis_history WHERE id = $1", [id]);
+      if (currentRes.rows.length === 0) return res.status(404).json({ error: "Analysis history record not found" });
+      const current = currentRes.rows[0];
+
+      const finalName = data_point_name !== undefined ? data_point_name : current.data_point_name;
+      const finalState = state !== undefined ? state : current.state;
+      const finalSpeed = op_speed !== undefined ? (op_speed ? parseFloat(op_speed) : null) : current.op_speed;
+      const finalVal = measurement_value !== undefined ? (measurement_value ? parseFloat(measurement_value) : null) : current.measurement_value;
+      const finalUnits = units !== undefined ? units : current.units;
+      const finalNotes = notes !== undefined ? notes : current.notes;
+      const finalAlarm = alarm_status !== undefined ? !!alarm_status : current.alarm_status;
+      const finalWasCorrect = was_correct !== undefined ? (was_correct === null ? null : !!was_correct) : current.was_correct;
+      const finalCorrectedDiag = corrected_diagnosis !== undefined ? corrected_diagnosis : current.corrected_diagnosis;
+
+      const result = await pool.query(
+        `UPDATE analysis_history SET 
+         data_point_name = $1, state = $2, op_speed = $3, measurement_value = $4, units = $5, notes = $6, alarm_status = $7, was_correct = $8, corrected_diagnosis = $9 
+         WHERE id = $10 RETURNING *`,
+        [finalName, finalState, finalSpeed, finalVal, finalUnits, finalNotes, finalAlarm, finalWasCorrect, finalCorrectedDiag, id]
+      );
+      return res.json(result.rows[0]);
+    } else {
+      const ah = memoryAnalysisHistory.find(item => item.id === id);
+      if (!ah) return res.status(404).json({ error: "Analysis history record not found" });
+
+      if (data_point_name !== undefined) ah.data_point_name = data_point_name;
+      if (state !== undefined) ah.state = state;
+      if (op_speed !== undefined) ah.op_speed = op_speed ? parseFloat(op_speed) : null;
+      if (measurement_value !== undefined) ah.measurement_value = measurement_value ? parseFloat(measurement_value) : null;
+      if (units !== undefined) ah.units = units;
+      if (notes !== undefined) ah.notes = notes;
+      if (alarm_status !== undefined) ah.alarm_status = !!alarm_status;
+      if (was_correct !== undefined) ah.was_correct = was_correct === null ? null : !!was_correct;
+      if (corrected_diagnosis !== undefined) ah.corrected_diagnosis = corrected_diagnosis;
+
+      return res.json(ah);
+    }
+  } catch (error: any) {
+    console.error("PUT analysis history failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update analysis history record" });
+  }
+});
+
+// DELETE /api/analysis-history/:id - Delete record
+app.delete(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+
+    if (pool) {
+      const result = await pool.query("DELETE FROM analysis_history WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Analysis history record not found" });
+      return res.json({ message: "Analysis record deleted successfully", deleted: result.rows[0] });
+    } else {
+      const index = memoryAnalysisHistory.findIndex(item => item.id === id);
+      if (index === -1) return res.status(404).json({ error: "Analysis history record not found" });
+      const deleted = memoryAnalysisHistory.splice(index, 1)[0];
+      return res.json({ message: "Analysis record deleted successfully", deleted });
+    }
+  } catch (error: any) {
+    console.error("DELETE analysis history failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete analysis history record" });
+  }
+});
+
+
 // Serve static assets or mount Vite middleware
 const isProduction = process.env.NODE_ENV === "production";
 
-// Startup function to verify/create diagnosis_history table
+// Startup function to verify/create database tables
 async function initializeDatabase() {
   if (!pool) {
     console.warn("⚠️ Pool not initialized (DATABASE_URL missing). Skipping database table creation.");
@@ -2217,9 +3894,165 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS corrected_diagnosis TEXT;");
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS user_feedback_timestamp TIMESTAMP DEFAULT NULL;");
 
-    console.log("✅ Database initialized: diagnosis_history table and feedback columns verified.");
+    // Create plants table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS plants (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        location VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Create routes table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS routes (
+        id SERIAL PRIMARY KEY,
+        plant_id INTEGER REFERENCES plants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Check for equipment table migration to assets
+    const equipTableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM pg_tables 
+        WHERE schemaname = 'public' 
+        AND tablename = 'equipment'
+      );
+    `);
+    const assetsTableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM pg_tables 
+        WHERE schemaname = 'public' 
+        AND tablename = 'assets'
+      );
+    `);
+
+    const equipmentExists = equipTableCheck.rows[0].exists;
+    const assetsExists = assetsTableCheck.rows[0].exists;
+
+    if (equipmentExists && !assetsExists) {
+      console.log("🔄 Migrating legacy 'equipment' table to 'assets'...");
+      await pool.query("ALTER TABLE equipment RENAME TO assets;");
+    }
+
+    // Create assets table if it doesn't exist
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS assets (
+        id SERIAL PRIMARY KEY,
+        route_id INTEGER REFERENCES routes(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        tag_number VARCHAR(100),
+        type VARCHAR(100),
+        manufacturer VARCHAR(255),
+        model VARCHAR(255),
+        serial_number VARCHAR(255),
+        install_date DATE,
+        criticality VARCHAR(50),
+        status VARCHAR(50) DEFAULT 'Active',
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Ensure assets table columns exist
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS tag_number VARCHAR(100);");
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS description TEXT;");
+
+    // Check components table
+    const componentsExistsQuery = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM pg_tables 
+        WHERE schemaname = 'public' 
+        AND tablename = 'components'
+      );
+    `);
+    const componentsExists = componentsExistsQuery.rows[0].exists;
+
+    if (componentsExists) {
+      // Check if equipment_id exists in components, rename to asset_id
+      const colCheck = await pool.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name='components' AND column_name='equipment_id';
+      `);
+      if (colCheck.rows.length > 0) {
+        console.log("🔄 Renaming components.equipment_id to asset_id...");
+        await pool.query("ALTER TABLE components RENAME COLUMN equipment_id TO asset_id;");
+      }
+    }
+
+    // Create components table (updated reference)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS components (
+        id SERIAL PRIMARY KEY,
+        asset_id INTEGER REFERENCES assets(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        type VARCHAR(100),
+        manufacturer VARCHAR(255),
+        model VARCHAR(255),
+        specifications JSONB,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Ensure components table columns exist
+    await pool.query("ALTER TABLE components ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(255);");
+    await pool.query("ALTER TABLE components ADD COLUMN IF NOT EXISTS model VARCHAR(255);");
+    await pool.query("ALTER TABLE components ADD COLUMN IF NOT EXISTS notes TEXT;");
+
+    // Create collection_points table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS collection_points (
+        id SERIAL PRIMARY KEY,
+        component_id INTEGER REFERENCES components(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        location_order INTEGER DEFAULT 0,
+        notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Create measurement_points table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS measurement_points (
+        id SERIAL PRIMARY KEY,
+        collection_point_id INTEGER REFERENCES collection_points(id) ON DELETE CASCADE,
+        direction VARCHAR(50) NOT NULL,
+        technology_type VARCHAR(50) DEFAULT 'Vibration',
+        units VARCHAR(50) DEFAULT 'in/Sec',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Create analysis_history table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS analysis_history (
+        id SERIAL PRIMARY KEY,
+        measurement_point_id INTEGER REFERENCES measurement_points(id) ON DELETE CASCADE,
+        data_point_name VARCHAR(100),
+        state VARCHAR(50) DEFAULT 'Data Collected',
+        op_speed DECIMAL(10,2),
+        measurement_value DECIMAL(10,6),
+        units VARCHAR(50),
+        measurement_date TIMESTAMP,
+        notes TEXT,
+        waveform_data JSONB,
+        alarm_status BOOLEAN DEFAULT FALSE,
+        diagnosis_result JSONB,
+        was_correct BOOLEAN,
+        corrected_diagnosis TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    console.log("✅ Database initialized: All plants, routes, assets, components, collection points, measurement points, and analysis history tables verified/created.");
   } catch (error) {
-    console.error("❌ Failed to initialize database table:", error);
+    console.error("❌ Failed to initialize database tables:", error);
   }
 }
 

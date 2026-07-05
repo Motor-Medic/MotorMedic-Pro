@@ -4,10 +4,11 @@ import Dashboard from "./components/Dashboard";
 import Diagnose from "./components/Diagnose";
 import History from "./components/History";
 import ReportDetails from "./components/ReportDetails";
-import TrendAnalyzer from "./components/TrendAnalyzer";
+import Trends from "./components/Trends";
 import SensorPlacementPlanner from "./components/SensorPlacementPlanner";
+import Assets from "./components/Assets";
 import { 
-  Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing
+  Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder
 } from "lucide-react";
 
 const STORAGE_KEY = "reliability_reports_v6";
@@ -24,13 +25,25 @@ export interface Notification {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets">("dashboard");
   const [reports, setReports] = useState<SavedReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<SavedReport | null>(null);
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
   const [isSandbox, setIsSandbox] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
+  const [targetContext, setTargetContext] = useState<{
+    plantId: number | null;
+    routeId: number | null;
+    assetId: number | null;
+    componentId: number | null;
+    technologyType: string | null;
+  } | null>(null);
+
+  const handleStartDiagnosis = (plantId: number, routeId: number, assetId: number, componentId: number, technologyType: string) => {
+    setTargetContext({ plantId, routeId, assetId, componentId, technologyType });
+    setActiveTab("diagnose");
+  };
 
   const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem("reliability_custom_gemini_key") || "");
   const [showCredsModal, setShowCredsModal] = useState<boolean>(false);
@@ -632,6 +645,21 @@ export default function App() {
 
           <button
             onClick={() => {
+              setActiveTab("assets");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "assets" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+          >
+            <Folder className="w-4.5 h-4.5" />
+            <span>Equipment DB</span>
+          </button>
+
+          <button
+            onClick={() => {
               setActiveTab("diagnose");
               setSelectedReport(null);
             }}
@@ -715,10 +743,22 @@ export default function App() {
               onNavigate={(tab) => setActiveTab(tab as any)}
               onSelectReport={(report) => setSelectedReport(report)}
             />
+          ) : activeTab === "assets" ? (
+            <Assets 
+              reports={reports} 
+              onSelectReport={(report) => setSelectedReport(report)} 
+              onStartDiagnosis={handleStartDiagnosis}
+            />
           ) : activeTab === "diagnose" ? (
-            <Diagnose onSaveReport={handleSaveReport} isSandbox={isSandbox} setIsSandbox={setIsSandbox} />
+            <Diagnose 
+              onSaveReport={handleSaveReport} 
+              isSandbox={isSandbox} 
+              setIsSandbox={setIsSandbox} 
+              targetContext={targetContext}
+              onClearTargetContext={() => setTargetContext(null)}
+            />
           ) : activeTab === "trends" ? (
-            <TrendAnalyzer trendData={trendData} onAddTrendPoint={handleAddTrendPoint} />
+            <Trends />
           ) : activeTab === "sensors" ? (
             <SensorPlacementPlanner isSandbox={isSandbox} setIsSandbox={setIsSandbox} />
           ) : (
@@ -745,6 +785,19 @@ export default function App() {
         >
           <Database className="w-5 h-5" />
           <span className="text-[9px]">Dashboard</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab("assets");
+            setSelectedReport(null);
+          }}
+          className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
+            activeTab === "assets" && !selectedReport ? "text-yellow-400" : "text-slate-400"
+          }`}
+        >
+          <Folder className="w-5 h-5" />
+          <span className="text-[9px]">Assets</span>
         </button>
 
         <button

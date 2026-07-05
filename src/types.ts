@@ -145,3 +145,42 @@ export interface SensorPlacementResult {
   simulationReason?: string;
 }
 
+export interface Plant {
+  id: number;
+  name: string;
+  location: string | null;
+  created_at?: string;
+}
+
+export interface RouteArea {
+  id: number;
+  plant_id: number;
+  name: string;
+  description: string | null;
+  created_at?: string;
+}
+
+export interface Equipment {
+  id: number;
+  route_id: number;
+  name: string;
+  type: string;
+  manufacturer: string | null;
+  model: string | null;
+  serial_number: string | null;
+  install_date: string | null;
+  criticality: string | null;
+  status: string;
+  created_at?: string;
+}
+
+export interface ComponentAsset {
+  id: number;
+  equipment_id: number;
+  name: string;
+  type: string;
+  specifications: any;
+  created_at?: string;
+}
+
+
