@@ -30,6 +30,7 @@ import {
   Sliders,
   PlayCircle
 } from "lucide-react";
+import { useToast } from "./Toast";
 
 interface AssetsProps {
   reports: SavedReport[];
@@ -41,9 +42,19 @@ interface AssetsProps {
     componentId: number,
     technologyType: string
   ) => void;
+  selectedCompanyId?: number;
+  setSelectedCompanyId?: (id: number) => void;
 }
 
-export default function Assets({ reports, onSelectReport, onStartDiagnosis }: AssetsProps) {
+export default function Assets({ 
+  reports, 
+  onSelectReport, 
+  onStartDiagnosis,
+  selectedCompanyId = 1,
+  setSelectedCompanyId = () => {}
+}: AssetsProps) {
+  const { showToast } = useToast();
+
   // --- Core States ---
   const [plants, setPlants] = useState<Plant[]>([]);
   const [routes, setRoutes] = useState<Record<number, RouteArea[]>>({});
@@ -106,7 +117,7 @@ export default function Assets({ reports, onSelectReport, onStartDiagnosis }: As
     setLoadingPlants(true);
     setError(null);
     try {
-      const res = await fetch("/api/plants");
+      const res = await fetch(`/api/plants?company_id=${selectedCompanyId}`);
       if (!res.ok) throw new Error("Failed to load plants");
       const data = await res.json();
       setPlants(data);
@@ -202,7 +213,7 @@ export default function Assets({ reports, onSelectReport, onStartDiagnosis }: As
   // --- Fetch initial data ---
   useEffect(() => {
     fetchPlants();
-  }, []);
+  }, [selectedCompanyId]);
 
   // --- Trigger lazy fetches on tree expand ---
   const togglePlant = (plantId: number) => {
@@ -365,7 +376,7 @@ export default function Assets({ reports, onSelectReport, onStartDiagnosis }: As
 
         if (modalTargetType === "plant") {
           url = "/api/plants";
-          body = { name: formName, location: formLocation };
+          body = { name: formName, location: formLocation, company_id: selectedCompanyId };
         } else if (modalTargetType === "route") {
           url = "/api/routes";
           body = { plant_id: modalParentId, name: formName, description: formDescription };
@@ -502,8 +513,10 @@ export default function Assets({ reports, onSelectReport, onStartDiagnosis }: As
       }
 
       setModalType(null);
+      showToast(`Success: Asset saved successfully!`, "success");
     } catch (err: any) {
-      alert("Error: " + err.message);
+      console.error(err);
+      showToast(`Error: ${err.message || "Failed to save asset."}`, "error");
     }
   };
 
@@ -540,8 +553,10 @@ export default function Assets({ reports, onSelectReport, onStartDiagnosis }: As
       }
 
       setModalType(null);
+      showToast(`Success: Asset deleted successfully!`, "success");
     } catch (err: any) {
-      alert("Error: " + err.message);
+      console.error(err);
+      showToast(`Error: ${err.message || "Failed to delete asset."}`, "error");
     }
   };
 
@@ -593,6 +608,33 @@ export default function Assets({ reports, onSelectReport, onStartDiagnosis }: As
 
   return (
     <div className="space-y-6">
+      {/* Company Selection Header Card */}
+      <div className="bg-slate-900/60 border border-slate-850 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-yellow-400/10 rounded-xl border border-yellow-400/20">
+            <Sliders className="w-5 h-5 text-yellow-400" />
+          </div>
+          <div>
+            <label htmlFor="company-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Tenant Company Context
+            </label>
+            <span className="text-xs text-slate-500">Isolate plants, routes, and machinery assets by organization.</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <span className="text-xs text-slate-400 whitespace-nowrap font-medium">Select Company:</span>
+          <select
+            id="company-select"
+            value={selectedCompanyId}
+            onChange={(e) => setSelectedCompanyId(parseInt(e.target.value, 10))}
+            className="w-full sm:w-56 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-100 text-xs font-semibold rounded-xl px-3.5 py-2 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer"
+          >
+            <option value={1}>Allied Reliability</option>
+            <option value={2}>ExxonMobil</option>
+          </select>
+        </div>
+      </div>
+
       {/* Page Title Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
         <div>

@@ -1792,7 +1792,145 @@ function normalizeDiagnosticResponse(data: any): any {
   return data;
 }
 
-function sendCriticalEmailAlert(equipmentName: string, fault: string, stage: string, delta: string | null) {
+async function sendResendEmail({
+  to,
+  subject,
+  htmlContent
+}: {
+  to: string;
+  subject: string;
+  htmlContent: string;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    console.warn("⚠️ RESEND_API_KEY is not defined. Skipping email dispatch.");
+    return false;
+  }
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        from: "MotorMedic Alerts <onboarding@resend.dev>",
+        to: [to],
+        subject: subject,
+        html: htmlContent
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error("Resend API returned error:", errText);
+      return false;
+    }
+
+    const data = await response.json();
+    console.log("Resend email sent successfully:", data);
+    return true;
+  } catch (err) {
+    console.error("Failed to send email via Resend:", err);
+    return false;
+  }
+}
+
+function buildEmailTemplate({
+  assetName,
+  faultName,
+  severity,
+  description,
+  recommendedAction,
+  link
+}: {
+  assetName: string;
+  faultName: string;
+  severity: string;
+  description: string;
+  recommendedAction: string;
+  link: string;
+}) {
+  const isCritical = severity.toLowerCase() === "critical" || severity.toLowerCase() === "high";
+  const headerBg = isCritical ? "#ef4444" : "#f59e0b"; // Red vs Amber
+  const severityText = severity.toUpperCase();
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>MotorMedic Pro Alert</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 0; }
+        .container { max-width: 600px; margin: 30px auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; }
+        .header { background-color: ${headerBg}; padding: 24px; text-align: center; color: #ffffff; }
+        .header h1 { margin: 0; font-size: 20px; font-weight: bold; letter-spacing: 0.05em; }
+        .content { padding: 30px; }
+        .badge { display: inline-block; padding: 6px 12px; border-radius: 9999px; font-size: 12px; font-weight: bold; text-transform: uppercase; margin-bottom: 20px; }
+        .badge-critical { background-color: #fee2e2; color: #dc2626; }
+        .badge-warning { background-color: #fef3c7; color: #d97706; }
+        .section-title { font-size: 14px; font-weight: bold; text-transform: uppercase; color: #64748b; margin-top: 24px; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+        .detail-row { display: flex; margin-bottom: 8px; font-size: 14px; }
+        .detail-label { width: 140px; font-weight: 600; color: #475569; }
+        .detail-value { flex: 1; color: #0f172a; }
+        .box { background-color: #f1f5f9; border-left: 4px solid #475569; padding: 16px; border-radius: 4px; font-size: 14px; line-height: 1.6; margin-top: 8px; }
+        .action-box { background-color: #f0fdf4; border-left: 4px solid #16a34a; padding: 16px; border-radius: 4px; font-size: 14px; line-height: 1.6; margin-top: 8px; }
+        .footer { background-color: #0f172a; color: #94a3b8; text-align: center; padding: 20px; font-size: 11px; }
+        .button { display: inline-block; background-color: #0f172a; color: #ffffff !important; text-decoration: none; padding: 12px 24px; font-size: 14px; font-weight: bold; border-radius: 8px; margin-top: 24px; text-align: center; }
+        .button:hover { background-color: #1e293b; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🚨 MOTOR MEDIC PRO CONDITION MONITORING ALERT</h1>
+        </div>
+        <div class="content">
+          <div class="badge ${isCritical ? 'badge-critical' : 'badge-warning'}">
+            ${severityText} SEVERITY LEVEL ALERT
+          </div>
+          
+          <div class="section-title">Asset Information</div>
+          <div class="detail-row">
+            <span class="detail-label">Asset Name:</span>
+            <span class="detail-value">${assetName}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Diagnosed Fault:</span>
+            <span class="detail-value" style="font-weight: bold; color: ${headerBg};">${faultName}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Detected Time:</span>
+            <span class="detail-value">${new Date().toLocaleString()}</span>
+          </div>
+
+          <div class="section-title">Fault Description & Evidence</div>
+          <div class="box">
+            ${description}
+          </div>
+
+          <div class="section-title">Required Maintenance Action</div>
+          <div class="action-box">
+            ${recommendedAction}
+          </div>
+
+          <div style="text-align: center;">
+            <a href="${link}" class="button">View Diagnostic Report</a>
+          </div>
+        </div>
+        <div class="footer">
+          Generated automatically by MotorMedic Pro Enterprise Diagnostic System.<br>
+          Based on ISO 10816 and ISO 18436 vibration standards.
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+}
+
+function sendCriticalEmailAlert(equipmentName: string, fault: string, stage: string, delta: string | null, severity: string = "Critical", briefText: string = "", recommendedAction: string = "") {
   console.log(`
 ============================================================
 📧 [AUTOMATED ENTERPRISE ALERT ENGINE] - EMAIL NOTIFICATION
@@ -1820,6 +1958,22 @@ RECOMMENDED ACTIONS:
 This alert was generated automatically based on ISO 18436 standards.
 ============================================================
 `);
+
+  // Trigger real email dispatch via Resend to user's registered address
+  const html = buildEmailTemplate({
+    assetName: equipmentName,
+    faultName: fault,
+    severity: severity,
+    description: briefText || `Condition Monitoring system flagged an active stage ${stage} anomaly on ${equipmentName}. Calculated baseline deviation is ${delta || "N/A"}.`,
+    recommendedAction: recommendedAction || `Execute Lock-Out Tag-Out (LOTO) protocols immediately. Deploy an on-call maintenance technician for verification.`,
+    link: "https://ai.studio/build"
+  });
+
+  sendResendEmail({
+    to: "shanedufrene1989@gmail.com",
+    subject: `🚨 ${severity.toUpperCase()} ALERT: ${equipmentName} - ${fault}`,
+    htmlContent: html
+  });
 }
 
 // API Endpoint for Diagnostic Analysis
@@ -1955,8 +2109,23 @@ app.post("/api/diagnose", async (req, res) => {
     if (isCritical) {
       const equipName = specs?.equipmentName || `${category} Asset`;
       const primaryFault = result.probable_faults?.[0]?.fault_name || "Unknown Mechanical Fault";
-      sendCriticalEmailAlert(equipName, primaryFault, result.failure_stage || "Incipient", result.baseline_delta);
+      const briefText = result.manager_summary?.executive_brief || "";
+      const recommendedAction = result.immediate_actions?.[0]?.action || "";
+      sendCriticalEmailAlert(
+        equipName, 
+        primaryFault, 
+        result.failure_stage || "Incipient", 
+        result.baseline_delta,
+        result.manager_summary?.severity || "High",
+        briefText,
+        recommendedAction
+      );
     }
+
+    const rawComponentId = req.body.componentId || req.body.component_id;
+    const componentIdVal = rawComponentId ? parseInt(String(rawComponentId), 10) : null;
+    const isTemp = !componentIdVal;
+    result.is_temporary = isTemp;
 
     // AFTER the AI generates a response, insert the new input_data and ai_response into the diagnosis_history table.
     if (pool) {
@@ -1973,8 +2142,8 @@ app.post("/api/diagnose", async (req, res) => {
 
         console.log("💾 Logging diagnostics record in PostgreSQL...");
         const dbRes = await pool.query(
-          "INSERT INTO diagnosis_history (input_data, ai_response) VALUES ($1, $2) RETURNING id",
-          [inputDataStr, aiResponseStr]
+          "INSERT INTO diagnosis_history (input_data, ai_response, component_id, is_temporary) VALUES ($1, $2, $3, $4) RETURNING id",
+          [inputDataStr, aiResponseStr, componentIdVal, isTemp]
         );
         if (dbRes.rows && dbRes.rows.length > 0) {
           result.db_id = dbRes.rows[0].id;
@@ -2032,6 +2201,84 @@ app.post("/api/feedback", async (req, res) => {
   } catch (error: any) {
     console.error("❌ Failed to save user feedback in database:", error);
     return res.status(500).json({ error: error.message || "Failed to save verification feedback." });
+  }
+});
+
+// NEW ENDPOINT: Save temporary analysis to permanent database storage
+app.post("/api/save-temporary-analysis", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    const { analysis_id, analysisId, component_id, componentId } = req.body;
+    const id = parseInt(analysis_id || analysisId, 10);
+    const compId = parseInt(component_id || componentId, 10);
+
+    if (isNaN(id) || isNaN(compId)) {
+      return res.status(400).json({ error: "Missing or invalid analysis_id or component_id parameters." });
+    }
+
+    if (!pool) {
+      console.warn("⚠️ Pool not initialized. Running mock update for save-temporary-analysis.");
+      return res.json({ success: true, message: "Analysis successfully saved (Mock Mode)." });
+    }
+
+    console.log(`💾 Saving temporary analysis ID ${id} under component ID ${compId}`);
+    const updateResult = await pool.query(
+      "UPDATE diagnosis_history SET component_id = $1, is_temporary = false WHERE id = $2 RETURNING *",
+      [compId, id]
+    );
+
+    if (updateResult.rows.length === 0) {
+      return res.status(404).json({ error: `Temporary analysis record with ID ${id} not found.` });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: "Analysis successfully moved from temporary to permanent storage.", 
+      record: updateResult.rows[0] 
+    });
+  } catch (error: any) {
+    console.error("❌ Failed to save temporary analysis:", error);
+    return res.status(500).json({ error: error.message || "Failed to save temporary analysis." });
+  }
+});
+
+// NEW ENDPOINT: Manual or automated send-alert route using Resend API
+app.post("/api/send-alert", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    const { assetName, faultName, faultDetails, severity, recipientEmail } = req.body;
+    const targetEmail = recipientEmail || "shanedufrene1989@gmail.com";
+    const fName = faultName || faultDetails || "Undetermined Anomaly";
+    const sev = severity || "Warning";
+
+    console.log(`📨 Direct alert email request: Asset=${assetName}, Fault=${fName}, Recipient=${targetEmail}`);
+
+    const description = `This notification was sent via the manual alert trigger on the MotorMedic Pro diagnosis control panel.`;
+    const recommendedAction = `Verify the asset immediately. Inspect vibration spectral patterns, bearing temperature, and ensure compliance with ISO guidelines.`;
+
+    const htmlContent = buildEmailTemplate({
+      assetName: assetName || "Test Equipment Unit",
+      faultName: fName,
+      severity: sev,
+      description,
+      recommendedAction,
+      link: "https://ai.studio/build"
+    });
+
+    const success = await sendResendEmail({
+      to: targetEmail,
+      subject: `🚨 MANUAL ALERT: ${assetName || "Test Asset"} - ${fName}`,
+      htmlContent
+    });
+
+    if (success) {
+      return res.json({ success: true, message: `Alert email dispatched to ${targetEmail} via Resend API.` });
+    } else {
+      return res.status(500).json({ error: "Failed to dispatch email via Resend. Check API key configuration." });
+    }
+  } catch (error: any) {
+    console.error("❌ Failed to send alert email:", error);
+    return res.status(500).json({ error: error.message || "Failed to send alert email." });
   }
 });
 
@@ -2193,9 +2440,14 @@ app.post("/api/sensor-placement", async (req, res) => {
 // ============================================
 
 // Local In-Memory Storage for Fallback/Sandbox Demo Mode
+let memoryCompanies: any[] = [
+  { id: 1, name: "Allied Reliability", created_at: new Date() },
+  { id: 2, name: "ExxonMobil", created_at: new Date() }
+];
+
 let memoryPlants: any[] = [
-  { id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
-  { id: 2, name: "Chicago Manufacturing Facility", location: "1350 E 89th St, Chicago, IL", created_at: new Date() }
+  { id: 1, company_id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
+  { id: 2, company_id: 2, name: "Chicago Manufacturing Facility", location: "1350 E 89th St, Chicago, IL", created_at: new Date() }
 ];
 
 let memoryRoutes: any[] = [
@@ -2260,17 +2512,72 @@ function getNextId() {
 }
 
 // --------------------------------------------------------
+// COMPANIES ENDPOINTS
+// --------------------------------------------------------
+
+// GET /api/companies - List all companies
+app.get("/api/companies", async (req, res) => {
+  try {
+    if (pool) {
+      const result = await pool.query("SELECT * FROM companies ORDER BY name ASC");
+      return res.json(result.rows);
+    } else {
+      return res.json(memoryCompanies);
+    }
+  } catch (error: any) {
+    console.error("GET /api/companies failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch companies" });
+  }
+});
+
+
+// --------------------------------------------------------
 // PLANTS ENDPOINTS
 // --------------------------------------------------------
 
-// GET /api/plants - List all plants
+// GET /api/plants/count - Get count of plants for a company
+app.get("/api/plants/count", async (req, res) => {
+  try {
+    const companyIdParam = req.query.company_id || req.query.companyId;
+    if (!companyIdParam) {
+      return res.status(400).json({ error: "Missing required query parameter: company_id" });
+    }
+    const company_id = parseInt(companyIdParam as string, 10);
+    if (isNaN(company_id)) {
+      return res.status(400).json({ error: "Invalid company_id parameter" });
+    }
+
+    if (pool) {
+      const result = await pool.query("SELECT COUNT(*)::int as count FROM plants WHERE company_id = $1", [company_id]);
+      return res.json({ count: result.rows[0].count });
+    } else {
+      const filtered = memoryPlants.filter(p => p.company_id === company_id);
+      return res.json({ count: filtered.length });
+    }
+  } catch (error: any) {
+    console.error("GET /api/plants/count failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to count plants" });
+  }
+});
+
+// GET /api/plants - List all plants for a company
 app.get("/api/plants", async (req, res) => {
   try {
+    const companyIdParam = req.query.company_id || req.query.companyId;
+    if (!companyIdParam) {
+      return res.status(400).json({ error: "Missing required query parameter: company_id" });
+    }
+    const company_id = parseInt(companyIdParam as string, 10);
+    if (isNaN(company_id)) {
+      return res.status(400).json({ error: "Invalid company_id parameter" });
+    }
+
     if (pool) {
-      const result = await pool.query("SELECT * FROM plants ORDER BY name ASC");
+      const result = await pool.query("SELECT * FROM plants WHERE company_id = $1 ORDER BY name ASC", [company_id]);
       return res.json(result.rows);
     } else {
-      return res.json(memoryPlants);
+      const filtered = memoryPlants.filter(p => p.company_id === company_id);
+      return res.json(filtered);
     }
   } catch (error: any) {
     console.error("GET /api/plants failed:", error);
@@ -2305,23 +2612,33 @@ app.get("/api/plants/:id", async (req, res) => {
   }
 });
 
-// POST /api/plants - Create new plant
+// POST /api/plants - Create new plant linked to a company_id
 app.post("/api/plants", async (req, res) => {
   try {
     const { name, location } = req.body;
+    const company_id = req.body.company_id !== undefined ? req.body.company_id : req.body.companyId;
+
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+    if (company_id === undefined || company_id === null) {
+      return res.status(400).json({ error: "Missing required field: company_id" });
+    }
+    const companyIdNum = parseInt(company_id, 10);
+    if (isNaN(companyIdNum)) {
+      return res.status(400).json({ error: "Invalid company_id field" });
     }
 
     if (pool) {
       const result = await pool.query(
-        "INSERT INTO plants (name, location) VALUES ($1, $2) RETURNING *",
-        [name.trim(), location ? location.trim() : null]
+        "INSERT INTO plants (name, location, company_id) VALUES ($1, $2, $3) RETURNING *",
+        [name.trim(), location ? location.trim() : null, companyIdNum]
       );
       return res.status(201).json(result.rows[0]);
     } else {
       const newPlant = {
         id: getNextId(),
+        company_id: companyIdNum,
         name: name.trim(),
         location: location ? location.trim() : null,
         created_at: new Date()
@@ -3893,6 +4210,27 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS was_correct BOOLEAN DEFAULT NULL;");
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS corrected_diagnosis TEXT;");
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS user_feedback_timestamp TIMESTAMP DEFAULT NULL;");
+    await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS component_id INTEGER;");
+    await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS is_temporary BOOLEAN DEFAULT FALSE;");
+
+    // Create companies table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // Ensure we seed Allied Reliability and ExxonMobil if they don't exist
+    await pool.query(`
+      INSERT INTO companies (name) VALUES ('Allied Reliability')
+      ON CONFLICT (name) DO NOTHING;
+    `);
+    await pool.query(`
+      INSERT INTO companies (name) VALUES ('ExxonMobil')
+      ON CONFLICT (name) DO NOTHING;
+    `);
 
     // Create plants table
     await pool.query(`
@@ -3900,9 +4238,20 @@ async function initializeDatabase() {
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         location VARCHAR(255),
+        company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Ensure company_id exists in case plants table already existed
+    await pool.query("ALTER TABLE plants ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE;");
+
+    // Seed existing plants with Allied Reliability (id: 1) if company_id is null
+    const firstCompanyRes = await pool.query("SELECT id FROM companies ORDER BY id ASC LIMIT 1");
+    if (firstCompanyRes.rows.length > 0) {
+      const defaultCompanyId = firstCompanyRes.rows[0].id;
+      await pool.query("UPDATE plants SET company_id = $1 WHERE company_id IS NULL", [defaultCompanyId]);
+    }
 
     // Create routes table
     await pool.query(`
@@ -4055,6 +4404,15 @@ async function initializeDatabase() {
     console.error("❌ Failed to initialize database tables:", error);
   }
 }
+
+// Global error-handling middleware to prevent Express from crashing and return uniform JSON responses
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("🔥 Unhandled exception caught by global Express middleware:", err);
+  res.status(500).json({
+    error: "Internal server error. Please try again in a few minutes.",
+    details: err?.message || "Unknown error occurred on the condition monitoring backend."
+  });
+});
 
 async function setupServer() {
   // Run database initialization on startup

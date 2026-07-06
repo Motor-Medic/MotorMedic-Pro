@@ -2,8 +2,10 @@ import React, { useState, useRef, useEffect } from "react";
 import { DiagnosticResponse } from "../types";
 import { 
   Zap, Droplet, Wrench, AlertTriangle, FileText, UploadCloud, Trash2, 
-  Video, Mic, MicOff, Check, Copy, Settings, Info, RefreshCw, HelpCircle, Camera, Globe, ArrowUpRight 
+  Video, Mic, MicOff, Check, Copy, Settings, Info, RefreshCw, HelpCircle, Camera, Globe, ArrowUpRight, Mail
 } from "lucide-react";
+import { generatePDFReport } from "./ReportGenerator";
+import { useToast } from "./Toast";
 
 interface DiagnoseProps {
   onSaveReport: (category: "Mechanical" | "Electrical" | "Hydraulic", symptoms: string, specs: Record<string, string>, data: DiagnosticResponse, fileName?: string, fileType?: string) => void;
@@ -17,6 +19,7 @@ interface DiagnoseProps {
     technologyType: string | null;
   } | null;
   onClearTargetContext?: () => void;
+  selectedCompanyId?: number;
 }
 
 const techMap: Record<string, string> = {
@@ -31,8 +34,14 @@ export default function Diagnose({
   isSandbox = false, 
   setIsSandbox,
   targetContext,
-  onClearTargetContext
+  onClearTargetContext,
+  selectedCompanyId = 1
 }: DiagnoseProps) {
+  const { showToast } = useToast();
+  
+  // File upload validation error state
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   // Cascading dropdown states
   const [plants, setPlants] = useState<any[]>([]);
   const [routesList, setRoutesList] = useState<any[]>([]);
@@ -44,11 +53,30 @@ export default function Diagnose({
   const [selectedAssetId, setSelectedAssetId] = useState<number | "">("");
   const [selectedComponentId, setSelectedComponentId] = useState<number | "">("");
 
-  // Fetch plants list on mount
+  // Quick Analysis Mode (Test Mode) & Link-Saving States
+  const [quickAnalysisMode, setQuickAnalysisMode] = useState<boolean>(false);
+  const [showLinkModal, setShowLinkModal] = useState<boolean>(false);
+  const [modalPlantId, setModalPlantId] = useState<number | "">("");
+  const [modalRouteId, setModalRouteId] = useState<number | "">("");
+  const [modalAssetId, setModalAssetId] = useState<number | "">("");
+  const [modalComponentId, setModalComponentId] = useState<number | "">("");
+  const [modalRoutesList, setModalRoutesList] = useState<any[]>([]);
+  const [modalAssetsList, setModalAssetsList] = useState<any[]>([]);
+  const [modalComponentsList, setModalComponentsList] = useState<any[]>([]);
+  const [isLinking, setIsLinking] = useState<boolean>(false);
+  
+  // Notification Toast State
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  // Manual Email Alert State
+  const [isAlertSending, setIsAlertSending] = useState<boolean>(false);
+  const [alertSuccessMsg, setAlertSuccessMsg] = useState<string | null>(null);
+
+  // Fetch plants list on mount and when company changes
   useEffect(() => {
     const fetchPlants = async () => {
       try {
-        const res = await fetch("/api/plants");
+        const res = await fetch(`/api/plants?company_id=${selectedCompanyId}`);
         if (res.ok) {
           const data = await res.json();
           setPlants(data);
@@ -58,7 +86,7 @@ export default function Diagnose({
       }
     };
     fetchPlants();
-  }, []);
+  }, [selectedCompanyId]);
 
   // Fetch routes when plant is selected
   useEffect(() => {
@@ -137,6 +165,83 @@ export default function Diagnose({
       }
     }
   }, [targetContext]);
+
+  // Modal cascading dropdown hooks
+  useEffect(() => {
+    if (showLinkModal && modalPlantId) {
+      const fetchRoutes = async () => {
+        try {
+          const res = await fetch(`/api/routes?plant_id=${modalPlantId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setModalRoutesList(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch routes in modal:", err);
+        }
+      };
+      fetchRoutes();
+    } else {
+      setModalRoutesList([]);
+      setModalAssetsList([]);
+      setModalComponentsList([]);
+    }
+  }, [modalPlantId, showLinkModal]);
+
+  useEffect(() => {
+    if (showLinkModal && modalRouteId) {
+      const fetchAssets = async () => {
+        try {
+          const res = await fetch(`/api/assets?route_id=${modalRouteId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setModalAssetsList(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch assets in modal:", err);
+        }
+      };
+      fetchAssets();
+    } else {
+      setModalAssetsList([]);
+      setModalComponentsList([]);
+    }
+  }, [modalRouteId, showLinkModal]);
+
+  useEffect(() => {
+    if (showLinkModal && modalAssetId) {
+      const fetchComponents = async () => {
+        try {
+          const res = await fetch(`/api/components?asset_id=${modalAssetId}`);
+          if (res.ok) {
+            const data = await res.json();
+            setModalComponentsList(data);
+          }
+        } catch (err) {
+          console.error("Failed to fetch components in modal:", err);
+        }
+      };
+      fetchComponents();
+    } else {
+      setModalComponentsList([]);
+    }
+  }, [modalAssetId, showLinkModal]);
+
+  // Auto-clear Toast notifications
+  useEffect(() => {
+    if (toastMsg) {
+      const timer = setTimeout(() => setToastMsg(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toastMsg]);
+
+  // Auto-clear manual email alert feedback
+  useEffect(() => {
+    if (alertSuccessMsg) {
+      const timer = setTimeout(() => setAlertSuccessMsg(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [alertSuccessMsg]);
 
   // Category state
   const [category, setCategory] = useState<"Mechanical" | "Electrical" | "Hydraulic">("Mechanical");
@@ -337,6 +442,26 @@ export default function Diagnose({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+    const allowedExtensions = ["csv", "xlsx", "xls", "txt", "pdf", "json"];
+
+    // Validate extension
+    if (!allowedExtensions.includes(ext)) {
+      setUploadError("Invalid file. Please upload a CSV, Excel, or Text file under 50MB.");
+      if (e.target) e.target.value = "";
+      return;
+    }
+
+    // Validate size (50MB)
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      setUploadError("Invalid file. Please upload a CSV, Excel, or Text file under 50MB.");
+      if (e.target) e.target.value = "";
+      return;
+    }
+
+    setUploadError(null);
     processFile(file);
   };
 
@@ -506,8 +631,8 @@ export default function Diagnose({
 
   // Diagnose triggering
   const triggerDiagnostics = async () => {
-    if (!selectedComponentId) {
-      setErrorMsg("Mandatory: Please select a Target Plant, Route, Asset, and Component at the top before diagnosing.");
+    if (!selectedComponentId && !quickAnalysisMode) {
+      setErrorMsg("Mandatory: Please select a Target Plant, Route, Asset, and Component at the top before diagnosing, or turn on Quick Analysis Mode.");
       return;
     }
     if (!selectedTech) {
@@ -527,7 +652,7 @@ export default function Diagnose({
       baselineData: baselineMode === "text" ? baselineText : baselineFile?.name || "",
       uploadedFileName: uploadedFile?.name || "",
       uploadedFileDataLength: uploadedFile?.data ? uploadedFile.data.length : 0,
-      componentId: selectedComponentId,
+      componentId: selectedComponentId || null,
     });
 
     // Check cache first to avoid redundant live API tokens
@@ -591,7 +716,7 @@ export default function Diagnose({
         technology: selectedTech,
         baselineData: baselineMode === "text" ? baselineText : (baselineFile ? `${baselineFile.name}: ${baselineFile.content}` : ""),
         maintenanceHistory: maintenanceLogs,
-        componentId: selectedComponentId,
+        componentId: selectedComponentId || null,
         technologyType: selectedTech,
       };
 
@@ -637,8 +762,15 @@ export default function Diagnose({
         playCatastrophicAlarm();
       }
     } catch (err: any) {
-      console.error(err);
-      setErrorMsg("Analysis is taking longer than expected. Please try again in a moment.");
+      console.error("Diagnostics execution error:", err);
+      const isNetwork = !navigator.onLine || err.message?.toLowerCase().includes("failed to fetch") || err.name === "TypeError" || err.name === "AbortError";
+      if (isNetwork) {
+        showToast("Network error. Please check your connection and try again.", "error");
+        setErrorMsg("Network error. Please check your connection and try again.");
+      } else {
+        showToast("Server error. Please try again in a few minutes.", "error");
+        setErrorMsg("Server error. Please try again in a few minutes.");
+      }
     } finally {
       clearInterval(timer);
       setIsLoading(false);
@@ -681,47 +813,167 @@ export default function Diagnose({
     }
   };
 
-  // Copy CMMS Work Order
+  // Copy CMMS Work Order with dynamic and enhanced formatting
   const handleCopyCMMS = () => {
     if (!diagnosticResult) return;
 
     const d = diagnosticResult;
-    const faults = d.probable_faults
-      .map((f) => `- ${f.fault} (Confidence: ${f.confidence}, ${f.probability}%): ${f.description}`)
-      .join("\n");
-    const actions = d.immediate_actions
-      .map(
-        (a) =>
-          `- [Priority ${a.priority}] ${a.action}\n  Rationale: ${a.rationale}${
-            a.safety_warning ? `\n  ⚠️ SAFETY: ${a.safety_warning}` : ""
-          }\n  Time: ${a.estimated_time || "N/A"} | Tools: ${(a.required_tools || []).join(", ") || "Standard"}`
-      )
-      .join("\n");
+    const selectedPlant = plants.find(p => p.id === selectedPlantId);
+    const selectedRoute = routesList.find(r => r.id === selectedRouteId);
+    const selectedAsset = assetsList.find(a => a.id === selectedAssetId);
+    const selectedComponent = componentsList.find(c => c.id === selectedComponentId);
 
-    const cmmsText = `================================================
-CMMS MAINTENANCE WORK ORDER REQUEST
-================================================
-System Category : ${category}
-Date            : ${new Date().toLocaleString()}
-Observed Symptoms: ${symptoms || "No symptoms stated. Analysed from data file."}
-------------------------------------------------
-PROBABLE FAULTS DIAGNOSED:
-${faults}
+    const plantName = selectedPlant?.name || "Unspecified Plant";
+    const routeName = selectedRoute?.name || "Unspecified Route";
+    const assetName = selectedAsset?.name || "Unspecified Asset";
+    const componentName = selectedComponent?.name || "Unspecified Component";
 
-CORRECTIVE ACTIONS REQUIRED:
-${actions}
+    const tag = specs?.tag || specs?.tagNumber || specs?.tag_number || "TAG-UNSPECIFIED";
+    const primaryFault = d.probable_faults?.[0]?.fault_name || d.probable_faults?.[0]?.fault || "Undetermined Anomaly";
+    const severity = d.manager_summary?.severity || "Medium";
+    const primaryAction = d.immediate_actions?.[0]?.action || "Perform verification scan and contact engineer.";
 
-------------------------------------------------
-EXECUTIVE ANALYSIS BRIEF:
-Severity Level  : ${d.manager_summary.severity}
-Est. Downtime   : ${d.manager_summary.estimated_downtime}
-Repair Estimate : ${d.manager_summary.cost_estimate}
-Business Impact : ${d.manager_summary.business_impact}
-================================================`;
+    let dueDate = "Medium Priority (Within 1 Month)";
+    const sevLower = severity.toLowerCase();
+    if (sevLower === "critical") {
+      dueDate = "Immediate (Within 24 Hours)";
+    } else if (sevLower === "high") {
+      dueDate = "High Priority (Within 1 Week)";
+    } else if (sevLower === "medium") {
+      dueDate = "Medium Priority (Within 1 Month)";
+    } else if (sevLower === "low") {
+      dueDate = "Routine (Next Scheduled Shutdown)";
+    }
+
+    const timestamp = new Date().toLocaleString();
+
+    const cmmsText = `===============================================
+🔧 CMMS WORK ORDER REQUISITION - AUTOMATIC AI DISPATCH
+===============================================
+ASSET: ${plantName} > ${routeName} > ${assetName} > ${componentName}
+TAG: ${tag}
+ISSUE: ${primaryFault}
+SEVERITY LEVEL: ${severity}
+RECOMMENDED ACTION: ${primaryAction}
+DUE DATE: ${dueDate}
+GENERATION TIMESTAMP: ${timestamp}
+DISPATCHED BY: MotorMedic Pro AI
+===============================================`;
 
     navigator.clipboard.writeText(cmmsText);
     setIsCopied(true);
+    setToastMsg("Work order copied to clipboard! Ready to paste into SAP/Maximo.");
     setTimeout(() => setIsCopied(false), 3000);
+  };
+
+  // Export PDF Report using ReportGenerator module
+  const handleExportPDF = () => {
+    if (!diagnosticResult) return;
+
+    const selectedPlant = plants.find(p => p.id === selectedPlantId);
+    const selectedRoute = routesList.find(r => r.id === selectedRouteId);
+    const selectedAsset = assetsList.find(a => a.id === selectedAssetId);
+    const selectedComponent = componentsList.find(c => c.id === selectedComponentId);
+
+    const plantName = selectedPlant?.name || "Unspecified Plant";
+    const routeName = selectedRoute?.name || "Unspecified Route";
+    const assetName = selectedAsset?.name || "Unspecified Asset";
+    const componentName = selectedComponent?.name || "Unspecified Component";
+
+    generatePDFReport({
+      plantName,
+      routeName,
+      assetName,
+      componentName,
+      diagnosticResult,
+      category,
+      symptoms
+    });
+
+    setToastMsg("✓ PDF Report successfully generated and downloaded!");
+  };
+
+  // Confirm and Link an analysis run in Quick Mode to a database Component
+  const handleConfirmLinkAndSave = async () => {
+    if (!diagnosticResult?.db_id || !modalComponentId) return;
+
+    setIsLinking(true);
+    try {
+      const response = await fetch("/api/save-temporary-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysisId: diagnosticResult.db_id,
+          componentId: modalComponentId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to link asset and save.");
+      }
+
+      const resData = await response.json();
+      
+      // Update local diagnosticResult so it is marked permanent
+      setDiagnosticResult(prev => prev ? { ...prev, is_temporary: false } : null);
+      setToastMsg("✓ Analysis successfully linked to asset & saved permanently!");
+      showToast("Analysis successfully linked to asset & saved permanently!", "success");
+      setShowLinkModal(false);
+    } catch (err: any) {
+      console.error(err);
+      showToast("Failed to save analysis. Please try again.", "error");
+      setErrorMsg("Failed to save analysis. Please try again.");
+    } finally {
+      setIsLinking(false);
+    }
+  };
+
+  // Direct manual dispatch of critical email alert
+  const handleSendManualAlert = async () => {
+    if (!diagnosticResult) return;
+    setIsAlertSending(true);
+    setAlertSuccessMsg(null);
+
+    const selectedPlant = plants.find(p => p.id === selectedPlantId);
+    const selectedRoute = routesList.find(r => r.id === selectedRouteId);
+    const selectedAsset = assetsList.find(a => a.id === selectedAssetId);
+    const selectedComponent = componentsList.find(c => c.id === selectedComponentId);
+
+    const assetName = selectedAsset?.name 
+      ? `${selectedAsset.name} (${selectedComponent?.name || "Component"})`
+      : "Machinery Asset Unit";
+
+    const primaryFault = diagnosticResult.probable_faults?.[0]?.fault_name || 
+                         diagnosticResult.probable_faults?.[0]?.fault || 
+                         "Undetermined Fault Pattern";
+
+    const severity = diagnosticResult.manager_summary?.severity || "High";
+
+    try {
+      const res = await fetch("/api/send-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assetName,
+          faultName: primaryFault,
+          severity
+        })
+      });
+
+      if (res.ok) {
+        setAlertSuccessMsg("Alert notification dispatched successfully to shanedufrene1989@gmail.com!");
+        setToastMsg("✓ Critical Email Alert dispatched successfully!");
+        showToast("✓ Critical Email Alert dispatched successfully!", "success");
+      } else {
+        throw new Error("Failed to dispatch alert.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg("Failed to send critical email notification alert.");
+      showToast("Failed to send critical email notification alert.", "error");
+    } finally {
+      setIsAlertSending(false);
+    }
   };
 
   // Trigger Local Save
@@ -735,27 +987,59 @@ Business Impact : ${d.manager_summary.business_impact}
       uploadedFile?.name,
       uploadedFile?.type
     );
+    setToastMsg("✓ Report successfully saved to local web history!");
   };
 
   return (
-    <div className="space-y-6 pb-12">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+    <div className={`space-y-6 pb-12 transition-all duration-300 p-2 rounded-3xl ${
+      quickAnalysisMode 
+        ? "bg-amber-950/10 border border-amber-500/10 shadow-inner" 
+        : "bg-transparent border border-transparent"
+    }`}>
+      {/* Toast Notification Container */}
+      {toastMsg && (
+        <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2.5 bg-slate-900 border border-yellow-500 text-yellow-400 px-4 py-3 rounded-xl shadow-2xl animate-bounce">
+          <span className="text-xs font-bold font-mono">{toastMsg}</span>
+        </div>
+      )}
+
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-2 border-b border-slate-800">
         <div>
           <h2 className="text-xl font-bold text-white font-display">Machinery Fault Diagnosis</h2>
           <p className="text-xs text-slate-400">Provide observations, upload data telemetry, and get a reliability brief</p>
         </div>
-        <div className="flex items-center gap-2 bg-slate-900/80 p-1.5 rounded-xl border border-slate-800 shrink-0">
-          <span className="text-xs font-semibold text-slate-300 pl-1.5">Testing/QA Mode:</span>
-          <button
-            onClick={() => setTestingMode(!testingMode)}
-            className={`px-3 py-1 text-xs font-bold rounded-lg transition-all ${
-              testingMode 
-                ? "bg-amber-500 text-slate-950 font-extrabold shadow-md hover:bg-amber-400" 
-                : "bg-slate-800 text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            {testingMode ? "ON" : "OFF"}
-          </button>
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Quick Analysis Mode Toggle Switch */}
+          <label className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-xl cursor-pointer hover:border-amber-500/50 transition-all select-none shadow">
+            <input 
+              type="checkbox"
+              checked={quickAnalysisMode}
+              onChange={(e) => {
+                setQuickAnalysisMode(e.target.checked);
+                if (e.target.checked) {
+                  setErrorMsg("");
+                }
+              }}
+              className="rounded border-slate-700 bg-slate-950 text-amber-500 focus:ring-amber-500 h-4 w-4 cursor-pointer"
+            />
+            <span className="text-xs font-bold text-slate-200">
+              📊 Quick Analysis Mode <span className="text-[10px] text-amber-400 font-medium">(No DB Required)</span>
+            </span>
+          </label>
+
+          <div className="flex items-center gap-2 bg-slate-900/80 p-1.5 rounded-xl border border-slate-800 shrink-0 shadow">
+            <span className="text-xs font-semibold text-slate-300 pl-1.5">Testing/QA Mode:</span>
+            <button
+              onClick={() => setTestingMode(!testingMode)}
+              className={`px-3 py-1 text-xs font-bold rounded-lg transition-all ${
+                testingMode 
+                  ? "bg-amber-500 text-slate-950 font-extrabold shadow-md hover:bg-amber-400" 
+                  : "bg-slate-800 text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {testingMode ? "ON" : "OFF"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -783,7 +1067,11 @@ Business Impact : ${d.manager_summary.business_impact}
               Target Asset for Analysis
             </h3>
           </div>
-          {targetContext ? (
+          {quickAnalysisMode ? (
+            <span className="text-[10px] font-extrabold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+              ⚡ Quick Analysis Active
+            </span>
+          ) : targetContext ? (
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-semibold text-yellow-400 bg-yellow-400/10 px-2 py-0.5 rounded border border-yellow-400/20">
                 🔗 Assets Page Context Active
@@ -813,94 +1101,108 @@ Business Impact : ${d.manager_summary.business_impact}
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {/* Plant Dropdown */}
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">1. Select Plant</label>
-            <select
-              value={selectedPlantId}
-              disabled={!!targetContext}
-              onChange={(e) => {
-                setSelectedPlantId(e.target.value ? Number(e.target.value) : "");
-                setSelectedRouteId("");
-                setSelectedAssetId("");
-                setSelectedComponentId("");
-              }}
-              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
-            >
-              <option value="">-- Choose Plant --</option>
-              {plants.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+        {quickAnalysisMode ? (
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs space-y-2 text-amber-300">
+            <span className="font-bold flex items-center gap-1.5 text-amber-400">
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse"></span>
+              ⚡ Quick Analysis Mode (No Database Selection Required) Active
+            </span>
+            <p className="leading-relaxed">
+              Quick Analysis Mode is **ON**. You can upload a telemetry file or video inspection and click "Diagnose Machinery Fault" immediately without choosing any plant or asset targets. Results will be computed in real-time, but they will **NOT** be permanently saved under any database asset unless manually linked.
+            </p>
           </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Plant Dropdown */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">1. Select Plant</label>
+                <select
+                  value={selectedPlantId}
+                  disabled={!!targetContext}
+                  onChange={(e) => {
+                    setSelectedPlantId(e.target.value ? Number(e.target.value) : "");
+                    setSelectedRouteId("");
+                    setSelectedAssetId("");
+                    setSelectedComponentId("");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Plant --</option>
+                  {plants.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Route Dropdown */}
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">2. Select Route / Area</label>
-            <select
-              value={selectedRouteId}
-              disabled={!!targetContext || !selectedPlantId}
-              onChange={(e) => {
-                setSelectedRouteId(e.target.value ? Number(e.target.value) : "");
-                setSelectedAssetId("");
-                setSelectedComponentId("");
-              }}
-              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
-            >
-              <option value="">-- Choose Route --</option>
-              {routesList.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </div>
+              {/* Route Dropdown */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">2. Select Route / Area</label>
+                <select
+                  value={selectedRouteId}
+                  disabled={!!targetContext || !selectedPlantId}
+                  onChange={(e) => {
+                    setSelectedRouteId(e.target.value ? Number(e.target.value) : "");
+                    setSelectedAssetId("");
+                    setSelectedComponentId("");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Route --</option>
+                  {routesList.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Asset Dropdown */}
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">3. Select Asset</label>
-            <select
-              value={selectedAssetId}
-              disabled={!!targetContext || !selectedRouteId}
-              onChange={(e) => {
-                setSelectedAssetId(e.target.value ? Number(e.target.value) : "");
-                setSelectedComponentId("");
-              }}
-              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
-            >
-              <option value="">-- Choose Asset --</option>
-              {assetsList.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name} {a.tag_number ? `(${a.tag_number})` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
+              {/* Asset Dropdown */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">3. Select Asset</label>
+                <select
+                  value={selectedAssetId}
+                  disabled={!!targetContext || !selectedRouteId}
+                  onChange={(e) => {
+                    setSelectedAssetId(e.target.value ? Number(e.target.value) : "");
+                    setSelectedComponentId("");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Asset --</option>
+                  {assetsList.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} {a.tag_number ? `(${a.tag_number})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-          {/* Component Dropdown */}
-          <div className="flex flex-col gap-1">
-            <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">4. Select Component</label>
-            <select
-              value={selectedComponentId}
-              disabled={!!targetContext || !selectedAssetId}
-              onChange={(e) => {
-                setSelectedComponentId(e.target.value ? Number(e.target.value) : "");
-              }}
-              className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
-            >
-              <option value="">-- Choose Component --</option>
-              {componentsList.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} {c.type ? `(${c.type})` : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+              {/* Component Dropdown */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">4. Select Component</label>
+                <select
+                  value={selectedComponentId}
+                  disabled={!!targetContext || !selectedAssetId}
+                  onChange={(e) => {
+                    setSelectedComponentId(e.target.value ? Number(e.target.value) : "");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-850 focus:border-yellow-400 rounded-xl px-3 py-2.5 outline-none disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Component --</option>
+                  {componentsList.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {c.type ? `(${c.type})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
-        {!selectedComponentId && (
-          <p className="text-[11px] font-mono text-amber-400/80 bg-amber-500/5 border border-amber-500/10 px-3 py-2 rounded-xl">
-            ⚠️ Attention: Universal File Upload, Video Inspection, and the 'Diagnose Machinery Fault' button remain disabled until you select a Target Component. This guarantees context accuracy in the asset management database.
-          </p>
+            {!selectedComponentId && (
+              <p className="text-[11px] font-mono text-amber-400/80 bg-amber-500/5 border border-amber-500/10 px-3 py-2 rounded-xl">
+                ⚠️ Attention: Universal File Upload, Video Inspection, and the 'Diagnose Machinery Fault' button remain disabled until you select a Target Component. This guarantees context accuracy in the asset management database.
+              </p>
+            )}
+          </>
         )}
       </div>
 
@@ -1295,79 +1597,86 @@ Business Impact : ${d.manager_summary.business_impact}
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {/* Universal File upload */}
-              <div 
-                onClick={() => {
-                  if (selectedComponentId) {
-                    fileInputRef.current?.click();
-                  } else {
-                    setErrorMsg("Please select a Target Component at the top before uploading telemetry files.");
-                  }
-                }}
-                className={`border-2 border-dashed rounded-xl p-5 text-center transition-all flex flex-col items-center justify-center space-y-2 group ${
-                  selectedComponentId 
-                    ? "border-slate-800 hover:border-slate-700 bg-slate-950/40 cursor-pointer" 
-                    : "border-slate-900/60 bg-slate-950/10 cursor-not-allowed opacity-40"
-                }`}
-              >
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  accept=".csv,.txt,.json,.log,.xlsx,.xls,.png,.jpg,.jpeg,.webp"
-                  className="hidden"
-                  disabled={!selectedComponentId}
-                />
-                
-                {uploadedFile ? (
-                  <div className="w-full space-y-3" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center justify-between bg-slate-900 border border-emerald-500/30 rounded-xl p-2.5">
-                      <div className="flex items-center gap-2 max-w-[70%] text-left">
-                        <FileText className="w-5 h-5 text-emerald-400 shrink-0" />
-                        <div className="truncate text-xs">
-                          <p className="font-bold text-slate-200 truncate">{uploadedFile.name}</p>
-                          <p className="text-[10px] text-slate-400 uppercase">{uploadedFile.type} file loaded</p>
+              <div className="flex flex-col gap-1.5 w-full">
+                <div 
+                  onClick={() => {
+                    if (quickAnalysisMode || selectedComponentId) {
+                      fileInputRef.current?.click();
+                    } else {
+                      setErrorMsg("Please select a Target Component at the top before uploading telemetry files.");
+                    }
+                  }}
+                  className={`border-2 border-dashed rounded-xl p-5 text-center transition-all flex flex-col items-center justify-center space-y-2 group ${
+                    (quickAnalysisMode || selectedComponentId) 
+                      ? "border-slate-800 hover:border-slate-700 bg-slate-950/40 cursor-pointer" 
+                      : "border-slate-900/60 bg-slate-950/10 cursor-not-allowed opacity-40"
+                  }`}
+                >
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileChange}
+                    accept=".csv,.txt,.json,.log,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.pdf"
+                    className="hidden"
+                    disabled={!(quickAnalysisMode || selectedComponentId)}
+                  />
+                  
+                  {uploadedFile ? (
+                    <div className="w-full space-y-3" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-between bg-slate-900 border border-emerald-500/30 rounded-xl p-2.5">
+                        <div className="flex items-center gap-2 max-w-[70%] text-left">
+                          <FileText className="w-5 h-5 text-emerald-400 shrink-0" />
+                          <div className="truncate text-xs">
+                            <p className="font-bold text-slate-200 truncate">{uploadedFile.name}</p>
+                            <p className="text-[10px] text-slate-400 uppercase">{uploadedFile.type} file loaded</p>
+                          </div>
                         </div>
+                        <button
+                          onClick={() => setUploadedFile(null)}
+                          className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
-                      <button
-                        onClick={() => setUploadedFile(null)}
-                        className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {uploadedFile.type === "image" && (
+                        <div className="max-h-32 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
+                          <img 
+                            src={uploadedFile.data} 
+                            alt="Machinery Upload Preview" 
+                            className="max-h-32 mx-auto object-contain"
+                            referrerPolicy="no-referrer"
+                          />
+                        </div>
+                      )}
                     </div>
-                    {uploadedFile.type === "image" && (
-                      <div className="max-h-32 rounded-lg overflow-hidden border border-slate-800 bg-slate-950">
-                        <img 
-                          src={uploadedFile.data} 
-                          alt="Machinery Upload Preview" 
-                          className="max-h-32 mx-auto object-contain"
-                          referrerPolicy="no-referrer"
-                        />
+                  ) : (
+                    <>
+                      <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-yellow-400 transition-colors" />
+                      <div className="text-xs">
+                        <p className="font-semibold text-slate-300">Telemetry Data or Image</p>
+                        <p className="text-[10px] text-slate-500 mt-1">PNG, JPG, CSV, JSON, TXT, PDF</p>
                       </div>
-                    )}
-                  </div>
-                ) : (
-                  <>
-                    <UploadCloud className="w-8 h-8 text-slate-500 group-hover:text-yellow-400 transition-colors" />
-                    <div className="text-xs">
-                      <p className="font-semibold text-slate-300">Telemetry Data or Image</p>
-                      <p className="text-[10px] text-slate-500 mt-1">PNG, JPG, CSV, JSON, TXT</p>
-                    </div>
-                  </>
+                    </>
+                  )}
+                </div>
+                {uploadError && (
+                  <p className="text-[11px] text-red-500 font-semibold mt-1">
+                    {uploadError}
+                  </p>
                 )}
               </div>
 
               {/* Video Inspection upload */}
               <div 
                 onClick={() => {
-                  if (selectedComponentId) {
+                  if (quickAnalysisMode || selectedComponentId) {
                     videoInputRef.current?.click();
                   } else {
                     setErrorMsg("Please select a Target Component at the top before uploading inspection videos.");
                   }
                 }}
                 className={`border-2 border-dashed rounded-xl p-5 text-center transition-all flex flex-col items-center justify-center space-y-2 group ${
-                  selectedComponentId 
+                  (quickAnalysisMode || selectedComponentId) 
                     ? "border-slate-800 hover:border-slate-700 bg-slate-950/40 cursor-pointer" 
                     : "border-slate-900/60 bg-slate-950/10 cursor-not-allowed opacity-40"
                 }`}
@@ -1378,7 +1687,7 @@ Business Impact : ${d.manager_summary.business_impact}
                   onChange={handleVideoChange}
                   accept="video/mp4,video/quicktime,video/webm"
                   className="hidden"
-                  disabled={!selectedComponentId}
+                  disabled={!(quickAnalysisMode || selectedComponentId)}
                 />
 
                 {videoFile ? (
@@ -1433,20 +1742,23 @@ Business Impact : ${d.manager_summary.business_impact}
                   <p className="text-xs text-slate-400 italic animate-pulse">{loadingMessage}</p>
                 </div>
               </div>
-            ) : (
-              <button
-                onClick={triggerDiagnostics}
-                disabled={!selectedComponentId}
-                className={`w-full font-bold py-4 rounded-xl shadow-lg transition-all text-sm flex items-center justify-center gap-2 ${
-                  selectedComponentId 
-                    ? "bg-yellow-400 hover:bg-yellow-500 text-slate-950 cursor-pointer" 
-                    : "bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
-                }`}
-              >
-                <Wrench className="w-4 h-4" />
-                <span>DIAGNOSE MACHINERY FAULT</span>
-              </button>
-            )}
+            ) : (() => {
+              const isAnalyzeDisabled = (!uploadedFile && !videoFile) || (!quickAnalysisMode && !selectedComponentId);
+              return (
+                <button
+                  onClick={triggerDiagnostics}
+                  disabled={isAnalyzeDisabled}
+                  className={`w-full font-bold py-4 rounded-xl shadow-lg transition-all text-sm flex items-center justify-center gap-2 ${
+                    !isAnalyzeDisabled 
+                      ? "bg-yellow-400 hover:bg-yellow-500 text-slate-950 cursor-pointer" 
+                      : "bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
+                  }`}
+                >
+                  <Wrench className="w-4 h-4" />
+                  <span>DIAGNOSE MACHINERY FAULT</span>
+                </button>
+              );
+            })()}
           </div>
         </div>
 
@@ -1633,12 +1945,40 @@ Business Impact : ${d.manager_summary.business_impact}
       {/* Diagnosis Results Section */}
       {diagnosticResult && (
         <div id="resultsSection" className="space-y-6 pt-4 animate-fade-in">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800">
+          {alertSuccessMsg && (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-4 py-3 rounded-xl text-xs flex items-center gap-2 animate-fade-in">
+              <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>{alertSuccessMsg}</span>
+            </div>
+          )}
+
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-2 border-b border-slate-800">
             <div>
               <h3 className="text-lg font-bold text-white font-display">Diagnostic Results Brief</h3>
               <p className="text-xs text-slate-400">Review probability analysis, corrective guidelines, and economic summaries</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
+              {diagnosticResult.is_temporary && (
+                <div className="flex items-center gap-2 mr-2">
+                  <span className="text-[10px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 rounded-lg">
+                    ⚠️ Results not saved
+                  </span>
+                  <button
+                    onClick={() => {
+                      setModalPlantId("");
+                      setModalRouteId("");
+                      setModalAssetId("");
+                      setModalComponentId("");
+                      setShowLinkModal(true);
+                    }}
+                    className="px-3 py-1.5 bg-yellow-500 hover:bg-yellow-600 text-slate-950 font-extrabold text-xs rounded-lg transition-all shadow-md flex items-center gap-1"
+                  >
+                    <Wrench className="w-3.5 h-3.5" />
+                    <span>Link to Asset & Save</span>
+                  </button>
+                </div>
+              )}
+
               <button
                 onClick={handleSave}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-lg transition-all shadow"
@@ -1653,11 +1993,24 @@ Business Impact : ${d.manager_summary.business_impact}
                 <span>{isCopied ? "Copied!" : "Copy CMMS Work Order"}</span>
               </button>
               <button
-                onClick={() => console.log('Export to PDF clicked')}
+                onClick={handleExportPDF}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-rose-400 border border-slate-700 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow"
               >
                 <FileText className="w-3.5 h-3.5" />
                 <span>Export to PDF</span>
+              </button>
+
+              <button
+                onClick={handleSendManualAlert}
+                disabled={isAlertSending}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-red-400 border border-slate-700 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow disabled:opacity-50"
+              >
+                {isAlertSending ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Mail className="w-3.5 h-3.5" />
+                )}
+                <span>{isAlertSending ? "Sending..." : "Dispatch Email Alert"}</span>
               </button>
             </div>
           </div>
@@ -2095,6 +2448,141 @@ Business Impact : ${d.manager_summary.business_impact}
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* LINK TO ASSET & SAVE MODAL */}
+      {showLinkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-scale-up">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <h3 className="text-sm font-bold text-white font-display uppercase tracking-wider flex items-center gap-2">
+                <Wrench className="w-4 h-4 text-yellow-400" />
+                Link Analysis to Database Asset
+              </h3>
+              <button 
+                onClick={() => setShowLinkModal(false)}
+                className="text-slate-400 hover:text-white transition-colors text-sm font-bold p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Select which plant component you would like to permanently link this diagnostic analysis to in the system database. Once confirmed, this run will be marked as a permanent record.
+            </p>
+
+            <div className="space-y-4">
+              {/* Plant Select */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase">1. Plant Location</label>
+                <select
+                  value={modalPlantId}
+                  onChange={(e) => {
+                    setModalPlantId(e.target.value ? Number(e.target.value) : "");
+                    setModalRouteId("");
+                    setModalAssetId("");
+                    setModalComponentId("");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-800 rounded-xl px-3 py-2.5 outline-none focus:border-yellow-400"
+                >
+                  <option value="">-- Choose Plant --</option>
+                  {plants.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Route Select */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase">2. Route / Area</label>
+                <select
+                  value={modalRouteId}
+                  disabled={!modalPlantId}
+                  onChange={(e) => {
+                    setModalRouteId(e.target.value ? Number(e.target.value) : "");
+                    setModalAssetId("");
+                    setModalComponentId("");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-800 rounded-xl px-3 py-2.5 outline-none focus:border-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Route --</option>
+                  {modalRoutesList.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Asset Select */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase">3. Equipment Asset</label>
+                <select
+                  value={modalAssetId}
+                  disabled={!modalRouteId}
+                  onChange={(e) => {
+                    setModalAssetId(e.target.value ? Number(e.target.value) : "");
+                    setModalComponentId("");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-800 rounded-xl px-3 py-2.5 outline-none focus:border-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Asset --</option>
+                  {modalAssetsList.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Component Select */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-mono text-slate-500 uppercase">4. Component</label>
+                <select
+                  value={modalComponentId}
+                  disabled={!modalAssetId}
+                  onChange={(e) => {
+                    setModalComponentId(e.target.value ? Number(e.target.value) : "");
+                  }}
+                  className="w-full bg-slate-950 text-xs font-semibold text-slate-200 border border-slate-800 rounded-xl px-3 py-2.5 outline-none focus:border-yellow-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <option value="">-- Choose Component --</option>
+                  {modalComponentsList.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-3 border-t border-slate-850">
+              <button
+                type="button"
+                onClick={() => setShowLinkModal(false)}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmLinkAndSave}
+                disabled={!modalComponentId || isLinking}
+                className={`flex-1 py-2.5 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+                  modalComponentId && !isLinking
+                    ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-md cursor-pointer"
+                    : "bg-slate-800 text-slate-500 cursor-not-allowed opacity-50"
+                }`}
+              >
+                {isLinking ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Confirm Save</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

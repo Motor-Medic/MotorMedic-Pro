@@ -59,7 +59,11 @@ interface AnalysisRecord {
   diagnosis_result: any;
 }
 
-export default function Trends() {
+interface TrendsProps {
+  selectedCompanyId?: number;
+}
+
+export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
   // --- Cascading Dropdown States ---
   const [plants, setPlants] = useState<Plant[]>([]);
   const [routes, setRoutes] = useState<RouteArea[]>([]);
@@ -101,13 +105,15 @@ export default function Trends() {
     async function fetchPlants() {
       setLoadingPlants(true);
       try {
-        const res = await fetch("/api/plants");
+        const res = await fetch(`/api/plants?company_id=${selectedCompanyId}`);
         if (res.ok) {
           const data = await res.json();
           setPlants(data);
           // Auto select first plant if available
           if (data.length > 0) {
             setSelectedPlantId(data[0].id);
+          } else {
+            setSelectedPlantId("");
           }
         }
       } catch (err) {
@@ -117,7 +123,7 @@ export default function Trends() {
       }
     }
     fetchPlants();
-  }, []);
+  }, [selectedCompanyId]);
 
   // --- Load Routes when Plant changes ---
   useEffect(() => {

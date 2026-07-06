@@ -7,6 +7,7 @@ import ReportDetails from "./components/ReportDetails";
 import Trends from "./components/Trends";
 import SensorPlacementPlanner from "./components/SensorPlacementPlanner";
 import Assets from "./components/Assets";
+import OnboardingWizard from "./components/OnboardingWizard";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder
 } from "lucide-react";
@@ -25,6 +26,15 @@ export interface Notification {
 }
 
 export default function App() {
+  const [selectedCompanyId, setSelectedCompanyId] = useState<number>(() => {
+    const stored = localStorage.getItem("reliability_selected_company_id");
+    return stored ? parseInt(stored, 10) : 1; // Default to Allied Reliability
+  });
+
+  useEffect(() => {
+    localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
+  }, [selectedCompanyId]);
+
   const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets">("dashboard");
   const [reports, setReports] = useState<SavedReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<SavedReport | null>(null);
@@ -49,6 +59,43 @@ export default function App() {
   const [showCredsModal, setShowCredsModal] = useState<boolean>(false);
   const [tempApiKey, setTempApiKey] = useState<string>("");
   const [showKeyPassword, setShowKeyPassword] = useState<boolean>(false);
+
+  // Onboarding Wizard states
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
+  const [hasCheckedOnboarding, setHasCheckedOnboarding] = useState<boolean>(false);
+  const [hasSkippedOnboarding] = useState<boolean>(() => {
+    return localStorage.getItem("motor_medic_onboarding_skipped") === "true";
+  });
+
+  const checkOnboardingCount = async () => {
+    if (hasCheckedOnboarding || hasSkippedOnboarding) return;
+    try {
+      const res = await fetch(`/api/plants/count?company_id=${selectedCompanyId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.count === 0) {
+          setShowOnboarding(true);
+        }
+        setHasCheckedOnboarding(true);
+      }
+    } catch (err) {
+      console.error("Failed to fetch plants count for onboarding:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "dashboard" || activeTab === "assets") {
+      checkOnboardingCount();
+    }
+  }, [activeTab, selectedCompanyId]);
+
+  const handleOnboardingComplete = () => {
+    localStorage.setItem("motor_medic_onboarding_skipped", "false");
+    setShowOnboarding(false);
+    setActiveTab("dashboard");
+    // Trigger any reload or custom events needed to refresh components
+    window.location.reload();
+  };
 
   // Initialize/Load Notifications
   useEffect(() => {
@@ -748,6 +795,8 @@ export default function App() {
               reports={reports} 
               onSelectReport={(report) => setSelectedReport(report)} 
               onStartDiagnosis={handleStartDiagnosis}
+              selectedCompanyId={selectedCompanyId}
+              setSelectedCompanyId={setSelectedCompanyId}
             />
           ) : activeTab === "diagnose" ? (
             <Diagnose 
@@ -756,9 +805,10 @@ export default function App() {
               setIsSandbox={setIsSandbox} 
               targetContext={targetContext}
               onClearTargetContext={() => setTargetContext(null)}
+              selectedCompanyId={selectedCompanyId}
             />
           ) : activeTab === "trends" ? (
-            <Trends />
+            <Trends selectedCompanyId={selectedCompanyId} />
           ) : activeTab === "sensors" ? (
             <SensorPlacementPlanner isSandbox={isSandbox} setIsSandbox={setIsSandbox} />
           ) : (
@@ -855,6 +905,14 @@ export default function App() {
       
       {/* Mobile nav spacing */}
       <div className="h-16 lg:hidden shrink-0"></div>
+
+      {showOnboarding && (
+        <OnboardingWizard 
+          onClose={() => setShowOnboarding(false)} 
+          companyId={selectedCompanyId} 
+          onSetupComplete={handleOnboardingComplete} 
+        />
+      )}
 
     </div>
   );
