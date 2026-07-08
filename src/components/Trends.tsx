@@ -11,6 +11,42 @@ import {
 } from "recharts";
 import { motion, AnimatePresence } from "motion/react";
 
+// --- Error Boundary and Safe Formatting Helpers ---
+class ChartErrorBoundary extends React.Component<{ children: React.ReactNode; key?: string | number }, { hasError: boolean }> {
+  props: { children: React.ReactNode; key?: string | number };
+  state: { hasError: boolean };
+  constructor(props: { children: React.ReactNode; key?: string | number }) {
+    super(props);
+    this.props = props;
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("Chart Error Boundary caught an error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full w-full bg-slate-950/40 border border-red-500/10 rounded-xl p-4 text-center">
+          <AlertOctagon className="w-5 h-5 text-red-500 mb-1" />
+          <p className="text-red-400 text-xs font-semibold">Chart display error</p>
+          <p className="text-slate-500 text-[10px] mt-1">Unable to render this specific chart.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function safeToFixed(value: any, decimals: number = 4, fallback: string = "0.0000"): string {
+  if (value === null || value === undefined) return fallback;
+  const num = Number(value);
+  if (isNaN(num)) return fallback;
+  return num.toFixed(decimals);
+}
+
 // --- Types ---
 interface Plant {
   id: number;
@@ -61,9 +97,10 @@ interface AnalysisRecord {
 
 interface TrendsProps {
   selectedCompanyId?: number;
+  subscriptionPlan?: string;
 }
 
-export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
+export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibration_only" }: TrendsProps) {
   // --- Cascading Dropdown States ---
   const [plants, setPlants] = useState<Plant[]>([]);
   const [routes, setRoutes] = useState<RouteArea[]>([]);
@@ -85,6 +122,42 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
   const [timeRange, setTimeRange] = useState<string>("30D"); // "7D", "30D", "90D", "1Y", "ALL", "CUSTOM"
   const [customStartDate, setCustomStartDate] = useState("");
   const [customEndDate, setCustomEndDate] = useState("");
+
+  // --- Subscription Technology Filtering ---
+  const allowedTechKeys = useMemo(() => {
+    switch (subscriptionPlan) {
+      case 'vibration_only':
+        return ['vibration'];
+      case 'ir_only':
+        return ['infrared'];
+      case 'vibration_ir':
+        return ['vibration', 'infrared'];
+      case 'full_suite':
+      case 'custom':
+      default:
+        return ['vibration', 'infrared', 'ultrasound', 'mca', 'oil_analysis'];
+    }
+  }, [subscriptionPlan]);
+
+  const allTabs = useMemo(() => [
+    { id: "All", label: "All Technologies", key: "all" },
+    { id: "Vibration", label: "Vibration Analysis", key: "vibration" },
+    { id: "Thermal", label: "Infrared Thermography", key: "infrared" },
+    { id: "Ultrasound", label: "Ultrasound", key: "ultrasound" },
+    { id: "Electrical", label: "Motor Circuit (MCA)", key: "mca" },
+    { id: "Oil", label: "Oil Analysis", key: "oil_analysis" }
+  ], []);
+
+  const allowedTabs = useMemo(() => {
+    return allTabs.filter(tab => tab.key === "all" || allowedTechKeys.includes(tab.key));
+  }, [allowedTechKeys, allTabs]);
+
+  useEffect(() => {
+    const activeTabObj = allTabs.find(t => t.id === selectedTech);
+    if (activeTabObj && activeTabObj.key !== "all" && !allowedTechKeys.includes(activeTabObj.key)) {
+      setSelectedTech("All");
+    }
+  }, [allowedTechKeys, selectedTech, allTabs]);
 
   // --- Historical Trend State ---
   const [rawTrendData, setRawTrendData] = useState<AnalysisRecord[]>([]);
@@ -232,6 +305,10 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
         const res = await fetch(`/api/analysis-history/${selectedComponentId}?technology=${techQuery}&isComponent=true`);
         if (res.ok) {
           const data = await res.json();
+          console.log(`[Trends Debug] Successfully fetched trend history for component ${selectedComponentId}, tech ${techQuery}. Total records:`, data ? data.length : 0);
+          if (data && data.length > 0) {
+            console.log(`[Trends Debug] Sample record:`, data[0]);
+          }
           setRawTrendData(data);
         } else {
           setErrorTrends("Failed to load historical trend telemetry from diagnostic server.");
@@ -249,7 +326,7 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
 
   // --- Filtered Data by Time Range ---
   const filteredTrendData = useMemo(() => {
-    if (rawTrendData.length === 0) return [];
+    if (!rawTrendData || !Array.isArray(rawTrendData) || rawTrendData.length === 0) return [];
 
     const now = new Date();
     let thresholdDate = new Date(0); // Epoch
@@ -272,6 +349,7 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
     }
 
     return rawTrendData.filter(pt => {
+      if (!pt || !pt.measurement_date) return false;
       const d = new Date(pt.measurement_date);
       return d >= thresholdDate && d <= endThresholdDate;
     });
@@ -280,7 +358,9 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
   // --- Grouped Data by Metric Name for rendering individual charts ---
   const metricsData = useMemo(() => {
     const groups: Record<string, AnalysisRecord[]> = {};
-    filteredTrendData.forEach(pt => {
+    const trendDataArray = Array.isArray(filteredTrendData) ? filteredTrendData : [];
+    trendDataArray.forEach(pt => {
+      if (!pt) return;
       const metric = pt.data_point_name || "Unknown Parameter";
       if (!groups[metric]) {
         groups[metric] = [];
@@ -290,7 +370,13 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
 
     // Ensure they are sorted by date ascending for charts
     Object.keys(groups).forEach(key => {
-      groups[key].sort((a, b) => new Date(a.measurement_date).getTime() - new Date(b.measurement_date).getTime());
+      if (Array.isArray(groups[key])) {
+        groups[key].sort((a, b) => {
+          const timeA = a?.measurement_date ? new Date(a.measurement_date).getTime() : 0;
+          const timeB = b?.measurement_date ? new Date(b.measurement_date).getTime() : 0;
+          return timeA - timeB;
+        });
+      }
     });
 
     return groups;
@@ -438,9 +524,9 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                 className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400 transition-colors cursor-pointer appearance-none disabled:opacity-50"
               >
                 <option value="">-- Select Plant Location --</option>
-                {plants.map((p) => (
+                {Array.isArray(plants) ? plants.map((p) => (
                   <option key={p.id} value={p.id}>{p.name} {p.location ? `(${p.location})` : ""}</option>
-                ))}
+                )) : null}
               </select>
               <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -464,9 +550,9 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                 className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400 transition-colors cursor-pointer appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="">-- Select Route Area --</option>
-                {routes.map((r) => (
+                {Array.isArray(routes) ? routes.map((r) => (
                   <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
+                )) : null}
               </select>
               <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -489,9 +575,9 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                 className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400 transition-colors cursor-pointer appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="">-- Select Machinery Asset --</option>
-                {assets.map((a) => (
+                {Array.isArray(assets) ? assets.map((a) => (
                   <option key={a.id} value={a.id}>{a.name} {a.tag_number ? `[${a.tag_number}]` : ""}</option>
-                ))}
+                )) : null}
               </select>
               <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -513,9 +599,9 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                 className="w-full bg-slate-900/60 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-yellow-400 transition-colors cursor-pointer appearance-none disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="">-- Select Sub-Component --</option>
-                {components.map((c) => (
+                {Array.isArray(components) ? components.map((c) => (
                   <option key={c.id} value={c.id}>{c.name} ({c.type})</option>
-                ))}
+                )) : null}
               </select>
               <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -548,14 +634,7 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
             
             {/* Tech Tabs */}
             <div className="flex flex-wrap items-center gap-1.5">
-              {[
-                { id: "All", label: "All Technologies" },
-                { id: "Vibration", label: "Vibration Analysis" },
-                { id: "Thermal", label: "Infrared Thermography" },
-                { id: "Ultrasound", label: "Ultrasound" },
-                { id: "Electrical", label: "Motor Circuit (MCA)" },
-                { id: "Oil", label: "Oil Analysis" }
-              ].map((tab) => {
+              {allowedTabs.map((tab) => {
                 const isActive = selectedTech === tab.id;
                 return (
                   <button
@@ -679,13 +758,23 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
             <div className="space-y-10">
               
               {/* Separate technologies into organized visual groups */}
-              {Object.entries(techHeaders).map(([techKey, meta]) => {
+              {Object.entries(techHeaders).filter(([techKey]) => {
+                let key = "vibration";
+                if (techKey === "Vibration") key = "vibration";
+                else if (techKey === "Thermal") key = "infrared";
+                else if (techKey === "Ultrasound") key = "ultrasound";
+                else if (techKey === "Electrical") key = "mca";
+                else if (techKey === "Oil") key = "oil_analysis";
+                return allowedTechKeys.includes(key);
+              }).map(([techKey, meta]) => {
                 // Find if there is any metric matching this technology
                 // The metrics mapping:
                 const technologyMetrics = Object.keys(metricsData).filter(metricName => {
                   const pts = metricsData[metricName];
-                  if (pts.length === 0) return false;
-                  const tType = pts[0].technology_type || pts[0].diagnosis_result?.technology || "Vibration";
+                  if (!Array.isArray(pts) || pts.length === 0) return false;
+                  const firstPt = pts[0];
+                  if (!firstPt) return false;
+                  const tType = firstPt.technology_type || firstPt.diagnosis_result?.technology || "Vibration";
                   return tType === techKey;
                 });
 
@@ -709,209 +798,218 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                       {technologyMetrics.map((metricName) => {
                         const data = metricsData[metricName];
-                        if (data.length === 0) return null;
+                        if (!Array.isArray(data) || data.length === 0) return null;
 
-                        // Calculate statistical values
-                        const values = data.map(pt => pt.measurement_value);
-                        const minVal = Math.min(...values);
-                        const maxVal = Math.max(...values);
-                        const avgVal = values.reduce((sum, v) => sum + v, 0) / values.length;
-                        const latestPt = data[data.length - 1];
-                        const alarmThreshold = latestPt.diagnosis_result?.alarm_threshold || 1.0;
-                        const isLowerAlarm = latestPt.data_point_name?.includes("Resistance") || latestPt.data_point_name?.includes("Viscosity") || latestPt.data_point_name?.includes("Zinc") || latestPt.data_point_name?.includes("Phosphorus");
+                        // Calculate statistical values safely
+                        const values = Array.isArray(data) ? data.map(pt => pt?.measurement_value || 0) : [];
+                        const minVal = values.length > 0 ? Math.min(...values) : 0;
+                        const maxVal = values.length > 0 ? Math.max(...values) : 0;
+                        const avgVal = values.length > 0 ? (values.reduce((sum, v) => sum + v, 0) / values.length) : 0;
+                        const latestPt = Array.isArray(data) && data.length > 0 ? data[data.length - 1] : {} as any;
+                        const alarmThreshold = latestPt?.diagnosis_result?.alarm_threshold || 1.0;
+                        const isLowerAlarm = latestPt?.data_point_name?.includes("Resistance") || latestPt?.data_point_name?.includes("Viscosity") || latestPt?.data_point_name?.includes("Zinc") || latestPt?.data_point_name?.includes("Phosphorus");
                         
                         // Alarm assessment
                         let isCurrentlyAlarmed = false;
                         if (isLowerAlarm) {
-                          isCurrentlyAlarmed = latestPt.measurement_value <= alarmThreshold;
+                          isCurrentlyAlarmed = (latestPt?.measurement_value || 0) <= alarmThreshold;
                         } else {
-                          isCurrentlyAlarmed = latestPt.measurement_value >= alarmThreshold;
+                          isCurrentlyAlarmed = (latestPt?.measurement_value || 0) >= alarmThreshold;
                         }
 
-                        const units = latestPt.units;
+                        const units = latestPt?.units || "";
 
                         // Find other metrics in same tech group for comparison
                         const otherMetricsForComparison = technologyMetrics.filter(m => m !== metricName);
 
                         return (
-                          <div key={metricName} className="bg-slate-900/60 border border-slate-850 rounded-2xl p-5 space-y-4 flex flex-col justify-between hover:border-slate-800 transition-all duration-300 shadow-xl print:shadow-none print:border print:border-slate-900">
-                            
-                            {/* Card Header */}
-                            <div className="flex items-start justify-between gap-4 border-b border-slate-800/60 pb-3">
-                              <div>
-                                <h5 className="text-xs font-bold text-slate-200 uppercase tracking-wide leading-snug">
-                                  {metricName}
-                                </h5>
-                                <p className="text-[10px] text-slate-500 font-mono mt-0.5">
-                                  Units: {units} | Operating Speed: {latestPt.op_speed ? `${latestPt.op_speed.toFixed(0)} RPM` : "Variable"}
-                                </p>
+                          <ChartErrorBoundary key={metricName}>
+                            <div className="bg-slate-900/60 border border-slate-850 rounded-2xl p-5 space-y-4 flex flex-col justify-between hover:border-slate-800 transition-all duration-300 shadow-xl print:shadow-none print:border print:border-slate-900">
+                              
+                              {/* Card Header */}
+                              <div className="flex items-start justify-between gap-4 border-b border-slate-800/60 pb-3">
+                                <div>
+                                  <h5 className="text-xs font-bold text-slate-200 uppercase tracking-wide leading-snug">
+                                    {metricName}
+                                  </h5>
+                                  <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                    Units: {units} | Operating Speed: {latestPt?.op_speed !== undefined && latestPt?.op_speed !== null ? `${safeToFixed(latestPt.op_speed, 0)} RPM` : "Variable"}
+                                  </p>
+                                </div>
+
+                                {/* Alarm Indicator Badge */}
+                                <button
+                                  onClick={() => setSelectedAlarmDetails({
+                                    paramName: metricName,
+                                    details: latestPt?.diagnosis_result
+                                  })}
+                                  className={`px-2.5 py-1 rounded-lg border font-bold text-[9px] flex items-center gap-1.5 transition-all hover:scale-102 uppercase ${
+                                    isCurrentlyAlarmed 
+                                      ? "bg-red-500/10 border-red-500/30 text-red-400" 
+                                      : (latestPt?.measurement_value || 0) >= (alarmThreshold * 0.7) && !isLowerAlarm
+                                        ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                                        : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                                  }`}
+                                >
+                                  {isCurrentlyAlarmed ? (
+                                    <>
+                                      <AlertTriangle className="w-3 h-3 text-red-500 shrink-0" />
+                                      <span>Critical Alarm</span>
+                                    </>
+                                  ) : (latestPt?.measurement_value || 0) >= (alarmThreshold * 0.7) && !isLowerAlarm ? (
+                                    <>
+                                      <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
+                                      <span>Warning Status</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                                      <span>Normal status</span>
+                                    </>
+                                  )}
+                                </button>
                               </div>
 
-                              {/* Alarm Indicator Badge */}
-                              <button
-                                onClick={() => setSelectedAlarmDetails({
-                                  paramName: metricName,
-                                  details: latestPt.diagnosis_result
-                                })}
-                                className={`px-2.5 py-1 rounded-lg border font-bold text-[9px] flex items-center gap-1.5 transition-all hover:scale-102 uppercase ${
-                                  isCurrentlyAlarmed 
-                                    ? "bg-red-500/10 border-red-500/30 text-red-400" 
-                                    : latestPt.measurement_value >= (alarmThreshold * 0.7) && !isLowerAlarm
-                                      ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
-                                      : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-                                }`}
-                              >
-                                {isCurrentlyAlarmed ? (
-                                  <>
-                                    <AlertTriangle className="w-3 h-3 text-red-500 shrink-0" />
-                                    <span>Critical Alarm</span>
-                                  </>
-                                ) : latestPt.measurement_value >= (alarmThreshold * 0.7) && !isLowerAlarm ? (
-                                  <>
-                                    <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0" />
-                                    <span>Warning Status</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                                    <span>Normal status</span>
-                                  </>
-                                )}
-                              </button>
-                            </div>
-
-                            {/* Comparison Panel (Subtle inline options) */}
-                            <div className="flex flex-wrap items-center gap-4 text-[10px] text-slate-400 bg-slate-950/30 border border-slate-900/60 rounded-xl p-2 px-3 print:hidden">
-                              <label className="flex items-center gap-1.5 font-semibold cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={showBaseline[metricName] || false}
-                                  onChange={(e) => {
-                                    setShowBaseline(prev => ({ ...prev, [metricName]: e.target.checked }));
-                                  }}
-                                  className="rounded bg-slate-950 border-slate-800 text-yellow-400 focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5"
-                                />
-                                <span>Show baseline ({getBaselineValue(metricName)} {units})</span>
-                              </label>
-
-                              {otherMetricsForComparison.length > 0 && (
-                                <div className="flex items-center gap-1.5">
-                                  <Layers className="w-3 h-3 text-slate-500" />
-                                  <span>Compare with:</span>
-                                  <select
-                                    value={compareMetric[metricName] || ""}
+                              {/* Comparison Panel (Subtle inline options) */}
+                              <div className="flex flex-wrap items-center gap-4 text-[10px] text-slate-400 bg-slate-950/30 border border-slate-900/60 rounded-xl p-2 px-3 print:hidden">
+                                <label className="flex items-center gap-1.5 font-semibold cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={showBaseline[metricName] || false}
                                     onChange={(e) => {
-                                      setCompareMetric(prev => ({ ...prev, [metricName]: e.target.value }));
+                                      setShowBaseline(prev => ({ ...prev, [metricName]: e.target.checked }));
                                     }}
-                                    className="bg-slate-950 border border-slate-900 rounded-lg px-2 py-0.5 text-[9px] text-slate-300 focus:outline-none"
-                                  >
-                                    <option value="">-- None --</option>
-                                    {otherMetricsForComparison.map(m => (
-                                      <option key={m} value={m}>{m}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* ----------------- Recharts Trending Chart ----------------- */}
-                            <div className="h-64 w-full text-[9px] font-mono select-none">
-                              <ResponsiveContainer width="100%" height="100%">
-                                <LineChart 
-                                  data={data} 
-                                  margin={{ top: 15, right: 15, left: -25, bottom: 5 }}
-                                >
-                                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" strokeOpacity={0.6} />
-                                  <XAxis 
-                                    dataKey="measurement_date" 
-                                    stroke="#64748b" 
-                                    tickFormatter={(str) => {
-                                      const d = new Date(str);
-                                      return `${d.getMonth() + 1}/${d.getDate()}`;
-                                    }}
+                                    className="rounded bg-slate-950 border-slate-800 text-yellow-400 focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5"
                                   />
-                                  <YAxis stroke="#64748b" domain={['auto', 'auto']} />
-                                  <Tooltip 
-                                    contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#1e293b", borderRadius: "10px" }} 
-                                    labelStyle={{ color: "#f8fafc", fontWeight: "bold" }}
-                                    labelFormatter={(label) => new Date(label).toLocaleString()}
-                                  />
-                                  
-                                  <Legend verticalAlign="top" height={36} />
+                                  <span>Show baseline ({getBaselineValue(metricName)} {units})</span>
+                                </label>
 
-                                  {/* Alarm reference line */}
-                                  <ReferenceLine 
-                                    y={alarmThreshold} 
-                                    label={{ value: `Alarm (${alarmThreshold} ${units})`, fill: "#ef4444", position: "insideBottomRight", fontSize: 8, fontWeight: "bold" }} 
-                                    stroke="#ef4444" 
-                                    strokeDasharray="4 4" 
-                                    strokeWidth={1.5}
-                                  />
+                                {otherMetricsForComparison.length > 0 && (
+                                  <div className="flex items-center gap-1.5">
+                                    <Layers className="w-3 h-3 text-slate-500" />
+                                    <span>Compare with:</span>
+                                    <select
+                                      value={compareMetric[metricName] || ""}
+                                      onChange={(e) => {
+                                        setCompareMetric(prev => ({ ...prev, [metricName]: e.target.value }));
+                                      }}
+                                      className="bg-slate-950 border border-slate-900 rounded-lg px-2 py-0.5 text-[9px] text-slate-300 focus:outline-none"
+                                    >
+                                      <option value="">-- None --</option>
+                                      {otherMetricsForComparison.map(m => (
+                                        <option key={m} value={m}>{m}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                )}
+                              </div>
 
-                                  {/* Baseline comparison line if active */}
-                                  {showBaseline[metricName] && (
-                                    <ReferenceLine 
-                                      y={getBaselineValue(metricName)} 
-                                      label={{ value: `Baseline (${getBaselineValue(metricName)})`, fill: "#34d399", position: "insideTopRight", fontSize: 8 }} 
-                                      stroke="#34d399" 
-                                      strokeDasharray="3 3" 
-                                      strokeWidth={1.5}
-                                    />
-                                  )}
+                              {/* ----------------- Recharts Trending Chart ----------------- */}
+                              <div className="h-64 w-full text-[9px] font-mono select-none flex items-center justify-center bg-slate-950/20 rounded-xl border border-slate-900/40">
+                                {!data || data.length === 0 ? (
+                                  <div className="p-4 text-slate-400 text-center">No trend data available for this selection.</div>
+                                ) : (
+                                  <ChartErrorBoundary>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <LineChart 
+                                        data={data} 
+                                        margin={{ top: 15, right: 15, left: -25, bottom: 5 }}
+                                      >
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" strokeOpacity={0.6} />
+                                        <XAxis 
+                                          dataKey="measurement_date" 
+                                          stroke="#64748b" 
+                                          tickFormatter={(str) => {
+                                            if (!str) return "";
+                                            const d = new Date(str);
+                                            return `${d.getMonth() + 1}/${d.getDate()}`;
+                                          }}
+                                        />
+                                        <YAxis stroke="#64748b" domain={['auto', 'auto']} />
+                                        <Tooltip 
+                                          contentStyle={{ backgroundColor: "#0b0f19", borderColor: "#1e293b", borderRadius: "10px" }} 
+                                          labelStyle={{ color: "#f8fafc", fontWeight: "bold" }}
+                                          labelFormatter={(label) => label ? new Date(label).toLocaleString() : ""}
+                                        />
+                                        
+                                        <Legend verticalAlign="top" height={36} />
 
-                                  {/* Primary Value Line */}
-                                  <Line 
-                                    type="monotone" 
-                                    dataKey="measurement_value" 
-                                    stroke={isCurrentlyAlarmed ? "#f87171" : latestPt.measurement_value >= (alarmThreshold * 0.7) && !isLowerAlarm ? "#fbbf24" : "#22d3ee"} 
-                                    strokeWidth={2.5} 
-                                    name={metricName}
-                                    activeDot={{ r: 6 }} 
-                                  />
+                                        {/* Alarm reference line */}
+                                        <ReferenceLine 
+                                          y={alarmThreshold} 
+                                          label={{ value: `Alarm (${alarmThreshold} ${units})`, fill: "#ef4444", position: "insideBottomRight", fontSize: 8, fontWeight: "bold" }} 
+                                          stroke="#ef4444" 
+                                          strokeDasharray="4 4" 
+                                          strokeWidth={1.5}
+                                        />
 
-                                  {/* Comparison metric value line if selected */}
-                                  {compareMetric[metricName] && metricsData[compareMetric[metricName]] && (
-                                    <Line 
-                                      type="monotone" 
-                                      data={metricsData[compareMetric[metricName]]}
-                                      dataKey="measurement_value" 
-                                      stroke="#c084fc" 
-                                      strokeWidth={2} 
-                                      strokeDasharray="5 5"
-                                      name={compareMetric[metricName]}
-                                      activeDot={{ r: 5 }} 
-                                    />
-                                  )}
+                                        {/* Baseline comparison line if active */}
+                                        {showBaseline[metricName] && (
+                                          <ReferenceLine 
+                                            y={getBaselineValue(metricName)} 
+                                            label={{ value: `Baseline (${getBaselineValue(metricName)})`, fill: "#34d399", position: "insideTopRight", fontSize: 8 }} 
+                                            stroke="#34d399" 
+                                            strokeDasharray="3 3" 
+                                            strokeWidth={1.5}
+                                          />
+                                        )}
 
-                                  {/* Brush tool for pan/zoom capability */}
-                                  <Brush 
-                                    dataKey="measurement_date" 
-                                    height={20} 
-                                    stroke="#1e293b" 
-                                    fill="#090d16"
-                                    tickFormatter={(str) => {
-                                      const d = new Date(str);
-                                      return `${d.getMonth() + 1}/${d.getDate()}`;
-                                    }}
-                                    className="print:hidden"
-                                  />
-                                </LineChart>
-                              </ResponsiveContainer>
-                            </div>
+                                        {/* Primary Value Line */}
+                                        <Line 
+                                          type="monotone" 
+                                          dataKey="measurement_value" 
+                                          stroke={isCurrentlyAlarmed ? "#f87171" : (latestPt?.measurement_value || 0) >= (alarmThreshold * 0.7) && !isLowerAlarm ? "#fbbf24" : "#22d3ee"} 
+                                          strokeWidth={2.5} 
+                                          name={metricName}
+                                          activeDot={{ r: 6 }} 
+                                        />
+
+                                        {/* Comparison metric value line if selected */}
+                                        {compareMetric[metricName] && metricsData[compareMetric[metricName]] && (
+                                          <Line 
+                                            type="monotone" 
+                                            data={metricsData[compareMetric[metricName]]}
+                                            dataKey="measurement_value" 
+                                            stroke="#c084fc" 
+                                            strokeWidth={2} 
+                                            strokeDasharray="5 5"
+                                            name={compareMetric[metricName]}
+                                            activeDot={{ r: 5 }} 
+                                          />
+                                        )}
+
+                                        {/* Brush tool for pan/zoom capability */}
+                                        <Brush 
+                                          dataKey="measurement_date" 
+                                          height={20} 
+                                          stroke="#1e293b" 
+                                          fill="#090d16"
+                                          tickFormatter={(str) => {
+                                            if (!str) return "";
+                                            const d = new Date(str);
+                                            return `${d.getMonth() + 1}/${d.getDate()}`;
+                                          }}
+                                          className="print:hidden"
+                                        />
+                                      </LineChart>
+                                    </ResponsiveContainer>
+                                  </ChartErrorBoundary>
+                                )}
+                              </div>
 
                             {/* Min / Max / Average Status Stats */}
                             <div className="grid grid-cols-3 gap-2 bg-slate-950/40 border border-slate-900/60 rounded-xl p-2.5 text-center text-[10px]">
                               <div>
                                 <span className="text-slate-500 block uppercase font-mono text-[9px]">Minimum</span>
-                                <span className="font-bold text-slate-300 font-mono">{minVal.toFixed(4)} {units}</span>
+                                <span className="font-bold text-slate-300 font-mono">{safeToFixed(minVal, 4)} {units}</span>
                               </div>
                               <div className="border-x border-slate-900">
                                 <span className="text-slate-500 block uppercase font-mono text-[9px]">Average</span>
-                                <span className="font-bold text-slate-300 font-mono">{avgVal.toFixed(4)} {units}</span>
+                                <span className="font-bold text-slate-300 font-mono">{safeToFixed(avgVal, 4)} {units}</span>
                               </div>
                               <div>
                                 <span className="text-slate-500 block uppercase font-mono text-[9px]">Maximum</span>
-                                <span className="font-bold text-slate-100 font-mono">{maxVal.toFixed(4)} {units}</span>
+                                <span className="font-bold text-slate-100 font-mono">{safeToFixed(maxVal, 4)} {units}</span>
                               </div>
                             </div>
 
@@ -1011,7 +1109,7 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                                       </thead>
                                       <tbody className="divide-y divide-slate-900/60 text-slate-300">
                                         {(() => {
-                                          let records = [...data];
+                                          let records = Array.isArray(data) ? [...data] : [];
                                           // Apply Filter
                                           const txt = (tableFilters[metricName] || "").toLowerCase();
                                           if (txt) {
@@ -1050,7 +1148,7 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                                                 {row.measurement_value}
                                               </td>
                                               <td className="p-2 font-mono text-slate-500">{row.units}</td>
-                                              <td className="p-2 text-right text-slate-400 font-mono">{row.op_speed ? row.op_speed.toFixed(0) : "N/A"}</td>
+                                              <td className="p-2 text-right text-slate-400 font-mono">{row.op_speed !== undefined && row.op_speed !== null ? `${safeToFixed(row.op_speed, 0)}` : "N/A"}</td>
                                               <td className="p-2 text-center">
                                                 <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${
                                                   row.alarm_status 
@@ -1074,9 +1172,10 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                             </AnimatePresence>
 
                           </div>
-                        );
-                      })}
-                    </div>
+                        </ChartErrorBoundary>
+                      );
+                    })}
+                  </div>
 
                   </div>
                 );
@@ -1130,7 +1229,7 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                   <div>
                     <span className="text-[9px] font-semibold text-slate-500 block uppercase">Trigger Value</span>
                     <span className="font-bold text-red-400 font-mono text-xs">
-                      {selectedAlarmDetails.details?.current_value?.toFixed(4) || "N/A"}
+                      {selectedAlarmDetails.details?.current_value !== undefined && selectedAlarmDetails.details?.current_value !== null ? safeToFixed(selectedAlarmDetails.details.current_value, 4) : "N/A"}
                     </span>
                   </div>
                   <div>
@@ -1248,11 +1347,23 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                     Trend Metric Profiles
                   </h3>
                   
-                  {(Object.entries(metricsData) as [string, AnalysisRecord[]][]).map(([name, records]) => {
-                    if (records.length === 0) return null;
+                  {Array.isArray(Object.entries(metricsData)) && (Object.entries(metricsData) as [string, AnalysisRecord[]][]).filter(([_, records]) => {
+                    if (!Array.isArray(records) || records.length === 0) return false;
+                    const firstPt = records[0];
+                    if (!firstPt) return false;
+                    const rowTech = ((firstPt as any).technology_type || firstPt.diagnosis_result?.technology || "Vibration").toLowerCase();
+                    let rowKey = "vibration";
+                    if (rowTech.includes("vibration")) rowKey = "vibration";
+                    else if (rowTech.includes("thermal") || rowTech.includes("infrared")) rowKey = "infrared";
+                    else if (rowTech.includes("ultrasound")) rowKey = "ultrasound";
+                    else if (rowTech.includes("electrical") || rowTech.includes("mca")) rowKey = "mca";
+                    else if (rowTech.includes("oil")) rowKey = "oil_analysis";
+                    return allowedTechKeys.includes(rowKey);
+                  }).map(([name, records]) => {
+                    if (!Array.isArray(records) || records.length === 0) return null;
                     const latest = records[records.length - 1];
-                    const alarmVal = latest.diagnosis_result?.alarm_threshold || 1.0;
-                    const val = latest.measurement_value;
+                    const alarmVal = latest?.diagnosis_result?.alarm_threshold || 1.0;
+                    const val = latest?.measurement_value || 0;
                     const status = val >= alarmVal ? "ALARM" : "NORMAL";
 
                     return (
@@ -1265,23 +1376,29 @@ export default function Trends({ selectedCompanyId = 1 }: TrendsProps) {
                             STATUS: {status}
                           </span>
                           <div className="text-[10px] font-mono text-slate-500 space-y-0.5">
-                            <p>Current: {val.toFixed(4)} {latest.units}</p>
-                            <p>Alarm Limit: {alarmVal} {latest.units}</p>
-                            <p>Operating Speed: {latest.op_speed ? `${latest.op_speed.toFixed(0)} RPM` : "N/A"}</p>
+                            <p>Current: {safeToFixed(val, 4)} {latest?.units || ""}</p>
+                            <p>Alarm Limit: {alarmVal} {latest?.units || ""}</p>
+                            <p>Operating Speed: {latest && latest.op_speed !== undefined && latest.op_speed !== null ? `${safeToFixed(latest.op_speed, 0)} RPM` : "N/A"}</p>
                           </div>
                         </div>
 
                         {/* Miniature Sparkline chart for print output */}
-                        <div className="col-span-2 h-24">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={records}>
-                              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                              <XAxis dataKey="measurement_date" hide />
-                              <YAxis domain={['auto', 'auto']} hide />
-                              <ReferenceLine y={alarmVal} stroke="#ef4444" strokeDasharray="3 3" />
-                              <Line type="monotone" dataKey="measurement_value" stroke={status === "ALARM" ? "#ef4444" : "#0284c7"} strokeWidth={2} dot={false} />
-                            </LineChart>
-                          </ResponsiveContainer>
+                        <div className="col-span-2 h-24 flex items-center justify-center">
+                          {!records || records.length === 0 ? (
+                            <div className="p-4 text-gray-400 text-[10px]">No trend data available.</div>
+                          ) : (
+                            <ChartErrorBoundary>
+                              <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={records}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                                  <XAxis dataKey="measurement_date" hide />
+                                  <YAxis domain={['auto', 'auto']} hide />
+                                  <ReferenceLine y={alarmVal} stroke="#ef4444" strokeDasharray="3 3" />
+                                  <Line type="monotone" dataKey="measurement_value" stroke={status === "ALARM" ? "#ef4444" : "#0284c7"} strokeWidth={2} dot={false} />
+                                </LineChart>
+                              </ResponsiveContainer>
+                            </ChartErrorBoundary>
+                          )}
                         </div>
                       </div>
                     );

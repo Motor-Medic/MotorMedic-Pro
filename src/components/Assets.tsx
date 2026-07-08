@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Plant, RouteArea, Equipment, ComponentAsset, SavedReport } from "../types";
 import { 
   Folder, 
@@ -31,6 +31,8 @@ import {
   PlayCircle
 } from "lucide-react";
 import { useToast } from "./Toast";
+import BulkImportModal from "./BulkImportModal";
+import { Upload } from "lucide-react";
 
 interface AssetsProps {
   reports: SavedReport[];
@@ -44,6 +46,7 @@ interface AssetsProps {
   ) => void;
   selectedCompanyId?: number;
   setSelectedCompanyId?: (id: number) => void;
+  subscriptionPlan?: string;
 }
 
 export default function Assets({ 
@@ -51,9 +54,26 @@ export default function Assets({
   onSelectReport, 
   onStartDiagnosis,
   selectedCompanyId = 1,
-  setSelectedCompanyId = () => {}
+  setSelectedCompanyId = () => {},
+  subscriptionPlan = "vibration_only"
 }: AssetsProps) {
   const { showToast } = useToast();
+
+  // --- Subscription Technology Filtering ---
+  const allowedTechKeys = useMemo(() => {
+    switch (subscriptionPlan) {
+      case 'vibration_only':
+        return ['vibration'];
+      case 'ir_only':
+        return ['infrared'];
+      case 'vibration_ir':
+        return ['vibration', 'infrared'];
+      case 'full_suite':
+      case 'custom':
+      default:
+        return ['vibration', 'infrared', 'ultrasound', 'mca', 'oil_analysis'];
+    }
+  }, [subscriptionPlan]);
 
   // --- Core States ---
   const [plants, setPlants] = useState<Plant[]>([]);
@@ -89,6 +109,9 @@ export default function Assets({
 
   // Diagnosis History Tab State
   const [historyTab, setHistoryTab] = useState<"All" | "Vibration" | "Thermal" | "Oil" | "Electrical">("All");
+
+  // Bulk Import State
+  const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
 
   // --- CRUD Modal States ---
   const [modalType, setModalType] = useState<"create" | "edit" | "delete" | null>(null);
@@ -647,37 +670,47 @@ export default function Assets({
           </p>
         </div>
 
-        <button
-          onClick={() => openCreateModal("plant", null)}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-xs font-bold rounded-lg transition-all shadow"
-        >
-          <Plus className="w-4 h-4" />
-          Add Plant Facility
-        </button>
+        <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:w-auto shrink-0">
+          <button
+            onClick={() => setIsBulkImportOpen(true)}
+            className="inline-flex items-center justify-center gap-1.5 w-full sm:w-auto px-4 py-3 md:py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs sm:text-sm font-bold rounded-xl border border-slate-700 transition-all shadow min-h-[44px] cursor-pointer"
+          >
+            <Upload className="w-4 h-4 shrink-0 text-yellow-400" />
+            <span>Bulk Import</span>
+          </button>
+
+          <button
+            onClick={() => openCreateModal("plant", null)}
+            className="inline-flex items-center justify-center gap-1.5 w-full sm:w-auto px-4 py-3 md:py-2 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-xs sm:text-sm font-bold rounded-xl transition-all shadow min-h-[44px] cursor-pointer"
+          >
+            <Plus className="w-4 h-4 shrink-0" />
+            <span>Add Plant Facility</span>
+          </button>
+        </div>
       </div>
 
       {/* Search & Filters Card */}
       <div className="bg-slate-900/40 border border-slate-800/80 rounded-2xl p-4 space-y-3">
         <div className="flex flex-col md:flex-row gap-3">
           <div className="relative flex-1">
-            <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+            <Search className="absolute left-3.5 top-3.5 w-4 h-4 text-slate-500" />
             <input
               type="text"
               placeholder="Search assets by name, tag, model or serial number..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-slate-950 border border-slate-850 rounded-xl text-slate-200 text-xs focus:outline-none focus:border-yellow-400/50"
+              className="w-full pl-10 pr-4 py-3 md:py-2 bg-slate-950 border border-slate-850 rounded-xl text-slate-200 text-[16px] md:text-xs focus:outline-none focus:border-yellow-400/50 min-h-[44px]"
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-2 shrink-0">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 shrink-0 w-full md:w-auto">
             {/* Filter Status */}
-            <div className="flex items-center bg-slate-950 border border-slate-850 rounded-xl px-2.5">
+            <div className="flex items-center bg-slate-950 border border-slate-850 rounded-xl px-2.5 min-h-[44px]">
               <span className="text-[10px] text-slate-500 mr-1.5 hidden lg:inline">Status:</span>
               <select
                 value={filterStatus}
                 onChange={e => setFilterStatus(e.target.value)}
-                className="bg-transparent text-slate-300 text-xs focus:outline-none cursor-pointer py-2"
+                className="bg-transparent text-slate-300 text-[16px] md:text-xs focus:outline-none cursor-pointer py-2 w-full h-full"
               >
                 <option value="All">All Status</option>
                 <option value="Healthy">Healthy</option>
@@ -687,12 +720,12 @@ export default function Assets({
             </div>
 
             {/* Filter Criticality */}
-            <div className="flex items-center bg-slate-950 border border-slate-850 rounded-xl px-2.5">
+            <div className="flex items-center bg-slate-950 border border-slate-850 rounded-xl px-2.5 min-h-[44px]">
               <span className="text-[10px] text-slate-500 mr-1.5 hidden lg:inline">Crit:</span>
               <select
                 value={filterCriticality}
                 onChange={e => setFilterCriticality(e.target.value)}
-                className="bg-transparent text-slate-300 text-xs focus:outline-none cursor-pointer py-2"
+                className="bg-transparent text-slate-300 text-[16px] md:text-xs focus:outline-none cursor-pointer py-2 w-full h-full"
               >
                 <option value="All">All Criticality</option>
                 <option value="High">High</option>
@@ -702,12 +735,12 @@ export default function Assets({
             </div>
 
             {/* Filter Type */}
-            <div className="flex items-center bg-slate-950 border border-slate-850 rounded-xl px-2.5">
+            <div className="flex items-center bg-slate-950 border border-slate-850 rounded-xl px-2.5 min-h-[44px]">
               <span className="text-[10px] text-slate-500 mr-1.5 hidden lg:inline">Type:</span>
               <select
                 value={filterType}
                 onChange={e => setFilterType(e.target.value)}
-                className="bg-transparent text-slate-300 text-xs focus:outline-none cursor-pointer py-2"
+                className="bg-transparent text-slate-300 text-[16px] md:text-xs focus:outline-none cursor-pointer py-2 w-full h-full"
               >
                 <option value="All">All Types</option>
                 <option value="Motor">Motor</option>
@@ -788,9 +821,19 @@ export default function Assets({
                         selectedItem?.type === "plant" && selectedItem?.data.id === plant.id ? "bg-slate-900 border border-slate-800" : ""
                       }`}
                     >
-                      <div className="flex items-center gap-2">
-                        {isPlantExpanded ? <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />}
-                        <Folder className="w-4 h-4 text-yellow-500 shrink-0" />
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            togglePlant(plant.id);
+                          }}
+                          className="w-11 h-11 flex items-center justify-center -ml-2.5 rounded-full text-slate-400 hover:text-white hover:bg-slate-800/60 active:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                          title={isPlantExpanded ? "Collapse" : "Expand"}
+                        >
+                          {isPlantExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                        </button>
+                        <Folder className="w-4.5 h-4.5 text-yellow-500 shrink-0" />
                         <span className="font-bold text-slate-200">{plant.name}</span>
                         {plant.location && <span className="text-[10px] text-slate-500 hidden sm:inline">({plant.location})</span>}
                       </div>
@@ -847,7 +890,17 @@ export default function Assets({
                                   }`}
                                 >
                                   <div className="flex items-center gap-1.5">
-                                    {isRouteExpanded ? <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        toggleRoute(route.id);
+                                      }}
+                                      className="w-11 h-11 flex items-center justify-center -ml-2 rounded-full text-slate-500 hover:text-slate-300 hover:bg-slate-800/60 active:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                                      title={isRouteExpanded ? "Collapse" : "Expand"}
+                                    >
+                                      {isRouteExpanded ? <ChevronDown className="w-4.5 h-4.5" /> : <ChevronRight className="w-4.5 h-4.5" />}
+                                    </button>
                                     <Layers className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                                     <span className="text-slate-300 font-medium">{route.name}</span>
                                   </div>
@@ -910,7 +963,17 @@ export default function Assets({
                                             >
                                               <div className="flex items-center gap-1.5 min-w-0">
                                                 {/* Expand chevron */}
-                                                {isEquipExpanded ? <ChevronDown className="w-3 h-3 text-slate-600 shrink-0" /> : <ChevronRight className="w-3 h-3 text-slate-600 shrink-0" />}
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    toggleEquipment(equip.id);
+                                                  }}
+                                                  className="w-11 h-11 flex items-center justify-center -ml-2 rounded-full text-slate-600 hover:text-slate-400 hover:bg-slate-800/60 active:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                                                  title={isEquipExpanded ? "Collapse" : "Expand"}
+                                                >
+                                                  {isEquipExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                                </button>
                                                 
                                                 {/* Equipment status indicator */}
                                                 <span 
@@ -1350,11 +1413,12 @@ export default function Assets({
                         </thead>
                         <tbody className="divide-y divide-slate-900/60 font-medium">
                           {[
-                            { id: "Vibration", label: "Vibration Analysis", icon: "📊", status: "Healthy", color: "text-emerald-400" },
-                            { id: "Thermal", label: "Infrared Thermography", icon: "🌡️", status: "Healthy", color: "text-emerald-400" },
-                            { id: "Oil", label: "Oil Analysis", icon: "🧪", status: "Healthy", color: "text-emerald-400" },
-                            { id: "Electrical", label: "Motor Circuit Analysis (MCA)", icon: "⚡", status: "Healthy", color: "text-emerald-400" }
-                          ].map((tech) => (
+                            { id: "Vibration", label: "Vibration Analysis", icon: "📊", status: "Healthy", color: "text-emerald-400", key: "vibration" },
+                            { id: "Thermal", label: "Infrared Thermography", icon: "🌡️", status: "Healthy", color: "text-emerald-400", key: "infrared" },
+                            { id: "Ultrasound", label: "Ultrasound Acoustic Analysis", icon: "🔊", status: "Healthy", color: "text-emerald-400", key: "ultrasound" },
+                            { id: "Oil", label: "Oil Analysis", icon: "🧪", status: "Healthy", color: "text-emerald-400", key: "oil_analysis" },
+                            { id: "Electrical", label: "Motor Circuit Analysis (MCA)", icon: "⚡", status: "Healthy", color: "text-emerald-400", key: "mca" }
+                          ].filter(tech => allowedTechKeys.includes(tech.key)).map((tech) => (
                             <tr key={tech.id} className="hover:bg-slate-950/30 transition-colors">
                               <td className="py-2.5 px-3 flex items-center gap-2">
                                 <span className="text-base">{tech.icon}</span>
@@ -1814,6 +1878,22 @@ export default function Assets({
           </div>
         </div>
       )}
+
+      {/* BULK IMPORT MODAL */}
+      <BulkImportModal
+        isOpen={isBulkImportOpen}
+        onClose={() => setIsBulkImportOpen(false)}
+        selectedCompanyId={selectedCompanyId}
+        onImportComplete={() => {
+          setIsBulkImportOpen(false);
+          fetchPlants();
+          setRoutes({});
+          setEquipment({});
+          setComponents({});
+          setCollectionPoints({});
+          showToast("Bulk hierarchy import completed successfully!", "success");
+        }}
+      />
     </div>
   );
 }

@@ -8,8 +8,11 @@ import Trends from "./components/Trends";
 import SensorPlacementPlanner from "./components/SensorPlacementPlanner";
 import Assets from "./components/Assets";
 import OnboardingWizard from "./components/OnboardingWizard";
+import Login, { UserSession } from "./components/Login";
+import AdminPanel from "./components/AdminPanel";
+import LegalDocuments from "./components/LegalDocuments";
 import { 
-  Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder
+  Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings
 } from "lucide-react";
 
 const STORAGE_KEY = "reliability_reports_v6";
@@ -26,20 +29,55 @@ export interface Notification {
 }
 
 export default function App() {
+  const [user, setUser] = useState<UserSession | null>(() => {
+    const stored = localStorage.getItem("motormedic_user_session");
+    if (stored) {
+      try { return JSON.parse(stored); } catch (e) { return null; }
+    }
+    return null;
+  });
+
   const [selectedCompanyId, setSelectedCompanyId] = useState<number>(() => {
     const stored = localStorage.getItem("reliability_selected_company_id");
     return stored ? parseInt(stored, 10) : 1; // Default to Allied Reliability
   });
 
   useEffect(() => {
+    if (user) {
+      setSelectedCompanyId(user.company_id);
+      localStorage.setItem("motormedic_user_session", JSON.stringify(user));
+    } else {
+      localStorage.removeItem("motormedic_user_session");
+    }
+  }, [user]);
+
+  useEffect(() => {
     localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin">("dashboard");
+  const [showLegalDoc, setShowLegalDoc] = useState<"terms" | "privacy" | null>(null);
+  const [companies, setCompanies] = useState<any[]>([]);
+
+  const fetchCompanies = () => {
+    fetch("/api/companies")
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setCompanies(data);
+        }
+      })
+      .catch(err => console.error("Failed to load companies:", err));
+  };
+
+  useEffect(() => {
+    fetchCompanies();
+  }, [selectedCompanyId]);
   const [reports, setReports] = useState<SavedReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<SavedReport | null>(null);
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
   const [isSandbox, setIsSandbox] = useState<boolean>(false);
+  const [isHamburgerOpen, setIsHamburgerOpen] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
   const [targetContext, setTargetContext] = useState<{
@@ -549,6 +587,14 @@ export default function App() {
 
   const systemHealth = calculateSystemHealth();
 
+  if (showLegalDoc) {
+    return <LegalDocuments initialTab={showLegalDoc} onClose={() => setShowLegalDoc(null)} />;
+  }
+
+  if (!user) {
+    return <Login onLoginSuccess={(u) => setUser(u)} onShowLegal={(tab) => setShowLegalDoc(tab)} />;
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-[#080c14] text-slate-100">
       {/* Dynamic Background Noise/Glow effect */}
@@ -559,6 +605,15 @@ export default function App() {
       <header className="sticky top-0 z-40 bg-[#0c1220]/95 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
+            {/* Hamburger Menu Button */}
+            <button
+              onClick={() => setIsHamburgerOpen(!isHamburgerOpen)}
+              className="lg:hidden p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white active:bg-slate-800 transition-colors cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center shrink-0"
+              aria-label="Toggle navigation menu"
+            >
+              {isHamburgerOpen ? <X className="w-5 h-5 text-yellow-400" /> : <Menu className="w-5 h-5" />}
+            </button>
+
             <div className="p-2.5 bg-yellow-400/10 border border-yellow-400/20 rounded-xl text-yellow-400">
               <Activity className="w-5 h-5" />
             </div>
@@ -662,10 +717,20 @@ export default function App() {
               )}
             </div>
 
-            <div className="hidden md:block text-right text-[10px] text-slate-400">
-              <p className="font-semibold text-slate-300">CAT IV Reliability Workspace</p>
-              <p className="font-mono">UTC OPERATOR</p>
+            <div className="hidden sm:block text-right text-[10px] text-slate-400">
+              <p className="font-semibold text-slate-300">User: <span className="text-emerald-400 font-bold font-mono">{user?.username}</span></p>
+              <p className="font-mono text-slate-500 uppercase">{user?.role} Access</p>
             </div>
+
+            <button
+              onClick={() => setUser(null)}
+              className="p-2.5 rounded-xl bg-red-950/20 hover:bg-red-950/40 border border-red-500/20 hover:border-red-500/40 text-red-400 hover:text-red-300 transition-all duration-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
+              title="Sign Out"
+              id="signOutButton"
+            >
+              <LogOut className="w-4.5 h-4.5" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
           </div>
         </div>
       </header>
@@ -765,7 +830,41 @@ export default function App() {
             <span>Diagnosis Logs</span>
           </button>
 
-          <div className="pt-6 border-t border-slate-900 mt-6">
+          <button
+            onClick={() => {
+              setActiveTab("admin");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "admin" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+            id="sidebar-admin-btn"
+          >
+            <Settings className="w-4.5 h-4.5" />
+            <span>Tenant Settings</span>
+          </button>
+
+          <div className="pt-4 border-t border-slate-900 mt-4 space-y-2">
+            <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-3">Legal & Policy</p>
+            <div className="flex flex-col gap-1.5 pl-3 text-[11px] text-slate-400">
+              <button
+                onClick={() => setShowLegalDoc("terms")}
+                className="hover:text-yellow-400 text-left transition-colors cursor-pointer bg-transparent border-none p-0 outline-none"
+              >
+                Terms of Service
+              </button>
+              <button
+                onClick={() => setShowLegalDoc("privacy")}
+                className="hover:text-yellow-400 text-left transition-colors cursor-pointer bg-transparent border-none p-0 outline-none"
+              >
+                Privacy Policy
+              </button>
+            </div>
+          </div>
+
+          <div className="pt-6 border-t border-slate-900 mt-4">
             <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-4 text-xs space-y-2">
               <span className="font-bold text-slate-300">Integrations active:</span>
               <p className="text-[10px] text-slate-400 leading-normal">
@@ -785,10 +884,24 @@ export default function App() {
             />
           ) : activeTab === "dashboard" ? (
             <Dashboard
-              reports={reports}
-              systemHealth={systemHealth}
-              onNavigate={(tab) => setActiveTab(tab as any)}
+              companyId={selectedCompanyId}
+              onNavigate={(tab) => {
+                setActiveTab(tab as any);
+                setSelectedReport(null);
+              }}
               onSelectReport={(report) => setSelectedReport(report)}
+              onStartQuickAnalysis={() => {
+                setTargetContext({
+                  plantId: null,
+                  routeId: null,
+                  assetId: null,
+                  componentId: null,
+                  technologyType: null,
+                  quickAnalysisMode: true
+                });
+                setActiveTab("diagnose");
+              }}
+              onAddAsset={() => setShowOnboarding(true)}
             />
           ) : activeTab === "assets" ? (
             <Assets 
@@ -797,6 +910,7 @@ export default function App() {
               onStartDiagnosis={handleStartDiagnosis}
               selectedCompanyId={selectedCompanyId}
               setSelectedCompanyId={setSelectedCompanyId}
+              subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
             />
           ) : activeTab === "diagnose" ? (
             <Diagnose 
@@ -806,9 +920,19 @@ export default function App() {
               targetContext={targetContext}
               onClearTargetContext={() => setTargetContext(null)}
               selectedCompanyId={selectedCompanyId}
+              subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
             />
           ) : activeTab === "trends" ? (
-            <Trends selectedCompanyId={selectedCompanyId} />
+            <Trends 
+              selectedCompanyId={selectedCompanyId} 
+              subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
+            />
+          ) : activeTab === "admin" ? (
+            <AdminPanel
+              companies={companies}
+              onSubscriptionChange={fetchCompanies}
+              selectedCompanyId={selectedCompanyId}
+            />
           ) : activeTab === "sensors" ? (
             <SensorPlacementPlanner isSandbox={isSandbox} setIsSandbox={setIsSandbox} />
           ) : (
@@ -905,6 +1029,179 @@ export default function App() {
       
       {/* Mobile nav spacing */}
       <div className="h-16 lg:hidden shrink-0"></div>
+
+      {/* Responsive Slide-out Drawer Menu (Hamburger) */}
+      {isHamburgerOpen && (
+        <div className="lg:hidden fixed inset-0 z-50 flex">
+          {/* Backdrop Overlay */}
+          <div 
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity"
+            onClick={() => setIsHamburgerOpen(false)}
+          />
+          
+          {/* Drawer Panel */}
+          <div className="relative flex flex-col w-72 max-w-[80vw] h-full bg-[#0d1323] border-r border-slate-800/85 p-6 space-y-6 shadow-2xl overflow-y-auto z-10 transition-transform">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Activity className="w-5 h-5 text-yellow-400" />
+                <span className="font-bold text-white tracking-tight">MotorMedic Pro</span>
+              </div>
+              <button 
+                onClick={() => setIsHamburgerOpen(false)}
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5 flex-1">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2 pb-1">Primary Modules</p>
+              
+              <button
+                onClick={() => {
+                  setActiveTab("dashboard");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "dashboard" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+              >
+                <Database className="w-5 h-5 shrink-0" />
+                <span>Health Dashboard</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("assets");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "assets" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+              >
+                <Folder className="w-5 h-5 shrink-0" />
+                <span>Equipment DB</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("diagnose");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "diagnose" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+              >
+                <Wrench className="w-5 h-5 shrink-0" />
+                <span>Run Diagnostics</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("sensors");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "sensors" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+              >
+                <Compass className="w-5 h-5 shrink-0" />
+                <span>Mounting Planner</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("trends");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "trends" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+              >
+                <LineChart className="w-5 h-5 shrink-0" />
+                <span>Trend Analyzer</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("history");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "history" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+              >
+                <Clock className="w-5 h-5 shrink-0" />
+                <span>Diagnosis Logs</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("admin");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "admin" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+                id="drawer-admin-btn"
+              >
+                <Settings className="w-5 h-5 shrink-0" />
+                <span>Tenant Settings</span>
+              </button>
+            </div>
+
+            <div className="pt-4 border-t border-slate-800 space-y-2">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2">Legal & Policy</p>
+              <div className="flex flex-col gap-2 pl-2 text-xs text-slate-300">
+                <button
+                  onClick={() => {
+                    setShowLegalDoc("terms");
+                    setIsHamburgerOpen(false);
+                  }}
+                  className="hover:text-yellow-400 text-left transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
+                >
+                  Terms of Service
+                </button>
+                <button
+                  onClick={() => {
+                    setShowLegalDoc("privacy");
+                    setIsHamburgerOpen(false);
+                  }}
+                  className="hover:text-yellow-400 text-left transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
+                >
+                  Privacy Policy
+                </button>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-800 text-[10px] text-slate-500 font-mono space-y-1">
+              <p>User: <span className="text-emerald-400 font-bold">{user?.username}</span></p>
+              <p>Role: {user?.role.toUpperCase()}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showOnboarding && (
         <OnboardingWizard 

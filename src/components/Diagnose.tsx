@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { DiagnosticResponse } from "../types";
 import { 
   Zap, Droplet, Wrench, AlertTriangle, FileText, UploadCloud, Trash2, 
@@ -17,9 +17,11 @@ interface DiagnoseProps {
     assetId: number | null;
     componentId: number | null;
     technologyType: string | null;
+    quickAnalysisMode?: boolean;
   } | null;
   onClearTargetContext?: () => void;
   selectedCompanyId?: number;
+  subscriptionPlan?: string;
 }
 
 const techMap: Record<string, string> = {
@@ -35,7 +37,8 @@ export default function Diagnose({
   setIsSandbox,
   targetContext,
   onClearTargetContext,
-  selectedCompanyId = 1
+  selectedCompanyId = 1,
+  subscriptionPlan = "vibration_only"
 }: DiagnoseProps) {
   const { showToast } = useToast();
   
@@ -162,6 +165,9 @@ export default function Diagnose({
         const rawTech = targetContext.technologyType;
         const mappedTech = techMap[rawTech] || rawTech;
         setSelectedTech(mappedTech);
+      }
+      if (targetContext.quickAnalysisMode) {
+        setQuickAnalysisMode(true);
       }
     }
   }, [targetContext]);
@@ -318,8 +324,57 @@ export default function Diagnose({
   const [isFeedbackSubmitting, setIsFeedbackSubmitting] = useState<boolean>(false);
   const [feedbackError, setFeedbackError] = useState<string>("");
 
+  // Correction workflow form states
+  const [actualFaultType, setActualFaultType] = useState<string>("Unbalance");
+  const [actualDetails, setActualDetails] = useState<string>("");
+  const [actualSeverity, setActualSeverity] = useState<string>("Medium");
+
   // 1. Condition Monitoring Technology Selector
   const [selectedTech, setSelectedTech] = useState<string>("");
+
+  // --- Subscription Technology Filtering ---
+  const allowedTechKeys = useMemo(() => {
+    switch (subscriptionPlan) {
+      case 'vibration_only':
+        return ['vibration'];
+      case 'ir_only':
+        return ['infrared'];
+      case 'vibration_ir':
+        return ['vibration', 'infrared'];
+      case 'full_suite':
+      case 'custom':
+      default:
+        return ['vibration', 'infrared', 'ultrasound', 'mca', 'oil_analysis'];
+    }
+  }, [subscriptionPlan]);
+
+  const allTechs = useMemo(() => [
+    { id: "Vibration Analysis", label: "Vibration", icon: "📊", key: "vibration" },
+    { id: "Infrared Thermography", label: "Infrared / Thermal", icon: "🌡️", key: "infrared" },
+    { id: "Ultrasonic Testing", label: "Ultrasonic / AE", icon: "🔊", key: "ultrasound" },
+    { id: "Motor Circuit Analysis (MCA)", label: "Motor Circuit / MCA", icon: "⚡", key: "mca" },
+    { id: "Oil Analysis", label: "Oil Tribology", icon: "🧪", key: "oil_analysis" },
+    { id: "Multi-Modal", label: "Multi-Modal Fusion", icon: "🌀", key: "multi_modal" }
+  ], []);
+
+  const allowedTechs = useMemo(() => {
+    return allTechs.filter(tech => {
+      if (tech.key === "multi_modal") {
+        return allowedTechKeys.length >= 2;
+      }
+      return allowedTechKeys.includes(tech.key);
+    });
+  }, [allowedTechKeys, allTechs]);
+
+  useEffect(() => {
+    if (selectedTech && !allowedTechs.some(t => t.id === selectedTech)) {
+      if (allowedTechs.length > 0) {
+        setSelectedTech(allowedTechs[0].id);
+      } else {
+        setSelectedTech("");
+      }
+    }
+  }, [allowedTechs, selectedTech]);
 
   // 2. Baseline Comparison state
   const [baselineMode, setBaselineMode] = useState<"text" | "file">("text");
@@ -681,11 +736,13 @@ export default function Diagnose({
 
     // Dynamic rotation of loading statements
     const messages = [
-      "Interrogating machine thermal signatures...",
-      "Correlating base RPM against dynamic frequency bands...",
-      "Extracting physical fault probabilities using Gemini AI...",
-      "Analyzing mechanical stress components and LOTO prerequisites...",
-      "Drafting reliability report and structural business brief...",
+      "Consulting multiple AI models and debating findings...",
+      "Agent A (Gemini) evaluating bearing & vibration frequency bands...",
+      "Agent B (Groq Llama) assessing structural rotor dynamics & resonance...",
+      "Agent C (DeepSeek) conducting failure modes & effects analysis...",
+      "Constructing RAG context and loading historical machine trends...",
+      "Moderating agent disputes and seeking diagnostic consensus...",
+      "Finalizing consensus-driven diagnostics report..."
     ];
 
     let msgIdx = 0;
@@ -778,23 +835,25 @@ export default function Diagnose({
   };
 
   // Submit verification feedback to Neon database ML log
-  const handleSubmitFeedback = async (wasCorrect: boolean, correctedValue?: string) => {
-    if (!diagnosticResult?.db_id) {
-      setFeedbackError("No database tracking ID associated with this analysis. Feedback cannot be saved.");
-      return;
-    }
-
+  const handleSubmitFeedback = async (
+    wasCorrect: boolean,
+    correctedFaultType?: string,
+    correctedDetails?: string,
+    correctedSeverity?: string
+  ) => {
     setIsFeedbackSubmitting(true);
     setFeedbackError("");
 
     try {
-      const response = await fetch("/api/feedback", {
+      const response = await fetch("/api/analysis/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: diagnosticResult.db_id,
-          was_correct: wasCorrect,
-          corrected_diagnosis: correctedValue || null
+          analysis_id: diagnosticResult?.db_id || null,
+          is_correct: wasCorrect,
+          actual_fault_type: wasCorrect ? null : (correctedFaultType || null),
+          actual_details: wasCorrect ? null : (correctedDetails || null),
+          actual_severity: wasCorrect ? null : (correctedSeverity || null)
         })
       });
 
@@ -805,9 +864,18 @@ export default function Diagnose({
 
       setFeedbackSubmitted(true);
       setFeedbackStatus(wasCorrect ? "correct" : "incorrect");
+
+      if (wasCorrect) {
+        showToast("Feedback saved. Thank you!", "success");
+        setToastMsg("Feedback saved. Thank you!");
+      } else {
+        showToast("Correction saved. AI will learn from this!", "success");
+        setToastMsg("Correction saved. AI will learn from this!");
+      }
     } catch (err: any) {
       console.error(err);
       setFeedbackError(err.message || "Failed to submit verification feedback to the server.");
+      showToast("Error saving feedback.", "error");
     } finally {
       setIsFeedbackSubmitting(false);
     }
@@ -1229,14 +1297,7 @@ DISPATCHED BY: MotorMedic Pro AI
         </div>
         
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 pt-1">
-          {[
-            { id: "Vibration Analysis", label: "Vibration", icon: "📊" },
-            { id: "Infrared Thermography", label: "Infrared / Thermal", icon: "🌡️" },
-            { id: "Ultrasonic Testing", label: "Ultrasonic / AE", icon: "🔊" },
-            { id: "Motor Circuit Analysis (MCA)", label: "Motor Circuit / MCA", icon: "⚡" },
-            { id: "Oil Analysis", label: "Oil Tribology", icon: "🧪" },
-            { id: "Multi-Modal", label: "Multi-Modal Fusion", icon: "🌀" }
-          ].map((tech) => {
+          {allowedTechs.map((tech) => {
             const isSelected = selectedTech === tech.id;
             return (
               <button
@@ -2015,115 +2076,163 @@ DISPATCHED BY: MotorMedic Pro AI
             </div>
           </div>
 
-          {/* TESTING / QA VERIFICATION & MACHINE LEARNING FEEDBACK CARD */}
-          {/* UNCONDITIONAL RENDER (Simplification as requested: removed testingMode check temporarily for debug) */}
-          <div className="bg-amber-500/10 border border-dashed border-amber-500/30 rounded-2xl p-5 space-y-4 animate-fade-in">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-amber-500/20">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-amber-500/20 text-amber-400 rounded-lg text-xs font-bold font-mono">QA TESTING MODE</span>
+          {/* AI Correction and Feedback Loop */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4 shadow-xl" id="feedback-section">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-6.5 w-6.5 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
+                  <Zap className="w-4 h-4 animate-pulse" />
+                </span>
                 <div>
-                  <h4 className="text-sm font-bold text-white uppercase tracking-wider">Diagnostic Verification Panel</h4>
-                  <p className="text-[10px] text-amber-400 font-mono">Active Session ML Loop • Record ID: {diagnosticResult.db_id || "Staged Offline"}</p>
+                  <h4 className="text-sm font-bold text-white uppercase tracking-wider">AI Correction & Feedback Loop</h4>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    Consensus ID: {diagnosticResult.db_id || "Staged Session (Local)"}
+                  </p>
                 </div>
               </div>
-              {diagnosticResult.db_id ? (
-                <span className="text-[9px] font-bold uppercase text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
-                  ⚡ Database Bound
-                </span>
-              ) : (
-                <span className="text-[9px] font-bold uppercase text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-md">
-                  ⚠️ Offline Sandbox
-                </span>
-              )}
+              <span className="text-[9px] font-mono uppercase tracking-wider font-bold text-slate-500 bg-slate-950 px-2.5 py-1 rounded-md border border-slate-800/60">
+                Machine Learning Loop
+              </span>
             </div>
 
             {!feedbackSubmitted ? (
               <div className="space-y-4">
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  Verify the accuracy of this AI-generated machinery diagnosis. Your expert validation will be logged in the database to train the fault consensus engine for future diagnostics.
+                  Verify the AI's diagnostic accuracy. Your validation corrects potential anomalies and trains our decentralized neural network for future predictive consensus.
                 </p>
 
                 {feedbackError && (
-                  <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-xs text-red-400 font-mono">
+                  <div className="p-3 bg-red-950/40 border border-red-500/20 rounded-xl text-xs text-red-400 font-mono">
                     {feedbackError}
                   </div>
                 )}
 
-                <div className="flex flex-wrap items-center gap-3">
+                {/* Primary Feedback Choice Buttons */}
+                <div className="flex flex-col sm:flex-row gap-3">
                   <button
                     type="button"
-                    disabled={isFeedbackSubmitting}
-                    onClick={() => {
-                      console.log("👉 [MotorMedic Debug Click] Clicked Correct Diagnosis button for record ID:", diagnosticResult.db_id);
-                      handleSubmitFeedback(true);
-                    }}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl flex items-center gap-2 shadow-md transition-all shrink-0"
+                    disabled={isFeedbackSubmitting || isLoading}
+                    onClick={() => handleSubmitFeedback(true)}
+                    className="flex-1 px-5 py-3.5 bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-sm rounded-xl flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-950/10 transition-all cursor-pointer border border-emerald-500/20"
+                    id="feedback-correct-btn"
                   >
-                    {isFeedbackSubmitting && feedbackStatus === null ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    {isFeedbackSubmitting && feedbackStatus === "correct" ? (
+                      <RefreshCw className="w-4 h-4 animate-spin" />
                     ) : (
-                      <span>✓</span>
+                      <span className="text-base">✅</span>
                     )}
-                    <span>Correct Diagnosis</span>
+                    <span>Diagnosis Correct</span>
                   </button>
 
                   <button
                     type="button"
-                    disabled={isFeedbackSubmitting}
+                    disabled={isFeedbackSubmitting || isLoading}
                     onClick={() => {
-                      console.log("👉 [MotorMedic Debug Click] Clicked Incorrect Diagnosis button for record ID:", diagnosticResult.db_id);
                       setFeedbackStatus("incorrect");
                       setFeedbackError("");
                     }}
-                    className={`px-4 py-2.5 disabled:opacity-50 font-bold text-xs rounded-xl flex items-center gap-2 transition-all shrink-0 ${
-                      feedbackStatus === "incorrect" 
-                        ? "bg-red-500 text-white shadow-md" 
-                        : "bg-slate-800 hover:bg-slate-700 text-red-400 border border-slate-700"
+                    className={`flex-1 px-5 py-3.5 disabled:opacity-40 font-bold text-sm rounded-xl flex items-center justify-center gap-2.5 transition-all cursor-pointer ${
+                      feedbackStatus === "incorrect"
+                        ? "bg-red-600 text-white border border-red-500/30"
+                        : "bg-slate-950 hover:bg-slate-900 text-red-400 border border-slate-800"
                     }`}
+                    id="feedback-incorrect-btn"
                   >
-                    <span>✗</span>
-                    <span>Incorrect Diagnosis</span>
+                    <span className="text-base">❌</span>
+                    <span>Diagnosis Incorrect</span>
                   </button>
                 </div>
 
+                {/* Dropdown & Details Correction workflow (When 'Incorrect' is selected) */}
                 {feedbackStatus === "incorrect" && (
-                  <div className="space-y-3 pt-2 border-t border-slate-800/60 animate-fade-in">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Provide Correct Diagnosis (Human Expert Overrides AI Consensus):
-                      </label>
-                      <textarea
-                        rows={2}
-                        value={correctedDiagnosis}
-                        onChange={(e) => setCorrectedDiagnosis(e.target.value)}
-                        placeholder="State the correct mechanical fault (e.g. Loose rotor bars, belt slippage, misaligned coupling)..."
-                        className="w-full bg-slate-950 border border-slate-800 focus:border-amber-400/50 rounded-xl p-3 text-xs text-slate-200 focus:outline-none placeholder-slate-600"
-                      />
+                  <div className="space-y-4 pt-4 border-t border-slate-800/80 animate-fade-in" id="correction-form">
+                    <div className="bg-slate-950/40 rounded-xl p-4 border border-slate-800 space-y-4">
+                      
+                      {/* Grid for Dropdowns */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        {/* Field 1: Actual Fault Type */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Actual Fault Type:
+                          </label>
+                          <select
+                            value={actualFaultType}
+                            onChange={(e) => setActualFaultType(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs font-semibold rounded-lg px-3 py-2.5 outline-none focus:border-red-500/50 focus:ring-1 focus:ring-red-500/20"
+                            id="correction-fault-type"
+                          >
+                            <option value="Unbalance">Unbalance</option>
+                            <option value="Misalignment">Misalignment</option>
+                            <option value="Bearing Defect">Bearing Defect</option>
+                            <option value="Looseness">Looseness</option>
+                            <option value="Rub">Rub</option>
+                            <option value="Electrical">Electrical</option>
+                            <option value="Cavitation">Cavitation</option>
+                            <option value="Other">Other</option>
+                          </select>
+                        </div>
+
+                        {/* Field 3: Severity */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                            Actual Severity:
+                          </label>
+                          <select
+                            value={actualSeverity}
+                            onChange={(e) => setActualSeverity(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs font-semibold rounded-lg px-3 py-2.5 outline-none focus:border-red-500/50 focus:ring-1 focus:ring-red-500/20"
+                            id="correction-severity"
+                          >
+                            <option value="Critical">Critical</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Field 2: Specific Details */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                          Specific Details (Optional):
+                        </label>
+                        <input
+                          type="text"
+                          value={actualDetails}
+                          onChange={(e) => setActualDetails(e.target.value)}
+                          placeholder="e.g. Inner Race Defect on Drive End Bearing"
+                          className="w-full bg-slate-900 border border-slate-800 text-slate-200 text-xs rounded-lg px-3 py-2.5 outline-none focus:border-red-500/50 focus:ring-1 focus:ring-red-500/20 placeholder-slate-600"
+                          id="correction-details"
+                        />
+                      </div>
                     </div>
-                    <div className="flex justify-end">
+
+                    <div className="flex justify-end pt-1">
                       <button
                         type="button"
-                        disabled={isFeedbackSubmitting || !correctedDiagnosis.trim()}
+                        disabled={isFeedbackSubmitting}
                         onClick={() => {
-                          console.log("👉 [MotorMedic Debug Click] Submitting corrected diagnosis feedback:", correctedDiagnosis);
-                          handleSubmitFeedback(false, correctedDiagnosis);
+                          handleSubmitFeedback(false, actualFaultType, actualDetails, actualSeverity);
                         }}
-                        className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-extrabold text-xs rounded-lg transition-all shadow-md flex items-center gap-1.5"
+                        className="px-5 py-2.5 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-extrabold text-xs rounded-lg transition-all shadow-md flex items-center gap-2 cursor-pointer"
+                        id="submit-correction-btn"
                       >
                         {isFeedbackSubmitting ? (
-                          <RefreshCw className="w-3 h-3 animate-spin" />
-                        ) : null}
-                        <span>Submit Corrected Diagnosis</span>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <span>🚀</span>
+                        )}
+                        <span>Submit Correction & Train AI</span>
                       </button>
                     </div>
                   </div>
                 )}
               </div>
             ) : (
-              <div className="bg-slate-950/40 border border-amber-500/20 p-4 rounded-xl space-y-2 animate-fade-in">
+              <div className="bg-slate-950/50 border border-emerald-500/20 p-5 rounded-xl space-y-2 animate-fade-in">
                 <div className="flex items-center gap-2 text-emerald-400">
-                  <span className="text-base">✓</span>
-                  <h5 className="text-xs font-bold uppercase tracking-wider">Expert Feedback Submitted</h5>
+                  <span className="text-lg">✓</span>
+                  <h5 className="text-xs font-bold uppercase tracking-wider">Expert Feedback Logged</h5>
                 </div>
                 <p className="text-xs text-slate-300">
                   Thank you! The AI diagnosis was marked as{" "}
@@ -2132,13 +2241,15 @@ DISPATCHED BY: MotorMedic Pro AI
                   </strong>
                   .
                 </p>
-                {feedbackStatus === "incorrect" && correctedDiagnosis && (
-                  <div className="p-2.5 bg-slate-950 border border-slate-850 rounded-lg mt-1 font-mono text-[10px] text-slate-400">
-                    <span className="text-amber-400 font-bold">Correction Logged:</span> {correctedDiagnosis}
+                {feedbackStatus === "incorrect" && (
+                  <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg mt-2 font-mono text-[11px] text-slate-300 space-y-1">
+                    <div><span className="text-slate-500">Correct Fault:</span> <span className="text-red-400 font-bold">{actualFaultType}</span></div>
+                    {actualDetails && <div><span className="text-slate-500">Details:</span> <span className="text-slate-200">{actualDetails}</span></div>}
+                    <div><span className="text-slate-500">Severity:</span> <span className="text-orange-400 font-bold">{actualSeverity}</span></div>
                   </div>
                 )}
                 <p className="text-[10px] text-slate-500 leading-normal font-mono pt-1">
-                  * Saved directly into Neon database. Subsequent diagnostic queries for similar symptoms/assets will learn from this correction.
+                  * Saved in training queue. Subsequent diagnosis requests for matching signatures will adapt and optimize according to this feedback.
                 </p>
               </div>
             )}
@@ -2409,6 +2520,63 @@ DISPATCHED BY: MotorMedic Pro AI
               </div>
             </div>
           </div>
+
+          {/* Multi-Agent Debate System Summary & Rounds Log */}
+          {diagnosticResult.debate_summary && (
+            <div className="bg-slate-900/60 border border-indigo-500/20 hover:border-indigo-500/40 rounded-2xl p-5 space-y-4 mt-6 transition-all">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+                <div className="flex items-center gap-2 text-xs font-bold text-indigo-400 uppercase tracking-wider font-display">
+                  <span className="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse shrink-0" />
+                  <span>Multi-Agent Consensus Debate System</span>
+                </div>
+                <span className="text-[10px] font-mono text-slate-400 px-2 py-0.5 bg-slate-950/80 rounded border border-slate-800">
+                  3 Agents Co-operating
+                </span>
+              </div>
+              
+              <div className="space-y-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Consensus Resolution</span>
+                <p className="text-xs text-slate-200 leading-relaxed font-sans bg-indigo-950/20 p-3.5 rounded-xl border border-indigo-500/10">
+                  {diagnosticResult.debate_summary}
+                </p>
+              </div>
+
+              {diagnosticResult.debate_rounds_log && diagnosticResult.debate_rounds_log.length > 0 && (
+                <div className="space-y-3 pt-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Deliberation Transcript</span>
+                  <div className="space-y-3">
+                    {diagnosticResult.debate_rounds_log.map((roundLog: any, idx: number) => (
+                      <div key={idx} className="bg-slate-950/50 p-4 rounded-xl border border-slate-850/80 space-y-3 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-indigo-300 font-mono">
+                            Round {roundLog.round}: {roundLog.round === 1 ? "Independent Proposals" : "Debate deliberations"}
+                          </span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${roundLog.round === 1 ? "bg-slate-800 text-slate-300" : "bg-indigo-950 text-indigo-300 border border-indigo-900"}`}>
+                            {roundLog.round === 1 ? "Initial Vote" : "Debate Loop"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {Object.entries(roundLog.votes || {}).map(([agentName, vote]: any) => (
+                            <div key={agentName} className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/60 space-y-1">
+                              <div className="text-[10px] font-medium text-slate-400 tracking-tight truncate">
+                                {agentName}
+                              </div>
+                              <div className="font-bold text-slate-200 truncate">
+                                {vote || "None"}
+                              </div>
+                              <div className="text-[10px] text-slate-400 leading-normal pt-1 border-t border-slate-800/40 line-clamp-4 hover:line-clamp-none transition-all cursor-pointer">
+                                {roundLog.reasonings?.[agentName] || "No detailed explanation provided."}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Grounded Web Research Sources */}
           {diagnosticResult.sources && diagnosticResult.sources.length > 0 && (

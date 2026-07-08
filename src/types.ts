@@ -72,6 +72,12 @@ export interface DiagnosticResponse {
   failure_stage?: "Incipient" | "Early" | "Advanced" | "Catastrophic" | string;
   baseline_delta?: string | null;
   db_id?: number;
+  debate_summary?: string;
+  debate_rounds_log?: Array<{
+    round: number;
+    votes: Record<string, string>;
+    reasonings?: Record<string, string>;
+  }>;
 }
 
 export interface MaintenanceLog {
