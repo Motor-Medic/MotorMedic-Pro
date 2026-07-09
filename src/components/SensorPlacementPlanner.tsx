@@ -8,7 +8,7 @@ import {
 const MOCK_TEMPLATES = [
   {
     name: "Centrifugal Pump B-101",
-    imgUrl: "https://images.unsplash.com/photo-1581092160607-ee22621dd758?auto=format&fit=crop&q=80&w=600",
+    imgUrl: "https://images.unsplash.com/photo-1581091226825-a6a2a5aee15b?w=800",
     result: {
       equipmentType: "Horizontal Centrifugal Impeller Pump",
       recommendedSensors: "Standard Industrial 100 mV/g ICP® Accelerometer (Shear Mode design)",
@@ -48,7 +48,7 @@ const MOCK_TEMPLATES = [
   },
   {
     name: "Overhung Cooling Fan F-402",
-    imgUrl: "https://images.unsplash.com/photo-1599008633840-052c7f756385?auto=format&fit=crop&q=80&w=600",
+    imgUrl: "https://images.unsplash.com/photo-1532601428956-78cb138456b7?w=800",
     result: {
       equipmentType: "Overhung Axial Cooling Tower Fan",
       recommendedSensors: "High-Sensitivity 500 mV/g Low-Frequency Accelerometer (for low RPM operation)",

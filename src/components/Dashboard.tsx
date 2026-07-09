@@ -2,13 +2,14 @@ import React, { useState, useEffect } from "react";
 import { 
   Activity, AlertTriangle, CheckCircle2, DollarSign, ArrowRight, TrendingUp, 
   Wrench, FileText, Plus, RefreshCw, Calendar, Sparkles, AlertOctagon,
-  ShieldCheck, Layers, Clipboard, Building
+  ShieldCheck, Layers, Clipboard, Building, Upload
 } from "lucide-react";
 import { 
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
   LineChart, Line, XAxis, YAxis, CartesianGrid
 } from "recharts";
 import { jsPDF } from "jspdf";
+import BulkImportModal from "./BulkImportModal";
 
 interface DashboardProps {
   companyId: number;
@@ -79,6 +80,7 @@ export default function Dashboard({
   const [activities, setActivities] = useState<RecentActivityItem[]>([]);
   const [roi, setRoi] = useState<RoiMetrics | null>(null);
   const [exportingPdf, setExportingPdf] = useState<boolean>(false);
+  const [isBulkImportOpen, setIsBulkImportOpen] = useState<boolean>(false);
 
   // Fetch Dashboard Data
   const fetchDashboardData = async () => {
@@ -345,6 +347,44 @@ export default function Dashboard({
           <RefreshCw className="w-3.5 h-3.5" />
           Retry Connection
         </button>
+      </div>
+    );
+  }
+
+  // Render Empty State if no assets exist
+  if (!loading && (!summary || summary.total === 0)) {
+    return (
+      <div className="flex flex-col items-center justify-center text-center p-8 sm:p-16 min-h-[500px] rounded-2xl border border-slate-850 bg-[#0c1220]/55 relative overflow-hidden backdrop-blur-sm animate-fade-in" id="dashboard-empty-state">
+        <div className="absolute top-0 right-0 p-6 opacity-5 sm:opacity-10 pointer-events-none">
+          <Activity className="w-64 h-64 text-yellow-400" />
+        </div>
+        <div className="p-5 bg-yellow-400/10 text-yellow-400 rounded-full border border-yellow-400/20 mb-6 shadow-lg shadow-yellow-400/5">
+          <Wrench className="w-12 h-12 stroke-[1.5]" />
+        </div>
+        <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight font-display text-white mb-3" id="empty-state-title">
+          Welcome to MotorMedic Pro!
+        </h2>
+        <p className="text-slate-400 text-sm max-w-md mb-8 leading-relaxed" id="empty-state-subtitle">
+          You don't have any assets set up yet. Build your industrial asset hierarchy to begin monitoring vibration, temperature, and diagnostics.
+        </p>
+        <button
+          onClick={() => setIsBulkImportOpen(true)}
+          className="inline-flex items-center gap-2.5 px-6 py-3.5 bg-yellow-400 hover:bg-yellow-500 text-slate-950 font-bold rounded-xl text-sm transition-all shadow-lg hover:shadow-yellow-400/10 scale-100 hover:scale-[1.02] cursor-pointer"
+          id="dashboard-empty-import-btn"
+        >
+          <Plus className="w-5 h-5 shrink-0" />
+          <span>+ Import Your First Assets</span>
+        </button>
+
+        <BulkImportModal
+          isOpen={isBulkImportOpen}
+          onClose={() => setIsBulkImportOpen(false)}
+          selectedCompanyId={companyId}
+          onImportComplete={() => {
+            setIsBulkImportOpen(false);
+            fetchDashboardData();
+          }}
+        />
       </div>
     );
   }

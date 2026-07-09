@@ -14,15 +14,15 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
   const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null);
 
   // Fallback price IDs in case env variables aren't injected to the window
-  const priceStarter = (window as any)._env_?.STRIPE_PRICE_STARTER || "price_starter_id";
-  const priceProfessional = (window as any)._env_?.STRIPE_PRICE_PROFESSIONAL || "price_professional_id";
-  const priceEnterprise = (window as any)._env_?.STRIPE_PRICE_ENTERPRISE || "price_enterprise_id";
+  const priceStarter = (window as any)._env_?.STRIPE_PRICE_STARTER || "price_1TrGj0Qfze97pRyvtrEBSEgU";
+  const priceProfessional = (window as any)._env_?.STRIPE_PRICE_PROFESSIONAL || "price_1TrGQ1Qfze97pRyvZGU4JOEh";
+  const priceEnterprise = (window as any)._env_?.STRIPE_PRICE_ENTERPRISE || "price_1TrGQmQfze97pRyvkG6xGE29";
 
   const tiers = [
     {
       id: "vibration_only",
       name: "Starter",
-      price: "$299",
+      price: "$399",
       priceId: priceStarter,
       desc: "Perfect for facilities focused purely on mechanical rotating equipment.",
       badge: "Vibration Core",
@@ -38,7 +38,7 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
     {
       id: "vibration_ir",
       name: "Professional",
-      price: "$599",
+      price: "$699",
       priceId: priceProfessional,
       desc: "Our most popular tier, combining mechanical and thermo diagnostics.",
       badge: "Vibration + Thermal",
@@ -55,7 +55,7 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
     {
       id: "full_suite",
       name: "Enterprise",
-      price: "$999",
+      price: "$1299",
       priceId: priceEnterprise,
       desc: "Complete industrial reliability intelligence and asset diagnostics command center.",
       badge: "Full Suite",

@@ -3,8 +3,58 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { 
   X, Upload, FileText, CheckCircle2, AlertCircle, ArrowRight, 
-  Download, Loader2, RefreshCw, Layers, Check, ChevronRight, AlertTriangle
+  Download, Loader2, Check, ChevronRight, AlertTriangle
 } from "lucide-react";
+
+// --- React Error Boundary Class Component ---
+class BulkImportErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  props: { children: React.ReactNode };
+  state: { hasError: boolean; error: Error | null };
+
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.props = props;
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("BulkImportErrorBoundary caught an error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-red-500/30 rounded-2xl p-6 max-w-md w-full text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mx-auto">
+              <AlertCircle className="w-6 h-6" />
+            </div>
+            <h3 className="text-lg font-bold text-white">Import Error</h3>
+            <p className="text-xs text-slate-400">
+              An unexpected crash occurred inside the Bulk Import module: {this.state.error?.message || "Unknown rendering error"}
+            </p>
+            <div className="flex justify-center gap-3">
+              <button
+                onClick={() => (this as any).setState({ hasError: false, error: null })}
+                className="px-4 py-2 bg-yellow-400 hover:bg-yellow-300 text-slate-950 rounded-xl text-xs font-bold transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 interface BulkImportModalProps {
   isOpen: boolean;
@@ -22,7 +72,7 @@ interface Mapping {
   componentName: string;
 }
 
-export default function BulkImportModal({
+function BulkImportModalInner({
   isOpen,
   onClose,
   selectedCompanyId,
@@ -33,6 +83,9 @@ export default function BulkImportModal({
   const [fileName, setFileName] = useState("");
   const [parsedHeaders, setParsedHeaders] = useState<string[]>([]);
   const [parsedRows, setParsedRows] = useState<any[]>([]);
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
   
   // Column Mappings (Source Header -> DB Target Field)
   const [mappings, setMappings] = useState<Mapping>({
@@ -56,26 +109,72 @@ export default function BulkImportModal({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  if (!isOpen) return null;
+  // --- Step 1: Download Excel Template (.xlsx) ---
+  const downloadTemplateExcel = () => {
+    try {
+      console.log("Downloading Excel template...");
+      const data = [
+        ["Plant Name", "Route Name", "Asset Tag", "Asset Name", "Asset Type", "Component Name"],
+        ["Faustina Facility", "Ammonia Compressors", "C-101", "Ammonia Compressor A", "Centrifugal Compressor", "Drive End Bearing"],
+        ["Faustina Facility", "Ammonia Compressors", "C-101", "Ammonia Compressor A", "Centrifugal Compressor", "Non-Drive End Bearing"],
+        ["Faustina Facility", "Cooling Water", "P-201", "Cooling Water Pump 1", "Centrifugal Pump", "Drive End Bearing"],
+        ["Faustina Facility", "Cooling Water", "P-201", "Cooling Water Pump 1", "Centrifugal Pump", "Non-Drive End Bearing"],
+        ["Faustina Facility", "Power Generation", "G-301", "Steam Turbine Generator", "Steam Turbine", "Thrust Bearing"],
+      ];
+      
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      
+      // Auto-fit column widths
+      const maxColWidths = data[0].map((_, colIdx) => {
+        return Math.max(...data.map(row => row[colIdx] ? row[colIdx].toString().length : 0)) + 3;
+      });
+      ws["!cols"] = maxColWidths.map(w => ({ wch: w }));
 
-  // --- Step 1: Download Template ---
+      // Add bold and light gray background to header row for Excel
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1:F6");
+      for (let col = range.s.c; col <= range.e.c; ++col) {
+        const cellRef = XLSX.utils.encode_cell({ r: 0, c: col });
+        if (ws[cellRef]) {
+          ws[cellRef].s = {
+            font: { bold: true, color: { rgb: "000000" } },
+            fill: { fgColor: { rgb: "EAEAEA" } }
+          };
+        }
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Asset Template");
+      XLSX.writeFile(wb, "MotorMedic_Pro_Asset_Template.xlsx");
+      console.log("Excel template downloaded successfully.");
+    } catch (err: any) {
+      console.error("Failed to download Excel template:", err);
+      setError("Failed to generate and download Excel template file.");
+    }
+  };
+
+  // --- Step 1: Download CSV Template ---
   const downloadTemplateCSV = () => {
-    const headers = ["Plant Name", "Route Name", "Asset Tag", "Asset Name", "Asset Type", "Component Name"];
-    const rows = [
-      ["Allied Refinery", "Boiler House", "PMP-101", "Feedwater Pump A", "Pump", "Drive End Bearing"],
-      ["Allied Refinery", "Boiler House", "PMP-101", "Feedwater Pump A", "Pump", "Non-Drive End Bearing"],
-      ["Allied Refinery", "Cooling Tower", "FAN-202", "Tower Fan Motor B", "Motor", ""],
-      ["Allied Refinery", "Cooling Tower", "FAN-202", "Tower Fan Motor B", "Motor", "Gearbox Shaft"],
-    ];
-    const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
-      + [headers.join(","), ...rows.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(","))].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "bulk_asset_import_template.csv");
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      const headers = ["Plant Name", "Route Name", "Asset Tag", "Asset Name", "Asset Type", "Component Name"];
+      const rows = [
+        ["Allied Refinery", "Boiler House", "PMP-101", "Feedwater Pump A", "Pump", "Drive End Bearing"],
+        ["Allied Refinery", "Boiler House", "PMP-101", "Feedwater Pump A", "Pump", "Non-Drive End Bearing"],
+        ["Allied Refinery", "Cooling Tower", "FAN-202", "Tower Fan Motor B", "Motor", ""],
+        ["Allied Refinery", "Cooling Tower", "FAN-202", "Tower Fan Motor B", "Motor", "Gearbox Shaft"],
+      ];
+      const csvContent = "data:text/csv;charset=utf-8,\uFEFF" 
+        + [headers.join(","), ...rows.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(","))].join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "bulk_asset_import_template.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err: any) {
+      console.error("Failed to download template:", err);
+      setError("Failed to generate and download template file.");
+    }
   };
 
   // --- Step 1: File Upload Handler ---
@@ -93,72 +192,116 @@ export default function BulkImportModal({
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
+    if (isLoading) return;
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       processFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isLoading) return;
     if (e.target.files && e.target.files[0]) {
       processFile(e.target.files[0]);
     }
   };
 
   const processFile = (file: File) => {
+    console.log("File selected:", file);
+    if (!file) {
+      setParseError("No file selected.");
+      return;
+    }
+    if (!selectedCompanyId) {
+      setParseError("No active company selected. Please select or create a company first.");
+      return;
+    }
+
     setFileName(file.name);
+    setParseError(null);
     const ext = file.name.split(".").pop()?.toLowerCase();
 
-    if (ext === "csv") {
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results) => {
-          if (results.meta.fields && results.meta.fields.length > 0) {
-            setParsedHeaders(results.meta.fields);
-            setParsedRows(results.data);
-            autoMapColumns(results.meta.fields);
-            setStep(2);
-          } else {
-            alert("Unable to detect headers in this CSV file.");
-          }
-        },
-        error: (err) => {
-          console.error("CSV parse error:", err);
-          alert("Error parsing CSV: " + err.message);
-        }
-      });
-    } else if (ext === "xlsx" || ext === "xls") {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: "array" });
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-          const json: any[] = XLSX.utils.sheet_to_json(worksheet);
+    setIsLoading(true);
 
-          if (json.length > 0) {
-            const headers = Object.keys(json[0]);
-            setParsedHeaders(headers);
-            setParsedRows(json);
-            autoMapColumns(headers);
-            setStep(2);
-          } else {
-            alert("The uploaded Excel sheet appears to be empty.");
+    try {
+      if (ext === "csv") {
+        console.log("Parsing CSV...");
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            setIsLoading(false);
+            try {
+              if (results && results.meta && results.meta.fields && Array.isArray(results.meta.fields) && results.meta.fields.length > 0) {
+                setParsedHeaders(results.meta.fields);
+                setParsedRows(Array.isArray(results.data) ? results.data : []);
+                autoMapColumns(results.meta.fields);
+                setStep(2);
+              } else {
+                setParseError("Failed to parse CSV file. Please check the format and try again.");
+              }
+            } catch (err: any) {
+              console.error("CSV complete processing error:", err);
+              setParseError("Failed to parse CSV file. Please check the format and try again.");
+            }
+          },
+          error: (err) => {
+            setIsLoading(false);
+            console.error("CSV parse error:", err);
+            setParseError("Failed to parse CSV file. Please check the format and try again.");
           }
-        } catch (error: any) {
-          console.error("Excel parse error:", error);
-          alert("Error parsing Excel: " + error.message);
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    } else {
-      alert("Unsupported file format. Please upload a .csv or .xlsx file.");
+        });
+      } else if (ext === "xlsx" || ext === "xls") {
+        console.log("Parsing XLSX/XLS file...");
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          setIsLoading(false);
+          try {
+            if (!e.target || !e.target.result) {
+              throw new Error("No target or result in FileReader.");
+            }
+            const data = new Uint8Array(e.target.result as ArrayBuffer);
+            const workbook = XLSX.read(data, { type: "array" });
+            if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
+              throw new Error("Invalid workbook format.");
+            }
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            const json: any[] = XLSX.utils.sheet_to_json(worksheet);
+
+            if (Array.isArray(json) && json.length > 0) {
+              const headers = Object.keys(json[0]);
+              setParsedHeaders(headers);
+              setParsedRows(json);
+              autoMapColumns(headers);
+              setStep(2);
+            } else {
+              setParseError("The uploaded Excel sheet appears to be empty.");
+            }
+          } catch (error: any) {
+            console.error("Excel parse error:", error);
+            setParseError("Failed to parse CSV file. Please check the format and try again.");
+          }
+        };
+        reader.onerror = (err) => {
+          setIsLoading(false);
+          console.error("FileReader error:", err);
+          setParseError("Failed to parse CSV file. Please check the format and try again.");
+        };
+        reader.readAsArrayBuffer(file);
+      } else {
+        setIsLoading(false);
+        setParseError("Unsupported file format. Please upload a .csv or .xlsx file.");
+      }
+    } catch (err: any) {
+      setIsLoading(false);
+      console.error("File processing crashed:", err);
+      setParseError("Failed to parse CSV file. Please check the format and try again.");
     }
   };
 
   // --- Step 2: Auto Column Mapping ---
   const autoMapColumns = (headers: string[]) => {
+    if (!Array.isArray(headers)) return;
     const map: Mapping = {
       plantName: "",
       routeName: "",
@@ -189,36 +332,62 @@ export default function BulkImportModal({
 
   // --- Step 3: Map Data to Preview ---
   const mappedPreviewData = useMemo(() => {
-    return parsedRows.slice(0, 5).map(row => ({
-      plantName: row[mappings.plantName] || "",
-      routeName: row[mappings.routeName] || "",
-      assetTag: row[mappings.assetTag] || "",
-      assetName: row[mappings.assetName] || "",
-      assetType: row[mappings.assetType] || "",
-      componentName: row[mappings.componentName] || ""
-    }));
+    if (!Array.isArray(parsedRows)) return [];
+    if (!mappings) return [];
+    return parsedRows.slice(0, 5).map(row => {
+      if (!row) return { plantName: "", routeName: "", assetTag: "", assetName: "", assetType: "", componentName: "" };
+      return {
+        plantName: row[mappings.plantName] || "",
+        routeName: row[mappings.routeName] || "",
+        assetTag: row[mappings.assetTag] || "",
+        assetName: row[mappings.assetName] || "",
+        assetType: row[mappings.assetType] || "",
+        componentName: row[mappings.componentName] || ""
+      };
+    });
   }, [parsedRows, mappings]);
 
   // --- Step 4: Import Processing ---
   const handleImportSubmit = async () => {
+    if (isLoading) return;
+    
+    // Safety checks
+    if (!selectedCompanyId) {
+      setError("Please select or configure a company ID before importing.");
+      return;
+    }
+    if (!Array.isArray(parsedRows) || parsedRows.length === 0) {
+      setError("Import aborted: Parsed data rows are empty or invalid.");
+      return;
+    }
+    if (!mappings || !mappings.plantName || !mappings.routeName || !mappings.assetName || !mappings.assetType) {
+      setError("Import aborted: Column mapping configurations are missing or incomplete.");
+      return;
+    }
+
+    setIsLoading(true);
     setStep(4);
     setImportStatus("importing");
     setImportProgress(10);
     setImportLogs(["Initializing secure connection to the central asset registry...", "Validating column schemas..."]);
 
-    const allMappedRows = parsedRows.map(row => ({
-      plantName: (row[mappings.plantName] || "").toString().trim(),
-      routeName: (row[mappings.routeName] || "").toString().trim(),
-      assetTag: (row[mappings.assetTag] || "").toString().trim(),
-      assetName: (row[mappings.assetName] || "").toString().trim(),
-      assetType: (row[mappings.assetType] || "").toString().trim(),
-      componentName: (row[mappings.componentName] || "").toString().trim()
-    }));
+    const allMappedRows = parsedRows.map(row => {
+      if (!row) return null;
+      return {
+        plantName: (row[mappings.plantName] || "").toString().trim(),
+        routeName: (row[mappings.routeName] || "").toString().trim(),
+        assetTag: (row[mappings.assetTag] || "").toString().trim(),
+        assetName: (row[mappings.assetName] || "").toString().trim(),
+        assetType: (row[mappings.assetType] || "").toString().trim(),
+        componentName: (row[mappings.componentName] || "").toString().trim()
+      };
+    }).filter(Boolean);
 
     try {
       setImportProgress(30);
       setImportLogs(prev => [...prev, `Mapped ${allMappedRows.length} rows. Uploading telemetry payload to database...`]);
 
+      console.log("Sending to backend...");
       const res = await fetch("/api/assets/bulk-import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -228,6 +397,7 @@ export default function BulkImportModal({
         })
       });
 
+      console.log("Success/Error:", res);
       setImportProgress(75);
 
       if (res.ok) {
@@ -255,11 +425,16 @@ export default function BulkImportModal({
       setImportStatus("error");
       setImportProgress(100);
       setImportLogs(prev => [...prev, `❌ Error: ${err.message || "Unknown database rejection error."}`]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleMappingChange = (field: keyof Mapping, value: string) => {
-    setMappings(prev => ({ ...prev, [field]: value }));
+    setMappings(prev => {
+      if (!prev) return prev;
+      return { ...prev, [field]: value };
+    });
   };
 
   const resetModalState = () => {
@@ -267,9 +442,12 @@ export default function BulkImportModal({
     setFileName("");
     setParsedHeaders([]);
     setParsedRows([]);
+    setParseError(null);
+    setError(null);
     setImportProgress(0);
     setImportStatus("idle");
     setImportLogs([]);
+    setIsLoading(false);
     setImportSummary({ total: 0, success: 0, skipped: 0, warnings: [] });
   };
 
@@ -278,6 +456,43 @@ export default function BulkImportModal({
     resetModalState();
     onClose();
   };
+
+  if (!isOpen) return null;
+
+  if (error) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div className="p-6 bg-red-900 border border-red-750 text-white rounded-2xl max-w-md w-full text-center space-y-4 shadow-2xl">
+          <div className="w-12 h-12 bg-red-500/10 text-red-100 rounded-full flex items-center justify-center mx-auto">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <h3 className="text-lg font-bold">Import Error</h3>
+          <p className="text-sm text-red-200">{error}</p>
+          <div className="flex justify-center gap-3 pt-2">
+            <button 
+              onClick={() => {
+                setError(null);
+                resetModalState();
+              }}
+              className="px-4 py-2 bg-red-800 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-all shadow-md"
+            >
+              Try Again
+            </button>
+            <button 
+              onClick={() => {
+                setError(null);
+                resetModalState();
+                onClose();
+              }}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition-all"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm transition-all duration-300">
@@ -294,12 +509,23 @@ export default function BulkImportModal({
               <p className="text-xs text-slate-400">Import plants, routes, assets, and components from a CSV or Excel spreadsheet</p>
             </div>
           </div>
-          <button 
-            onClick={() => { resetModalState(); onClose(); }}
-            className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors focus:outline-none"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={downloadTemplateExcel}
+              disabled={isLoading}
+              className="px-3 py-1.5 bg-yellow-400 hover:bg-yellow-300 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-colors shadow-md disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Download Excel Template</span>
+            </button>
+            <button 
+              onClick={() => { resetModalState(); onClose(); }}
+              disabled={isLoading}
+              className="p-1.5 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg transition-colors focus:outline-none disabled:opacity-50"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Modal Body */}
@@ -334,32 +560,51 @@ export default function BulkImportModal({
           {/* STEP 1: UPLOAD FILE */}
           {step === 1 && (
             <div className="space-y-4">
+              {parseError && (
+                <div className="bg-red-500/10 border border-red-500/30 text-red-400 rounded-2xl p-4 flex items-start gap-3" id="bulk-import-parse-error">
+                  <AlertCircle className="w-5 h-5 text-red-450 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-red-400">File Processing Issue</h4>
+                    <p className="text-[10px] leading-relaxed text-red-300">{parseError}</p>
+                  </div>
+                </div>
+              )}
+
               <div 
                 onDragEnter={handleDrag}
                 onDragOver={handleDrag}
                 onDragLeave={handleDrag}
                 onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => { if (!isLoading) fileInputRef.current?.click(); }}
                 className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${
                   dragActive 
                     ? "border-yellow-400 bg-yellow-400/5 shadow-inner" 
                     : "border-slate-800 bg-slate-950 hover:border-slate-700 hover:bg-slate-950/60"
-                }`}
+                } ${isLoading ? "opacity-60 cursor-not-allowed" : ""}`}
               >
                 <input 
                   type="file" 
                   ref={fileInputRef}
                   onChange={handleFileChange}
                   accept=".csv, .xlsx, .xls"
+                  disabled={isLoading}
                   className="hidden"
                 />
                 <div className="flex flex-col items-center gap-4">
                   <div className="p-4 bg-slate-900 rounded-full border border-slate-800 text-slate-400 group-hover:text-white transition-colors">
-                    <Upload className="w-8 h-8 text-yellow-400" />
+                    {isLoading ? (
+                      <Loader2 className="w-8 h-8 text-yellow-400 animate-spin" />
+                    ) : (
+                      <Upload className="w-8 h-8 text-yellow-400" />
+                    )}
                   </div>
                   <div className="space-y-1.5">
                     <p className="font-semibold text-sm text-slate-200">
-                      Drag & drop your asset data file here, or <span className="text-yellow-400">browse local files</span>
+                      {isLoading ? (
+                        "Parsing and validating file..."
+                      ) : (
+                        <>Drag & drop your asset data file here, or <span className="text-yellow-400">browse local files</span></>
+                      )}
                     </p>
                     <p className="text-xs text-slate-500 font-medium">Supports CSV and Microsoft Excel (.xlsx, .xls) files</p>
                   </div>
@@ -374,16 +619,27 @@ export default function BulkImportModal({
                   </div>
                   <div>
                     <h4 className="text-xs font-bold text-slate-200">Need an example template file?</h4>
-                    <p className="text-[10px] text-slate-500 mt-0.5">Download our pre-structured template CSV to organize your plant hierarchy efficiently.</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Download our pre-structured Excel template with sample data or basic CSV template.</p>
                   </div>
                 </div>
-                <button
-                  onClick={downloadTemplateCSV}
-                  className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 hover:text-white font-bold rounded-xl text-xs flex items-center gap-2 border border-slate-800 transition-all shadow-md focus:outline-none"
-                >
-                  <Download className="w-3.5 h-3.5 text-yellow-400" />
-                  <span>Download Template</span>
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={downloadTemplateExcel}
+                    disabled={isLoading}
+                    className="px-3.5 py-1.5 bg-yellow-400 hover:bg-yellow-300 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md focus:outline-none"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Excel Template (.xlsx)</span>
+                  </button>
+                  <button
+                    onClick={downloadTemplateCSV}
+                    disabled={isLoading}
+                    className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-slate-200 hover:text-white font-bold rounded-xl text-xs flex items-center gap-1.5 border border-slate-800 transition-all shadow-md focus:outline-none"
+                  >
+                    <Download className="w-3.5 h-3.5 text-yellow-400" />
+                    <span>CSV Template</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -507,16 +763,18 @@ export default function BulkImportModal({
               <div className="flex justify-between items-center pt-4 border-t border-slate-800">
                 <button
                   onClick={() => setStep(2)}
-                  className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors"
+                  disabled={isLoading}
+                  className="px-4 py-2 text-xs font-bold text-slate-400 hover:text-white transition-colors disabled:opacity-50"
                 >
                   Back
                 </button>
                 <button
                   onClick={handleImportSubmit}
-                  className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-lg"
+                  disabled={isLoading}
+                  className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-2 transition-all shadow-lg"
                 >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Execute Bulk Import</span>
+                  {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                  <span>{isLoading ? "Executing Bulk Import..." : "Execute Bulk Import"}</span>
                 </button>
               </div>
             </div>
@@ -631,5 +889,14 @@ export default function BulkImportModal({
 
       </div>
     </div>
+  );
+}
+
+// --- Wrapped BulkImportModal with Error Boundary ---
+export default function BulkImportModal(props: BulkImportModalProps) {
+  return (
+    <BulkImportErrorBoundary>
+      <BulkImportModalInner {...props} />
+    </BulkImportErrorBoundary>
   );
 }

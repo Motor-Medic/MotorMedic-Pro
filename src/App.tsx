@@ -11,6 +11,7 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import Login, { UserSession } from "./components/Login";
 import AdminPanel from "./components/AdminPanel";
 import LegalDocuments from "./components/LegalDocuments";
+import AlertsManager from "./components/AlertsManager";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings
 } from "lucide-react";
@@ -55,7 +56,7 @@ export default function App() {
     localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts">("dashboard");
   const [showLegalDoc, setShowLegalDoc] = useState<"terms" | "privacy" | null>(null);
   const [companies, setCompanies] = useState<any[]>([]);
 
@@ -91,6 +92,21 @@ export default function App() {
   const handleStartDiagnosis = (plantId: number, routeId: number, assetId: number, componentId: number, technologyType: string) => {
     setTargetContext({ plantId, routeId, assetId, componentId, technologyType });
     setActiveTab("diagnose");
+  };
+
+  const handleSecureLogout = () => {
+    // Completely clear user session tokens & preferences from storage
+    localStorage.removeItem("motormedic_user_session");
+    sessionStorage.clear();
+    
+    // Clear states
+    setUser(null);
+    setActiveTab("dashboard");
+    setSelectedReport(null);
+
+    // Replace history entries and reload to guarantee "Back" button blocks access
+    window.history.pushState(null, "", window.location.origin);
+    window.location.replace(window.location.origin);
   };
 
   const [customApiKey, setCustomApiKey] = useState<string>(() => localStorage.getItem("reliability_custom_gemini_key") || "");
@@ -614,15 +630,15 @@ export default function App() {
               {isHamburgerOpen ? <X className="w-5 h-5 text-yellow-400" /> : <Menu className="w-5 h-5" />}
             </button>
 
-            <div className="p-2.5 bg-yellow-400/10 border border-yellow-400/20 rounded-xl text-yellow-400">
-              <Activity className="w-5 h-5" />
-            </div>
-            <div>
-              <h1 className="text-sm font-bold tracking-tight font-display text-white flex items-center gap-1.5">
-                MotorMedic Pro
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono font-medium">v6.0</span>
-              </h1>
-              <p className="text-[10px] text-slate-400 font-mono">CONDITION MONITORING SUITE</p>
+            {/* Navy Blue & Gold Placeholder Logo (Height exactly 40px) */}
+            <div className="flex items-center gap-2.5 px-3.5 bg-[#0a192f] border border-[#d4af37]/30 rounded-xl shadow-lg" style={{ height: '40px' }} id="app-brand-logo">
+              <Activity className="w-4.5 h-4.5 text-[#d4af37] animate-pulse" />
+              <div className="flex flex-col justify-center">
+                <span className="text-xs font-black tracking-tight text-[#d4af37] font-display uppercase">
+                  MotorMedic <span className="text-slate-100 font-bold">Pro</span>
+                </span>
+                <span className="text-[7px] font-mono font-semibold tracking-widest text-[#d4af37]/75 uppercase leading-none">Reliability SaaS</span>
+              </div>
             </div>
           </div>
 
@@ -723,7 +739,7 @@ export default function App() {
             </div>
 
             <button
-              onClick={() => setUser(null)}
+              onClick={handleSecureLogout}
               className="p-2.5 rounded-xl bg-red-950/20 hover:bg-red-950/40 border border-red-500/20 hover:border-red-500/40 text-red-400 hover:text-red-300 transition-all duration-200 flex items-center gap-1.5 text-xs font-semibold cursor-pointer"
               title="Sign Out"
               id="signOutButton"
@@ -846,6 +862,22 @@ export default function App() {
             <span>Tenant Settings</span>
           </button>
 
+          <button
+            onClick={() => {
+              setActiveTab("alerts");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "alerts" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+            id="sidebar-alerts-btn"
+          >
+            <Bell className="w-4.5 h-4.5" />
+            <span>Alerts Control</span>
+          </button>
+
           <div className="pt-4 border-t border-slate-900 mt-4 space-y-2">
             <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-3">Legal & Policy</p>
             <div className="flex flex-col gap-1.5 pl-3 text-[11px] text-slate-400">
@@ -933,6 +965,8 @@ export default function App() {
               onSubscriptionChange={fetchCompanies}
               selectedCompanyId={selectedCompanyId}
             />
+          ) : activeTab === "alerts" ? (
+            <AlertsManager userId={user?.id || 3} />
           ) : activeTab === "sensors" ? (
             <SensorPlacementPlanner isSandbox={isSandbox} setIsSandbox={setIsSandbox} />
           ) : (
@@ -1026,6 +1060,29 @@ export default function App() {
           <span className="text-[9px]">History</span>
         </button>
       </nav>
+
+      {/* Legal Footer */}
+      <footer className="w-full py-6 mt-auto border-t border-slate-900 bg-[#080c14] text-center text-slate-500 text-[11px] relative z-20" id="app-legal-footer">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <span className="font-sans">© 2026 MotorMedic Pro. All rights reserved.</span>
+          <div className="flex items-center gap-6">
+            <button
+              onClick={() => setShowLegalDoc("terms")}
+              className="hover:text-yellow-400 hover:underline transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
+              id="footer-terms-btn"
+            >
+              Terms of Service
+            </button>
+            <button
+              onClick={() => setShowLegalDoc("privacy")}
+              className="hover:text-yellow-400 hover:underline transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
+              id="footer-privacy-btn"
+            >
+              Privacy Policy
+            </button>
+          </div>
+        </div>
+      </footer>
       
       {/* Mobile nav spacing */}
       <div className="h-16 lg:hidden shrink-0"></div>
@@ -1168,6 +1225,23 @@ export default function App() {
               >
                 <Settings className="w-5 h-5 shrink-0" />
                 <span>Tenant Settings</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("alerts");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "alerts" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+                id="drawer-alerts-btn"
+              >
+                <Bell className="w-5 h-5 shrink-0 animate-pulse" />
+                <span>Alerts Control</span>
               </button>
             </div>
 

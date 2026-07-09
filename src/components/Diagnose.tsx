@@ -499,11 +499,11 @@ export default function Diagnose({
     if (!file) return;
 
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
-    const allowedExtensions = ["csv", "xlsx", "xls", "txt", "pdf", "json"];
+    const allowedExtensions = ["png", "jpg", "jpeg", "csv", "json", "txt", "pdf"];
 
     // Validate extension
     if (!allowedExtensions.includes(ext)) {
-      setUploadError("Invalid file. Please upload a CSV, Excel, or Text file under 50MB.");
+      setUploadError("Invalid file type. Please upload an Image, CSV, JSON, TXT, or PDF under 50MB.");
       if (e.target) e.target.value = "";
       return;
     }
@@ -511,7 +511,7 @@ export default function Diagnose({
     // Validate size (50MB)
     const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
-      setUploadError("Invalid file. Please upload a CSV, Excel, or Text file under 50MB.");
+      setUploadError("Invalid file type. Please upload an Image, CSV, JSON, TXT, or PDF under 50MB.");
       if (e.target) e.target.value = "";
       return;
     }
@@ -736,12 +736,11 @@ export default function Diagnose({
 
     // Dynamic rotation of loading statements
     const messages = [
-      "Consulting multiple AI models and debating findings...",
-      "Agent A (Gemini) evaluating bearing & vibration frequency bands...",
-      "Agent B (Groq Llama) assessing structural rotor dynamics & resonance...",
-      "Agent C (DeepSeek) conducting failure modes & effects analysis...",
-      "Constructing RAG context and loading historical machine trends...",
-      "Moderating agent disputes and seeking diagnostic consensus...",
+      "Consulting AI models...",
+      "Searching web for manufacturer specs...",
+      "Constructing database RAG context & historical machine trends...",
+      "Models are debating findings...",
+      "Resolving consensus or voting on final diagnosis...",
       "Finalizing consensus-driven diagnostics report..."
     ];
 
@@ -750,7 +749,7 @@ export default function Diagnose({
     const timer = setInterval(() => {
       msgIdx = (msgIdx + 1) % messages.length;
       setLoadingMessage(messages[msgIdx]);
-    }, 2800);
+    }, 2500);
 
     try {
       const storedKey = localStorage.getItem("reliability_custom_gemini_key") || "";
@@ -2523,52 +2522,90 @@ DISPATCHED BY: MotorMedic Pro AI
 
           {/* Multi-Agent Debate System Summary & Rounds Log */}
           {diagnosticResult.debate_summary && (
-            <div className="bg-slate-900/60 border border-indigo-500/20 hover:border-indigo-500/40 rounded-2xl p-5 space-y-4 mt-6 transition-all">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-850">
-                <div className="flex items-center gap-2 text-xs font-bold text-indigo-400 uppercase tracking-wider font-display">
-                  <span className="flex h-2 w-2 rounded-full bg-indigo-500 animate-pulse shrink-0" />
-                  <span>Multi-Agent Consensus Debate System</span>
+            <div className="bg-[#0f172a] border border-indigo-500/35 hover:border-indigo-500/50 rounded-2xl p-6 space-y-5 mt-6 transition-all shadow-xl">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-500/20 text-indigo-400">
+                    <Zap className="w-4 h-4 animate-bounce" />
+                  </span>
+                  <div>
+                    <h4 className="text-sm font-bold text-white uppercase tracking-wider font-display">Multi-Agent Consensus Debate Report</h4>
+                    <p className="text-[10px] text-slate-400 font-mono">Consensus-driven vibration analytics protocol</p>
+                  </div>
                 </div>
-                <span className="text-[10px] font-mono text-slate-400 px-2 py-0.5 bg-slate-950/80 rounded border border-slate-800">
-                  3 Agents Co-operating
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-extrabold text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded border border-indigo-500/20 uppercase tracking-wider font-mono">
+                    Consensus reached by {diagnosticResult.active_models_count || 3} active models
+                  </span>
+                </div>
               </div>
               
               <div className="space-y-2">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Consensus Resolution</span>
-                <p className="text-xs text-slate-200 leading-relaxed font-sans bg-indigo-950/20 p-3.5 rounded-xl border border-indigo-500/10">
+                <span className="text-[10px] font-mono text-indigo-300 uppercase tracking-wider font-bold">Consensus Resolution Summary</span>
+                <p className="text-xs text-slate-200 leading-relaxed font-sans bg-indigo-950/30 p-4 rounded-xl border border-indigo-500/20 font-medium">
                   {diagnosticResult.debate_summary}
                 </p>
               </div>
 
               {diagnosticResult.debate_rounds_log && diagnosticResult.debate_rounds_log.length > 0 && (
-                <div className="space-y-3 pt-1">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Deliberation Transcript</span>
-                  <div className="space-y-3">
+                <div className="space-y-4 pt-2">
+                  <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider font-bold">Deliberation & Vote Transcript</span>
+                  <div className="space-y-4">
                     {diagnosticResult.debate_rounds_log.map((roundLog: any, idx: number) => (
-                      <div key={idx} className="bg-slate-950/50 p-4 rounded-xl border border-slate-850/80 space-y-3 text-xs">
+                      <div key={idx} className="bg-slate-950/60 p-5 rounded-xl border border-slate-850 space-y-4 text-xs">
                         <div className="flex items-center justify-between">
                           <span className="font-semibold text-indigo-300 font-mono">
-                            Round {roundLog.round}: {roundLog.round === 1 ? "Independent Proposals" : "Debate deliberations"}
+                            Round {roundLog.round}: {roundLog.round === 1 ? "Independent Diagnoses" : "Peer Review & Debate"}
                           </span>
-                          <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${roundLog.round === 1 ? "bg-slate-800 text-slate-300" : "bg-indigo-950 text-indigo-300 border border-indigo-900"}`}>
+                          <span className={`text-[10px] px-2.5 py-0.5 rounded font-bold uppercase tracking-wider font-mono ${roundLog.round === 1 ? "bg-slate-900 text-slate-300 border border-slate-800" : "bg-indigo-950 text-indigo-300 border border-indigo-900"}`}>
                             {roundLog.round === 1 ? "Initial Vote" : "Debate Loop"}
                           </span>
                         </div>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          {Object.entries(roundLog.votes || {}).map(([agentName, vote]: any) => (
-                            <div key={agentName} className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/60 space-y-1">
-                              <div className="text-[10px] font-medium text-slate-400 tracking-tight truncate">
-                                {agentName}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          {Object.entries(roundLog.votes || {}).map(([agentName, vote]: any) => {
+                            const isExcluded = (vote || "").toLowerCase().includes("silently excluded") || (vote || "").toLowerCase().includes("offline");
+                            const isAligned = vote && diagnosticResult.primary_fault_name && !isExcluded && (
+                              vote.toLowerCase().replace(/[^a-z0-9]/g, "").includes(diagnosticResult.primary_fault_name.toLowerCase().replace(/[^a-z0-9]/g, "")) ||
+                              diagnosticResult.primary_fault_name.toLowerCase().replace(/[^a-z0-9]/g, "").includes(vote.toLowerCase().replace(/[^a-z0-9]/g, ""))
+                            );
+                            return (
+                              <div key={agentName} className={`p-3.5 rounded-xl border space-y-2 transition-all ${
+                                isExcluded
+                                  ? "bg-red-500/5 border-red-500/10 text-red-400 opacity-60"
+                                  : isAligned
+                                  ? "bg-indigo-500/5 border-indigo-500/30 text-indigo-300 shadow-sm"
+                                  : "bg-slate-900/40 border-slate-850 text-slate-300"
+                              }`}>
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[10px] font-bold text-slate-400 tracking-tight truncate">
+                                    {agentName}
+                                  </span>
+                                  {isAligned && (
+                                    <span className="text-[9px] font-bold bg-indigo-500/10 text-indigo-400 px-1.5 py-0.2 rounded border border-indigo-500/20 shrink-0 uppercase tracking-widest font-mono">
+                                      ✓ Aligned
+                                    </span>
+                                  )}
+                                  {isExcluded && (
+                                    <span className="text-[9px] font-bold bg-red-500/10 text-red-400 px-1.5 py-0.2 rounded border border-red-500/20 shrink-0 uppercase tracking-widest font-mono animate-pulse">
+                                      Offline
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="font-extrabold text-sm truncate flex items-center gap-1.5">
+                                  {isExcluded ? (
+                                    <span className="text-red-400 text-xs">Silently Excluded / Key Offline</span>
+                                  ) : (
+                                    <span className={isAligned ? "text-indigo-200" : "text-slate-200"}>
+                                      {vote || "None"}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-400 leading-relaxed pt-2 border-t border-slate-800/40 line-clamp-4 hover:line-clamp-none transition-all cursor-pointer font-sans">
+                                  {roundLog.reasonings?.[agentName] || "No detailed explanation provided."}
+                                </div>
                               </div>
-                              <div className="font-bold text-slate-200 truncate">
-                                {vote || "None"}
-                              </div>
-                              <div className="text-[10px] text-slate-400 leading-normal pt-1 border-t border-slate-800/40 line-clamp-4 hover:line-clamp-none transition-all cursor-pointer">
-                                {roundLog.reasonings?.[agentName] || "No detailed explanation provided."}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     ))}

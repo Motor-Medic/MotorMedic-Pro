@@ -629,6 +629,16 @@ export default function Assets({
     return acc + count;
   }, 0);
 
+  if (loadingPlants && plants.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 text-center min-h-[400px] bg-slate-950/20 border border-slate-900 rounded-2xl space-y-4 animate-pulse">
+        <RefreshCw className="w-8 h-8 animate-spin text-yellow-400" />
+        <div className="text-sm text-slate-300 font-bold">Loading data...</div>
+        <p className="text-xs text-slate-500 max-w-xs leading-relaxed">Fetching machinery assets from central telemetry servers...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Company Selection Header Card */}
