@@ -11,6 +11,8 @@ import OnboardingWizard from "./components/OnboardingWizard";
 import Login, { UserSession } from "./components/Login";
 import AdminPanel from "./components/AdminPanel";
 import LegalDocuments from "./components/LegalDocuments";
+import Terms from "./components/Terms";
+import Privacy from "./components/Privacy";
 import AlertsManager from "./components/AlertsManager";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings
@@ -58,6 +60,17 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts">("dashboard");
   const [showLegalDoc, setShowLegalDoc] = useState<"terms" | "privacy" | null>(null);
+
+  // Custom router state for /terms and /privacy URLs
+  const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
   const [companies, setCompanies] = useState<any[]>([]);
 
   const fetchCompanies = () => {
@@ -603,8 +616,34 @@ export default function App() {
 
   const systemHealth = calculateSystemHealth();
 
+  if (currentPath === "/terms") {
+    return (
+      <Terms
+        onBack={() => {
+          window.history.pushState(null, "", "/");
+          setCurrentPath("/");
+        }}
+      />
+    );
+  }
+
+  if (currentPath === "/privacy") {
+    return (
+      <Privacy
+        onBack={() => {
+          window.history.pushState(null, "", "/");
+          setCurrentPath("/");
+        }}
+      />
+    );
+  }
+
   if (showLegalDoc) {
-    return <LegalDocuments initialTab={showLegalDoc} onClose={() => setShowLegalDoc(null)} />;
+    return showLegalDoc === "terms" ? (
+      <Terms onBack={() => setShowLegalDoc(null)} />
+    ) : (
+      <Privacy onBack={() => setShowLegalDoc(null)} />
+    );
   }
 
   if (!user) {

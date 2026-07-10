@@ -144,7 +144,19 @@ function BulkImportModalInner({
 
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Asset Template");
-      XLSX.writeFile(wb, "MotorMedic_Pro_Asset_Template.xlsx");
+      
+      // Generate spreadsheet as an array buffer and download as explicit Blob with correct MIME type
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "MotorMedic_Pro_Asset_Template.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
       console.log("Excel template downloaded successfully.");
     } catch (err: any) {
       console.error("Failed to download Excel template:", err);
@@ -586,7 +598,7 @@ function BulkImportModalInner({
                   type="file" 
                   ref={fileInputRef}
                   onChange={handleFileChange}
-                  accept=".csv, .xlsx, .xls"
+                  accept=".csv, .txt, .xlsx, .xls"
                   disabled={isLoading}
                   className="hidden"
                 />

@@ -1247,6 +1247,15 @@ async function callOpenRouterAPI(modelName: string, prompt: string, fileData?: s
 
   messages.push({ role: "user", content: contentParts });
 
+  if (modelName.toLowerCase().includes("deepseek")) {
+    console.log(`🤖 Payload sent to DeepSeek (via OpenRouter):`, JSON.stringify({
+      model: modelName,
+      messages: messages,
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    }, null, 2));
+  }
+
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -1281,6 +1290,13 @@ async function callDeepSeekAPI(modelName: string, prompt: string, fileData?: str
 
   try {
     const messages = [{ role: "user", content: prompt }];
+    console.log(`🤖 Payload sent directly to DeepSeek (${modelName}):`, JSON.stringify({
+      model: modelName,
+      messages: messages,
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    }, null, 2));
+
     const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: {
@@ -2285,7 +2301,11 @@ Use this history to detect if the vibration levels are worsening over time:
 ${historyText || "No prior history available."}
 
 --- YOUR INSTRUCTIONS ---
-Perform a rigorous analysis. Be objective, precise, and adhere to ISO standards (such as ISO 10816).
+Perform a rigorous analysis. Be objective, precise, and strictly adhere to ISO standards (specifically ISO 10816):
+- Before looking for specific faults, you MUST check the overall vibration velocity against ISO 10816 standards:
+  * Zone A (< 0.28 in/sec): Return 'Normal Operation - No Faults Detected' for final_diagnosis.
+  * Zone B (0.28 - 0.71 in/sec): Return 'Acceptable - Normal Operation with Routine Monitoring' for final_diagnosis.
+  * Zone C & D (> 0.71 in/sec): ONLY THEN proceed to analyze frequency peaks for specific faults (Unbalance, Misalignment, Bearing Defect).
 You MUST output your response in JSON format. Your JSON MUST contain the following structure exactly:
 {
   "data_summary": "A high-level summary of the vibration data and trend levels observed.",
@@ -2516,11 +2536,11 @@ async function callAgent(agent: any, prompt: string, fileData?: string, fileMime
     if (provider === "google") {
       textResponse = await callGeminiAPI(modelName, prompt, fileData, fileMimeType, customKey);
     } else if (provider === "openai") {
-      textResponse = await callOpenAICompatibleAPI("openai", modelName, prompt, fileData, fileMimeType);
+      textResponse = await callOpenAIAPI(modelName, prompt, fileData, fileMimeType);
     } else if (provider === "groq") {
-      textResponse = await callOpenAICompatibleAPI("groq", modelName, prompt, fileData, fileMimeType);
+      textResponse = await callGroqAPI(modelName, prompt, fileData, fileMimeType);
     } else if (provider === "openrouter") {
-      textResponse = await callOpenAICompatibleAPI("openrouter", modelName, prompt, fileData, fileMimeType);
+      textResponse = await callOpenRouterAPI(modelName, prompt, fileData, fileMimeType);
     } else if (provider === "deepseek") {
       textResponse = await callDeepSeekAPI(modelName, prompt, fileData, fileMimeType);
     } else {
@@ -2539,57 +2559,95 @@ async function callAgent(agent: any, prompt: string, fileData?: string, fileMime
 }
 
 async function runMultiAgentDebate(vibrationData: any, assetId: number | null, customKey?: string): Promise<any> {
-  // Step 1: Database Context (RAG)
-  let plantHistory: any[] = [];
-  if (pool && assetId) {
-    try {
-      console.log(`🔍 Querying analysis_history for asset ID: ${assetId}`);
-      const histResult = await pool.query(`
-        SELECT ah.id, ah.measurement_value, ah.units, ah.measurement_date, ah.notes, ah.diagnosis_result,
-               mp.direction, cp.name as cp_name, comp.name as comp_name
-        FROM analysis_history ah
-        JOIN measurement_points mp ON ah.measurement_point_id = mp.id
-        JOIN collection_points cp ON mp.collection_point_id = cp.id
-        JOIN components comp ON cp.component_id = comp.id
-        WHERE comp.asset_id = $1
-        ORDER BY ah.measurement_date DESC, ah.created_at DESC
-        LIMIT 5
-      `, [assetId]);
-      plantHistory = histResult.rows;
-      console.log(`✅ Retrieved ${plantHistory.length} historical trend records for RAG.`);
-    } catch (dbErr: any) {
-      console.warn("⚠️ Failed to retrieve trend history for asset RAG:", dbErr.message);
+  try {
+    // Step 1: Database Context (RAG)
+    let plantHistory: any[] = [];
+    if (pool && assetId) {
+      try {
+        console.log(`🔍 Querying analysis_history for asset ID: ${assetId}`);
+        const histResult = await pool.query(`
+          SELECT ah.id, ah.measurement_value, ah.units, ah.measurement_date, ah.notes, ah.diagnosis_result,
+                 mp.direction, cp.name as cp_name, comp.name as comp_name
+          FROM analysis_history ah
+          JOIN measurement_points mp ON ah.measurement_point_id = mp.id
+          JOIN collection_points cp ON mp.collection_point_id = cp.id
+          JOIN components comp ON cp.component_id = comp.id
+          WHERE comp.asset_id = $1
+          ORDER BY ah.measurement_date DESC, ah.created_at DESC
+          LIMIT 5
+        `, [assetId]);
+        plantHistory = histResult.rows;
+        console.log(`✅ Retrieved ${plantHistory.length} historical trend records for RAG.`);
+      } catch (dbErr: any) {
+        console.warn("⚠️ Failed to retrieve trend history for asset RAG:", dbErr.message);
+      }
     }
-  }
 
-  // Step 2: Live Web Search via Gemini Google Search tool
-  const searchResult = await performWebSearch(vibrationData, customKey);
-  const webContext = searchResult.text;
-  const webSources = searchResult.sources;
+    // Step 2: Live Web Search via Gemini Google Search tool
+    const searchResult = await performWebSearch(vibrationData, customKey);
+    const webContext = searchResult.text;
+    const webSources = searchResult.sources;
 
-  const initialAgents = [
-    {
-      id: "Agent A",
-      name: "Agent A (Gemini)",
-      provider: "google",
-      model: "gemini-3.5-flash",
-      persona: "Expert Condition Monitoring Analyst specializing in ISO 10816 standards, spectral signal analysis, and mechanical anomaly detection."
-    },
-    {
-      id: "Agent B",
-      name: "Agent B (Groq Llama)",
-      provider: "groq",
-      model: "llama-3.3-70b-versatile",
-      persona: "Senior Rotordynamics Specialist with expertise in high-speed machinery fault signatures, rotor dynamics, and structural resonance."
-    },
-    {
-      id: "Agent C",
-      name: "Agent C (DeepSeek OpenRouter)",
-      provider: "openrouter",
-      model: "deepseek/deepseek-chat",
-      persona: "Predictive Maintenance Consultant with expertise in asset health trending, failure modes analysis (FMEA), and risk-prioritized plant maintenance actions."
+    const initialAgents: any[] = [];
+
+    // Verify Gemini key (Google)
+    if (customKey || process.env.GEMINI_API_KEY) {
+      initialAgents.push({
+        id: "Agent A",
+        name: "Agent A (Gemini)",
+        provider: "google",
+        model: "gemini-3.5-flash",
+        persona: "Expert Condition Monitoring Analyst specializing in ISO 10816 standards, spectral signal analysis, and mechanical anomaly detection."
+      });
+    } else {
+      console.warn("⚠️ [Debate Key Validation] GEMINI_API_KEY is missing. Excluding Agent A (Gemini) from debate.");
     }
-  ];
+
+    // Verify Groq key (Groq)
+    if (process.env.GROQ_API_KEY) {
+      initialAgents.push({
+        id: "Agent B",
+        name: "Agent B (Groq Llama)",
+        provider: "groq",
+        model: "llama-3.3-70b-versatile",
+        persona: "Senior Rotordynamics Specialist with expertise in high-speed machinery fault signatures, rotor dynamics, and structural resonance."
+      });
+    } else {
+      console.warn("⚠️ [Debate Key Validation] GROQ_API_KEY is missing. Excluding Agent B (Groq Llama) from debate.");
+    }
+
+    // Verify OpenRouter or direct DeepSeek or OpenAI
+    if (process.env.OPENROUTER_API_KEY) {
+      initialAgents.push({
+        id: "Agent C",
+        name: "Agent C (DeepSeek OpenRouter)",
+        provider: "openrouter",
+        model: "deepseek/deepseek-chat",
+        persona: "Predictive Maintenance Consultant with expertise in asset health trending, failure modes analysis (FMEA), and risk-prioritized plant maintenance actions."
+      });
+    } else if (process.env.DEEPSEEK_API_KEY) {
+      initialAgents.push({
+        id: "Agent C",
+        name: "Agent C (DeepSeek Direct)",
+        provider: "deepseek",
+        model: "deepseek-chat",
+        persona: "Predictive Maintenance Consultant with expertise in asset health trending, failure modes analysis (FMEA), and risk-prioritized plant maintenance actions."
+      });
+    } else if (process.env.OPENAI_API_KEY) {
+      initialAgents.push({
+        id: "Agent C",
+        name: "Agent C (OpenAI)",
+        provider: "openai",
+        model: "gpt-4o",
+        persona: "Predictive Maintenance Consultant with expertise in asset health trending, failure modes analysis (FMEA), and risk-prioritized plant maintenance actions."
+      });
+    } else {
+      console.warn("⚠️ [Debate Key Validation] No key (OPENROUTER_API_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY) available for Agent C. Excluding from debate.");
+    }
+
+    if (initialAgents.length === 0) {
+      throw new Error("No active AI models could be initialized due to missing API keys (GEMINI_API_KEY, GROQ_API_KEY, etc.). Please configure at least one API key.");
+    }
 
   console.log("🎭 Starting Multi-Agent Debate System...");
 
@@ -2784,6 +2842,10 @@ async function runMultiAgentDebate(vibrationData: any, assetId: number | null, c
       active_models_count: activeR2Results.length
     };
   }
+  } catch (error: any) {
+    console.error("❌ Fatal Error in runMultiAgentDebate with stack trace:", error.stack || error);
+    throw error;
+  }
 }
 
 // API Endpoint for Diagnostic Analysis
@@ -2792,6 +2854,15 @@ app.post("/api/diagnose", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
 
   try {
+    if (pool) {
+      try {
+        await pool.query("SELECT 1");
+      } catch (dbErr: any) {
+        console.error("❌ Database connection check failed inside /api/diagnose:", dbErr.stack || dbErr);
+        return res.status(500).json({ error: "Database connection failed" });
+      }
+    }
+
     const { 
       category, 
       symptoms, 
@@ -2908,7 +2979,128 @@ app.post("/api/diagnose", async (req, res) => {
       pastCasesText
     };
 
-    const rawResult = await runMultiAgentDebate(vibrationData, finalAssetId, customKey);
+    // ISO 10816 Baseline logic check
+    let overallVelocity: number | null = null;
+    if (techKey === "vibration") {
+      // 1. Try from specs
+      if (specs && typeof specs === "object") {
+        for (const [key, value] of Object.entries(specs)) {
+          const valStr = String(value);
+          const match = valStr.match(/(\d+(\.\d+)?)\s*(in\/sec|in\/s|ips|ips\s+rms|in\/s\s+rms|in\/sec\s+rms)/i);
+          if (match) {
+            overallVelocity = parseFloat(match[1]);
+            break;
+          }
+          if (key.toLowerCase().includes("velocity") || key.toLowerCase().includes("vibration_level") || key.toLowerCase().includes("vibration")) {
+            const parsedNum = parseFloat(valStr.replace(/[^\d.]/g, ''));
+            if (!isNaN(parsedNum)) {
+              overallVelocity = parsedNum;
+              break;
+            }
+          }
+        }
+      }
+
+      // 2. Try from symptoms text
+      if (overallVelocity === null && symptoms) {
+        const symptomsStr = String(symptoms);
+        const match = symptomsStr.match(/(\d+(\.\d+)?)\s*(in\/sec|in\/s|ips|ips\s+rms|in\/s\s+rms|in\/sec\s+rms)/i);
+        if (match) {
+          overallVelocity = parseFloat(match[1]);
+        }
+      }
+
+      // 3. Try from baselineData text
+      if (overallVelocity === null && baselineData) {
+        const baseStr = String(baselineData);
+        const match = baseStr.match(/(\d+(\.\d+)?)\s*(in\/sec|in\/s|ips|ips\s+rms|in\/s\s+rms|in\/sec\s+rms)/i);
+        if (match) {
+          overallVelocity = parseFloat(match[1]);
+        }
+      }
+    }
+
+    let rawResult: any = null;
+
+    if (overallVelocity !== null && techKey === "vibration") {
+      console.log(`📊 Programmatic ISO 10816 Baseline Check: Overall vibration level is ${overallVelocity} in/sec`);
+      if (overallVelocity < 0.28) {
+        console.log(`✅ ISO 10816 Baseline - Zone A detected (< 0.28 in/sec). Returning Normal Operation.`);
+        rawResult = {
+          equipment_status: "HEALTHY",
+          confidence_score: 100,
+          overall_vibration_level: `${overallVelocity} in/sec RMS`,
+          iso_severity_zone: "A",
+          failure_stage: "Incipient",
+          primary_fault_name: "Normal Operation - No Faults Detected",
+          final_diagnosis: "Normal Operation - No Faults Detected",
+          data_summary: `Overall vibration velocity is well within safe ISO 10816 limits (Zone A) at ${overallVelocity} in/sec. Equipment is running normally.`,
+          reasoning_steps: [
+            "Check overall vibration level against ISO 10816 standard.",
+            `Extracted overall velocity is ${overallVelocity} in/sec, which falls in Zone A (< 0.28 in/sec).`,
+            "Confirm normal operations; no mechanical faults detected."
+          ],
+          evidence: `Vibration velocity (${overallVelocity} in/sec) is below the 0.28 in/sec ISO threshold.`,
+          probable_faults: [],
+          runner_up_faults: [],
+          manager_summary: {
+            severity: "Low",
+            executive_brief: `Normal Operation - No Faults Detected. The overall vibration level of ${overallVelocity} in/sec is completely normal and healthy.`,
+            estimated_downtime: "0 hours",
+            cost_estimate: "$0",
+            business_impact: "None"
+          },
+          technician_instructions: "No action required. Continue standard plant operational intervals.",
+          immediate_actions: [],
+          verification_steps: ["No action required for healthy machine."]
+        };
+      } else if (overallVelocity >= 0.28 && overallVelocity <= 0.71) {
+        console.log(`✅ ISO 10816 Baseline - Zone B detected (0.28 - 0.71 in/sec). Returning Acceptable - Normal Operation with Routine Monitoring.`);
+        rawResult = {
+          equipment_status: "HEALTHY",
+          confidence_score: 95,
+          overall_vibration_level: `${overallVelocity} in/sec RMS`,
+          iso_severity_zone: "B",
+          failure_stage: "Incipient",
+          primary_fault_name: "Acceptable - Normal Operation with Routine Monitoring",
+          final_diagnosis: "Acceptable - Normal Operation with Routine Monitoring",
+          data_summary: `Overall vibration velocity is acceptable but requires routine monitoring under ISO 10816 limits (Zone B) at ${overallVelocity} in/sec.`,
+          reasoning_steps: [
+            "Check overall vibration level against ISO 10816 standard.",
+            `Extracted overall velocity is ${overallVelocity} in/sec, which falls in Zone B (0.28 - 0.71 in/sec).`,
+            "Confirm acceptable operations; routine monitoring recommended."
+          ],
+          evidence: `Vibration velocity (${overallVelocity} in/sec) is within the 0.28 - 0.71 in/sec acceptable range.`,
+          probable_faults: [],
+          runner_up_faults: [],
+          manager_summary: {
+            severity: "Low",
+            executive_brief: `Acceptable - Normal Operation with Routine Monitoring. The overall vibration level of ${overallVelocity} in/sec is acceptable but requires routine monitoring.`,
+            estimated_downtime: "0 hours",
+            cost_estimate: "$0",
+            business_impact: "Low risk. Monitor periodically."
+          },
+          technician_instructions: "No immediate repair required. Schedule routine vibration scans during monthly intervals.",
+          immediate_actions: [
+            {
+              action: "Schedule routine vibration scan",
+              priority: "3",
+              timeline: "Next scheduled interval (monthly)",
+              safety_warning: "Observe standard plant safety protocols.",
+              rationale: "To monitor overall level and detect potential progression early.",
+              estimated_time: "1 hour",
+              required_tools: ["Vibration analyzer"]
+            }
+          ],
+          verification_steps: ["Verify overall level remains stable during routine monthly routes."]
+        };
+      }
+    }
+
+    if (!rawResult) {
+      console.log(`🔍 ISO 10816 Baseline - Zone C/D or velocity not found. Dispatching to AI debate...`);
+      rawResult = await runMultiAgentDebate(vibrationData, finalAssetId, customKey);
+    }
 
     if (!rawResult) {
       console.error("❌ All debate AI models failed to generate a diagnosis.");
@@ -2917,6 +3109,23 @@ app.post("/api/diagnose", async (req, res) => {
 
     // Normalize output to protect against missing keys or formatting variations from different LLMs
     const result = normalizeDiagnosticResponse(rawResult);
+
+    // Enforce 70% confidence threshold consensus override
+    if (result.confidence_score < 70) {
+      console.log(`⚠️ Diagnostic confidence score (${result.confidence_score}%) is below 70% threshold. Forcing consensus override.`);
+      result.primary_fault_name = "Insufficient Data - Manual Review Recommended";
+      result.final_diagnosis = "Insufficient Data - Manual Review Recommended";
+      if (result.manager_summary) {
+        result.manager_summary.executive_brief = "Confidence score fell below 70% threshold. Recommended manual review of the vibration spectra.";
+      }
+      result.probable_faults = [{
+        fault_name: "Insufficient Data - Manual Review Recommended",
+        probability: result.confidence_score,
+        physical_explanation: "Confidence score is too low (< 70%) to provide a high-fidelity diagnostic. Recommended onsite manual verification.",
+        supporting_evidence: "Ambiguous spectra or conflicting symptoms.",
+        calculated_frequencies: "N/A"
+      }];
+    }
 
     // Set fallback property to false and tag with successful model
     result.isSimulatedFallback = false;
@@ -3045,8 +3254,20 @@ app.post("/api/diagnose", async (req, res) => {
     return res.json(result);
 
   } catch (error: any) {
-    console.error("Diagnosis route fatal error:", error);
-    return res.status(503).json({ error: "All AI models are currently unavailable" });
+    console.error("❌ Diagnosis route fatal error with stack trace:", error.stack || error);
+    
+    // Check if it's a database connection error
+    if (error.message && (
+      error.message.toLowerCase().includes("connect") ||
+      error.message.toLowerCase().includes("connection") ||
+      error.message.toLowerCase().includes("pool") ||
+      error.message.toLowerCase().includes("postgresql") ||
+      error.code === "ECONNREFUSED"
+    )) {
+      return res.status(500).json({ error: "Database connection failed" });
+    }
+    
+    return res.status(500).json({ error: error.message || "An unexpected error occurred during diagnostics." });
   }
 });
 

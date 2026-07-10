@@ -289,6 +289,7 @@ export default function Diagnose({
   const [loadingMessage, setLoadingMessage] = useState("");
   const [diagnosticResult, setDiagnosticResult] = useState<DiagnosticResponse | null>(null);
   const [isCopied, setIsCopied] = useState(false);
+  const [isReportCopied, setIsReportCopied] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [analysisCache, setAnalysisCache] = useState<Record<string, DiagnosticResponse>>({});
 
@@ -931,6 +932,76 @@ DISPATCHED BY: MotorMedic Pro AI
     setIsCopied(true);
     setToastMsg("Work order copied to clipboard! Ready to paste into SAP/Maximo.");
     setTimeout(() => setIsCopied(false), 3000);
+  };
+
+  // Format and copy the complete diagnostic report to clipboard
+  const handleCopyFullReport = () => {
+    if (!diagnosticResult) return;
+
+    const d = diagnosticResult;
+    const selectedPlant = plants.find(p => p.id === selectedPlantId);
+    const selectedRoute = routesList.find(r => r.id === selectedRouteId);
+    const selectedAsset = assetsList.find(a => a.id === selectedAssetId);
+    const selectedComponent = componentsList.find(c => c.id === selectedComponentId);
+
+    const plantName = selectedPlant?.name || "Unspecified Plant";
+    const routeName = selectedRoute?.name || "Unspecified Route";
+    const assetName = selectedAsset?.name || "Unspecified Asset";
+    const componentName = selectedComponent?.name || "Unspecified Component";
+    const tag = specs?.tag || specs?.tagNumber || specs?.tag_number || "TAG-UNSPECIFIED";
+
+    const timestamp = new Date().toLocaleString();
+
+    let text = `==================================================
+📋 MOTOR_MEDIC PRO AI DIAGNOSTIC REPORT
+==================================================
+ASSET CONTEXT:
+  - Plant: ${plantName}
+  - Route: ${routeName}
+  - Asset: ${assetName}
+  - Component: ${componentName}
+  - Tag: ${tag}
+  - Timestamp: ${timestamp}
+
+HEALTH STATUS SUMMARY:
+  - Equipment Status: ${d.equipment_status}
+  - Overall Vibration Level: ${d.overall_vibration_level || "N/A"}
+  - ISO 10816 Zone: ${d.iso_severity_zone || "N/A"}
+  - Confidence Score: ${d.confidence_score}%
+
+EXECUTIVE BRIEF:
+${d.manager_summary?.executive_brief || "No summary brief available."}
+
+DIAGNOSTIC REASONING:
+${d.manager_summary?.reasoning || "No reasoning details available."}
+
+PROBABLE FAULTS IDENTIFIED:
+`;
+
+    if (d.probable_faults && d.probable_faults.length > 0) {
+      d.probable_faults.forEach((f, idx) => {
+        text += `  [${idx + 1}] Fault: ${f.fault_name || f.fault || "Unknown Anomaly"}\n`;
+        text += `      Probability: ${f.probability}%\n`;
+        text += `      Confidence Level: ${f.confidence}\n`;
+        if (f.description) text += `      Details: ${f.description}\n`;
+      });
+    } else {
+      text += "  - No specific faults detected (Normal Operation).\n";
+    }
+
+    if (d.immediate_actions && d.immediate_actions.length > 0) {
+      text += `\nRECOMMENDED ACTIONS:\n`;
+      d.immediate_actions.forEach((act: any, idx) => {
+        text += `  - [Action ${idx + 1}]: ${act.action || act} (Priority: ${act.priority || "Normal"})\n`;
+      });
+    }
+
+    text += `\n==================================================\nDISPATCHED BY: MotorMedic Pro AI Multi-Agent Console`;
+
+    navigator.clipboard.writeText(text);
+    setIsReportCopied(true);
+    setToastMsg("Report copied to clipboard!");
+    setTimeout(() => setIsReportCopied(false), 3000);
   };
 
   // Export PDF Report using ReportGenerator module
@@ -2051,6 +2122,13 @@ DISPATCHED BY: MotorMedic Pro AI
               >
                 {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{isCopied ? "Copied!" : "Copy CMMS Work Order"}</span>
+              </button>
+              <button
+                onClick={handleCopyFullReport}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-slate-700 font-semibold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow"
+              >
+                {isReportCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{isReportCopied ? "Copied!" : "Copy Report to Clipboard"}</span>
               </button>
               <button
                 onClick={handleExportPDF}
