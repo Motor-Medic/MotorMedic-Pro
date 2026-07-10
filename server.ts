@@ -2302,10 +2302,10 @@ ${historyText || "No prior history available."}
 
 --- YOUR INSTRUCTIONS ---
 Perform a rigorous analysis. Be objective, precise, and strictly adhere to ISO standards (specifically ISO 10816):
-- Before looking for specific faults, you MUST check the overall vibration velocity against ISO 10816 standards:
-  * Zone A (< 0.28 in/sec): Return 'Normal Operation - No Faults Detected' for final_diagnosis.
-  * Zone B (0.28 - 0.71 in/sec): Return 'Acceptable - Normal Operation with Routine Monitoring' for final_diagnosis.
-  * Zone C & D (> 0.71 in/sec): ONLY THEN proceed to analyze frequency peaks for specific faults (Unbalance, Misalignment, Bearing Defect).
+- You MUST FIRST check the overall vibration velocity against ISO 10816 standards:
+  * If the overall vibration velocity is < 0.28 in/sec (Zone A), you MUST return 'Normal Operation - No Faults Detected' for final_diagnosis. You are strictly forbidden from diagnosing specific mechanical faults for healthy machines in Zone A.
+  * If the overall vibration velocity is Zone B (0.28 - 0.71 in/sec), you MUST return 'Acceptable - Normal Operation with Routine Monitoring' for final_diagnosis.
+  * Only if the overall vibration velocity is > 0.71 in/sec (Zone C & D) should you proceed to analyze frequency peaks and look for specific mechanical faults (such as Unbalance, Misalignment, Bearing Defect, or looseness).
 You MUST output your response in JSON format. Your JSON MUST contain the following structure exactly:
 {
   "data_summary": "A high-level summary of the vibration data and trend levels observed.",
@@ -3502,7 +3502,10 @@ app.post("/api/send-alert", async (req, res) => {
 let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
   if (!stripeClient) {
-    const key = process.env.STRIPE_SECRET_KEY || "process.env.STRIPE_SECRET_KEY";
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) {
+      throw new Error("STRIPE_SECRET_KEY environment variable is required to process payments");
+    }
     stripeClient = new Stripe(key, {
       apiVersion: "2023-10-16" as any
     });

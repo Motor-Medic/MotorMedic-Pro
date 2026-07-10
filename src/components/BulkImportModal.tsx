@@ -235,8 +235,8 @@ function BulkImportModalInner({
     setIsLoading(true);
 
     try {
-      if (ext === "csv") {
-        console.log("Parsing CSV...");
+      if (ext === "csv" || ext === "txt") {
+        console.log("Parsing CSV/Text file...");
         Papa.parse(file, {
           header: true,
           skipEmptyLines: true,
@@ -249,17 +249,17 @@ function BulkImportModalInner({
                 autoMapColumns(results.meta.fields);
                 setStep(2);
               } else {
-                setParseError("Failed to parse CSV file. Please check the format and try again.");
+                setParseError("Failed to parse CSV/text file. Please check the column headers and ensure it contains valid data rows.");
               }
             } catch (err: any) {
-              console.error("CSV complete processing error:", err);
-              setParseError("Failed to parse CSV file. Please check the format and try again.");
+              console.error("CSV/Text complete processing error:", err);
+              setParseError("Failed to process parsed file data. Please verify the format.");
             }
           },
           error: (err) => {
             setIsLoading(false);
-            console.error("CSV parse error:", err);
-            setParseError("Failed to parse CSV file. Please check the format and try again.");
+            console.error("CSV/Text parse error:", err);
+            setParseError("Failed to parse CSV/text file. Ensure the file is not corrupted.");
           }
         });
       } else if (ext === "xlsx" || ext === "xls") {
@@ -291,23 +291,23 @@ function BulkImportModalInner({
             }
           } catch (error: any) {
             console.error("Excel parse error:", error);
-            setParseError("Failed to parse CSV file. Please check the format and try again.");
+            setParseError("Failed to parse Excel file. Ensure the sheet has column headers.");
           }
         };
         reader.onerror = (err) => {
           setIsLoading(false);
           console.error("FileReader error:", err);
-          setParseError("Failed to parse CSV file. Please check the format and try again.");
+          setParseError("FileReader failed to read the Excel file.");
         };
         reader.readAsArrayBuffer(file);
       } else {
         setIsLoading(false);
-        setParseError("Unsupported file format. Please upload a .csv or .xlsx file.");
+        setParseError("Unsupported file format. Please upload a .csv, .txt, .xlsx, or .xls file.");
       }
     } catch (err: any) {
       setIsLoading(false);
       console.error("File processing crashed:", err);
-      setParseError("Failed to parse CSV file. Please check the format and try again.");
+      setParseError("An unexpected error occurred while reading the file.");
     }
   };
 
