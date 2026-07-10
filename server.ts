@@ -3502,7 +3502,7 @@ app.post("/api/send-alert", async (req, res) => {
 let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
   if (!stripeClient) {
-    const key = process.env.STRIPE_SECRET_KEY || "sk_test_51To60TQfze97pRyvNKAbSwIUuMAUPyonLAd61CRCuGhQcfSX7A5M3UFxVKafl0QMQxXe8MBFLUMbSe3aZpsl9R4700StUaBACc";
+    const key = process.env.STRIPE_SECRET_KEY || "process.env.STRIPE_SECRET_KEY";
     stripeClient = new Stripe(key, {
       apiVersion: "2023-10-16" as any
     });
