@@ -2726,8 +2726,8 @@ async function runMultiAgentDebate(vibrationData: any, assetId: number | null, c
     console.log(`- Bearing Defect Frequencies (BPFO/BPFI): ${vibrationData.specs?.bpfo || vibrationData.specs?.bpfi || "Not explicitly specified"}`);
     console.log(`- Physical Symptoms: ${vibrationData.symptoms || "None"}`);
 
-    const openAiKey = process.env.OPENAI_API_KEY || const openaiKey = process.env.OPENAI_API_KEY;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || const anthropicKey = process.env.ANTHROPIC_API_KEY;
+      const openaiKey = process.env.OPENAI_API_KEY;
+      const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
     const openai = new OpenAI({ apiKey: openAiKey });
     const anthropic = new Anthropic({ apiKey: anthropicKey });
