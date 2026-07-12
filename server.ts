@@ -2726,8 +2726,8 @@ async function runMultiAgentDebate(vibrationData: any, assetId: number | null, c
     console.log(`- Bearing Defect Frequencies (BPFO/BPFI): ${vibrationData.specs?.bpfo || vibrationData.specs?.bpfi || "Not explicitly specified"}`);
     console.log(`- Physical Symptoms: ${vibrationData.symptoms || "None"}`);
 
-    const openAiKey = process.env.OPENAI_API_KEY || process.env["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"] || "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";
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || process.env["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"] || "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";
+    const openAiKey = process.env.OPENAI_API_KEY || const openaiKey = process.env.OPENAI_API_KEY;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
     const openai = new OpenAI({ apiKey: openAiKey });
     const anthropic = new Anthropic({ apiKey: anthropicKey });
