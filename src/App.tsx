@@ -14,6 +14,7 @@ import LegalDocuments from "./components/LegalDocuments";
 import Terms from "./components/Terms";
 import Privacy from "./components/Privacy";
 import AlertsManager from "./components/AlertsManager";
+import AIChatbot from "./components/AIChatbot";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings
 } from "lucide-react";
@@ -1323,6 +1324,9 @@ export default function App() {
           onSetupComplete={handleOnboardingComplete} 
         />
       )}
+
+      {/* Custom AI Chatbot */}
+      <AIChatbot />
 
     </div>
   );

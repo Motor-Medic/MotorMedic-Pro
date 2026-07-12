@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
@@ -19,7 +20,7 @@
     "jspdf": "^4.2.1",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
-    "openai": "^6.45.0",
+    "openai": "^6.46.0",
     "papaparse": "^5.5.4",
     "pg": "^8.11.3",
     "react": "^19.0.1",

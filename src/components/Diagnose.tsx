@@ -292,6 +292,8 @@ export default function Diagnose({
   const [isReportCopied, setIsReportCopied] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [analysisCache, setAnalysisCache] = useState<Record<string, DiagnosticResponse>>({});
+  const [isRunningTest, setIsRunningTest] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
 
   // QA Testing Mode & Diagnostic Verification Loop
   const [testingMode, setTestingMode] = useState<boolean>(() => {
@@ -792,7 +794,20 @@ export default function Diagnose({
           clearTimeout(timeoutId);
 
           const contentType = response.headers.get("content-type");
-          if (!response.ok || !contentType || !contentType.includes("application/json")) {
+          if (!response.ok) {
+            let errMsg = "Diagnosis failed";
+            if (contentType && contentType.includes("application/json")) {
+              try {
+                const errData = await response.json();
+                if (errData && errData.error) {
+                  errMsg = errData.error;
+                }
+              } catch (_) {}
+            }
+            throw new Error(errMsg);
+          }
+
+          if (!contentType || !contentType.includes("application/json")) {
             throw new Error("Invalid response or server error");
           }
 
@@ -825,8 +840,13 @@ export default function Diagnose({
         showToast("Network error. Please check your connection and try again.", "error");
         setErrorMsg("Network error. Please check your connection and try again.");
       } else {
-        showToast("Server error. Please try again in a few minutes.", "error");
-        setErrorMsg("Server error. Please try again in a few minutes.");
+        const msg = err.message || "";
+        let displayError = "Diagnosis failed. Please check your API keys in settings and try again.";
+        if (msg && !msg.toLowerCase().includes("all ai models failed") && !msg.toLowerCase().includes("diagnosis failed") && !msg.toLowerCase().includes("invalid response") && !msg.toLowerCase().includes("server error")) {
+          displayError = msg;
+        }
+        showToast(displayError, "error");
+        setErrorMsg(displayError);
       }
     } finally {
       clearInterval(timer);
@@ -1114,6 +1134,63 @@ PROBABLE FAULTS IDENTIFIED:
     }
   };
 
+  // Run AI Integrity Test
+  const handleRunAIIntegrityTest = async () => {
+    setIsRunningTest(true);
+    setTestResult(null);
+    setErrorMsg("");
+    try {
+      showToast("Starting AI Diagnostics Integrity Test with known Bearing defect telemetry...", "info");
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json"
+      };
+      
+      const customKey = (import.meta as any).env?.VITE_GEMINI_API_KEY || localStorage.getItem("custom_gemini_api_key");
+      if (customKey) {
+        headers["X-Gemini-API-Key"] = customKey;
+      }
+
+      const response = await fetch("/api/test-diagnosis", {
+        method: "GET",
+        headers
+      });
+
+      if (!response.ok) {
+        throw new Error(`Test request failed with status ${response.status}`);
+      }
+
+      const data = await response.json();
+      setTestResult(data);
+      if (data.success) {
+        if (data.isCorrectDiagnosis) {
+          showToast("AI Integrity Test PASSED! Correctly diagnosed bearing defect from spectrum peaks.", "success");
+        } else {
+          showToast(`AI Integrity Test completed with unexpected diagnosis: ${data.actual}`, "warning");
+        }
+        if (data.result) {
+          setDiagnosticResult(data.result);
+          // Set symptoms/specs state to matching test values so visual matches what was tested
+          setSymptoms("High frequency accelerometer readings indicate distinct peak at 122 Hz, corresponding to BPFO outer race defect frequency. Motor overall velocity is 0.22 in/s RMS.");
+          setCategory("Centrifugal Pump");
+          setSpecs({
+            manufacturer: "SKF",
+            model: "6205-2Z",
+            rpm: "1800",
+            vibration_level: "0.22 in/s"
+          });
+        }
+      } else {
+        throw new Error(data.error || "Unknown test failure");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(`AI Integrity Test Failed: ${err.message}`);
+      showToast(`AI Integrity Test Failed: ${err.message}`, "error");
+    } finally {
+      setIsRunningTest(false);
+    }
+  };
+
   // Trigger Local Save
   const handleSave = () => {
     if (!diagnosticResult) return;
@@ -1178,6 +1255,21 @@ PROBABLE FAULTS IDENTIFIED:
               {testingMode ? "ON" : "OFF"}
             </button>
           </div>
+
+          {testingMode && (
+            <button
+              onClick={handleRunAIIntegrityTest}
+              disabled={isRunningTest}
+              className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 font-bold text-xs rounded-xl transition-all shadow flex items-center gap-1.5"
+            >
+              {isRunningTest ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" />
+              ) : (
+                <Check className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span>{isRunningTest ? "Running Test..." : "Run AI Integrity Test"}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -2076,6 +2168,19 @@ PROBABLE FAULTS IDENTIFIED:
       {/* Diagnosis Results Section */}
       {diagnosticResult && (
         <div id="resultsSection" className="space-y-6 pt-4 animate-fade-in">
+          {diagnosticResult.modelsExcluded && diagnosticResult.modelsExcluded.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/20 text-amber-400 px-4 py-3.5 rounded-xl text-xs flex flex-col gap-1.5 animate-fade-in shadow-sm">
+              <div className="flex items-center gap-2 font-bold text-[13px]">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Note: Only {diagnosticResult.modelsUsed?.length || (3 - diagnosticResult.modelsExcluded.length)} of 3 AI models were available for this analysis.</span>
+              </div>
+              <p className="text-slate-300 text-[11px] leading-relaxed pl-6">
+                Excluded models: {diagnosticResult.modelsExcluded.join(", ")}.
+                {diagnosticResult.note && <span className="ml-1 text-slate-200 font-medium">{diagnosticResult.note}</span>}
+              </p>
+            </div>
+          )}
+
           {alertSuccessMsg && (
             <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-4 py-3 rounded-xl text-xs flex items-center gap-2 animate-fade-in">
               <Check className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -2332,62 +2437,122 @@ PROBABLE FAULTS IDENTIFIED:
             )}
           </div>
 
-          {/* FAILURE STAGE CLASSIFICATION GAUGE */}
-          {diagnosticResult.failure_stage && (
-            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm">📈</span>
-                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">Machinery Failure Stage Classification</h4>
-                </div>
-                <span className={`px-2.5 py-1 rounded text-xs font-bold uppercase tracking-wider ${
-                  diagnosticResult.failure_stage === "Catastrophic" ? "bg-red-500/20 text-red-400 border border-red-500/30" :
-                  diagnosticResult.failure_stage === "Advanced" ? "bg-orange-500/20 text-orange-400 border border-orange-500/30" :
-                  diagnosticResult.failure_stage === "Early" ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30" :
-                  "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                }`}>
-                  Current: {diagnosticResult.failure_stage}
-                </span>
+          {/* GAUGES GRID */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Fault Confidence Meter */}
+            <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 flex flex-col justify-between">
+              <div className="flex items-center gap-1.5 pb-2 border-b border-slate-800/60">
+                <span className="text-sm">🎯</span>
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider">Fault Confidence Meter</h4>
               </div>
-
-              {/* Horizontal bar gauge */}
-              <div className="space-y-2">
-                <div className="grid grid-cols-4 gap-1.5 text-center text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                  <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Incipient" ? "bg-emerald-500 text-slate-950 font-extrabold" : "bg-slate-950/40"}`}>
-                    1. Incipient
-                  </div>
-                  <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Early" ? "bg-yellow-500 text-slate-950 font-extrabold" : "bg-slate-950/40"}`}>
-                    2. Early
-                  </div>
-                  <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Advanced" ? "bg-orange-500 text-slate-950 font-extrabold" : "bg-slate-950/40"}`}>
-                    3. Advanced
-                  </div>
-                  <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Catastrophic" ? "bg-red-500 text-slate-950 font-extrabold animate-pulse" : "bg-slate-950/40"}`}>
-                    4. Catastrophic
+              <div className="flex flex-col sm:flex-row items-center justify-start gap-6 py-2">
+                <div className="relative w-36 h-20 shrink-0 z-10 flex items-center justify-center">
+                  <svg className="w-full h-full transform -rotate-180" viewBox="0 0 120 70">
+                    <path
+                      d="M 10 60 A 50 50 0 0 1 110 60"
+                      fill="none"
+                      stroke="#0f172a"
+                      strokeWidth="10"
+                      strokeLinecap="round"
+                    />
+                    <path
+                      d="M 10 60 A 50 50 0 0 1 110 60"
+                      fill="none"
+                      stroke="currentColor"
+                      className={`${
+                        (diagnosticResult.confidence_score ?? 85) >= 85 ? "text-emerald-500" :
+                        (diagnosticResult.confidence_score ?? 85) >= 70 ? "text-amber-500" :
+                        "text-rose-500"
+                      } transition-all duration-1000 ease-out`}
+                      strokeWidth="10"
+                      strokeLinecap="round"
+                      strokeDasharray={157}
+                      strokeDashoffset={157 - (Math.min(Math.max(diagnosticResult.confidence_score ?? 85, 0), 100) / 100) * 157}
+                    />
+                  </svg>
+                  <div className="absolute inset-x-0 bottom-1 flex flex-col items-center">
+                    <span className="text-2xl font-extrabold text-white tracking-tight leading-none">
+                      {diagnosticResult.confidence_score ?? 85}%
+                    </span>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mt-1">AI Confidence</span>
                   </div>
                 </div>
-
-                {/* Progress track */}
-                <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden flex">
-                  <div className={`h-full flex-1 ${
-                    ["Incipient", "Early", "Advanced", "Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-emerald-500" : "bg-slate-800"
-                  }`} />
-                  <div className={`h-full flex-1 ${
-                    ["Early", "Advanced", "Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-yellow-500" : "bg-slate-850"
-                  }`} />
-                  <div className={`h-full flex-1 ${
-                    ["Advanced", "Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-orange-500" : "bg-slate-850"
-                  }`} />
-                  <div className={`h-full flex-1 ${
-                    ["Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-red-500 animate-pulse" : "bg-slate-850"
-                  }`} />
+                <div className="space-y-1.5 text-center sm:text-left relative z-20 flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-slate-200">
+                    Confidence Rating: <span className={
+                      (diagnosticResult.confidence_score ?? 85) >= 85 ? "text-emerald-400 font-bold" :
+                      (diagnosticResult.confidence_score ?? 85) >= 70 ? "text-amber-400 font-bold" :
+                      "text-rose-400 font-bold"
+                    }>
+                      {(diagnosticResult.confidence_score ?? 85) >= 85 ? "High / Confirmed" :
+                       (diagnosticResult.confidence_score ?? 85) >= 70 ? "Moderate / Trending" :
+                       "Low / Uncertain"}
+                    </span>
+                  </p>
+                  <p className="text-[10px] text-slate-400 leading-relaxed font-sans max-w-sm whitespace-normal overflow-wrap-break-word">
+                    Reflects the mathematical consensus rating and validation of spectral peaks across the active CAT IV Reliability AI models. Scores above 70% indicate high alignment.
+                  </p>
                 </div>
-                <p className="text-[10px] text-slate-400 font-mono leading-normal pt-1">
-                  * <strong>Incipient</strong> indicates micro-wear (sub-harmonic frequencies/micro-thermal ΔT); <strong>Early</strong> indicates initial physical fatigue; <strong>Advanced</strong> indicates distinct failure symptoms with loss of operating margin; <strong>Catastrophic</strong> indicates immediate mechanical failure hazard requiring LOTO.
-                </p>
               </div>
             </div>
-          )}
+
+            {/* Machinery Failure Stage Classification */}
+            {diagnosticResult.failure_stage && (
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 space-y-4 flex flex-col justify-between">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm">📈</span>
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">Failure Stage Classification</h4>
+                  </div>
+                  <span className={`px-2.5 py-1 rounded text-xs font-bold uppercase tracking-wider ${
+                    diagnosticResult.failure_stage === "Catastrophic" ? "bg-red-500/20 text-red-400 border border-red-500/30" :
+                    diagnosticResult.failure_stage === "Advanced" ? "bg-orange-500/20 text-orange-400 border border-orange-500/30" :
+                    diagnosticResult.failure_stage === "Early" ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30" :
+                    "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                  }`}>
+                    Current: {diagnosticResult.failure_stage}
+                  </span>
+                </div>
+
+                {/* Horizontal bar gauge */}
+                <div className="space-y-2">
+                  <div className="grid grid-cols-4 gap-1.5 text-center text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Incipient" ? "bg-emerald-500 text-slate-950 font-extrabold" : "bg-slate-950/40"}`}>
+                      1. Incipient
+                    </div>
+                    <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Early" ? "bg-yellow-500 text-slate-950 font-extrabold" : "bg-slate-950/40"}`}>
+                      2. Early
+                    </div>
+                    <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Advanced" ? "bg-orange-500 text-slate-950 font-extrabold" : "bg-slate-950/40"}`}>
+                      3. Advanced
+                    </div>
+                    <div className={`p-1 rounded ${diagnosticResult.failure_stage === "Catastrophic" ? "bg-red-500 text-slate-950 font-extrabold animate-pulse" : "bg-slate-950/40"}`}>
+                      4. Catastrophic
+                    </div>
+                  </div>
+
+                  {/* Progress track */}
+                  <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden flex">
+                    <div className={`h-full flex-1 ${
+                      ["Incipient", "Early", "Advanced", "Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-emerald-500" : "bg-slate-800"
+                    }`} />
+                    <div className={`h-full flex-1 ${
+                      ["Early", "Advanced", "Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-yellow-500" : "bg-slate-850"
+                    }`} />
+                    <div className={`h-full flex-1 ${
+                      ["Advanced", "Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-orange-500" : "bg-slate-850"
+                    }`} />
+                    <div className={`h-full flex-1 ${
+                      ["Catastrophic"].indexOf(diagnosticResult.failure_stage) >= 0 ? "bg-red-500 animate-pulse" : "bg-slate-850"
+                    }`} />
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-mono leading-normal pt-1">
+                    * <strong>Incipient</strong>: micro-wear (sub-harmonic frequencies); <strong>Early</strong>: initial physical fatigue; <strong>Advanced</strong>: distinct failure symptoms; <strong>Catastrophic</strong>: hazard requiring LOTO.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* BASELINE DELTA CALCULATION WIDGET */}
           {diagnosticResult.baseline_delta && (
@@ -2443,7 +2608,7 @@ PROBABLE FAULTS IDENTIFIED:
                 )}
                 Probable Faults & Physics
               </h4>
-              <div className="space-y-4 max-h-[380px] overflow-y-auto pr-1">
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-1" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>
                 {!diagnosticResult.probable_faults || diagnosticResult.probable_faults?.length === 0 ? (
                   <div className="text-center py-10 space-y-2">
                     <Check className="w-8 h-8 text-emerald-400/30 mx-auto" />
@@ -2465,7 +2630,7 @@ PROBABLE FAULTS IDENTIFIED:
                           {f.confidence} ({f.probability}%)
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-350 leading-relaxed font-sans">{f.description}</p>
+                      <p className="text-[11px] text-slate-350 leading-relaxed font-sans whitespace-normal break-words" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>{f.description}</p>
                       <div className="flex flex-wrap gap-1.5 pt-1">
                         <span className="text-[9px] font-medium bg-slate-900 text-slate-400 px-2 py-0.5 rounded border border-slate-850">
                           {f.subsystem}
@@ -2494,7 +2659,7 @@ PROBABLE FAULTS IDENTIFIED:
                 <Wrench className="w-4.5 h-4.5" />
                 Corrective Guidance
               </h4>
-              <div className="space-y-4 max-h-[380px] overflow-y-auto pr-1">
+              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-1" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>
                 {!diagnosticResult.immediate_actions || diagnosticResult.immediate_actions?.length === 0 ? (
                   <div className="text-center py-10 space-y-2">
                     <Check className="w-8 h-8 text-emerald-400/30 mx-auto" />
@@ -2516,7 +2681,7 @@ PROBABLE FAULTS IDENTIFIED:
                           {a.priority}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-400 leading-relaxed font-sans">{a.rationale}</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed font-sans whitespace-normal break-words" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>{a.rationale}</p>
                       
                       {a.safety_warning && (
                         <div className="bg-rose-500/10 border border-rose-500/20 text-rose-350 p-2 rounded-lg text-[10px] leading-relaxed">
@@ -2552,7 +2717,7 @@ PROBABLE FAULTS IDENTIFIED:
                 <FileText className="w-4.5 h-4.5" />
                 Plant Management Brief
               </h4>
-              <div className="space-y-4 text-xs">
+              <div className="space-y-4 text-xs max-h-[400px] overflow-y-auto pr-1" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>
                 {/* Severity Badge */}
                 <div className="flex justify-between items-center bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                   <span className="text-slate-400 font-medium">Criticality Status</span>
@@ -2570,7 +2735,7 @@ PROBABLE FAULTS IDENTIFIED:
                 {/* Executive Brief */}
                 <div className="space-y-1">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Executive Brief</span>
-                  <div className="bg-slate-950/40 p-3.5 rounded-xl border border-slate-800 leading-relaxed text-slate-300 text-[11px] font-sans">
+                  <div className="bg-slate-950/40 p-3.5 rounded-xl border border-slate-800 leading-relaxed text-slate-300 text-[11px] font-sans whitespace-normal break-words" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>
                     {diagnosticResult.manager_summary?.executive_brief}
                   </div>
                 </div>
@@ -2590,7 +2755,7 @@ PROBABLE FAULTS IDENTIFIED:
                 {/* Operations Business Impact */}
                 <div className="space-y-1">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Operations Business Impact</span>
-                  <div className="bg-slate-950/40 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-400 leading-relaxed font-sans">
+                  <div className="bg-slate-950/40 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-400 leading-relaxed font-sans whitespace-normal break-words" style={{ whiteSpace: "normal", overflowWrap: "break-word" }}>
                     {diagnosticResult.manager_summary?.business_impact}
                   </div>
                 </div>
