@@ -2729,7 +2729,7 @@ async function runMultiAgentDebate(vibrationData: any, assetId: number | null, c
       const openaiKey = process.env.OPENAI_API_KEY;
       const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-    const openai = new OpenAI({ apiKey: openAiKey });
+    const openai = new OpenAI({ apiKey: openaiKey });
     const anthropic = new Anthropic({ apiKey: anthropicKey });
 
     // Step A: Send vibration data and Strict Analyst prompt to GPT-4o and Claude 3.5 Sonnet in parallel
