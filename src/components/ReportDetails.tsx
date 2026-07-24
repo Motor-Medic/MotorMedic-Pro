@@ -4,6 +4,7 @@ import {
   ArrowLeft, Calendar, FileText, Settings, AlertTriangle, 
   Wrench, Check, Copy, Trash2, Info, ArrowUpRight, Globe 
 } from "lucide-react";
+import { generateMcMasterQuery } from "../lib/mcmaster";
 
 interface ReportDetailsProps {
   report: SavedReport;
@@ -30,16 +31,21 @@ export default function ReportDetails({ report, onBack, onDelete }: ReportDetail
   const handleCopyCMMS = () => {
     const d = report.data;
     const faults = d.probable_faults
-      .map((f) => `- ${f.fault} (Confidence: ${f.confidence}, ${f.probability}%): ${f.description}`)
+      .map((f) => `- ${f.fault || f.fault_name} (Confidence: ${f.confidence}, ${f.probability}%): ${f.description || f.physical_explanation}`)
       .join("\n");
     const actions = d.immediate_actions
       .map(
         (a) =>
-          `- [Priority ${a.priority}] ${a.action}\n  Rationale: ${a.rationale}${
+          `- [Priority ${a.priority}] ${a.action}\n  Rationale: ${a.rationale || a.action}${
             a.safety_warning ? `\n  ⚠️ SAFETY: ${a.safety_warning}` : ""
           }\n  Time: ${a.estimated_time || "N/A"} | Tools: ${(a.required_tools || []).join(", ") || "Standard"}`
       )
       .join("\n");
+
+    const primaryFault = d.probable_faults?.[0]?.fault_name || d.probable_faults?.[0]?.fault || "Undetermined Anomaly";
+    const equipmentType = report.specs?.equipmentType || "Motor";
+    const partsList = generateMcMasterQuery(primaryFault, equipmentType, report.specs);
+    const partsText = partsList.map(p => `- [PROCURE] ${p.label}: ${p.url}`).join("\n");
 
     const cmmsText = `================================================
 CMMS MAINTENANCE WORK ORDER REQUEST
@@ -53,6 +59,10 @@ ${faults}
 
 CORRECTIVE ACTIONS REQUIRED:
 ${actions}
+
+------------------------------------------------
+RECOMMENDED PROCUREMENT PARTS (McMaster-Carr):
+${partsText || "No parts required."}
 
 ------------------------------------------------
 EXECUTIVE ANALYSIS BRIEF:
@@ -290,6 +300,72 @@ Business Impact : ${d.manager_summary.business_impact}
           </div>
         </div>
       </div>
+
+      {/* Recommended Replacement Parts (McMaster-Carr) */}
+      {(() => {
+        const primaryFault = report.data?.probable_faults?.[0]?.fault_name || report.data?.probable_faults?.[0]?.fault || "Undetermined";
+        const apiParts = report.data?.recommended_parts;
+        const equipmentType = report.specs?.equipmentType || "Motor";
+        const fallbackParts = generateMcMasterQuery(primaryFault, equipmentType, report.specs).map(p => ({
+          part_name: p.label,
+          query: decodeURIComponent(p.url.split('query=').pop() || ""),
+          url: p.url,
+          rationale: `Matched for fault "${primaryFault}" on "${equipmentType}".`
+        }));
+        const displayParts = (apiParts && apiParts.length > 0) ? apiParts : fallbackParts;
+
+        if (displayParts.length === 0) return null;
+        return (
+          <div className="bg-slate-900/40 border border-slate-800/85 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-yellow-400 uppercase tracking-wider font-display">
+                <Wrench className="w-4 h-4 text-yellow-400 animate-pulse" />
+                <span>Recommended Replacement Parts</span>
+              </div>
+              <span className="text-[10px] font-mono text-slate-500">
+                Auto-matched via AI Diagnosis & Specifications
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 leading-relaxed font-sans">
+              Based on the primary diagnosed fault (<span className="text-rose-400 font-semibold">{primaryFault}</span>), the following industrial replacement components have been identified in the McMaster-Carr catalog for automated procurement:
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+              {displayParts.map((part: any, idx: number) => (
+                <div
+                  key={idx}
+                  className="flex flex-col justify-between gap-3.5 p-4 bg-slate-950/60 border border-slate-850 hover:border-yellow-400/50 rounded-xl transition-all group"
+                >
+                  <div className="space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-semibold text-slate-200 group-hover:text-yellow-400 transition-colors">
+                        {part.part_name}
+                      </p>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-yellow-400/10 text-yellow-400 font-mono shrink-0">McMaster</span>
+                    </div>
+                    {part.rationale && (
+                      <p className="text-[11px] text-slate-400 leading-normal">
+                        {part.rationale}
+                      </p>
+                    )}
+                    <p className="text-[9px] text-slate-500 font-mono truncate">
+                      Query: {part.query}
+                    </p>
+                  </div>
+                  <a
+                    href={part.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-1.5 w-full py-2 px-3 bg-slate-900 group-hover:bg-yellow-400 group-hover:text-slate-950 text-slate-300 rounded-lg text-xs font-medium border border-slate-800 transition-all"
+                  >
+                    <span>View on McMaster-Carr</span>
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Grounded Web Research Sources */}
       {report.data?.sources && report.data.sources.length > 0 && (

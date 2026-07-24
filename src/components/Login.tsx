@@ -201,39 +201,8 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
               )}
             </button>
           </form>
-
-          {/* Divider */}
-          <div className="relative my-6" id="login-divider">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-800"></div>
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-slate-900 px-3 text-slate-500 font-mono tracking-wide">Or use Sandbox</span>
-            </div>
-          </div>
-
-          {/* Special Demo Mode Trigger Button */}
-          <button
-            type="button"
-            onClick={handleDemoLogin}
-            disabled={loading || demoLoading}
-            className="w-full bg-gradient-to-r from-emerald-950/40 to-teal-950/40 border border-emerald-500/30 hover:border-emerald-400 text-emerald-400 hover:text-emerald-300 font-medium py-3 px-4 rounded-lg text-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed group shadow-[0_0_15px_rgba(16,185,129,0.05)]"
-            id="demo-login-btn"
-          >
-            {demoLoading ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
-                <span>Launching Demo Company...</span>
-              </>
-            ) : (
-              <>
-                <span>🚀 Enter Demo Mode</span>
-              </>
-            )}
-          </button>
-
           <p className="text-center text-[11px] text-slate-500 mt-6 font-sans leading-relaxed">
-            Demo Mode logs in instantly to a custom company pre-seeded with real-time assets, routes, and diagnostic telemetry for immediate evaluation.
+            Please sign in using your authorized organizational credentials to access the diagnostic workbench.
           </p>
         </motion.div>
 

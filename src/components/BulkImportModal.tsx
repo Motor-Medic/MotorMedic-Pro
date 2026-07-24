@@ -116,9 +116,7 @@ function BulkImportModalInner({
       const data = [
         ["Plant Name", "Route Name", "Asset Tag", "Asset Name", "Asset Type", "Component Name"],
         ["Faustina Facility", "Ammonia Compressors", "C-101", "Ammonia Compressor A", "Centrifugal Compressor", "Drive End Bearing"],
-        ["Faustina Facility", "Ammonia Compressors", "C-101", "Ammonia Compressor A", "Centrifugal Compressor", "Non-Drive End Bearing"],
         ["Faustina Facility", "Cooling Water", "P-201", "Cooling Water Pump 1", "Centrifugal Pump", "Drive End Bearing"],
-        ["Faustina Facility", "Cooling Water", "P-201", "Cooling Water Pump 1", "Centrifugal Pump", "Non-Drive End Bearing"],
         ["Faustina Facility", "Power Generation", "G-301", "Steam Turbine Generator", "Steam Turbine", "Thrust Bearing"],
       ];
       
@@ -131,7 +129,7 @@ function BulkImportModalInner({
       ws["!cols"] = maxColWidths.map(w => ({ wch: w }));
 
       // Add bold and light gray background to header row for Excel
-      const range = XLSX.utils.decode_range(ws["!ref"] || "A1:F6");
+      const range = XLSX.utils.decode_range(ws["!ref"] || "A1:F4");
       for (let col = range.s.c; col <= range.e.c; ++col) {
         const cellRef = XLSX.utils.encode_cell({ r: 0, c: col });
         if (ws[cellRef]) {

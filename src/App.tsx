@@ -5,7 +5,7 @@ import Diagnose from "./components/Diagnose";
 import History from "./components/History";
 import ReportDetails from "./components/ReportDetails";
 import Trends from "./components/Trends";
-import SensorPlacementPlanner from "./components/SensorPlacementPlanner";
+import MountingPlanner from "./components/MountingPlanner";
 import Assets from "./components/Assets";
 import OnboardingWizard from "./components/OnboardingWizard";
 import Login, { UserSession } from "./components/Login";
@@ -91,7 +91,6 @@ export default function App() {
   const [reports, setReports] = useState<SavedReport[]>([]);
   const [selectedReport, setSelectedReport] = useState<SavedReport | null>(null);
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
-  const [isSandbox, setIsSandbox] = useState<boolean>(false);
   const [isHamburgerOpen, setIsHamburgerOpen] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
@@ -195,10 +194,6 @@ export default function App() {
     setNotifications(updated);
     localStorage.setItem("reliability_notifications_v6", JSON.stringify(updated));
   };
-
-  useEffect(() => {
-    localStorage.setItem("reliability_sandbox_v6", String(isSandbox));
-  }, [isSandbox]);
 
   useEffect(() => {
     localStorage.setItem("reliability_custom_gemini_key", customApiKey);
@@ -987,8 +982,6 @@ export default function App() {
           ) : activeTab === "diagnose" ? (
             <Diagnose 
               onSaveReport={handleSaveReport} 
-              isSandbox={isSandbox} 
-              setIsSandbox={setIsSandbox} 
               targetContext={targetContext}
               onClearTargetContext={() => setTargetContext(null)}
               selectedCompanyId={selectedCompanyId}
@@ -1008,7 +1001,7 @@ export default function App() {
           ) : activeTab === "alerts" ? (
             <AlertsManager userId={user?.id || 3} />
           ) : activeTab === "sensors" ? (
-            <SensorPlacementPlanner isSandbox={isSandbox} setIsSandbox={setIsSandbox} />
+            <MountingPlanner />
           ) : (
             <History
               reports={reports}

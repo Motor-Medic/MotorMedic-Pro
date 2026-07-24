@@ -74,9 +74,9 @@ const MOCK_TEMPLATES = [
   }
 ];
 
-interface SensorPlacementPlannerProps {}
+interface MountingPlannerProps {}
 
-export default function SensorPlacementPlanner({}: SensorPlacementPlannerProps) {
+export default function MountingPlanner({}: MountingPlannerProps) {
   const [selectedTemplate, setSelectedTemplate] = useState<number | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
@@ -85,6 +85,7 @@ export default function SensorPlacementPlanner({}: SensorPlacementPlannerProps) 
   const [analysisResult, setAnalysisResult] = useState<SensorPlacementResult | null>(null);
   const [activePoint, setActivePoint] = useState<SensorPoint | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
+  const [analysisCache, setAnalysisCache] = useState<Record<string, SensorPlacementResult>>({});
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -132,6 +133,17 @@ export default function SensorPlacementPlanner({}: SensorPlacementPlannerProps) 
       return;
     }
 
+    // Check cache first
+    const cacheKey = `${imageFile.name}_${imageFile.size}_${notes.trim()}_false`;
+    if (analysisCache[cacheKey]) {
+      const cachedResult = analysisCache[cacheKey];
+      setAnalysisResult(cachedResult);
+      if (cachedResult.points && cachedResult.points.length > 0) {
+        setActivePoint(cachedResult.points[0]);
+      }
+      return;
+    }
+
     setIsAnalyzing(true);
     setErrorMsg("");
 
@@ -160,6 +172,9 @@ export default function SensorPlacementPlanner({}: SensorPlacementPlannerProps) 
       }
 
       const result: SensorPlacementResult = await res.json();
+      
+      // Cache the result
+      setAnalysisCache(prev => ({ ...prev, [cacheKey]: result }));
       
       setAnalysisResult(result);
       if (result.points && result.points.length > 0) {

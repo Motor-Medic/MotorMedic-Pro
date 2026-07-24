@@ -78,6 +78,12 @@ export interface DiagnosticResponse {
     votes: Record<string, string>;
     reasonings?: Record<string, string>;
   }>;
+  recommended_parts?: Array<{
+    part_name: string;
+    query: string;
+    url: string;
+    rationale?: string;
+  }>;
 }
 
 export interface MaintenanceLog {
