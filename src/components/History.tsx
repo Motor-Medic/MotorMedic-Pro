@@ -51,9 +51,7 @@ export default function History({ reports, onSelectReport, onDeleteReport, onCle
         {reports.length > 0 && (
           <button
             onClick={() => {
-              if (confirm("Are you sure you want to purge all historical reports? This action is irreversible.")) {
-                onClearHistory();
-              }
+              onClearHistory();
             }}
             className="px-3 py-1.5 bg-red-950/40 hover:bg-red-900/40 text-red-400 hover:text-red-300 border border-red-500/20 rounded-lg text-xs font-semibold transition-all"
           >
@@ -183,9 +181,7 @@ export default function History({ reports, onSelectReport, onDeleteReport, onCle
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm("Delete this saved diagnostic record?")) {
-                          onDeleteReport(report.id);
-                        }
+                        onDeleteReport(report.id);
                       }}
                       className="p-2 bg-slate-950 hover:bg-red-500/15 border border-slate-800 text-slate-400 hover:text-red-400 rounded-lg transition-colors"
                       title="Delete Report"

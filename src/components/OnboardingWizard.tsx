@@ -402,6 +402,7 @@ export default function OnboardingWizard({ onClose, companyId, onSetupComplete }
                       <option value="Generator">Generator</option>
                       <option value="Blower">Blower</option>
                       <option value="Turbine">Turbine</option>
+                      <option value="Static Measurement">Static Measurement</option>
                     </select>
                   </div>
                 </div>

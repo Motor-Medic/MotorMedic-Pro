@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { 
   Activity, AlertTriangle, CheckCircle2, DollarSign, ArrowRight, TrendingUp, 
   Wrench, FileText, Plus, RefreshCw, Calendar, Sparkles, AlertOctagon,
-  ShieldCheck, Layers, Clipboard, Building, Upload
+  ShieldCheck, Layers, Clipboard, Building, Upload, Search
 } from "lucide-react";
 import { 
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -13,7 +13,7 @@ import BulkImportModal from "./BulkImportModal";
 
 interface DashboardProps {
   companyId: number;
-  onNavigate: (tab: "diagnose" | "history" | "trends" | "sensors" | "assets") => void;
+  onNavigate: (tab: "diagnose" | "history" | "trends" | "sensors" | "assets" | "migration") => void;
   onSelectReport?: (report: any) => void;
   onStartQuickAnalysis: () => void;
   onAddAsset: () => void;
@@ -90,7 +90,7 @@ export default function Dashboard({
       const queryParam = `?company_id=${companyId}`;
       
       const [summaryRes, alertsRes, distRes, trendRes, activityRes, roiRes] = await Promise.all([
-        fetch(`/api/dashboard/health-summary${queryParam}`),
+        fetch(`/api/dashboard${queryParam}`),
         fetch(`/api/dashboard/critical-alerts${queryParam}`),
         fetch(`/api/dashboard/fault-distribution${queryParam}`),
         fetch(`/api/dashboard/health-trend${queryParam}`),
@@ -102,12 +102,19 @@ export default function Dashboard({
         throw new Error("One or more dashboard endpoints failed to respond.");
       }
 
-      const summaryData = await summaryRes.json();
+      const dashboardData = await summaryRes.json();
       const alertsData = await alertsRes.json();
       const distData = await distRes.json();
       const trendData = await trendRes.json();
       const activityData = await activityRes.json();
       const roiData = await roiRes.json();
+
+      const summaryData: HealthSummary = {
+        total: dashboardData.total ?? 0,
+        healthy: dashboardData.healthy ?? 0,
+        critical: dashboardData.critical ?? 0,
+        warning: Math.max(0, (dashboardData.total ?? 0) - (dashboardData.healthy ?? 0) - (dashboardData.critical ?? 0))
+      };
 
       setSummary(summaryData);
       setAlerts(alertsData);
@@ -449,7 +456,112 @@ export default function Dashboard({
           </div>
         </div>
       </div>
- 
+
+      {/* ⚡ Quick Actions Section */}
+      <div className="bg-slate-900/60 border border-slate-850 rounded-2xl p-6 space-y-4 text-left" id="dashboard-quick-actions-widget">
+        <div>
+          <h3 className="text-sm font-bold text-white font-display flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-yellow-400" />
+            Reliability Team Quick Actions
+          </h3>
+          <p className="text-[11px] text-slate-400">Instant shortcuts to critical machinery workflows</p>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <button
+            onClick={() => onNavigate("diagnose")}
+            className="flex flex-col items-center justify-center p-4 bg-slate-950/40 border border-slate-850 hover:border-yellow-400/30 hover:bg-slate-900/40 rounded-xl transition-all cursor-pointer text-center group gap-2"
+          >
+            <div className="w-10 h-10 rounded-lg bg-yellow-400/10 flex items-center justify-center text-yellow-400 group-hover:scale-105 transition-transform">
+              <Activity className="w-5 h-5" />
+            </div>
+            <span className="text-xs font-bold text-white">📊 Run Diagnosis</span>
+            <span className="text-[10px] text-slate-500">Analyze raw spectrum telemetry</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate("migration")}
+            className="flex flex-col items-center justify-center p-4 bg-slate-950/40 border border-slate-850 hover:border-emerald-400/30 hover:bg-slate-900/40 rounded-xl transition-all cursor-pointer text-center group gap-2"
+          >
+            <div className="w-10 h-10 rounded-lg bg-emerald-400/10 flex items-center justify-center text-emerald-400 group-hover:scale-105 transition-transform">
+              <Plus className="w-5 h-5" />
+            </div>
+            <span className="text-xs font-bold text-white">📥 Bulk Import</span>
+            <span className="text-[10px] text-slate-500">Upload bulk equipment lists</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate("assets")}
+            className="flex flex-col items-center justify-center p-4 bg-slate-950/40 border border-slate-850 hover:border-blue-400/30 hover:bg-slate-900/40 rounded-xl transition-all cursor-pointer text-center group gap-2"
+          >
+            <div className="w-10 h-10 rounded-lg bg-blue-400/10 flex items-center justify-center text-blue-400 group-hover:scale-105 transition-transform">
+              <Search className="w-5 h-5" />
+            </div>
+            <span className="text-xs font-bold text-white">🔍 Search Equipment</span>
+            <span className="text-[10px] text-slate-500">Query and locate assets</span>
+          </button>
+
+          <button
+            onClick={() => onNavigate("history")}
+            className="flex flex-col items-center justify-center p-4 bg-slate-950/40 border border-slate-850 hover:border-purple-400/30 hover:bg-slate-900/40 rounded-xl transition-all cursor-pointer text-center group gap-2"
+          >
+            <div className="w-10 h-10 rounded-lg bg-purple-400/10 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
+              <FileText className="w-5 h-5" />
+            </div>
+            <span className="text-xs font-bold text-white">📈 View Reports</span>
+            <span className="text-[10px] text-slate-500">Access historical analysis reports</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ⚠️ Immediate Action Required Section */}
+      <div className="bg-slate-900/40 border border-slate-850 rounded-2xl p-6 space-y-4 text-left">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">⚠️</span>
+          <h3 className="text-base font-bold text-white font-display">Immediate Action Required</h3>
+        </div>
+        {alerts.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {alerts.map((alert) => (
+              <div 
+                key={alert.id} 
+                className="flex items-center justify-between p-4 bg-slate-950/60 border border-slate-800 rounded-xl hover:border-slate-700/60 transition-all cursor-pointer group"
+                onClick={() => onNavigate("assets")}
+              >
+                <div className="space-y-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-white text-sm truncate group-hover:text-yellow-400 transition-colors">{alert.name}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                      alert.severity === "Critical" 
+                        ? "bg-red-500/10 text-red-400 border border-red-500/20" 
+                        : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    }`}>
+                      {alert.severity}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 truncate">Fault: {alert.fault_type || "Unknown Fault"}</p>
+                </div>
+                <div className="text-right shrink-0 ml-4 font-mono">
+                  <p className="text-[9px] text-slate-500 uppercase font-bold">Detected At</p>
+                  <p className="text-[11px] text-slate-300">
+                    {alert.detected_at ? new Date(alert.detected_at).toLocaleDateString() : "N/A"}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 p-4 bg-emerald-500/5 border border-emerald-500/10 rounded-xl">
+            <div className="w-8 h-8 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-emerald-400 font-display">All Systems Normal</h4>
+              <p className="text-xs text-slate-400">No critical or high severity machinery faults are currently active.</p>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Top Section Layout (Plant Health circular gauge & statistics cards) */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6" id="dashboard-top-metrics">
         
@@ -482,7 +594,8 @@ export default function Dashboard({
                     ))}
                   </Pie>
                   <Tooltip 
-                    contentStyle={{ backgroundColor: "#0f172a", borderColor: "#1e293b", borderRadius: "10px", color: "#f8fafc" }}
+                    position={{ x: 5, y: 5 }}
+                    contentStyle={{ backgroundColor: "#0f172a", borderColor: "#1e293b", borderRadius: "10px", color: "#f8fafc", fontSize: "11px", padding: "4px 8px" }}
                     itemStyle={{ color: "#f8fafc" }}
                   />
                 </PieChart>

@@ -15,8 +15,10 @@ import Terms from "./components/Terms";
 import Privacy from "./components/Privacy";
 import AlertsManager from "./components/AlertsManager";
 import AIChatbot from "./components/AIChatbot";
+import AIDataMigration from "./components/AIDataMigration";
 import { 
-  Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings
+  Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
+  Sun, Moon, Sparkles
 } from "lucide-react";
 
 const STORAGE_KEY = "reliability_reports_v6";
@@ -59,7 +61,25 @@ export default function App() {
     localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts" | "migration">("dashboard");
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem("motormedic_theme") || "dark";
+  });
+
+  const toggleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    localStorage.setItem("motormedic_theme", nextTheme);
+  };
+
+  useEffect(() => {
+    if (theme === "dark") {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  }, [theme]);
+
   const [showLegalDoc, setShowLegalDoc] = useState<"terms" | "privacy" | null>(null);
 
   // Custom router state for /terms and /privacy URLs
@@ -100,12 +120,28 @@ export default function App() {
     assetId: number | null;
     componentId: number | null;
     technologyType: string | null;
+    collectionPointId?: number | string | null;
   } | null>(null);
 
-  const handleStartDiagnosis = (plantId: number, routeId: number, assetId: number, componentId: number, technologyType: string) => {
-    setTargetContext({ plantId, routeId, assetId, componentId, technologyType });
+  const handleStartDiagnosis = (
+    plantId: number | null, 
+    routeId: number | null, 
+    assetId: number | null, 
+    componentId: number | null, 
+    technologyType: string,
+    collectionPointId?: number | string | null
+  ) => {
+    setTargetContext({ plantId, routeId, assetId, componentId, technologyType, collectionPointId });
     setActiveTab("diagnose");
   };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const prefillId = params.get("prefillId");
+    if (prefillId) {
+      handleStartDiagnosis(null, null, null, null, "Vibration", prefillId);
+    }
+  }, []);
 
   const handleSecureLogout = () => {
     // Completely clear user session tokens & preferences from storage
@@ -198,6 +234,73 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("reliability_custom_gemini_key", customApiKey);
   }, [customApiKey]);
+
+  const fetchRealDiagnosisLogs = async (plantId: number) => {
+    try {
+      const res = await fetch(`/api/diagnosis-logs?plant_id=${plantId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const mapped: SavedReport[] = data.map((row: any) => {
+          let aiResp: any = {};
+          try {
+            aiResp = typeof row.ai_response === 'string' ? JSON.parse(row.ai_response) : row.ai_response;
+          } catch (e) {
+            aiResp = row.ai_response || {};
+          }
+
+          let inputData: any = {};
+          try {
+            inputData = typeof row.input_data === 'string' ? JSON.parse(row.input_data) : row.input_data;
+          } catch (e) {
+            inputData = row.input_data || {};
+          }
+
+          return {
+            id: String(row.id),
+            date: row.timestamp ? new Date(row.timestamp).toLocaleString() : new Date().toLocaleString(),
+            category: row.equipment_type || "Mechanical",
+            symptoms: inputData.symptoms || "Diagnostic File Asset Assessment",
+            specs: inputData.specs || {},
+            fileName: inputData.fileName || undefined,
+            fileType: "text",
+            data: {
+              equipment_status: aiResp.equipment_status || "FAULT_DETECTED",
+              confidence_score: aiResp.confidence_score || 85,
+              overall_vibration_level: aiResp.overall_vibration_level || "0.32 in/s RMS",
+              iso_severity_zone: aiResp.iso_severity_zone || "C",
+              probable_faults: aiResp.probable_faults || [
+                {
+                  fault_name: aiResp.probable_fault || "Unknown Anomaly",
+                  confidence: aiResp.confidence_score ? `${aiResp.confidence_score}%` : "High",
+                  probability: aiResp.confidence_score || 85,
+                  supporting_evidence: aiResp.fault_explanation || "",
+                  calculated_frequencies: "N/A",
+                  physical_explanation: aiResp.recommended_actions || "",
+                  fault: aiResp.probable_fault || "Unknown Anomaly",
+                  description: aiResp.fault_explanation || ""
+                }
+              ],
+              failure_stage: aiResp.failure_stage || "Moderate",
+              manager_summary: aiResp.manager_summary || {
+                severity: aiResp.overall_severity || aiResp.severity || "Medium",
+                actions_required: aiResp.recommended_actions || "Inspect machinery component."
+              },
+              maintenance_actions: aiResp.maintenance_actions || []
+            }
+          };
+        });
+        setReports(mapped);
+      }
+    } catch (err) {
+      console.error("Failed to fetch real diagnosis logs:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (user && user.plant_id) {
+      fetchRealDiagnosisLogs(user.plant_id);
+    }
+  }, [user]);
 
   // Initialize/Load from LocalStorage
   useEffect(() => {
@@ -513,7 +616,11 @@ export default function App() {
     setReports(updated);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
     setSelectedReport(newReport);
-    alert("Diagnostic report successfully saved to historical logs!");
+    // Diagnostic report saved cleanly to state and localStorage
+
+    if (user && user.plant_id) {
+      setTimeout(() => fetchRealDiagnosisLogs(user.plant_id), 1200);
+    }
 
     // Also automatically log a trend data point based on this report's values if present!
     // Try to parse dynamic values from the symptom description or preset them realistically
@@ -572,10 +679,24 @@ export default function App() {
   };
 
   // Delete report handler
-  const handleDeleteReport = (id: string) => {
-    const updated = reports.filter((r) => r.id !== id);
-    setReports(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+  const handleDeleteReport = async (id: string) => {
+    const isDbId = !isNaN(Number(id));
+    if (isDbId) {
+      try {
+        const res = await fetch(`/api/diagnosis-logs/${id}`, { method: "DELETE" });
+        if (res.ok) {
+          if (user && user.plant_id) {
+            fetchRealDiagnosisLogs(user.plant_id);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to delete diagnosis log on backend:", err);
+      }
+    } else {
+      const updated = reports.filter((r) => r.id !== id);
+      setReports(updated);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    }
     if (selectedReport?.id === id) {
       setSelectedReport(null);
     }
@@ -647,19 +768,25 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#080c14] text-slate-100">
+    <div className={`min-h-screen flex flex-col transition-colors duration-200 ${
+      theme === "dark" ? "bg-[#080c14] text-slate-100" : "bg-slate-50 text-slate-900"
+    }`}>
       {/* Dynamic Background Noise/Glow effect */}
       <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-yellow-500/5 rounded-full filter blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-cyan-500/5 rounded-full filter blur-[120px] pointer-events-none"></div>
 
       {/* Sticky Header */}
-      <header className="sticky top-0 z-40 bg-[#0c1220]/95 backdrop-blur-md border-b border-slate-800/80 px-4 sm:px-6 py-4">
+      <header className={`sticky top-0 z-40 backdrop-blur-md border-b px-4 sm:px-6 py-4 transition-colors duration-200 ${
+        theme === "dark" ? "bg-[#0c1220]/95 border-slate-800/80" : "bg-white/95 border-slate-200"
+      }`}>
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             {/* Hamburger Menu Button */}
             <button
               onClick={() => setIsHamburgerOpen(!isHamburgerOpen)}
-              className="lg:hidden p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white active:bg-slate-800 transition-colors cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center shrink-0"
+              className={`lg:hidden p-2 rounded-xl border transition-colors cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center shrink-0 ${
+                theme === "dark" ? "bg-slate-900 border-slate-800 text-slate-400 hover:text-white" : "bg-white border-slate-200 text-slate-600 hover:text-slate-900"
+              }`}
               aria-label="Toggle navigation menu"
             >
               {isHamburgerOpen ? <X className="w-5 h-5 text-yellow-400" /> : <Menu className="w-5 h-5" />}
@@ -670,7 +797,7 @@ export default function App() {
               <Activity className="w-4.5 h-4.5 text-[#d4af37] animate-pulse" />
               <div className="flex flex-col justify-center">
                 <span className="text-xs font-black tracking-tight text-[#d4af37] font-display uppercase">
-                  MotorMedic <span className="text-slate-100 font-bold">Pro</span>
+                  MotorMedic <span className={theme === "dark" ? "text-slate-100 font-bold" : "text-white font-bold"}>Pro</span>
                 </span>
                 <span className="text-[7px] font-mono font-semibold tracking-widest text-[#d4af37]/75 uppercase leading-none">Reliability SaaS</span>
               </div>
@@ -678,11 +805,26 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4 sm:gap-6">
+            {/* Theme Toggle Button */}
+            <button
+              onClick={toggleTheme}
+              className={`p-2.5 rounded-xl border transition-all duration-200 cursor-pointer shrink-0 ${
+                theme === "dark" 
+                  ? "bg-slate-900 border-slate-800 text-yellow-400 hover:bg-slate-800" 
+                  : "bg-white border-slate-200 text-indigo-600 hover:bg-slate-100"
+              }`}
+              title={theme === "dark" ? "Activate Light Mode" : "Activate Dark Mode"}
+            >
+              {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4 text-indigo-600" />}
+            </button>
+
             {/* Notification Bell Dropdown */}
             <div className="relative">
               <button
                 onClick={() => setShowNotificationsDropdown(!showNotificationsDropdown)}
-                className="relative p-2.5 rounded-xl bg-slate-900 border border-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white transition-all duration-200"
+                className={`relative p-2.5 rounded-xl border transition-all duration-200 ${
+                  theme === "dark" ? "bg-slate-900 border-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-white" : "bg-white border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-slate-900"
+                }`}
                 id="notificationBell"
               >
                 {notifications.filter(n => !n.read).length > 0 ? (
@@ -823,48 +965,69 @@ export default function App() {
 
           <button
             onClick={() => {
-              setActiveTab("diagnose");
+              setActiveTab("migration");
               setSelectedReport(null);
             }}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "diagnose" && !selectedReport
+              activeTab === "migration" && !selectedReport
                 ? "bg-yellow-400 text-slate-950 shadow font-bold"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
             }`}
           >
-            <Wrench className="w-4.5 h-4.5" />
-            <span>Run Diagnostics</span>
+            <Sparkles className="w-4.5 h-4.5 text-yellow-400" />
+            <span>AI Data Migration</span>
           </button>
 
-          <button
-            onClick={() => {
-              setActiveTab("sensors");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "sensors" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-          >
-            <Compass className="w-4.5 h-4.5" />
-            <span>Mounting Planner</span>
-          </button>
+          {user?.role !== 'mechanic' && (
+            <button
+              onClick={() => {
+                setActiveTab("diagnose");
+                setSelectedReport(null);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "diagnose" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+            >
+              <Wrench className="w-4.5 h-4.5" />
+              <span>Run Diagnostics</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => {
-              setActiveTab("trends");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "trends" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-          >
-            <LineChart className="w-4.5 h-4.5" />
-            <span>Trend Analyzer</span>
-          </button>
+          {user?.role !== 'mechanic' && (
+            <button
+              onClick={() => {
+                setActiveTab("sensors");
+                setSelectedReport(null);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "sensors" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+            >
+              <Compass className="w-4.5 h-4.5" />
+              <span>Mounting Planner</span>
+            </button>
+          )}
+
+          {user?.role !== 'mechanic' && (
+            <button
+              onClick={() => {
+                setActiveTab("trends");
+                setSelectedReport(null);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "trends" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+            >
+              <LineChart className="w-4.5 h-4.5" />
+              <span>Trend Analyzer</span>
+            </button>
+          )}
 
           <button
             onClick={() => {
@@ -881,37 +1044,41 @@ export default function App() {
             <span>Diagnosis Logs</span>
           </button>
 
-          <button
-            onClick={() => {
-              setActiveTab("admin");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "admin" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-            id="sidebar-admin-btn"
-          >
-            <Settings className="w-4.5 h-4.5" />
-            <span>Tenant Settings</span>
-          </button>
+          {user?.role !== 'mechanic' && (
+            <button
+              onClick={() => {
+                setActiveTab("admin");
+                setSelectedReport(null);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "admin" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-admin-btn"
+            >
+              <Settings className="w-4.5 h-4.5" />
+              <span>Tenant Settings</span>
+            </button>
+          )}
 
-          <button
-            onClick={() => {
-              setActiveTab("alerts");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "alerts" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-            id="sidebar-alerts-btn"
-          >
-            <Bell className="w-4.5 h-4.5" />
-            <span>Alerts Control</span>
-          </button>
+          {user?.role !== 'mechanic' && (
+            <button
+              onClick={() => {
+                setActiveTab("alerts");
+                setSelectedReport(null);
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "alerts" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-alerts-btn"
+            >
+              <Bell className="w-4.5 h-4.5" />
+              <span>Alerts Control</span>
+            </button>
+          )}
 
           <div className="pt-4 border-t border-slate-900 mt-4 space-y-2">
             <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-3">Legal & Policy</p>
@@ -972,15 +1139,23 @@ export default function App() {
             />
           ) : activeTab === "assets" ? (
             <Assets 
+              user={user}
               reports={reports} 
               onSelectReport={(report) => setSelectedReport(report)} 
               onStartDiagnosis={handleStartDiagnosis}
               selectedCompanyId={selectedCompanyId}
               setSelectedCompanyId={setSelectedCompanyId}
               subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
+              onNavigateToMigration={() => {
+                setActiveTab("migration");
+                setSelectedReport(null);
+              }}
             />
+          ) : activeTab === "migration" ? (
+            <AIDataMigration selectedCompanyId={selectedCompanyId} />
           ) : activeTab === "diagnose" ? (
             <Diagnose 
+              user={user}
               onSaveReport={handleSaveReport} 
               targetContext={targetContext}
               onClearTargetContext={() => setTargetContext(null)}
@@ -1181,51 +1356,73 @@ export default function App() {
 
               <button
                 onClick={() => {
-                  setActiveTab("diagnose");
+                  setActiveTab("migration");
                   setSelectedReport(null);
                   setIsHamburgerOpen(false);
                 }}
                 className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "diagnose" && !selectedReport
+                  activeTab === "migration" && !selectedReport
                     ? "bg-yellow-400 text-slate-950 shadow font-bold"
                     : "text-slate-300 hover:text-white active:bg-slate-900"
                 }`}
               >
-                <Wrench className="w-5 h-5 shrink-0" />
-                <span>Run Diagnostics</span>
+                <Sparkles className="w-5 h-5 shrink-0 text-yellow-400" />
+                <span>AI Data Migration</span>
               </button>
 
-              <button
-                onClick={() => {
-                  setActiveTab("sensors");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "sensors" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-              >
-                <Compass className="w-5 h-5 shrink-0" />
-                <span>Mounting Planner</span>
-              </button>
+              {user?.role !== 'mechanic' && (
+                <button
+                  onClick={() => {
+                    setActiveTab("diagnose");
+                    setSelectedReport(null);
+                    setIsHamburgerOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "diagnose" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                >
+                  <Wrench className="w-5 h-5 shrink-0" />
+                  <span>Run Diagnostics</span>
+                </button>
+              )}
 
-              <button
-                onClick={() => {
-                  setActiveTab("trends");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "trends" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-              >
-                <LineChart className="w-5 h-5 shrink-0" />
-                <span>Trend Analyzer</span>
-              </button>
+              {user?.role !== 'mechanic' && (
+                <button
+                  onClick={() => {
+                    setActiveTab("sensors");
+                    setSelectedReport(null);
+                    setIsHamburgerOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "sensors" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                >
+                  <Compass className="w-5 h-5 shrink-0" />
+                  <span>Mounting Planner</span>
+                </button>
+              )}
+
+              {user?.role !== 'mechanic' && (
+                <button
+                  onClick={() => {
+                    setActiveTab("trends");
+                    setSelectedReport(null);
+                    setIsHamburgerOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "trends" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                >
+                  <LineChart className="w-5 h-5 shrink-0" />
+                  <span>Trend Analyzer</span>
+                </button>
+              )}
 
               <button
                 onClick={() => {
@@ -1243,39 +1440,43 @@ export default function App() {
                 <span>Diagnosis Logs</span>
               </button>
 
-              <button
-                onClick={() => {
-                  setActiveTab("admin");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "admin" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-                id="drawer-admin-btn"
-              >
-                <Settings className="w-5 h-5 shrink-0" />
-                <span>Tenant Settings</span>
-              </button>
+              {user?.role !== 'mechanic' && (
+                <button
+                  onClick={() => {
+                    setActiveTab("admin");
+                    setSelectedReport(null);
+                    setIsHamburgerOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "admin" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-admin-btn"
+                >
+                  <Settings className="w-5 h-5 shrink-0" />
+                  <span>Tenant Settings</span>
+                </button>
+              )}
 
-              <button
-                onClick={() => {
-                  setActiveTab("alerts");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "alerts" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-                id="drawer-alerts-btn"
-              >
-                <Bell className="w-5 h-5 shrink-0 animate-pulse" />
-                <span>Alerts Control</span>
-              </button>
+              {user?.role !== 'mechanic' && (
+                <button
+                  onClick={() => {
+                    setActiveTab("alerts");
+                    setSelectedReport(null);
+                    setIsHamburgerOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "alerts" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-alerts-btn"
+                >
+                  <Bell className="w-5 h-5 shrink-0 animate-pulse" />
+                  <span>Alerts Control</span>
+                </button>
+              )}
             </div>
 
             <div className="pt-4 border-t border-slate-800 space-y-2">

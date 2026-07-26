@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Key, User, ArrowRight, Activity, AlertCircle, Loader2 } from "lucide-react";
+import { Shield, Key, User, ArrowRight, Activity, AlertCircle, Loader2, Building } from "lucide-react";
 
 export interface UserSession {
   id: number;
@@ -8,6 +8,8 @@ export interface UserSession {
   company_id: number;
   role: string;
   is_temp_password: boolean;
+  plant_id?: number;
+  plant_name?: string;
 }
 
 interface LoginProps {
@@ -16,8 +18,11 @@ interface LoginProps {
 }
 
 export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
+  const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [plantCompanyName, setPlantCompanyName] = useState("");
+  const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +41,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username: username.trim(), password: password.trim() }),
       });
 
       const data = await response.json();
@@ -48,6 +53,42 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
       onLoginSuccess(data);
     } catch (err: any) {
       setError(err.message || "Invalid credentials. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !password.trim() || !plantCompanyName.trim()) {
+      setError("Please fill in all required fields.");
+      return;
+    }
+
+    setError(null);
+    setLoading(true);
+
+    try {
+      const response = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: username.trim(),
+          password: password.trim(),
+          plantCompanyName: plantCompanyName.trim(),
+          email: email.trim() || null
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Registration failed.");
+      }
+
+      onLoginSuccess(data);
+    } catch (err: any) {
+      setError(err.message || "Registration failed. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -121,8 +162,12 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
           <div className="flex items-center gap-3 border-b border-slate-800 pb-5 mb-6">
             <Shield className="h-5 w-5 text-emerald-400" />
             <div>
-              <h2 className="text-sm font-medium text-slate-200">Secure Engineering Sign In</h2>
-              <p className="text-xs text-slate-500">Authorized personnel only</p>
+              <h2 className="text-sm font-medium text-slate-200">
+                {isRegister ? "Create Reliability Account" : "Secure Engineering Sign In"}
+              </h2>
+              <p className="text-xs text-slate-500">
+                {isRegister ? "Register your plant and engineering profile" : "Authorized personnel only"}
+              </p>
             </div>
           </div>
 
@@ -138,7 +183,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
             </motion.div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4">
+          <form onSubmit={isRegister ? handleRegister : handleLogin} className="space-y-4">
             {/* Username Input */}
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Username / ID</label>
@@ -161,9 +206,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
 
             {/* Password Input */}
             <div className="space-y-1.5">
-              <div className="flex justify-between items-center">
-                <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Access Key</label>
-              </div>
+              <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Access Key / Password</label>
               <div className="relative">
                 <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-500">
                   <Key className="h-4 w-4" />
@@ -181,26 +224,110 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
               </div>
             </div>
 
-            {/* Standard Login Submit Button */}
+            {/* Register-only Fields */}
+            {isRegister && (
+              <>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Plant / Company Name</label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-500">
+                      <Building className="h-4 w-4" />
+                    </span>
+                    <input
+                      type="text"
+                      required
+                      disabled={loading || demoLoading}
+                      value={plantCompanyName}
+                      onChange={(e) => setPlantCompanyName(e.target.value)}
+                      placeholder="e.g., Texas Refinery Alpha"
+                      className="w-full bg-slate-950/60 border border-slate-800 focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/30 text-white rounded-lg pl-10 pr-4 py-2.5 text-sm transition-all placeholder:text-slate-600 outline-none"
+                      id="login-plant-input"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Email Address (Optional)</label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-500">
+                      <Shield className="h-4 w-4" />
+                    </span>
+                    <input
+                      type="email"
+                      disabled={loading || demoLoading}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="e.g., engineer@refinery.com"
+                      className="w-full bg-slate-950/60 border border-slate-800 focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/30 text-white rounded-lg pl-10 pr-4 py-2.5 text-sm transition-all placeholder:text-slate-600 outline-none"
+                      id="login-email-input"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Submit Button */}
             <button
               type="submit"
               disabled={loading || demoLoading}
-              className="w-full mt-2 bg-slate-100 hover:bg-white text-slate-950 font-medium py-2.5 px-4 rounded-lg text-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full mt-2 bg-slate-100 hover:bg-white text-slate-950 font-medium py-2.5 px-4 rounded-lg text-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed font-sans"
               id="login-submit-btn"
             >
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin text-slate-950" />
-                  <span>Verifying credentials...</span>
+                  <span>{isRegister ? "Creating account..." : "Verifying credentials..."}</span>
                 </>
               ) : (
                 <>
-                  <span>Sign In</span>
+                  <span>{isRegister ? "Create Account & Plant" : "Sign In"}</span>
                   <ArrowRight className="h-4 w-4" />
                 </>
               )}
             </button>
           </form>
+
+          {/* Toggle link between login and register */}
+          <div className="mt-4 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                setIsRegister(!isRegister);
+                setError(null);
+              }}
+              className="text-emerald-400 hover:text-emerald-300 text-xs font-medium hover:underline transition-colors bg-transparent border-none p-0 outline-none cursor-pointer"
+            >
+              {isRegister ? "Already registered? Sign In" : "Need an account? Sign Up & Setup Plant"}
+            </button>
+          </div>
+
+          {/* Demo Credentials Badge */}
+          {!isRegister && (
+            <div className="mt-5 p-3 bg-emerald-950/20 border border-emerald-500/20 rounded-lg text-xs text-slate-300 flex flex-col gap-1.5" id="demo-credentials-badge">
+              <div className="flex items-center justify-between font-medium text-emerald-400">
+                <span>Test Credentials Available:</span>
+                <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-[10px] uppercase font-mono tracking-wider">Demo Mode</span>
+              </div>
+              <div className="flex items-center justify-between font-mono text-[11px] text-slate-400">
+                <div>
+                  <span>Username: </span>
+                  <span className="text-white select-all">demo</span>
+                </div>
+                <div>
+                  <span>Password: </span>
+                  <span className="text-white select-all">demo123</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleDemoLogin}
+                className="mt-1 w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[11px] font-medium py-1.5 rounded transition-colors text-center cursor-pointer"
+              >
+                Launch Demo Mode Instantly
+              </button>
+            </div>
+          )}
+
           <p className="text-center text-[11px] text-slate-500 mt-6 font-sans leading-relaxed">
             Please sign in using your authorized organizational credentials to access the diagnostic workbench.
           </p>

@@ -111,17 +111,15 @@ export default function AIChatbot() {
   };
 
   const handleClearHistory = () => {
-    if (window.confirm("Are you sure you want to clear your chat history?")) {
-      const welcomeMessage: Message = {
-        id: "welcome-msg",
-        role: "assistant",
-        content: "Welcome to MotorMedic Pro Support! I am your AI assistant, specializing in vibration analysis, condition monitoring, and machine reliability. How can I help you today?",
-        timestamp: Date.now()
-      };
-      setMessages([welcomeMessage]);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([welcomeMessage]));
-      setError(null);
-    }
+    const welcomeMessage: Message = {
+      id: "welcome-msg",
+      role: "assistant",
+      content: "Welcome to MotorMedic Pro Support! I am your AI assistant, specializing in vibration analysis, condition monitoring, and machine reliability. How can I help you today?",
+      timestamp: Date.now()
+    };
+    setMessages([welcomeMessage]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([welcomeMessage]));
+    setError(null);
   };
 
   return (

@@ -2,7 +2,8 @@ import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   Settings, CreditCard, Building, CheckCircle2, XCircle, 
-  Save, Info, Sliders, Activity, ShieldCheck, Check, Sparkles
+  Save, Info, Sliders, Activity, ShieldCheck, Check, Sparkles,
+  Users, UserPlus, Trash
 } from "lucide-react";
 import { useToast } from "./Toast";
 import PricingPage from "./PricingPage";
@@ -27,6 +28,99 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
   const [selectedCompId, setSelectedCompId] = useState<number>(selectedCompanyId);
   const [selectedPlan, setSelectedPlan] = useState<string>("vibration_only");
   const [isSaving, setIsSaving] = useState(false);
+
+  // User Management State
+  const [users, setUsers] = useState<any[]>([]);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("engineer");
+  const [inviteUsername, setInviteUsername] = useState("");
+  const [isInviting, setIsInviting] = useState(false);
+
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch(`/api/company/users?company_id=${selectedCompId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch company users:", error);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, [selectedCompId]);
+
+  const handleInviteUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteEmail) {
+      showToast("Email is required", "error");
+      return;
+    }
+    setIsInviting(true);
+    try {
+      const res = await fetch("/api/company/users/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company_id: selectedCompId,
+          email: inviteEmail.trim(),
+          role: inviteRole,
+          username: inviteUsername.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to invite user");
+      }
+      showToast("User invited successfully!", "success");
+      setIsInviteModalOpen(false);
+      setInviteEmail("");
+      setInviteUsername("");
+      setInviteRole("engineer");
+      fetchUsers();
+    } catch (err: any) {
+      showToast(err.message || "Failed to invite user", "error");
+    } finally {
+      setIsInviting(false);
+    }
+  };
+
+  const handleRoleChange = async (userId: number, newRole: string) => {
+    try {
+      const res = await fetch(`/api/company/users/${userId}/role`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: newRole })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to update role");
+      }
+      showToast("Role updated successfully!", "success");
+      fetchUsers();
+    } catch (err: any) {
+      showToast(err.message || "Failed to update role", "error");
+    }
+  };
+
+  const handleRemoveUser = async (userId: number) => {
+    try {
+      const res = await fetch(`/api/company/users/${userId}`, {
+        method: "DELETE"
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to remove user");
+      }
+      showToast("User removed successfully!", "success");
+      fetchUsers();
+    } catch (err: any) {
+      showToast(err.message || "Failed to remove user", "error");
+    }
+  };
 
   const [companyBillingData, setCompanyBillingData] = useState<{
     id: number;
@@ -271,6 +365,78 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                   </button>
                 </div>
               </div>
+
+              {/* User Management Section */}
+              <div className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest flex items-center gap-2">
+                    <Users className="w-4.5 h-4.5 text-yellow-400" />
+                    User Management
+                  </h3>
+                  <button
+                    onClick={() => setIsInviteModalOpen(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-xs font-bold transition-all duration-200 cursor-pointer shadow-lg shadow-emerald-550/10"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Invite User</span>
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-400 font-bold font-mono text-[10px] uppercase tracking-wider">
+                        <th className="pb-3 pt-1 pl-2">Name</th>
+                        <th className="pb-3 pt-1">Email</th>
+                        <th className="pb-3 pt-1">Role</th>
+                        <th className="pb-3 pt-1">Status</th>
+                        <th className="pb-3 pt-1 pr-2 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-850/40">
+                      {users.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-6 text-center text-slate-500 font-mono text-[11px]">
+                            No registered users found.
+                          </td>
+                        </tr>
+                      ) : (
+                        users.map((u) => (
+                          <tr key={u.id} className="text-slate-300 hover:bg-slate-900/10">
+                            <td className="py-3 pl-2 font-semibold text-slate-200">{u.username}</td>
+                            <td className="py-3 font-mono text-[11px] text-slate-400">{u.email || "N/A"}</td>
+                            <td className="py-3">
+                              <select
+                                value={u.role || "engineer"}
+                                onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                                className="bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-200 text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer"
+                              >
+                                <option value="admin">Admin</option>
+                                <option value="engineer">Engineer</option>
+                                <option value="mechanic">Mechanic</option>
+                              </select>
+                            </td>
+                            <td className="py-3">
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
+                                {u.status || "Active"}
+                              </span>
+                            </td>
+                            <td className="py-3 pr-2 text-right">
+                              <button
+                                onClick={() => handleRemoveUser(u.id)}
+                                className="p-1 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-all cursor-pointer"
+                                title="Remove User"
+                              >
+                                <Trash className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
 
             {/* Right Column: Interactive Permissions Visualizer */}
@@ -401,6 +567,92 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Invite User Modal */}
+      {isInviteModalOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-[#0b1220] border border-slate-800 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-850">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <UserPlus className="w-4 h-4 text-yellow-400" />
+                Invite New User
+              </h3>
+              <button
+                onClick={() => setIsInviteModalOpen(false)}
+                className="text-slate-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleInviteUser} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Username / Display Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. jdoe"
+                  value={inviteUsername}
+                  onChange={(e) => setInviteUsername(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 focus:outline-none rounded-xl px-3.5 py-2 text-xs text-slate-200 font-semibold"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="jdoe@company.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 focus:outline-none rounded-xl px-3.5 py-2 text-xs text-slate-200 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Role
+                </label>
+                <select
+                  value={inviteRole}
+                  onChange={(e) => setInviteRole(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 focus:outline-none rounded-xl px-3.5 py-2 text-xs text-slate-200 font-semibold cursor-pointer"
+                >
+                  <option value="admin">Admin</option>
+                  <option value="engineer">Engineer</option>
+                  <option value="mechanic">Mechanic</option>
+                </select>
+              </div>
+
+              <div className="pt-3 flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsInviteModalOpen(false)}
+                  className="px-4 py-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isInviting}
+                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-lg text-xs font-bold disabled:opacity-50"
+                >
+                  {isInviting ? "Sending..." : "Send Invite"}
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

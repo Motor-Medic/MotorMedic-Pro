@@ -36,7 +36,7 @@ export default function TrendAnalyzer({ trendData, onAddTrendPoint }: TrendAnaly
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!vibration || !temperature || !pressure || !amperage) {
-      alert("Please fill in all parameter fields.");
+      setSuccessMsg("⚠️ Please fill in all parameter fields.");
       return;
     }
 

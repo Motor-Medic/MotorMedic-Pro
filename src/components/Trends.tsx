@@ -287,7 +287,8 @@ export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibr
 
   // --- Load Trend History when Selected Component OR Tech Filter changes ---
   useEffect(() => {
-    if (selectedComponentId === "") {
+    const targetId = selectedComponentId || selectedAssetId;
+    if (!targetId) {
       setRawTrendData([]);
       return;
     }
@@ -296,20 +297,77 @@ export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibr
       setLoadingTrends(true);
       setErrorTrends(null);
       try {
-        // Map UI tech name to API query param
-        let techQuery = selectedTech;
-        if (selectedTech === "All Technologies" || selectedTech === "All") {
-          techQuery = "All";
-        }
-        
-        const res = await fetch(`/api/analysis-history/${selectedComponentId}?technology=${techQuery}&isComponent=true`);
+        const res = await fetch(`/api/trends/${targetId}`);
         if (res.ok) {
-          const data = await res.json();
-          console.log(`[Trends Debug] Successfully fetched trend history for component ${selectedComponentId}, tech ${techQuery}. Total records:`, data ? data.length : 0);
-          if (data && data.length > 0) {
-            console.log(`[Trends Debug] Sample record:`, data[0]);
+          const rawData = await res.json();
+          
+          let formattedData: any[] = [];
+          if (Array.isArray(rawData)) {
+            if (rawData.length > 0 && (rawData[0].overall_velocity !== undefined || rawData[0].vibrationVelocity !== undefined)) {
+              // Convert multi-parameter trend format to independent time-series points
+              for (const pt of rawData) {
+                const date = pt.timestamp || pt.measurement_date;
+                const recordId = pt.id || Math.random();
+                
+                // Vibration Velocity point
+                const vibVal = pt.overall_velocity ?? pt.vibrationVelocity ?? 1.5;
+                formattedData.push({
+                  id: `v-${recordId}`,
+                  measurement_date: date,
+                  data_point_name: "Vibration Velocity",
+                  measurement_value: vibVal,
+                  unit_of_measure: "mm/s",
+                  status: vibVal >= 4.5 ? "ALARM" : (vibVal >= 2.8 ? "WARNING" : "NORMAL"),
+                  alarm_threshold_limit: 4.5,
+                  lower_alarm_threshold: 0
+                });
+
+                // Bearing Temperature point
+                const tempVal = pt.bearingTemperature ?? 50;
+                formattedData.push({
+                  id: `t-${recordId}`,
+                  measurement_date: date,
+                  data_point_name: "Bearing Temperature",
+                  measurement_value: tempVal,
+                  unit_of_measure: "°C",
+                  status: tempVal >= 85 ? "ALARM" : (tempVal >= 70 ? "WARNING" : "NORMAL"),
+                  alarm_threshold_limit: 85,
+                  lower_alarm_threshold: 0
+                });
+
+                // Hydraulic Pressure point
+                const pressVal = pt.hydraulicPressure ?? 150;
+                formattedData.push({
+                  id: `p-${recordId}`,
+                  measurement_date: date,
+                  data_point_name: "Hydraulic Pressure",
+                  measurement_value: pressVal,
+                  unit_of_measure: "Bar",
+                  status: "NORMAL",
+                  alarm_threshold_limit: 220,
+                  lower_alarm_threshold: 0
+                });
+
+                // Motor Current point
+                const ampVal = pt.electricalAmperage ?? 40;
+                formattedData.push({
+                  id: `a-${recordId}`,
+                  measurement_date: date,
+                  data_point_name: "Motor Current / MCA",
+                  measurement_value: ampVal,
+                  unit_of_measure: "Amps",
+                  status: "NORMAL",
+                  alarm_threshold_limit: 100,
+                  lower_alarm_threshold: 0
+                });
+              }
+            } else {
+              formattedData = rawData;
+            }
           }
-          setRawTrendData(data);
+          
+          console.log(`[Trends Debug] Fetched and formatted ${formattedData.length} data points for ID ${targetId}`);
+          setRawTrendData(formattedData);
         } else {
           setErrorTrends("Failed to load historical trend telemetry from diagnostic server.");
         }
@@ -322,7 +380,7 @@ export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibr
     }
     
     fetchTrendHistory();
-  }, [selectedComponentId, selectedTech]);
+  }, [selectedComponentId, selectedAssetId, selectedTech]);
 
   // --- Filtered Data by Time Range ---
   const filteredTrendData = useMemo(() => {

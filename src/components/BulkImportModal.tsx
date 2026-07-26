@@ -414,21 +414,28 @@ function BulkImportModalInner({
         const result = await res.json();
         setImportProgress(100);
         setImportStatus("success");
+        const successCountVal = typeof result.successCount === "number" ? result.successCount : (typeof result.success === "number" ? result.success : 0);
         setImportSummary({
           total: result.total || allMappedRows.length,
-          success: result.success || 0,
+          success: successCountVal,
           skipped: result.skipped || 0,
           warnings: result.warnings || []
         });
         setImportLogs(prev => [
           ...prev, 
           `Upload complete! Processed ${result.total} records.`,
-          `Successfully registered ${result.success} hierarchy connections.`,
+          `Successfully registered ${successCountVal} hierarchy connections.`,
           result.skipped > 0 ? `⚠️ Skipped ${result.skipped} invalid rows due to missing fields.` : "No rows skipped."
         ]);
       } else {
-        const errData = await res.json();
-        throw new Error(errData.error || "Bulk import transaction failed on the host server.");
+        let errorMsg = "Bulk import transaction failed on the host server.";
+        try {
+          const errData = await res.json();
+          errorMsg = errData.error || errData.message || errorMsg;
+        } catch (e) {
+          errorMsg = `Server returned status ${res.status}: ${res.statusText || "Internal Server Error"}`;
+        }
+        throw new Error(errorMsg);
       }
     } catch (err: any) {
       console.error("Bulk Import error:", err);

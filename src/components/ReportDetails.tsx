@@ -99,10 +99,8 @@ Business Impact : ${d.manager_summary.business_impact}
           </button>
           <button
             onClick={() => {
-              if (confirm("Delete this saved diagnostic record?")) {
-                onDelete(report.id);
-                onBack();
-              }
+              onDelete(report.id);
+              onBack();
             }}
             className="px-3 py-1.5 bg-red-950/40 hover:bg-red-900/40 text-red-400 hover:text-red-300 border border-red-500/20 rounded-lg text-xs font-semibold transition-all flex items-center gap-1"
           >

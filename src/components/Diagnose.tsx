@@ -12,8 +12,10 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import SpecsForm from "./SpecsForm";
 import MaintenanceLogsSection from "./MaintenanceLogsSection";
 import ResultsDisplay from "./ResultsDisplay";
+import ResultsLoadingSkeleton from "./ResultsLoadingSkeleton";
 
 interface DiagnoseProps {
+  user?: any;
   onSaveReport: (category: "Mechanical" | "Electrical" | "Hydraulic", symptoms: string, specs: Record<string, string>, data: any, fileName?: string, fileType?: string) => void;
   targetContext?: {
     plantId: number | null;
@@ -22,6 +24,7 @@ interface DiagnoseProps {
     componentId: number | null;
     technologyType: string | null;
     quickAnalysisMode?: boolean;
+    collectionPointId?: number | string | null;
   } | null;
   onClearTargetContext?: () => void;
   selectedCompanyId?: number;
@@ -36,6 +39,7 @@ const techMap: Record<string, string> = {
 };
 
 export default function Diagnose({ 
+  user,
   onSaveReport, 
   targetContext,
   onClearTargetContext,
@@ -55,6 +59,8 @@ export default function Diagnose({
   const [selectedRouteId, setSelectedRouteId] = useState<number | "">("");
   const [selectedAssetId, setSelectedAssetId] = useState<number | "">("");
   const [selectedComponentId, setSelectedComponentId] = useState<number | "">("");
+  const [isComponentSpecsAutoFilled, setIsComponentSpecsAutoFilled] = useState<boolean>(false);
+  const [prefilledCPName, setPrefilledCPName] = useState<string | null>(null);
 
   // Quick Analysis Mode
   const [quickAnalysisMode, setQuickAnalysisMode] = useState<boolean>(false);
@@ -155,6 +161,8 @@ export default function Diagnose({
   const [diagnosticResult, setDiagnosticResult] = useState<any | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [analysisConfidence, setAnalysisConfidence] = useState<number | null>(null);
+  const [learningMatch, setLearningMatch] = useState<any | null>(null);
 
   // Historical past diagnoses
   const [historyList, setHistoryList] = useState<any[]>([]);
@@ -251,6 +259,67 @@ export default function Diagnose({
   useEffect(() => {
     fetchMaintenanceLogs();
   }, [selectedAssetId]);
+
+  // Auto-populate specifications of the selected component into the diagnosis form
+  useEffect(() => {
+    if (selectedComponentId && componentsList.length > 0) {
+      const component = componentsList.find(c => c.id === Number(selectedComponentId));
+      if (component) {
+        setIsComponentSpecsAutoFilled(true);
+        const cmpSpecs = component.specifications || component.specs || {};
+        
+        // Match the component type
+        if (component.type) {
+          setEquipmentType(component.type);
+        }
+
+        setSpecs(prev => {
+          const updated = { ...prev };
+          
+          if (cmpSpecs.rpm) {
+            updated.specRpm = String(cmpSpecs.rpm);
+          }
+          if (cmpSpecs.hp) {
+            updated.powerRating = String(cmpSpecs.hp);
+          }
+          if (cmpSpecs.bearing_inner || cmpSpecs.bearing_outer) {
+            const innerStr = cmpSpecs.bearing_inner ? `Inner: ${cmpSpecs.bearing_inner}` : "";
+            const outerStr = cmpSpecs.bearing_outer ? `Outer: ${cmpSpecs.bearing_outer}` : "";
+            updated.bearingType = [innerStr, outerStr].filter(Boolean).join(", ");
+          }
+          
+          // Construct system details
+          const detailParts = [];
+          if (component.type) detailParts.push(`Type: ${component.type}`);
+          if (component.manufacturer) detailParts.push(`Mfg: ${component.manufacturer}`);
+          if (component.model) detailParts.push(`Model: ${component.model}`);
+          if (cmpSpecs.gearbox_ratio) detailParts.push(`Ratio: ${cmpSpecs.gearbox_ratio}`);
+          
+          if (detailParts.length > 0) {
+            updated.systemDetails = detailParts.join(" | ");
+          }
+          
+          return updated;
+        });
+
+        // Set category based on type
+        if (component.type) {
+          const lowerType = component.type.toLowerCase();
+          if (lowerType.includes("pump") || lowerType.includes("hydraulic") || lowerType.includes("fan")) {
+            setCategory("Mechanical");
+          } else if (lowerType.includes("motor") || lowerType.includes("generator") || lowerType.includes("electric")) {
+            setCategory("Electrical");
+          } else {
+            setCategory("Mechanical");
+          }
+        }
+      } else {
+        setIsComponentSpecsAutoFilled(false);
+      }
+    } else {
+      setIsComponentSpecsAutoFilled(false);
+    }
+  }, [selectedComponentId, componentsList]);
 
   // Dynamically update shafts config array when numShafts changes
   useEffect(() => {
@@ -387,16 +456,116 @@ export default function Diagnose({
   // Handle targetContext synchronization
   useEffect(() => {
     if (targetContext) {
-      if (targetContext.plantId) setSelectedPlantId(targetContext.plantId);
-      if (targetContext.routeId) setSelectedRouteId(targetContext.routeId);
-      if (targetContext.assetId) setSelectedAssetId(targetContext.assetId);
-      if (targetContext.componentId) setSelectedComponentId(targetContext.componentId);
-      if (targetContext.technologyType) {
-        const rawTech = targetContext.technologyType;
-        setSelectedTech(techMap[rawTech] || rawTech);
-      }
-      if (targetContext.quickAnalysisMode) {
-        setQuickAnalysisMode(true);
+      if (targetContext.collectionPointId) {
+        const fetchPrefill = async () => {
+          try {
+            const res = await fetch(`/api/diagnosis/prefill/${targetContext.collectionPointId}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.plant) {
+                setPlants(prev => {
+                  if (!prev.some(p => p.id === data.plant.id)) {
+                    return [...prev, data.plant];
+                  }
+                  return prev;
+                });
+                setSelectedPlantId(data.plant.id);
+              }
+              if (data.route) {
+                setRoutesList(prev => {
+                  if (!prev.some(r => r.id === data.route.id)) {
+                    return [...prev, data.route];
+                  }
+                  return prev;
+                });
+                setSelectedRouteId(data.route.id);
+              }
+              if (data.asset) {
+                setAssetsList(prev => {
+                  if (!prev.some(a => a.id === data.asset.id)) {
+                    return [...prev, data.asset];
+                  }
+                  return prev;
+                });
+                setSelectedAssetId(data.asset.id);
+              }
+              if (data.component) {
+                setComponentsList(prev => {
+                  if (!prev.some(c => c.id === data.component.id)) {
+                    return [...prev, data.component];
+                  }
+                  return prev;
+                });
+                setSelectedComponentId(data.component.id);
+                
+                // Prefill core fields
+                if (data.component.type) {
+                  setEquipmentType(data.component.type);
+                  // Set category
+                  const lowerType = data.component.type.toLowerCase();
+                  if (lowerType.includes("pump") || lowerType.includes("hydraulic") || lowerType.includes("fan")) {
+                    setCategory("Mechanical");
+                  } else if (lowerType.includes("motor") || lowerType.includes("generator") || lowerType.includes("electric")) {
+                    setCategory("Electrical");
+                  } else {
+                    setCategory("Mechanical");
+                  }
+                }
+
+                // Prefill specifications
+                const cmpSpecs = data.component.specifications || data.component.specs || {};
+                setSpecs(prev => {
+                  const updated = { ...prev };
+                  Object.keys(cmpSpecs).forEach(key => {
+                    // Match RPM and HP to pre-defined fields
+                    if (key === "rpm") {
+                      updated.specRpm = String(cmpSpecs.rpm);
+                    } else if (key === "hp") {
+                      updated.powerRating = String(cmpSpecs.hp);
+                    } else if (key === "bearing_inner" || key === "bearing_outer") {
+                      const innerStr = cmpSpecs.bearing_inner ? `Inner: ${cmpSpecs.bearing_inner}` : "";
+                      const outerStr = cmpSpecs.bearing_outer ? `Outer: ${cmpSpecs.bearing_outer}` : "";
+                      updated.bearingType = [innerStr, outerStr].filter(Boolean).join(", ");
+                    } else {
+                      // Custom dynamic fields!
+                      updated[key] = String(cmpSpecs[key]);
+                    }
+                  });
+                  // Construct system details
+                  const detailParts = [];
+                  if (data.component.type) detailParts.push(`Type: ${data.component.type}`);
+                  if (data.component.manufacturer) detailParts.push(`Mfg: ${data.component.manufacturer}`);
+                  if (data.component.model) detailParts.push(`Model: ${data.component.model}`);
+                  if (cmpSpecs.gearbox_ratio) detailParts.push(`Ratio: ${cmpSpecs.gearbox_ratio}`);
+                  if (detailParts.length > 0) {
+                    updated.systemDetails = detailParts.join(" | ");
+                  }
+                  return updated;
+                });
+              }
+              if (data.collectionPoint) {
+                setPrefilledCPName(data.collectionPoint.name);
+                setSymptoms(`Analyzing collection point: ${data.collectionPoint.name}. Orientation: ${data.collectionPoint.orientation || "Horizontal"}. Please review the pre-filled technical specifications and upload raw spectrum telemetry to run diagnostics.`);
+              }
+              showToast("✓ Diagnostics fields pre-filled from collection point!", "success");
+            }
+          } catch (error) {
+            console.error("Failed to load prefill:", error);
+          }
+        };
+        fetchPrefill();
+      } else {
+        if (targetContext.plantId) setSelectedPlantId(targetContext.plantId);
+        if (targetContext.routeId) setSelectedRouteId(targetContext.routeId);
+        if (targetContext.assetId) setSelectedAssetId(targetContext.assetId);
+        if (targetContext.componentId) setSelectedComponentId(targetContext.componentId);
+        if (targetContext.technologyType) {
+          const rawTech = targetContext.technologyType;
+          setSelectedTech(techMap[rawTech] || rawTech);
+        }
+        if (targetContext.quickAnalysisMode) {
+          setQuickAnalysisMode(true);
+        }
       }
     }
   }, [targetContext]);
@@ -422,124 +591,122 @@ export default function Diagnose({
   }, [selectedComponentId, diagnosticResult]);
 
   // File processing and parsing
- const processFile = async (file: File) => {
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  const reader = new FileReader();
-  
-  if (["png", "jpg", "jpeg", "webp"].includes(ext || "")) {
-    // It's an image - use AI to analyze the spectrum
-    reader.onload = async (ev) => {
-      try {
+  const processFile = (file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    const reader = new FileReader();
+
+    const isImage = ["png", "jpg", "jpeg", "webp"].includes(ext || "");
+
+    if (isImage) {
+      reader.onload = async (ev) => {
         const base64Data = ev.target?.result as string;
-        
-        showToast("🤖 AI analyzing vibration spectrum image...", "info");
-        
-        // Call the new AI image analysis endpoint
-        const res = await fetch("/api/analyze-spectrum-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ 
-            fileData: base64Data, 
-            mimeType: file.type 
-          })
-        });
-        
-        if (res.ok) {
-          const extractedData = await res.json();
-          console.log("✅ AI extracted from image:", extractedData);
-          
-          // Update the state with extracted values
-          if (extractedData.overall_velocity) setOverallVelocity(String(extractedData.overall_velocity));
-          if (extractedData.oneX_rpm) setOneX(String(extractedData.oneX_rpm));
-          if (extractedData.twoX_rpm) setTwoX(String(extractedData.twoX_rpm));
-          if (extractedData.bearing_inner) setBearingInner(String(extractedData.bearing_inner));
-          if (extractedData.bearing_outer) setBearingOuter(String(extractedData.bearing_outer));
-          
-          setUploadedFile({
-            name: file.name,
-            type: "image",
-            data: base64Data,
-            mimeType: file.type,
-            size: file.size
-          });
-          
-          showToast(`✓ Image analyzed! Overall: ${extractedData.overall_velocity || 'N/A'} in/s`, "success");
-        } else {
-          throw new Error("Failed to analyze image");
-        }
-      } catch (err: any) {
-        console.error("Image analysis error:", err);
-        showToast("⚠️ Could not analyze image. Using default values.", "warning");
-        
-        // Still set the file but use defaults
         setUploadedFile({
           name: file.name,
           type: "image",
-          data: ev.target?.result as string,
+          data: base64Data,
           mimeType: file.type,
           size: file.size
         });
-      }
-    };
-    reader.readAsDataURL(file);
-  } else {
-    // It's a text/CSV file - use the old parsing method
-    reader.onload = (ev) => {
-      const textContent = ev.target?.result as string;
-      setUploadedFile({
-        name: file.name,
-        type: "text",
-        data: textContent.substring(0, 15000),
-        mimeType: file.type,
-        size: file.size
-      });
-      parseTelemetryData(textContent);
-    };
-    reader.readAsText(file);
-  }
-};
+
+        showToast("🤖 AI analyzing vibration spectrum image...", "info");
+
+        try {
+          const res = await fetch("/api/analyze-spectrum-image", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileData: base64Data, mimeType: file.type })
+          });
+
+          if (!res.ok) {
+            throw new Error("Spectrum image analyzer returned an error.");
+          }
+
+          const parsed = await res.json();
+          
+          console.log("✅ AI extracted from image: " + JSON.stringify(parsed));
+          
+          // Update state with extracted values or fallback to default values
+          setOverallVelocity(parsed.overall_velocity !== undefined && parsed.overall_velocity !== null ? String(parsed.overall_velocity) : "0.08");
+          setOneX(parsed.oneX_rpm !== undefined && parsed.oneX_rpm !== null ? String(parsed.oneX_rpm) : "0.02");
+          setTwoX(parsed.twoX_rpm !== undefined && parsed.twoX_rpm !== null ? String(parsed.twoX_rpm) : "0.01");
+          setBearingInner(parsed.bearing_inner !== undefined && parsed.bearing_inner !== null ? String(parsed.bearing_inner) : "0.005");
+          setBearingOuter(parsed.bearing_outer !== undefined && parsed.bearing_outer !== null ? String(parsed.bearing_outer) : "0.005");
+          setAnalysisConfidence(parsed.extraction_confidence !== undefined ? parsed.extraction_confidence : (parsed.confidence || 85));
+          setLearningMatch(parsed.learning_db_match || null);
+
+          showToast("✓ AI analyzed spectrum image successfully!", "success");
+        } catch (err: any) {
+          console.error("AI Spectrum analysis failed, using default values:", err);
+          setOverallVelocity("0.08");
+          setOneX("0.02");
+          setTwoX("0.01");
+          setBearingInner("0.005");
+          setBearingOuter("0.005");
+          showToast("⚠️ AI Analysis failed. Falls back to default nominal vibration values.", "error");
+        }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      reader.onload = (ev) => {
+        const textContent = ev.target?.result as string;
+        setUploadedFile({
+          name: file.name,
+          type: "text",
+          data: textContent.substring(0, 15000),
+          mimeType: file.type,
+          size: file.size
+        });
+        parseTelemetryData(textContent);
+      };
+      reader.readAsText(file);
+    }
+  };
 
   const parseTelemetryData = (content: string) => {
-  console.log(" Parsing telemetry file content:", content.substring(0, 500));
-  
-  const lines = content.split(/\r?\n/);
-  let vel = ""; let ox = ""; let tx = ""; let bi = ""; let bo = "";
-  
-  for (const line of lines) {
-    const lower = line.toLowerCase();
-    const match = line.match(/[\d.]+/);
-    if (match) {
-      const val = match[0];
-      if (lower.includes("overall") || lower.includes("velocity")) vel = val;
-      else if (lower.includes("1x") || lower.includes("onex")) ox = val;
-      else if (lower.includes("2x") || lower.includes("twox")) tx = val;
-      else if (lower.includes("inner") || lower.includes("bpfi") || lower.includes("bearing_inner")) bi = val;
-      else if (lower.includes("outer") || lower.includes("bpfo") || lower.includes("bearing_outer")) bo = val;
-    }
-  }
-  
-  console.log("📊 Parsed values:", { vel, ox, tx, bi, bo });
-  
-  if (vel) setOverallVelocity(vel);
-  if (ox) setOneX(ox);
-  if (tx) setTwoX(tx);
-  if (bi) setBearingInner(bi);
-  if (bo) setBearingOuter(bo);
-  
-  if (vel || ox || tx || bi || bo) {
-    showToast("✓ Successfully parsed vibration levels from telemetry spectrum file!", "success");
-    console.log("✅ Updated state with parsed values");
-  } else {
-    showToast("⚠️ Could not parse vibration data. Using default values. Check console for details.", "warning");
-  }
-};
+    try {
+      const lines = content.split(/\r?\n/);
+      let vel = ""; let ox = ""; let tx = ""; let bi = ""; let bo = "";
+      
+      for (const line of lines) {
+        const lower = line.toLowerCase();
+        const match = line.match(/[\d.]+/);
+        if (match) {
+          const val = match[0];
+          if (lower.includes("overall") || lower.includes("velocity")) vel = val;
+          else if (lower.includes("1x") || lower.includes("onex")) ox = val;
+          else if (lower.includes("2x") || lower.includes("twox")) tx = val;
+          else if (lower.includes("inner") || lower.includes("bpfi") || lower.includes("bearing_inner")) bi = val;
+          else if (lower.includes("outer") || lower.includes("bpfo") || lower.includes("bearing_outer")) bo = val;
+        }
+      }
 
+      setOverallVelocity(vel || "0.08");
+      setOneX(ox || "0.02");
+      setTwoX(tx || "0.01");
+      setBearingInner(bi || "0.005");
+      setBearingOuter(bo || "0.005");
+
+      if (vel || ox || tx || bi || bo) {
+        showToast("✓ Successfully parsed vibration levels from telemetry spectrum file!", "success");
+      } else {
+        showToast("⚠️ No distinct vibration signatures found. Using default nominal values.", "info");
+      }
+    } catch (err) {
+      console.error("Telemetry parsing failed, using nominal fallbacks:", err);
+      setOverallVelocity("0.08");
+      setOneX("0.02");
+      setTwoX("0.01");
+      setBearingInner("0.005");
+      setBearingOuter("0.005");
+      showToast("⚠️ Parsing error. Using default nominal vibration values.", "error");
+    }
+  };
 
   const simulateUpload = (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase() || "";
-    const allowed = ["png", "jpg", "jpeg", "csv", "txt", "pdf"];
+    const allowed = ["png", "jpg", "jpeg", "webp", "csv", "txt", "pdf"];
     if (!allowed.includes(ext)) {
-      setUploadError("Format unsupported. Please upload PNG, JPG, CSV, TXT, or PDF.");
+      setUploadError("Format unsupported. Please upload PNG, JPG, WEBP, CSV, TXT, or PDF.");
       return;
     }
     if (file.size > 50 * 1024 * 1024) {
@@ -583,6 +750,17 @@ export default function Diagnose({
 
   // Run machinery diagnosis
   const triggerDiagnostics = async () => {
+    if (!quickAnalysisMode && !selectedComponentId) {
+      showToast("⚠️ Please fill all required fields", "warning");
+      setErrorMsg("Please select a Component for diagnosis.");
+      return;
+    }
+    if (!symptoms.trim()) {
+      showToast("⚠️ Please fill all required fields", "warning");
+      setErrorMsg("Please describe observations or symptoms.");
+      return;
+    }
+
     setErrorMsg("");
     setIsLoading(true);
     setDiagnosticResult(null);
@@ -590,23 +768,24 @@ export default function Diagnose({
     setLoadingProgress(0);
 
     const messages = [
-      "Parsing vibration data...",
-      "Checking ISO 10816 thresholds...",
-      "Searching industry databases...",
-      "Analyzing environmental factors...",
-      "Generating report..."
+      "⚙️ GPT-4o extracting spectrum data...",
+      "🧠 Claude analyzing fault patterns...",
+      "📝 Generating Manager Report...",
+      "Finalizing consensus review..."
     ];
 
     let msgIdx = 0;
     setLoadingMessage(messages[0]);
     const messageInterval = setInterval(() => {
-      msgIdx = (msgIdx + 1) % messages.length;
-      setLoadingMessage(messages[msgIdx]);
-    }, 1500);
+      if (msgIdx < messages.length - 1) {
+        msgIdx++;
+        setLoadingMessage(messages[msgIdx]);
+      }
+    }, 3000);
 
     const progressInterval = setInterval(() => {
-      setLoadingProgress((p) => (p >= 98 ? 98 : p + Math.floor(Math.random() * 10) + 3));
-    }, 100);
+      setLoadingProgress((p) => (p >= 98 ? 98 : p + 1));
+    }, 125);
 
     try {
       const gearboxSpecs = equipmentType === "Gearbox" ? {
@@ -630,9 +809,11 @@ export default function Diagnose({
         equipmentType,
         customEquipment: equipmentType === "Other" ? customEquipment.trim() : "",
         componentId: selectedComponentId || null,
-        shafts: equipmentType === "Gearbox" ? shafts : undefined
+        shafts: equipmentType === "Gearbox" ? shafts : undefined,
+        imageConfidence: analysisConfidence
       };
 
+      const startTime = Date.now();
       const res = await fetch("/api/diagnose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -644,9 +825,22 @@ export default function Diagnose({
       }
 
       const data = await res.json();
+      
+      // Keep loading active for at least 9.2 seconds to allow the AI Consensus sequential stages to animate beautifully
+      const elapsed = Date.now() - startTime;
+      const minAnimationDuration = 9200; 
+      if (elapsed < minAnimationDuration) {
+        await new Promise(resolve => setTimeout(resolve, minAnimationDuration - elapsed));
+      }
+
       setLoadingProgress(100);
       setDiagnosticResult(data);
-      showToast("✓ Hybrid Diagnosis successfully computed!", "success");
+      if (data.confidence_score !== undefined) {
+        setAnalysisConfidence(data.confidence_score);
+      } else if (data.confidence !== undefined) {
+        setAnalysisConfidence(data.confidence);
+      }
+      showToast("✅ Diagnosis completed & hybrid report calculated!", "success");
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.message || "Failed to execute machine diagnosis.");
@@ -720,7 +914,7 @@ AUTHORIZED BY : MotorMedic Pro Expert Hybrid Engine
 ======================================================`;
 
     setGeneratedWorkOrder(workOrder);
-    showToast("✓ CMMS Work Order generated successfully!", "success");
+    showToast("✅ Work order created successfully!", "success");
   };
 
   const handleCopyToClipboard = () => {
@@ -839,6 +1033,7 @@ AUTHORIZED BY : MotorMedic Pro Expert Hybrid Engine
     { id: "Ventilation Fan", label: "Ventilation Fan", icon: RefreshCw, desc: "Industrial blowers, high power HVAC & cooling fans" },
     { id: "Compressor", label: "Compressor", icon: Activity, desc: "Rotary screw, reciprocating & reciprocating compressors" },
     { id: "Gearbox", label: "Gearbox", icon: Settings, desc: "Speed reducers & industrial gear drives" },
+    { id: "Static Measurement", label: "Static Measurement", icon: Sliders, desc: "Stationary equipment baseline & static structural measurements" },
     { id: "Other", label: "Custom Other", icon: HelpCircle, desc: "Other specialized turbines & machinery" },
   ];
 
@@ -914,6 +1109,25 @@ AUTHORIZED BY : MotorMedic Pro Expert Hybrid Engine
           </button>
         </div>
       </div>
+
+      {/* Prefill Banner */}
+      {prefilledCPName && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 px-4 py-3 rounded-xl flex items-center justify-between gap-3 animate-fade-in shadow-md">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">📋</span>
+            <span className="text-xs font-semibold">
+              Pre-filled from collection point <strong className="text-white">[{prefilledCPName}]</strong>. Review specs and upload spectrum file.
+            </span>
+          </div>
+          <button 
+            type="button" 
+            onClick={() => setPrefilledCPName(null)}
+            className="text-xs font-bold text-emerald-400 hover:text-emerald-300 underline border-none bg-transparent outline-none cursor-pointer"
+          >
+            Clear Prefill
+          </button>
+        </div>
+      )}
 
       {/* 2. Asset Selection Progress Bar (Pill-shaped green/teal row) */}
       <div className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 space-y-3.5 shadow-md">
@@ -1210,6 +1424,7 @@ AUTHORIZED BY : MotorMedic Pro Expert Hybrid Engine
               setNumShafts={setNumShafts} 
               shafts={shafts} 
               setShafts={setShafts} 
+              isAutoFilled={isComponentSpecsAutoFilled}
             />
           </div>
 
@@ -1572,18 +1787,26 @@ AUTHORIZED BY : MotorMedic Pro Expert Hybrid Engine
         </div>
       </div>
 
-      {/* Diagnosis Results Display Banners */}
-      <ResultsDisplay 
-        diagnosticResult={diagnosticResult} 
-        handleSave={handleSave} 
-        handleGenerateCMMSWorkOrder={handleGenerateCMMSWorkOrder} 
-        handleSendManualAlert={handleSendManualAlert} 
-        handleExportPDF={handleExportPDF} 
-        isAlertSending={isAlertSending} 
-        alertSuccessMsg={alertSuccessMsg} 
-        generatedWorkOrder={generatedWorkOrder} 
-        handleCopyToClipboard={handleCopyToClipboard} 
-      />
+      {/* Diagnosis Results Display Banners OR Skeletons */}
+      {isLoading ? (
+        <ResultsLoadingSkeleton progress={loadingProgress} message={loadingMessage} />
+      ) : (
+        <ResultsDisplay 
+          diagnosticResult={diagnosticResult} 
+          handleSave={handleSave} 
+          handleGenerateCMMSWorkOrder={handleGenerateCMMSWorkOrder} 
+          handleSendManualAlert={handleSendManualAlert} 
+          handleExportPDF={handleExportPDF} 
+          isAlertSending={isAlertSending} 
+          alertSuccessMsg={alertSuccessMsg} 
+          generatedWorkOrder={generatedWorkOrder} 
+          handleCopyToClipboard={handleCopyToClipboard} 
+          assetId={selectedAssetId}
+          equipmentType={equipmentType}
+          imageConfidence={analysisConfidence}
+          user={user}
+        />
+      )}
 
     </div>
   );

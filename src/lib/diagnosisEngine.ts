@@ -21,11 +21,11 @@ export interface Fault {
 }
 
 const THRESHOLDS = {
-  unbalance_1X: 0.05,      // in/s (LOWERED for testing)
-  misalignment_2X: 0.03,   // in/s (LOWERED for testing)
-  bearing_defect: 0.01,    // in/s (LOWERED for testing)
-  overall_velocity: 0.15,  // in/s (LOWERED for testing)
-  gear_mesh_freq: 0.05     // in/s (for gearboxes)
+  unbalance_1X: 0.10,      // in/s
+  misalignment_2X: 0.05,   // in/s
+  bearing_defect: 0.02,    // in/s
+  overall_velocity: 0.30,  // in/s
+  gear_mesh_freq: 0.08     // in/s (for gearboxes)
 };
 
 export function analyzeVibration(data: any): { 
