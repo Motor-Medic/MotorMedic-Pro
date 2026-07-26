@@ -388,6 +388,32 @@ export default function Assets({
     setEditingItem(item);
   };
 
+  const handleRunDiagnosisForComponent = (
+    componentId: number,
+    assetId: number,
+    technologyType = "Vibration"
+  ) => {
+    let routeId: number | null = null;
+    let plantId: number | null = null;
+
+    for (const [rIdStr, eqList] of Object.entries(equipment)) {
+      if ((eqList as any[]).some((eq) => eq.id === assetId)) {
+        routeId = Number(rIdStr);
+        for (const [pIdStr, rList] of Object.entries(routes)) {
+          if ((rList as any[]).some((rt) => rt.id === routeId)) {
+            plantId = Number(pIdStr);
+            break;
+          }
+        }
+        break;
+      }
+    }
+
+    if (onStartDiagnosis) {
+      onStartDiagnosis(plantId || 1, routeId || 1, assetId, componentId, technologyType);
+    }
+  };
+
   const handleModalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) return;
@@ -1036,29 +1062,38 @@ export default function Assets({
                                                   equipComp.map(comp => (
                                                     <div
                                                       key={comp.id}
-                                                      onClick={() => setSelectedItem({ type: "component", data: comp })}
-                                                      className={`flex items-center justify-between p-1 rounded text-[11px] cursor-pointer hover:bg-slate-900 ${
+                                                      className={`flex items-center justify-between p-1 rounded text-[11px] hover:bg-slate-900 ${
                                                         selectedItem?.type === "component" && selectedItem?.data.id === comp.id ? "bg-slate-900 border border-slate-850" : "text-slate-400"
                                                       }`}
                                                     >
-                                                      <div className="flex items-center gap-1">
+                                                      <div
+                                                        className="flex items-center gap-1 cursor-pointer flex-1 min-w-0"
+                                                        onClick={() => setSelectedItem({ type: "component", data: comp })}
+                                                      >
                                                         <Settings className="w-3 h-3 text-slate-500" />
                                                         <span>{comp.name}</span>
                                                         {comp.type && <span className="text-[9px] text-slate-600 font-mono">({comp.type})</span>}
                                                       </div>
 
                                                       {/* Component Actions */}
-                                                      <div className="flex items-center gap-1 opacity-0 hover:opacity-100" onClick={e => e.stopPropagation()}>
+                                                      <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => handleRunDiagnosisForComponent(comp.id, equip.id)}
+                                                          className="bg-yellow-500 hover:bg-yellow-600 text-slate-900 text-xs font-bold py-1 px-3 rounded"
+                                                        >
+                                                          Run Diagnosis
+                                                        </button>
                                                         <button
                                                           onClick={() => openEditModal("component", comp)}
-                                                          className="p-1 hover:text-sky-400 rounded transition-all"
+                                                          className="p-1 hover:text-sky-400 rounded transition-all opacity-40 hover:opacity-100"
                                                           title="Edit"
                                                         >
                                                           <Edit3 className="w-3 h-3" />
                                                         </button>
                                                         <button
                                                           onClick={() => openDeleteModal("component", comp)}
-                                                          className="p-1 hover:text-rose-400 rounded transition-all"
+                                                          className="p-1 hover:text-rose-400 rounded transition-all opacity-40 hover:opacity-100"
                                                           title="Delete"
                                                         >
                                                           <Trash2 className="w-3 h-3" />
@@ -1279,15 +1314,26 @@ export default function Assets({
                         {components[selectedItem.data.id].map(c => (
                           <div
                             key={c.id}
-                            onClick={() => setSelectedItem({ type: "component", data: c })}
-                            className="p-2 bg-slate-950/80 hover:bg-slate-900 border border-slate-850 rounded-lg flex items-center justify-between cursor-pointer text-xs"
+                            className="p-2 bg-slate-950/80 hover:bg-slate-900 border border-slate-850 rounded-lg flex items-center justify-between text-xs"
                           >
-                            <div className="flex items-center gap-2">
+                            <div
+                              className="flex items-center gap-2 cursor-pointer flex-1 min-w-0"
+                              onClick={() => setSelectedItem({ type: "component", data: c })}
+                            >
                               <Settings className="w-3.5 h-3.5 text-slate-500" />
                               <span className="font-semibold text-slate-200">{c.name}</span>
                               {c.type && <span className="text-[10px] text-slate-500">({c.type})</span>}
                             </div>
-                            <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRunDiagnosisForComponent(c.id, selectedItem.data.id);
+                              }}
+                              className="bg-yellow-500 hover:bg-yellow-600 text-slate-900 text-xs font-bold py-1 px-3 rounded shrink-0"
+                            >
+                              Run Diagnosis
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -1465,34 +1511,7 @@ export default function Assets({
                                     onClick={() => {
                                       const componentId = selectedItem.data.id;
                                       const assetId = selectedItem.data.equipment_id || selectedItem.data.asset_id;
-                                      
-                                      let routeId = null;
-                                      let plantId = null;
-                                      
-                                      for (const [rIdStr, eqList] of Object.entries(equipment)) {
-                                        const foundEq = (eqList as any).find((eq: any) => eq.id === assetId);
-                                        if (foundEq) {
-                                          routeId = Number(rIdStr);
-                                          for (const [pIdStr, rList] of Object.entries(routes)) {
-                                            const foundRt = (rList as any).find((rt: any) => rt.id === routeId);
-                                            if (foundRt) {
-                                              plantId = Number(pIdStr);
-                                              break;
-                                            }
-                                          }
-                                          break;
-                                        }
-                                      }
-
-                                      if (onStartDiagnosis) {
-                                        onStartDiagnosis(
-                                          plantId || 1, 
-                                          routeId || 1, 
-                                          assetId || 1, 
-                                          componentId, 
-                                          tech.id
-                                        );
-                                      }
+                                      handleRunDiagnosisForComponent(componentId, assetId || 1, tech.id);
                                     }}
                                     className="px-2.5 py-1 bg-yellow-400 text-slate-950 hover:bg-yellow-500 font-bold text-[10px] rounded flex items-center gap-1 transition-all"
                                   >
@@ -1603,8 +1622,13 @@ export default function Assets({
       {/* CRUD POPUP FORM MODAL                   */}
       {/* ======================================= */}
       {modalType && (modalType === "create" || modalType === "edit") && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-[#0c1220] border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl p-6 relative max-h-[90vh] overflow-y-auto custom-scrollbar">
+        <>
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+            onClick={() => setModalType(null)}
+          />
+          <div className="fixed inset-y-0 right-0 z-50 w-full max-w-lg bg-slate-900 border-l border-slate-800 shadow-2xl transform transition-transform duration-300 ease-in-out overflow-y-auto">
+            <div className="p-6 relative custom-scrollbar">
             <button
               onClick={() => setModalType(null)}
               className="absolute top-4 right-4 text-slate-400 hover:text-white"
@@ -1844,8 +1868,9 @@ export default function Assets({
                 </button>
               </div>
             </form>
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* ======================================= */}
