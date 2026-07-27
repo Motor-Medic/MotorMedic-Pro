@@ -16,9 +16,13 @@ import Privacy from "./components/Privacy";
 import AlertsControl from "./components/AlertsControl";
 import AIChatbot from "./components/AIChatbot";
 import AIDataMigration from "./components/AIDataMigration";
+import AnalysisReport from "./components/AnalysisReport";
+import RootCauseAnalysis from "./components/RootCauseAnalysis";
+import MaintenanceCalendar from "./components/MaintenanceCalendar";
+import FMEA from "./components/FMEA";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
-  Sun, Moon, Sparkles
+  Sun, Moon, Sparkles, FileText, Target, Calendar
 } from "lucide-react";
 
 const STORAGE_KEY = "reliability_reports_v6";
@@ -61,7 +65,7 @@ export default function App() {
     localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts" | "migration">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts" | "migration" | "analysis" | "rca" | "calendar" | "fmea">("dashboard");
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("motormedic_theme") || "dark";
   });
@@ -1031,6 +1035,70 @@ export default function App() {
 
           <button
             onClick={() => {
+              setActiveTab("analysis");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "analysis" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+            id="sidebar-analysis-btn"
+          >
+            <FileText className="w-4.5 h-4.5" />
+            <span>Analysis Reports</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("rca");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "rca" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+            id="sidebar-rca-btn"
+          >
+            <Target className="w-4.5 h-4.5" />
+            <span>Root Cause Analysis</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("fmea");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "fmea" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+            id="sidebar-fmea-btn"
+          >
+            <ShieldAlert className="w-4.5 h-4.5" />
+            <span>FMEA Analysis</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("calendar");
+              setSelectedReport(null);
+            }}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+              activeTab === "calendar" && !selectedReport
+                ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+            }`}
+            id="sidebar-calendar-btn"
+          >
+            <Calendar className="w-4.5 h-4.5" />
+            <span>Maintenance Calendar</span>
+          </button>
+
+          <button
+            onClick={() => {
               setActiveTab("history");
               setSelectedReport(null);
             }}
@@ -1159,6 +1227,14 @@ export default function App() {
                 setSelectedReport(null);
               }}
             />
+          ) : activeTab === "analysis" ? (
+            <AnalysisReport selectedCompanyId={selectedCompanyId} />
+          ) : activeTab === "rca" ? (
+            <RootCauseAnalysis selectedCompanyId={selectedCompanyId} />
+          ) : activeTab === "calendar" ? (
+            <MaintenanceCalendar selectedCompanyId={selectedCompanyId} />
+          ) : activeTab === "fmea" ? (
+            <FMEA selectedCompanyId={selectedCompanyId} />
           ) : activeTab === "diagnose" ? (
             <Diagnose 
               user={user}
@@ -1429,6 +1505,74 @@ export default function App() {
                   <span>Trend Analyzer</span>
                 </button>
               )}
+
+              <button
+                onClick={() => {
+                  setActiveTab("analysis");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "analysis" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+                id="drawer-analysis-btn"
+              >
+                <FileText className="w-5 h-5 shrink-0" />
+                <span>Analysis Reports</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("rca");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "rca" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+                id="drawer-rca-btn"
+              >
+                <Target className="w-5 h-5 shrink-0" />
+                <span>Root Cause Analysis</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("fmea");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "fmea" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+                id="drawer-fmea-btn"
+              >
+                <ShieldAlert className="w-5 h-5 shrink-0" />
+                <span>FMEA Analysis</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setActiveTab("calendar");
+                  setSelectedReport(null);
+                  setIsHamburgerOpen(false);
+                }}
+                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                  activeTab === "calendar" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-300 hover:text-white active:bg-slate-900"
+                }`}
+                id="drawer-calendar-btn"
+              >
+                <Calendar className="w-5 h-5 shrink-0" />
+                <span>Maintenance Calendar</span>
+              </button>
 
               <button
                 onClick={() => {
