@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import TrendAnalyzer from "./TrendAnalyzer";
 import { 
   TrendingUp, Calendar, AlertTriangle, CheckCircle2, Wrench, Thermometer, 
   Gauge, Zap, Database, Sliders, Download, RefreshCw, FileText, 
@@ -101,6 +102,9 @@ interface TrendsProps {
 }
 
 export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibration_only" }: TrendsProps) {
+  // Mode State: Category IV Interactive Analyzer vs Plant Telemetry Database Feed
+  const [viewMode, setViewMode] = useState<"analyzer" | "feed">("analyzer");
+
   // --- Cascading Dropdown States ---
   const [plants, setPlants] = useState<Plant[]>([]);
   const [routes, setRoutes] = useState<RouteArea[]>([]);
@@ -536,33 +540,54 @@ export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibr
   return (
     <div className="space-y-6 print:p-0 print:space-y-4">
       
-      {/* ----------------- Top Header ----------------- */}
+      {/* ----------------- Top Header & Mode Toggle ----------------- */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-slate-800 print:hidden">
         <div>
           <div className="flex items-center gap-2">
-            <span className="p-1.5 bg-yellow-400/10 border border-yellow-400/20 rounded-lg text-yellow-400">
+            <span className="p-1.5 bg-cyan-400/10 border border-cyan-400/20 rounded-lg text-cyan-400">
               <TrendingUp className="w-5 h-5 animate-pulse" />
             </span>
             <h2 className="text-xl font-bold text-white font-display">Machinery Trends & Telemetry</h2>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Conduct multi-technology trend analyses across plant life-cycles to detect pre-fault signatures
+            Conduct Category IV trend analyses and FFT spectrum inspections to detect pre-fault signatures
           </p>
         </div>
         
-        {/* Export Report Buttons */}
-        {selectedComponentId && rawTrendData.length > 0 && (
+        {/* View Mode Toggle Pill Buttons */}
+        <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 shadow-xl">
           <button
-            onClick={() => setShowPrintReport(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 border border-slate-800 text-slate-200 hover:text-white hover:bg-slate-800 font-bold text-xs rounded-xl shadow-lg transition-all"
+            onClick={() => setViewMode("analyzer")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              viewMode === "analyzer"
+                ? "bg-cyan-500 text-slate-950 shadow-lg"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
           >
-            <FileText className="w-4 h-4 text-yellow-400" />
-            <span>Generate Trend Report</span>
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Category IV Trend Analyzer</span>
           </button>
-        )}
+
+          <button
+            onClick={() => setViewMode("feed")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              viewMode === "feed"
+                ? "bg-cyan-500 text-slate-950 shadow-lg"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>Plant Telemetry Database</span>
+          </button>
+        </div>
       </div>
 
-      {/* ----------------- 1. Cascading Asset Selection ----------------- */}
+      {/* Conditionally Render Category IV Trend Analyzer vs Plant Database Feed */}
+      {viewMode === "analyzer" ? (
+        <TrendAnalyzer />
+      ) : (
+        <>
+          {/* ----------------- 1. Cascading Asset Selection ----------------- */}
       <div className="bg-slate-950/60 border border-slate-900 rounded-2xl p-5 space-y-4 shadow-xl print:hidden">
         <div className="flex items-center gap-2 pb-2 border-b border-slate-900/60">
           <Building className="w-4 h-4 text-cyan-400" />
@@ -1486,6 +1511,8 @@ export default function Trends({ selectedCompanyId = 1, subscriptionPlan = "vibr
           </div>
         )}
       </AnimatePresence>
+        </>
+      )}
 
     </div>
   );

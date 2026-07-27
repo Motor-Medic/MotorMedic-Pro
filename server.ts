@@ -20,6 +20,7 @@ let pool: pg.Pool | null = null;
 if (dbUrl) {
   pool = new Pool({
     connectionString: dbUrl,
+    connectionTimeoutMillis: 5000,
     ssl: dbUrl.includes("sslmode=require") || dbUrl.includes("amazonaws.com") || dbUrl.includes("elephantsql") || dbUrl.includes("supabase") || dbUrl.includes("aistudio")
       ? { rejectUnauthorized: false }
       : undefined
@@ -7359,7 +7360,7 @@ app.delete(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], asy
 // COMPONENTS ENDPOINTS
 // --------------------------------------------------------
 
-// GET components for specific asset/equipment
+// GET components for specific asset/equipment with vibration status and health analysis
 app.get(["/api/components", "/api/components/:equipmentId", "/api/components/asset/:assetId"], async (req, res) => {
   try {
     const equipIdParam = req.params.equipmentId ? parseInt(req.params.equipmentId, 10) : undefined;
@@ -7370,20 +7371,92 @@ app.get(["/api/components", "/api/components/:equipmentId", "/api/components/ass
     const finalAssetId = equipIdParam || assetIdParam || equipIdQuery || assetIdQuery;
 
     if (pool) {
+      let query = `
+        SELECT 
+          c.id, 
+          c.asset_id, 
+          c.asset_id as equipment_id, 
+          c.name, 
+          c.type, 
+          c.manufacturer, 
+          c.model, 
+          c.specifications, 
+          c.specs,
+          c.notes, 
+          c.created_at,
+          a.criticality as asset_criticality,
+          (
+            SELECT dh.ai_response 
+            FROM diagnosis_history dh 
+            WHERE dh.component_id = c.id 
+            ORDER BY dh.timestamp DESC 
+            LIMIT 1
+          ) as latest_diagnosis,
+          (
+            SELECT ah.diagnosis_result 
+            FROM analysis_history ah 
+            JOIN measurement_points mp ON ah.measurement_point_id = mp.id 
+            JOIN collection_points cp ON mp.collection_point_id = cp.id 
+            WHERE cp.component_id = c.id 
+            ORDER BY ah.created_at DESC 
+            LIMIT 1
+          ) as latest_analysis
+        FROM components c
+        LEFT JOIN assets a ON c.asset_id = a.id
+      `;
+      const queryParams: any[] = [];
       if (finalAssetId !== undefined) {
         if (isNaN(finalAssetId)) {
           return res.status(400).json({ error: "Invalid asset/equipment ID parameter" });
         }
-        // Return both asset_id and equipment_id aliases to prevent client-side failures
-        const result = await pool.query(
-          "SELECT id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at FROM components WHERE asset_id = $1 ORDER BY name ASC",
-          [finalAssetId]
-        );
-        return res.json(result.rows);
-      } else {
-        const result = await pool.query("SELECT id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at FROM components ORDER BY name ASC");
-        return res.json(result.rows);
+        query += " WHERE c.asset_id = $1";
+        queryParams.push(finalAssetId);
       }
+      query += " ORDER BY c.name ASC";
+
+      const result = await pool.query(query, queryParams);
+      
+      const rows = result.rows.map(row => {
+        let diag = row.latest_diagnosis || row.latest_analysis;
+        if (typeof diag === 'string') {
+          try { diag = JSON.parse(diag); } catch(e) {}
+        }
+
+        const specs = row.specifications || row.specs || {};
+        const criticality = specs.criticality || specs.assetCriticality || row.asset_criticality || "Medium";
+        let severity = diag?.manager_summary?.severity || diag?.overall_severity || diag?.severity || "Low";
+        let status = "Healthy";
+        let hasActiveAlert = false;
+        let faultType = null;
+
+        if (diag?.probable_faults && diag.probable_faults.length > 0) {
+          faultType = diag.probable_faults[0].fault_name || diag.probable_faults[0].fault;
+        }
+
+        if (severity === "Critical" || severity === "CRITICAL_FAULT") {
+          status = "Critical";
+          hasActiveAlert = true;
+        } else if (severity === "High" || severity === "Warning" || severity === "Medium") {
+          status = "Warning";
+          if (severity === "High") hasActiveAlert = true;
+        } else {
+          status = "Healthy";
+        }
+
+        return {
+          ...row,
+          status,
+          vibration_status: status,
+          severity,
+          vibration_severity: severity,
+          criticality,
+          has_active_alert: hasActiveAlert,
+          latest_fault: faultType,
+          latest_diagnosis: diag
+        };
+      });
+
+      return res.json(rows);
     } else {
       if (finalAssetId !== undefined) {
         if (isNaN(finalAssetId)) {
@@ -7391,10 +7464,27 @@ app.get(["/api/components", "/api/components/:equipmentId", "/api/components/ass
         }
         const filtered = memoryComponents
           .filter(c => c.asset_id === finalAssetId || c.equipment_id === finalAssetId)
-          .map(c => ({ ...c, asset_id: finalAssetId, equipment_id: finalAssetId }));
+          .map(c => {
+            const specs = c.specifications || c.specs || {};
+            const criticality = specs.criticality || specs.assetCriticality || "Medium";
+            const status = c.status || c.vibration_status || "Healthy";
+            return {
+              ...c,
+              asset_id: finalAssetId,
+              equipment_id: finalAssetId,
+              status,
+              vibration_status: status,
+              criticality
+            };
+          });
         return res.json(filtered);
       } else {
-        return res.json(memoryComponents);
+        return res.json(memoryComponents.map(c => ({
+          ...c,
+          status: c.status || "Healthy",
+          vibration_status: c.status || "Healthy",
+          criticality: c.specifications?.criticality || "Medium"
+        })));
       }
     }
   } catch (error: any) {
@@ -9290,8 +9380,10 @@ app.all("/api/*", (req, res) => {
 });
 
 async function setupServer() {
-  // Run database initialization on startup
-  await initializeDatabase();
+  // Run database initialization in background on startup so server starts listening immediately
+  initializeDatabase().catch(err => {
+    console.error("❌ Non-blocking database initialization error:", err);
+  });
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import("vite");

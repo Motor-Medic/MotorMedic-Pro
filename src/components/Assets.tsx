@@ -264,6 +264,85 @@ function FormSmartSelect({
   );
 }
 
+function getComponentHealth(c: any, asset?: any) {
+  const statusStr = String(c.status || c.vibration_status || c.health_status || c.analysis_status || "").toLowerCase();
+  const severityStr = String(c.severity || c.vibration_severity || c.latest_diagnosis?.overall_severity || c.latest_analysis?.severity || "").toLowerCase();
+  
+  const specs = c.specifications || c.specs || {};
+  const criticalityStr = String(
+    c.criticality || 
+    specs.criticality || 
+    specs.assetCriticality || 
+    specs.criticality_level ||
+    asset?.criticality || 
+    "Medium"
+  ).toLowerCase();
+
+  const hasAlert = Boolean(c.has_active_alert || c.active_alert || (c.alerts && c.alerts.length > 0));
+  const fault = c.latest_fault || c.latest_diagnosis?.probable_faults?.[0]?.fault_name || c.latest_analysis?.fault_type || null;
+
+  let state: 'healthy' | 'warning' | 'critical' = 'healthy';
+  let reason = 'Vibration levels within normal limits';
+
+  if (statusStr === 'critical' || statusStr === 'red' || severityStr === 'critical' || severityStr === 'danger' || hasAlert) {
+    state = 'critical';
+    reason = fault ? `Critical fault detected: ${fault}` : 'Active critical alert - Immediate attention required';
+  } else if (statusStr === 'warning' || statusStr === 'yellow' || severityStr === 'warning' || severityStr === 'high' || severityStr === 'medium' || (criticalityStr === 'critical' && fault)) {
+    state = 'warning';
+    reason = fault ? `Warning condition: ${fault}` : 'Elevated vibration levels - Monitoring needed';
+  } else if (statusStr === 'healthy' || statusStr === 'green' || statusStr === 'normal' || severityStr === 'low' || statusStr === 'active') {
+    state = 'healthy';
+    reason = 'Healthy - Normal operation';
+  } else if (criticalityStr === 'critical' || criticalityStr === 'high') {
+    state = 'warning';
+    reason = 'High criticality component - Requires monitoring';
+  } else {
+    state = 'healthy';
+    reason = 'Healthy - Normal operation';
+  }
+
+  if (state === 'critical') {
+    return {
+      state: 'critical',
+      label: 'CRITICAL',
+      sublabel: 'Immediate Attention Required',
+      badgeBg: 'bg-rose-500/15 text-rose-400 border-rose-500/40',
+      dotColor: 'bg-rose-500',
+      textColor: 'text-rose-400',
+      pulse: 'animate-ping',
+      leftBorder: 'border-l-4 border-l-rose-500',
+      reason,
+      tooltip: `RED Indicator: ${reason} (Criticality: ${criticalityStr.toUpperCase()})`
+    };
+  } else if (state === 'warning') {
+    return {
+      state: 'warning',
+      label: 'WARNING',
+      sublabel: 'Monitoring Needed',
+      badgeBg: 'bg-amber-500/15 text-amber-400 border-amber-500/40',
+      dotColor: 'bg-amber-500',
+      textColor: 'text-amber-400',
+      pulse: 'animate-pulse',
+      leftBorder: 'border-l-4 border-l-amber-500',
+      reason,
+      tooltip: `YELLOW Indicator: ${reason} (Criticality: ${criticalityStr.toUpperCase()})`
+    };
+  } else {
+    return {
+      state: 'healthy',
+      label: 'HEALTHY',
+      sublabel: 'Normal Operation',
+      badgeBg: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/40',
+      dotColor: 'bg-emerald-500',
+      textColor: 'text-emerald-400',
+      pulse: '',
+      leftBorder: 'border-l-4 border-l-emerald-500',
+      reason,
+      tooltip: `GREEN Indicator: ${reason} (Criticality: ${criticalityStr.toUpperCase()})`
+    };
+  }
+}
+
 export default function Assets({ 
   user,
   reports, 
@@ -308,6 +387,7 @@ export default function Assets({
   const [filterTechnology, setFilterTechnology] = useState("All");
 
   // Modals
+  const [clickPos, setClickPos] = useState({ x: 0, y: 0 });
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false);
   const [isWipeModalOpen, setIsWipeModalOpen] = useState(false);
   const [modalType, setModalType] = useState<"create" | "edit" | "delete" | null>(null);
@@ -679,8 +759,24 @@ export default function Assets({
     return () => clearTimeout(handler);
   }, [formType, customComponentType, editingItem]);
 
-  // --- Modal Openers ---
-  const openCreateModal = (targetType: "plant" | "route" | "equipment" | "component" | "collection_point") => {
+  // --- Modal Openers & Position Calculation ---
+  const calculateModalPosition = (e?: React.MouseEvent) => {
+    if (e && e.clientX !== undefined && e.clientY !== undefined) {
+      e.stopPropagation();
+      setClickPos({ x: e.clientX, y: e.clientY });
+    } else if (typeof window !== 'undefined') {
+      setClickPos({
+        x: Math.round(window.innerWidth / 2),
+        y: Math.round(window.innerHeight / 3)
+      });
+    }
+  };
+
+  const openCreateModal = (
+    targetType: "plant" | "route" | "equipment" | "component" | "collection_point",
+    e?: React.MouseEvent
+  ) => {
+    calculateModalPosition(e);
     setModalType("create");
     setModalTargetType(targetType);
     setEditingItem(null);
@@ -729,7 +825,12 @@ export default function Assets({
     setExpandedSpecsAccordion("motor");
   };
 
-  const openEditModal = (targetType: "plant" | "route" | "equipment" | "component" | "collection_point", item: any) => {
+  const openEditModal = (
+    targetType: "plant" | "route" | "equipment" | "component" | "collection_point",
+    item: any,
+    e?: React.MouseEvent
+  ) => {
+    calculateModalPosition(e);
     setModalType("edit");
     setModalTargetType(targetType);
     setEditingItem(item);
@@ -1091,7 +1192,7 @@ export default function Assets({
 
           {currentPlant && !currentRoute && (
             <button
-              onClick={() => openCreateModal("route")}
+              onClick={(e) => openCreateModal("route", e)}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-medium rounded-lg text-sm transition-all flex items-center gap-1.5 cursor-pointer"
               id="add-route-btn"
             >
@@ -1102,7 +1203,7 @@ export default function Assets({
 
           {currentRoute && !currentAsset && user?.role !== 'mechanic' && (
             <button
-              onClick={() => openCreateModal("equipment")}
+              onClick={(e) => openCreateModal("equipment", e)}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-medium rounded-lg text-sm transition-all flex items-center gap-1.5 cursor-pointer"
               id="add-asset-btn"
             >
@@ -1113,7 +1214,7 @@ export default function Assets({
 
           {currentAsset && !currentComponent && user?.role !== 'mechanic' && (
             <button
-              onClick={() => openCreateModal("component")}
+              onClick={(e) => openCreateModal("component", e)}
               className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-medium rounded-lg text-sm transition-all flex items-center gap-1.5 cursor-pointer"
               id="add-component-btn"
             >
@@ -1279,7 +1380,11 @@ export default function Assets({
                   {user?.role !== 'mechanic' && (
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <button 
-                        onClick={() => openEditModal("plant", p)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setClickPos({ x: e.clientX, y: e.clientY });
+                          openEditModal("plant", p, e);
+                        }}
                         className="p-1.5 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"
                       >
                         <Edit3 className="h-3.5 w-3.5" />
@@ -1307,7 +1412,7 @@ export default function Assets({
               <Layers className="h-10 w-10 text-slate-600 mx-auto mb-3" />
               <p className="text-slate-400 font-medium">No Routes Found inside {currentPlant.name}</p>
               <button
-                onClick={() => openCreateModal("route")}
+                onClick={(e) => openCreateModal("route", e)}
                 className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 font-medium rounded-lg text-xs"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -1345,7 +1450,11 @@ export default function Assets({
                   {user?.role !== 'mechanic' && (
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <button 
-                        onClick={() => openEditModal("route", r)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setClickPos({ x: e.clientX, y: e.clientY });
+                          openEditModal("route", r, e);
+                        }}
                         className="p-1.5 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"
                       >
                         <Edit3 className="h-3.5 w-3.5" />
@@ -1373,7 +1482,7 @@ export default function Assets({
               <Wrench className="h-10 w-10 text-slate-600 mx-auto mb-3" />
               <p className="text-slate-400 font-medium">No Assets Inside {currentRoute.name}</p>
               <button
-                onClick={() => openCreateModal("equipment")}
+                onClick={(e) => openCreateModal("equipment", e)}
                 className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 font-medium rounded-lg text-xs"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -1432,7 +1541,11 @@ export default function Assets({
                   {user?.role !== 'mechanic' && (
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <button 
-                        onClick={() => openEditModal("equipment", a)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setClickPos({ x: e.clientX, y: e.clientY });
+                          openEditModal("equipment", a, e);
+                        }}
                         className="p-1.5 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"
                       >
                         <Edit3 className="h-3.5 w-3.5" />
@@ -1460,7 +1573,7 @@ export default function Assets({
               <Cpu className="h-10 w-10 text-slate-600 mx-auto mb-3" />
               <p className="text-slate-400 font-medium">No Components Added to {currentAsset.name}</p>
               <button
-                onClick={() => openCreateModal("component")}
+                onClick={(e) => openCreateModal("component", e)}
                 className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 text-slate-950 font-medium rounded-lg text-xs"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -1468,66 +1581,103 @@ export default function Assets({
               </button>
             </div>
           ) : (
-            filteredComponents.map(c => (
-              <div 
-                key={c.id}
-                onClick={() => setCurrentComponent(c)}
-                className="bg-slate-900 border border-slate-800 hover:border-emerald-500/30 rounded-2xl p-6 transition-all group cursor-pointer relative shadow-lg hover:shadow-emerald-950/10 hover:-translate-y-0.5 flex flex-col justify-between"
-              >
-                <div className="space-y-3">
-                  <div className="h-10 w-10 rounded-xl bg-slate-950 flex items-center justify-center text-emerald-400 group-hover:bg-emerald-500/10 transition-colors">
-                    <Cpu className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-base font-bold text-white group-hover:text-emerald-400 transition-colors">{c.name}</h3>
-                    {c.type && (
-                      <span className="inline-block mt-1 bg-slate-950 border border-slate-850 text-slate-400 font-mono text-[10px] uppercase px-2 py-0.5 rounded">
-                        {c.type}
-                      </span>
-                    )}
+            filteredComponents.map(c => {
+              const cHealth = getComponentHealth(c, currentAsset);
+              return (
+                <div 
+                  key={c.id}
+                  onClick={() => setCurrentComponent(c)}
+                  className={`bg-slate-900 border border-slate-800 hover:border-emerald-500/30 rounded-2xl p-6 transition-all group cursor-pointer relative shadow-lg hover:shadow-emerald-950/10 hover:-translate-y-0.5 flex flex-col justify-between ${cHealth.leftBorder}`}
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between">
+                      <div className="h-10 w-10 rounded-xl bg-slate-950 flex items-center justify-center text-emerald-400 group-hover:bg-emerald-500/10 transition-colors">
+                        <Cpu className="h-5 w-5" />
+                      </div>
 
-                    {/* Specifications Grid */}
-                    {(c.specifications || c.specs) && (
-                      <div className="mt-4 p-3 bg-slate-950/40 rounded-lg space-y-1 text-xs border border-slate-850">
-                        {Object.entries(c.specifications || c.specs || {}).map(([key, val]) => {
-                          if (!val) return null;
-                          return (
-                            <div key={key} className="flex justify-between">
-                              <span className="text-slate-500 capitalize">{key.replace("_", " ")}:</span>
-                              <span className="text-slate-300 font-mono">{String(val)}</span>
-                            </div>
-                          );
-                        })}
+                      {/* Status Badge in Top Right Corner */}
+                      <div className="relative group/status cursor-help" title={cHealth.tooltip}>
+                        <div className={`px-2.5 py-1 rounded-full border ${cHealth.badgeBg} font-mono text-[10px] font-bold tracking-wider flex items-center gap-1.5 shadow-sm`}>
+                          <span className="relative flex h-2 w-2">
+                            {cHealth.pulse && (
+                              <span className={`absolute inline-flex h-full w-full rounded-full ${cHealth.dotColor} opacity-75 ${cHealth.pulse}`} />
+                            )}
+                            <span className={`relative inline-flex rounded-full h-2 w-2 ${cHealth.dotColor}`} />
+                          </span>
+                          <span>{cHealth.label}</span>
+                        </div>
+
+                        {/* Hover Tooltip */}
+                        <div className="absolute top-full right-0 mt-2 hidden group-hover/status:block z-30 w-56 p-2.5 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl text-[11px] text-slate-300 leading-snug">
+                          <div className="font-bold text-white mb-1 flex items-center gap-1">
+                            <span className={`w-2 h-2 rounded-full ${cHealth.dotColor}`}></span>
+                            <span>{cHealth.label} - {cHealth.sublabel}</span>
+                          </div>
+                          <p className="text-slate-400">{cHealth.reason}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="text-base font-bold text-white group-hover:text-emerald-400 transition-colors pr-2">{c.name}</h3>
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        {c.type && (
+                          <span className="inline-block bg-slate-950 border border-slate-850 text-slate-400 font-mono text-[10px] uppercase px-2 py-0.5 rounded">
+                            {c.type}
+                          </span>
+                        )}
+                        <span className={`inline-block font-mono text-[10px] px-2 py-0.5 rounded border ${cHealth.badgeBg}`}>
+                          {cHealth.reason}
+                        </span>
+                      </div>
+
+                      {/* Specifications Grid */}
+                      {(c.specifications || c.specs) && (
+                        <div className="mt-4 p-3 bg-slate-950/40 rounded-lg space-y-1 text-xs border border-slate-850">
+                          {Object.entries(c.specifications || c.specs || {}).map(([key, val]) => {
+                            if (!val) return null;
+                            return (
+                              <div key={key} className="flex justify-between">
+                                <span className="text-slate-500 capitalize">{key.replace("_", " ")}:</span>
+                                <span className="text-slate-300 font-mono">{String(val)}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-slate-850 mt-6 pt-4 text-xs text-slate-400">
+                    <span className="font-medium group-hover:text-emerald-400 transition-colors flex items-center gap-1">
+                      <span>{isVibrationAsset ? "Select Collection Points" : "Ready for Diagnosis"}</span>
+                      <ChevronRight className="h-3 w-3" />
+                    </span>
+                    
+                    {user?.role !== 'mechanic' && (
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setClickPos({ x: e.clientX, y: e.clientY });
+                            openEditModal("component", c, e);
+                          }}
+                          className="p-1.5 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" />
+                        </button>
+                        <button 
+                          onClick={() => openDeleteModal("component", c)}
+                          className="p-1.5 hover:text-red-400 hover:bg-slate-800 rounded transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     )}
                   </div>
                 </div>
-
-                <div className="flex items-center justify-between border-t border-slate-850 mt-6 pt-4 text-xs text-slate-400">
-                  <span className="font-medium group-hover:text-emerald-400 transition-colors flex items-center gap-1">
-                    <span>{isVibrationAsset ? "Select Collection Points" : "Ready for Diagnosis"}</span>
-                    <ChevronRight className="h-3 w-3" />
-                  </span>
-                  
-                  {user?.role !== 'mechanic' && (
-                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                      <button 
-                        onClick={() => openEditModal("component", c)}
-                        className="p-1.5 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"
-                      >
-                        <Edit3 className="h-3.5 w-3.5" />
-                      </button>
-                      <button 
-                        onClick={() => openDeleteModal("component", c)}
-                        className="p-1.5 hover:text-red-400 hover:bg-slate-800 rounded transition-colors"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))
+              );
+            })
           )
         )}
 
@@ -1788,7 +1938,11 @@ export default function Assets({
                     {user?.role !== 'mechanic' && (
                       <div className="flex items-center gap-2">
                         <button 
-                          onClick={() => openEditModal("collection_point", cp)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setClickPos({ x: e.clientX, y: e.clientY });
+                            openEditModal("collection_point", cp, e);
+                          }}
                           className="p-1.5 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"
                         >
                           <Edit3 className="h-3.5 w-3.5" />
@@ -1913,55 +2067,68 @@ export default function Assets({
 
       {/* Standard Modals Container */}
       {modalType && modalTargetType && (
-        <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 backdrop-blur-sm" id="modal-container-overlay">
-          
-          {modalType === "delete" ? (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative space-y-4" id="delete-modal-box">
-              <div className="flex items-start gap-3 text-red-400">
-                <AlertTriangle className="h-6 w-6 mt-1 shrink-0" />
-                <div>
-                  <h3 className="text-lg font-bold text-white">Delete {modalTargetType.toUpperCase()}?</h3>
-                  <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                    Are you sure you want to delete <strong className="text-white">{editingItem?.name}</strong>? This will recursively destroy all subsequent child records inside the ISO standard functional hierarchy. This action is permanent.
-                  </p>
-                </div>
-              </div>
+        <>
+          {/* Backdrop overlay */}
+          <div 
+            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" 
+            onClick={() => setModalType(null)} 
+            id="modal-container-overlay"
+          />
 
-              <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setModalType(null)}
-                  className="px-4 py-2 bg-slate-950 hover:bg-slate-850 text-slate-300 rounded-lg text-xs font-semibold cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDeleteSubmit}
-                  className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
-                >
-                  Confirm Delete
-                </button>
+          {modalType === "delete" ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative space-y-4" id="delete-modal-box">
+                <div className="flex items-start gap-3 text-red-400">
+                  <AlertTriangle className="h-6 w-6 mt-1 shrink-0" />
+                  <div>
+                    <h3 className="text-lg font-bold text-white">Delete {modalTargetType.toUpperCase()}?</h3>
+                    <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                      Are you sure you want to delete <strong className="text-white">{editingItem?.name}</strong>? This will recursively destroy all subsequent child records inside the ISO standard functional hierarchy. This action is permanent.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-4 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setModalType(null)}
+                    className="px-4 py-2 bg-slate-950 hover:bg-slate-850 text-slate-300 rounded-lg text-xs font-semibold cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteSubmit}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                  >
+                    Confirm Delete
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
-            <form onSubmit={handleModalSubmit} className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative space-y-4" id="form-modal-box">
+            <div 
+              className="fixed z-50 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl w-[450px] max-h-[80vh] overflow-y-auto p-6"
+              style={{ top: clickPos.y, left: clickPos.x, transform: 'translate(-50%, 20px)' }}
+              id="form-modal-box"
+            >
               <button 
                 type="button" 
                 onClick={() => setModalType(null)} 
-                className="absolute top-4 right-4 text-slate-500 hover:text-slate-300"
+                className="absolute top-2 right-2 text-slate-400 hover:text-white cursor-pointer p-1 rounded hover:bg-slate-800"
               >
                 <X className="h-4 w-4" />
               </button>
 
-              <div>
-                <h3 className="text-lg font-bold text-white">
-                  {modalType === "create" ? "Create New" : "Edit"} {modalTargetType.replace("_", " ").toUpperCase()}
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">Specify functional hierarchy attributes cleanly.</p>
-              </div>
+              <form onSubmit={handleModalSubmit} className="space-y-4">
+                <div>
+                  <h3 className="text-lg font-bold text-white">
+                    {modalType === "create" ? "Create New" : "Edit"} {modalTargetType.replace("_", " ").toUpperCase()}
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Specify functional hierarchy attributes cleanly.</p>
+                </div>
 
-              <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+                <div className="space-y-4 pr-1">
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Name / Label</label>
                   <input
@@ -2816,10 +2983,11 @@ export default function Assets({
                   Save Changes
                 </button>
               </div>
-            </form>
+              </form>
+            </div>
           )}
 
-        </div>
+        </>
       )}
 
       {/* Bulk Import Modal */}
@@ -2994,7 +3162,7 @@ export default function Assets({
               </div>
             ) : (
               <div className="space-y-4 pt-2">
-                <div className="space-y-2 max-h-[40vh] overflow-y-auto pr-1">
+                <div className="space-y-2 pr-1">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">
                     Point Names (Editable)
                   </span>

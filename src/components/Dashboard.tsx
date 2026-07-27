@@ -457,6 +457,78 @@ export default function Dashboard({
         </div>
       </div>
 
+      {/* 📊 Asset Health Summary Grid (Color-coded Status Cards) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" id="dashboard-health-status-cards">
+        {/* Healthy Assets (Green) */}
+        <div 
+          onClick={() => onNavigate("assets")}
+          className="bg-slate-900/80 border border-emerald-500/30 hover:border-emerald-500/60 rounded-2xl p-5 shadow-lg relative overflow-hidden flex items-center justify-between group transition-all cursor-pointer hover:-translate-y-0.5"
+        >
+          <div className="space-y-1.5 z-10">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider font-mono">Healthy Assets</p>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-extrabold text-white font-mono">{summary?.healthy ?? 0}</span>
+              <span className="text-xs text-slate-400 font-medium">Normal Operation</span>
+            </div>
+            <p className="text-[11px] text-emerald-400/80 font-mono">
+              {summary?.total ? Math.round(((summary.healthy ?? 0) / summary.total) * 100) : 0}% of total fleet
+            </p>
+          </div>
+          <div className="p-3 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400 group-hover:scale-110 transition-transform">
+            <CheckCircle2 className="w-6 h-6" />
+          </div>
+        </div>
+
+        {/* Warning Assets (Yellow) */}
+        <div 
+          onClick={() => onNavigate("assets")}
+          className="bg-slate-900/80 border border-amber-500/30 hover:border-amber-500/60 rounded-2xl p-5 shadow-lg relative overflow-hidden flex items-center justify-between group transition-all cursor-pointer hover:-translate-y-0.5"
+        >
+          <div className="space-y-1.5 z-10">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+              <p className="text-xs font-bold text-amber-400 uppercase tracking-wider font-mono">Warning Mode</p>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-extrabold text-white font-mono">{summary?.warning ?? 0}</span>
+              <span className="text-xs text-slate-400 font-medium">Monitoring Needed</span>
+            </div>
+            <p className="text-[11px] text-amber-400/80 font-mono">
+              {summary?.total ? Math.round(((summary.warning ?? 0) / summary.total) * 100) : 0}% of total fleet
+            </p>
+          </div>
+          <div className="p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 text-amber-400 group-hover:scale-110 transition-transform">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+        </div>
+
+        {/* Critical Assets (Red) */}
+        <div 
+          onClick={() => onNavigate("assets")}
+          className="bg-slate-900/80 border border-rose-500/30 hover:border-rose-500/60 rounded-2xl p-5 shadow-lg relative overflow-hidden flex items-center justify-between group transition-all cursor-pointer hover:-translate-y-0.5"
+        >
+          <div className="space-y-1.5 z-10">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping"></span>
+              <p className="text-xs font-bold text-rose-400 uppercase tracking-wider font-mono">Critical Risk</p>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-extrabold text-white font-mono">{summary?.critical ?? 0}</span>
+              <span className="text-xs text-slate-400 font-medium">Immediate Attention</span>
+            </div>
+            <p className="text-[11px] text-rose-400/80 font-mono">
+              {summary?.total ? Math.round(((summary.critical ?? 0) / summary.total) * 100) : 0}% of total fleet
+            </p>
+          </div>
+          <div className="p-3 bg-rose-500/10 rounded-xl border border-rose-500/20 text-rose-400 group-hover:scale-110 transition-transform">
+            <AlertOctagon className="w-6 h-6" />
+          </div>
+        </div>
+      </div>
+
       {/* ⚡ Quick Actions Section */}
       <div className="bg-slate-900/60 border border-slate-850 rounded-2xl p-6 space-y-4 text-left" id="dashboard-quick-actions-widget">
         <div>

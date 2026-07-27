@@ -13,7 +13,7 @@ import AdminPanel from "./components/AdminPanel";
 import LegalDocuments from "./components/LegalDocuments";
 import Terms from "./components/Terms";
 import Privacy from "./components/Privacy";
-import AlertsManager from "./components/AlertsManager";
+import AlertsControl from "./components/AlertsControl";
 import AIChatbot from "./components/AIChatbot";
 import AIDataMigration from "./components/AIDataMigration";
 import { 
@@ -1152,7 +1152,13 @@ export default function App() {
               }}
             />
           ) : activeTab === "migration" ? (
-            <AIDataMigration selectedCompanyId={selectedCompanyId} />
+            <AIDataMigration 
+              selectedCompanyId={selectedCompanyId} 
+              onNavigateToAssets={() => {
+                setActiveTab("assets");
+                setSelectedReport(null);
+              }}
+            />
           ) : activeTab === "diagnose" ? (
             <Diagnose 
               user={user}
@@ -1174,7 +1180,7 @@ export default function App() {
               selectedCompanyId={selectedCompanyId}
             />
           ) : activeTab === "alerts" ? (
-            <AlertsManager userId={user?.id || 3} />
+            <AlertsControl userId={user?.id || 3} />
           ) : activeTab === "sensors" ? (
             <MountingPlanner />
           ) : (
