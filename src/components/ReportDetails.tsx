@@ -321,7 +321,7 @@ Business Impact : ${d.manager_summary.business_impact}
                 <span>Recommended Replacement Parts</span>
               </div>
               <span className="text-[10px] font-mono text-slate-500">
-                Auto-matched via AI Diagnosis & Specifications
+                Auto-matched via Diagnosis & Specifications
               </span>
             </div>
             <p className="text-xs text-slate-400 leading-relaxed font-sans">
@@ -374,7 +374,7 @@ Business Impact : ${d.manager_summary.business_impact}
               <span>Grounded Live Web Research Citations</span>
             </div>
             <span className="text-[10px] font-mono text-slate-500">
-              Verified via {report.data.attemptedModel || "Gemini Search Grounding"}
+              Verified via {report.data.attemptedModel || "Search Grounding"}
             </span>
           </div>
           <p className="text-xs text-slate-400 leading-relaxed">

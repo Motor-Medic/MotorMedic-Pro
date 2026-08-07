@@ -304,7 +304,7 @@ export default function ResultsDisplay({
       setFeedbackSubmitted(true);
       setFeedbackSuccess(
         wasCorrect 
-          ? "✓ Feedback logged. Thank you for validating this AI diagnosis!" 
+          ? "✓ Feedback logged. Thank you for validating this diagnosis!"
           : `✓ Correction logged! Analysis refined to: ${finalFault}.`
       );
       setShowCorrectionModal(false);
@@ -435,7 +435,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
           severity,
           severity === "Danger" ? "Immediate" : "Urgent",
           "VIB-MNT",
-          `AI consensus diagnostic report: ${diagnosticResult.consensus_report || recommendations}`
+          `Consensus diagnostic report: ${diagnosticResult.consensus_report || recommendations}`
         ];
         
         // Escape values for CSV
@@ -551,7 +551,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
               </span>
             )}
           </h3>
-          <p className="text-[11px] text-slate-400">Computed via ISO 10816 baseline rules combined with AI-grounded analytics</p>
+          <p className="text-[11px] text-slate-400">Computed via ISO 10816 baseline rules combined with physics-based analytics</p>
         </div>
         
         {/* Quick Save Indicator */}
@@ -615,7 +615,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
             <div>
               <span className="text-[9px] text-slate-500 uppercase font-bold block">Analyzed By</span>
               <p className="font-semibold text-slate-200">
-                {diagnosticResult?.analyzed_by || "MotorMedic AI Analyst"}
+                {diagnosticResult?.analyzed_by || "MotorMedic Analyst"}
               </p>
             </div>
           </div>
@@ -704,7 +704,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
                       : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/30 border border-transparent"
                   }`}
                 >
-                  <span>⚡ Category IV AI Report</span>
+                  <span>⚡ Category IV Diagnostic Report</span>
                 </button>
               </div>
             </div>
@@ -1516,7 +1516,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
             <div className="bg-slate-950 p-3.5 border-b border-slate-850 flex items-center justify-between">
               <h3 className="text-xs font-black text-white uppercase font-mono tracking-widest flex items-center gap-1.5">
                 <Sparkles className="w-4 h-4 text-yellow-400" />
-                Refine AI Diagnosis
+                Refine Diagnosis
               </h3>
               <button
                 onClick={() => setShowCorrectionModal(false)}

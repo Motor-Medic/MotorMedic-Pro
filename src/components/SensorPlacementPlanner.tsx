@@ -194,9 +194,9 @@ export default function SensorPlacementPlanner({}: SensorPlacementPlannerProps) 
       {/* Engine Status Banner */}
       <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4">
         <div className="space-y-1">
-          <h3 className="text-xs font-bold text-emerald-400">LIVE AI MODE ACTIVE</h3>
+          <h3 className="text-xs font-bold text-emerald-400">LIVE ANALYSIS MODE ACTIVE</h3>
           <p className="text-xs text-slate-300 leading-normal">
-            Your uploaded machine photos are analyzed using the live Gemini 3.5 Vision API.
+            Your uploaded machine photos are analyzed using the live vision analysis engine.
           </p>
         </div>
       </div>
@@ -403,7 +403,7 @@ export default function SensorPlacementPlanner({}: SensorPlacementPlannerProps) 
                       <div className="space-y-1">
                         <p className="font-bold text-[13px] text-amber-300">Virtual Blueprint Generation Active (API Interception)</p>
                         <p className="leading-relaxed text-slate-300">
-                          Your custom Gemini API Key was rate-limited or quota exhausted (429). The system has automatically activated the offline physical blueprint engine to map coordinates based on your equipment notes!
+                          Your custom API key was rate-limited or quota exhausted (429). The system has automatically activated the offline physical blueprint engine to map coordinates based on your equipment notes!
                         </p>
                         <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1.5 text-[9px] text-amber-500/80 font-mono font-bold">
                           <span>● ENGINE: ISO 18436 CAT IV SIMULATION</span>

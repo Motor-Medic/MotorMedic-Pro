@@ -7,10 +7,18 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
 body {
   background-color: #0b0f19;
   color: #f1f5f9;
   font-family: var(--font-sans);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* Custom scrollbars for a premium dark interface */

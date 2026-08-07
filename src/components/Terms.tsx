@@ -74,7 +74,7 @@ export default function Terms({ onBack }: TermsProps) {
                 <strong>SaaS Platform Intellectual Property:</strong> All software, interface design, CSS stylesheets, proprietary multi-agent debate schemas, database structures, prompt templates, and source code are the sole and exclusive property of MotorMedic Pro LLC.
               </li>
               <li>
-                <strong>Anonymized Telemetry:</strong> You grant us a restricted, non-exclusive, royalty-free license to use completely anonymized and aggregated machine data solely to improve our underlying AI predictive models.
+                <strong>Anonymized Telemetry:</strong> You grant us a restricted, non-exclusive, royalty-free license to use completely anonymized and aggregated machine data solely to improve our underlying predictive models.
               </li>
             </ul>
           </section>
@@ -84,7 +84,7 @@ export default function Terms({ onBack }: TermsProps) {
               <span className="text-amber-500">4.</span> Limitation of Liability
             </h2>
             <p className="text-slate-400">
-              The AI models, multi-agent debates, and ISO 10816 baseline helpers integrated into MotorMedic Pro provide advisory health assessments. They do not replace hands-on certified Category II/III ISO vibration specialists or certified technicians.
+              The predictive models, multi-agent debates, and ISO 10816 baseline helpers integrated into MotorMedic Pro provide advisory health assessments. They do not replace hands-on certified Category II/III ISO vibration specialists or certified technicians.
             </p>
             <p className="text-slate-400">
               To the maximum extent permitted by applicable law, in no event shall MotorMedic Pro LLC, its developers, or its licensors be liable for any catastrophic machinery failure, production downtime, plant outages, business interruptions, replacement costs, physical injuries, or consequential damages resulting from the use or inability to use the platform, even if advised of the possibility of such damages.

@@ -119,7 +119,7 @@ export function SmartSelect({
           <span className={`text-[8px] font-mono font-bold px-1.5 py-0.5 rounded ${
             source === "ai-generated" ? "bg-purple-500/10 text-purple-400 border border-purple-500/10" : "bg-blue-500/10 text-blue-400 border border-blue-500/10"
           }`}>
-            {source === "ai-generated" ? "✨ AI-Generated" : "📋 Standard"}
+            {source === "ai-generated" ? "✨ Automated" : "📋 Standard"}
           </span>
         )}
       </div>

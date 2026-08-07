@@ -1,243 +1,20 @@
-import React, { useState, useMemo } from "react";
-import { SavedReport } from "../types";
-import { 
-  Calendar, Search, Filter, Trash2, FileText, ChevronRight, AlertCircle, AlertTriangle, Wrench, 
-  ShieldAlert, Activity, CheckCircle2, XCircle, Download, Share2, Plus, RefreshCw, 
-  ChevronDown, ChevronUp, Sparkles, Layers, Sliders, CheckSquare, Square, Eye, 
-  Clock, ArrowUpDown, ShieldCheck, Mail, Send, Check, AlertOctagon, BarChart2, 
-  PieChart, Settings, ExternalLink, Printer, User, Zap, Hash, X
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity, AlertTriangle, Bot, Check, CheckCircle2, ChevronDown, ChevronRight,
+  Clock, Download, FileText, Search, Sparkles, Wrench, X
 } from "lucide-react";
+import {
+  CartesianGrid, Line, LineChart, ResponsiveContainer,
+  Tooltip as RechartsTooltip, XAxis, YAxis
+} from "recharts";
+import { getEquipmentData, getFlatEquipment, type EquipComponent, type FlatEquipAsset } from "../data/equipmentDb";
+import { SavedReport } from "../types";
+import { useToast } from "./Toast";
+import OnboardingEmptyState from "./OnboardingEmptyState";
 
-export interface LogEntry {
-  id: string;
-  timestamp: string;
-  assetName: string;
-  assetId: string;
-  serialNumber: string;
-  assetType: "Motor" | "Pump" | "Gearbox" | "Fan" | "Compressor" | "Extruder";
-  diagnosticType: "Vibration FFT" | "Ultrasound" | "Thermography" | "Multi-Tech AI";
-  status: "Completed" | "Failed" | "In Review";
-  healthScore: number; // 0 - 100
-  severity: "Healthy" | "Warning" | "Critical";
-  keyFindings: string;
-  reviewed: boolean;
-  operator: string;
-  aiSummary: string;
-  vibrationPoints: { point: string; value: number; unit: string; isoLimit: number; status: "Good" | "Warning" | "Critical" }[];
-  faultFrequencies: { frequencyHz: number; peakVal: string; faultType: string; severity: "Low" | "Medium" | "High" | "Severe" }[];
-  recommendedActions: { priority: "P1 - Urgent" | "P2 - Planned" | "P3 - Routine"; action: string; timeframe: string }[];
-}
-
-const INITIAL_MOCK_LOGS: LogEntry[] = [
-  {
-    id: "DIAG-2026-0891",
-    timestamp: "2026-07-27 08:30 AM",
-    assetName: "Boiler Feed Pump A",
-    assetId: "pump-feed-01",
-    serialNumber: "BFP-8842-X",
-    assetType: "Pump",
-    diagnosticType: "Vibration FFT",
-    status: "Completed",
-    healthScore: 42,
-    severity: "Critical",
-    keyFindings: "Severe 178.2 Hz Outer Race Bearing Peak (BPFO). Lubrication Breakdown.",
-    reviewed: false,
-    operator: "Shane Dufrene",
-    aiSummary: "FFT spectral decomposition reveals high-amplitude impacts at 178.2 Hz corresponding to SKF 6314 outer race ball pass frequency. Peak g-level reached 4.8g Peak-to-Peak in horizontal axis. Immediate bearing flush and replacement recommended within 72 hours.",
-    vibrationPoints: [
-      { point: "1H (DE Horizontal)", value: 5.85, unit: "mm/s RMS", isoLimit: 4.5, status: "Critical" },
-      { point: "1V (DE Vertical)", value: 3.20, unit: "mm/s RMS", isoLimit: 2.8, status: "Warning" },
-      { point: "2H (NDE Horizontal)", value: 2.10, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" },
-      { point: "2A (DE Axial)", value: 1.85, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" }
-    ],
-    faultFrequencies: [
-      { frequencyHz: 178.2, peakVal: "4.82 g Peak", faultType: "BPFO (Outer Race Defect)", severity: "Severe" },
-      { frequencyHz: 356.4, peakVal: "1.95 g Peak", faultType: "2X BPFO Harmonic", severity: "High" },
-      { frequencyHz: 29.8, peakVal: "2.10 mm/s", faultType: "1X Running Speed", severity: "Medium" }
-    ],
-    recommendedActions: [
-      { priority: "P1 - Urgent", action: "Perform grease analysis and schedule DE bearing SKF 6314 replacement during upcoming maintenance window.", timeframe: "Within 72 Hours" },
-      { priority: "P2 - Planned", action: "Re-align pump to driver using laser alignment tool post-bearing installation.", timeframe: "Next Outage" },
-      { priority: "P3 - Routine", action: "Re-calibrate 4-20mA online vibration transmitter.", timeframe: "30 Days" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0885",
-    timestamp: "2026-07-26 04:15 PM",
-    assetName: "Extruder Gearbox GB-302",
-    assetId: "gearbox-gb-302",
-    serialNumber: "GBX-9901-C",
-    assetType: "Gearbox",
-    diagnosticType: "Multi-Tech AI",
-    status: "Completed",
-    healthScore: 58,
-    severity: "Critical",
-    keyFindings: "Gear Mesh Frequency (GMF) sidebands elevated + Oil Temp 88°C.",
-    reviewed: true,
-    operator: "Dave Miller",
-    aiSummary: "Combined vibration and thermal telemetry indicates progressive gear tooth pitting on the intermediate pinions. GMF peaks at 420 Hz with 1X running speed sidebands.",
-    vibrationPoints: [
-      { point: "HSS 1H (Input Shaft)", value: 4.80, unit: "mm/s RMS", isoLimit: 4.5, status: "Critical" },
-      { point: "ISS 2H (Intermediate)", value: 3.90, unit: "mm/s RMS", isoLimit: 2.8, status: "Warning" },
-      { point: "LSS 3V (Output Shaft)", value: 2.40, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" }
-    ],
-    faultFrequencies: [
-      { frequencyHz: 420.0, peakVal: "3.80 mm/s", faultType: "GMF (Gear Mesh Frequency)", severity: "High" },
-      { frequencyHz: 840.0, peakVal: "1.60 mm/s", faultType: "2X GMF Harmonic", severity: "Medium" }
-    ],
-    recommendedActions: [
-      { priority: "P1 - Urgent", action: "Inspect gear teeth via optical borescope port.", timeframe: "24-48 Hours" },
-      { priority: "P2 - Planned", action: "Filter gearbox lube oil and check particle count (ISO 4406).", timeframe: "7 Days" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0870",
-    timestamp: "2026-07-25 11:10 AM",
-    assetName: "Main Induction Motor B",
-    assetId: "motor-ind-02",
-    serialNumber: "MTR-5520-A",
-    assetType: "Motor",
-    diagnosticType: "Vibration FFT",
-    status: "Completed",
-    healthScore: 76,
-    severity: "Warning",
-    keyFindings: "Moderate 2X Shaft Misalignment & Phase Angular Offset.",
-    reviewed: false,
-    operator: "Sarah Jenkins",
-    aiSummary: "Dominant 2X running speed peak (59.6 Hz) observed in axial and radial directions. Phase angle measurements confirm 180° angular offset across rigid coupling.",
-    vibrationPoints: [
-      { point: "DE Axial", value: 3.45, unit: "mm/s RMS", isoLimit: 2.8, status: "Warning" },
-      { point: "DE Horizontal", value: 2.65, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" },
-      { point: "NDE Horizontal", value: 1.90, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" }
-    ],
-    faultFrequencies: [
-      { frequencyHz: 59.6, peakVal: "3.20 mm/s", faultType: "2X Speed (Angular Misalignment)", severity: "Medium" },
-      { frequencyHz: 29.8, peakVal: "1.80 mm/s", faultType: "1X Speed (Unbalance component)", severity: "Low" }
-    ],
-    recommendedActions: [
-      { priority: "P2 - Planned", action: "Schedule precision laser alignment on motor-to-driven unit coupling.", timeframe: "Next Maintenance Window" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0862",
-    timestamp: "2026-07-24 02:45 PM",
-    assetName: "Cooling Tower Fan 204",
-    assetId: "fan-ct-204",
-    serialNumber: "FAN-1044-B",
-    assetType: "Fan",
-    diagnosticType: "Ultrasound",
-    status: "Completed",
-    healthScore: 92,
-    severity: "Healthy",
-    keyFindings: "Smooth acoustic profile. Minimal friction or turbulence.",
-    reviewed: true,
-    operator: "Alex Rivera",
-    aiSummary: "Ultrasound decibel levels measured at 14 dBuV (within 2 dBuV of baseline). No early bearing micro-faulting or aerodynamic blade stall detected.",
-    vibrationPoints: [
-      { point: "Brg 1H", value: 1.15, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" },
-      { point: "Brg 2V", value: 0.95, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" }
-    ],
-    faultFrequencies: [],
-    recommendedActions: [
-      { priority: "P3 - Routine", action: "Continue standard bi-monthly ultrasound screening.", timeframe: "60 Days" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0850",
-    timestamp: "2026-07-23 09:20 AM",
-    assetName: "Air Compressor C-101",
-    assetId: "comp-air-101",
-    serialNumber: "CMP-7712-Z",
-    assetType: "Compressor",
-    diagnosticType: "Thermography",
-    status: "Completed",
-    healthScore: 88,
-    severity: "Healthy",
-    keyFindings: "Normal thermal gradient. Discharge valve delta T = 12°C.",
-    reviewed: true,
-    operator: "Shane Dufrene",
-    aiSummary: "IR thermogram indicates uniform heat dissipation across 1st and 2nd stage compression cylinders. No intercooler bypass or leaking discharge valves.",
-    vibrationPoints: [
-      { point: "DE Radial", value: 1.40, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" }
-    ],
-    faultFrequencies: [],
-    recommendedActions: [
-      { priority: "P3 - Routine", action: "Verify oil filter differential pressure indicator.", timeframe: "30 Days" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0841",
-    timestamp: "2026-07-22 01:05 PM",
-    assetName: "Slurry Recirculation Pump P-402",
-    assetId: "pump-slurry-402",
-    serialNumber: "PMP-3319-K",
-    assetType: "Pump",
-    diagnosticType: "Multi-Tech AI",
-    status: "Completed",
-    healthScore: 35,
-    severity: "Critical",
-    keyFindings: "High Hydraulic Cavitation Impacting + Thermal Spike (92.4°C).",
-    reviewed: false,
-    operator: "Dave Miller",
-    aiSummary: "High frequency random noise floor elevation (2 kHz - 10 kHz) accompanied by transient pressure pulsations. Suction NPSH margin insufficient causing severe impellor erosion.",
-    vibrationPoints: [
-      { point: "Suction Casing 1H", value: 6.20, unit: "mm/s RMS", isoLimit: 4.5, status: "Critical" },
-      { point: "DE Bearing 2V", value: 4.90, unit: "mm/s RMS", isoLimit: 2.8, status: "Critical" }
-    ],
-    faultFrequencies: [
-      { frequencyHz: 3200.0, peakVal: "6.50 g Peak", faultType: "Hydraulic Cavitation Broadband Noise", severity: "Severe" }
-    ],
-    recommendedActions: [
-      { priority: "P1 - Urgent", action: "Increase suction head pressure and clear inlet strainer restriction.", timeframe: "Immediate" },
-      { priority: "P2 - Planned", action: "Inspect impeller wet-end for erosion pitting.", timeframe: "Within 48 Hours" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0830",
-    timestamp: "2026-07-21 10:40 AM",
-    assetName: "Exhaust Blower Fan 101",
-    assetId: "fan-ex-101",
-    serialNumber: "FAN-0021-M",
-    assetType: "Fan",
-    diagnosticType: "Vibration FFT",
-    status: "Failed",
-    healthScore: 0,
-    severity: "Critical",
-    keyFindings: "Sensor Signal Disconnect / Open Circuit detected on Axis 2.",
-    reviewed: false,
-    operator: "System Auto-Diagnostic",
-    aiSummary: "Automated scan failed due to loss of sensor bias voltage (IEPE constant current drop). Signal saturated at +24V DC.",
-    vibrationPoints: [],
-    faultFrequencies: [],
-    recommendedActions: [
-      { priority: "P1 - Urgent", action: "Inspect accelerometer cable connections and BNC junction box ground.", timeframe: "Immediate" }
-    ]
-  },
-  {
-    id: "DIAG-2026-0818",
-    timestamp: "2026-07-20 03:30 PM",
-    assetName: "Hydraulic Power Unit HPU-01",
-    assetId: "hpu-unit-01",
-    serialNumber: "HPU-9081-R",
-    assetType: "Pump",
-    diagnosticType: "Vibration FFT",
-    status: "Completed",
-    healthScore: 95,
-    severity: "Healthy",
-    keyFindings: "Pristine operation. All vibration components under 0.8 mm/s.",
-    reviewed: true,
-    operator: "Sarah Jenkins",
-    aiSummary: "Excellent operating baseline across all 6 measurement locations. Piston pump frequency harmonics clean and stable.",
-    vibrationPoints: [
-      { point: "Pump DE 1H", value: 0.65, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" },
-      { point: "Motor DE 2V", value: 0.72, unit: "mm/s RMS", isoLimit: 2.8, status: "Good" }
-    ],
-    faultFrequencies: [],
-    recommendedActions: [
-      { priority: "P3 - Routine", action: "Standard routine quarter scan.", timeframe: "90 Days" }
-    ]
-  }
-];
+/* ========================================================================== */
+/* Props (kept for History.tsx wrapper)                                       */
+/* ========================================================================== */
 
 interface DiagnosisLogsProps {
   reports?: SavedReport[];
@@ -246,1202 +23,1350 @@ interface DiagnosisLogsProps {
   onStartDiagnosis?: () => void;
 }
 
+/* ========================================================================== */
+/* Domain                                                                     */
+/* ========================================================================== */
+
+type Severity = "Critical" | "Warning" | "Info";
+type LogStatus = "Pending" | "Acknowledged" | "Resolved" | "In Progress";
+type EventSource = "Predictive Scan" | "Manual Check" | "Automated Alarm";
+type DatePreset = "7d" | "30d" | "custom";
+
+interface SparkPoint {
+  t: string;
+  vib: number;
+}
+
+interface LogEvent {
+  id: string;
+  timestamp: string;
+  sortKey: number;
+  assetName: string;
+  assetTag: string;
+  source: EventSource;
+  severity: Severity;
+  summary: string;
+  confidence: number;
+  primaryFault: string;
+  secondaryFault: string;
+  recommendedActions: string[];
+  status: LogStatus;
+  sparkline: SparkPoint[];
+  acknowledgedBy?: string;
+  acknowledgedAt?: string;
+  workOrder?: string;
+  workOrderAt?: string;
+  resolvedAt?: string;
+  resolutionNotes: string;
+}
+
+interface Incident {
+  id: string;
+  number: number;
+  title: string;
+  assetName: string;
+  assetTag: string;
+  status: LogStatus;
+  severity: Severity;
+  events: LogEvent[];
+}
+
+const INPUT =
+  "w-full min-h-[40px] bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-400/60";
+
+const SELECT =
+  "w-full min-h-[40px] px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 truncate disabled:opacity-50 focus:outline-none focus:border-amber-400/60";
+
+function spark(seed: number, peak: number): SparkPoint[] {
+  return Array.from({ length: 14 }, (_, i) => ({
+    t: `${i}`,
+    vib: Math.max(0.4, +(peak * (0.45 + i / 20) + Math.sin((i + seed) / 2.2) * 0.35).toFixed(2))
+  }));
+}
+
+function makeEvent(partial: Omit<LogEvent, "sparkline" | "resolutionNotes"> & Partial<Pick<LogEvent, "sparkline" | "resolutionNotes">>): LogEvent {
+  return {
+    resolutionNotes: "",
+    sparkline: spark(partial.sortKey % 17, partial.severity === "Critical" ? 4.8 : partial.severity === "Warning" ? 3.2 : 1.6),
+    ...partial
+  };
+}
+
+const MOCK_EVENTS: LogEvent[] = [
+  makeEvent({
+    id: "e1",
+    timestamp: "Today, 09:14 AM",
+    sortKey: 900,
+    assetName: "Boiler Feed Pump A",
+    assetTag: "P-101A",
+    source: "Predictive Scan",
+    severity: "Critical",
+    summary: "System detected 85% confidence of Outer Race Bearing Defect (BPFO).",
+    confidence: 85,
+    primaryFault: "Outer race spalling (BPFO)",
+    secondaryFault: "Lubrication film breakdown",
+    recommendedActions: ["Schedule bearing replacement within 72h", "Verify grease type vs OEM", "Increase route frequency to daily"],
+    status: "In Progress",
+    acknowledgedBy: "J. Whitfield",
+    acknowledgedAt: "Today, 09:20 AM",
+    workOrder: "WO-8842",
+    workOrderAt: "Today, 09:45 AM"
+  }),
+  makeEvent({
+    id: "e2",
+    timestamp: "Today, 08:02 AM",
+    sortKey: 860,
+    assetName: "Boiler Feed Pump A",
+    assetTag: "P-101A",
+    source: "Automated Alarm",
+    severity: "Warning",
+    summary: "Zone C vibration alarm — overall velocity 3.45 mm/s RMS.",
+    confidence: 78,
+    primaryFault: "Elevated broadband vibration",
+    secondaryFault: "Possible early bearing wear",
+    recommendedActions: ["Confirm with predictive scan", "Check lubricant condition"],
+    status: "Acknowledged",
+    acknowledgedBy: "J. Whitfield",
+    acknowledgedAt: "Today, 08:15 AM"
+  }),
+  makeEvent({
+    id: "e3",
+    timestamp: "Today, 06:40 AM",
+    sortKey: 820,
+    assetName: "Boiler Feed Pump A",
+    assetTag: "P-101A",
+    source: "Automated Alarm",
+    severity: "Warning",
+    summary: "NDE horizontal point crossed warning limit (2.95 mm/s).",
+    confidence: 70,
+    primaryFault: "NDE bearing vibration rise",
+    secondaryFault: "Thermal growth misalignment contribution",
+    recommendedActions: ["Inspect coupling alignment"],
+    status: "Acknowledged",
+    acknowledgedBy: "M. Delgado",
+    acknowledgedAt: "Today, 07:05 AM"
+  }),
+  makeEvent({
+    id: "e4",
+    timestamp: "Yesterday, 04:18 PM",
+    sortKey: 700,
+    assetName: "Boiler Feed Pump A",
+    assetTag: "P-101A",
+    source: "Manual Check",
+    severity: "Info",
+    summary: "Manual ultrasound grease check — dB elevated before top-off.",
+    confidence: 62,
+    primaryFault: "Lubrication starvation indicators",
+    secondaryFault: "None",
+    recommendedActions: ["Document grease amount", "Retest after 24h"],
+    status: "Resolved",
+    acknowledgedBy: "S. Barrett",
+    acknowledgedAt: "Yesterday, 04:30 PM",
+    resolvedAt: "Yesterday, 05:10 PM",
+    resolutionNotes: "Added 2.5g Polyrex EM; ultrasound dropped 8 dB."
+  }),
+  makeEvent({
+    id: "e5",
+    timestamp: "Yesterday, 11:05 AM",
+    sortKey: 650,
+    assetName: "Boiler Feed Pump A",
+    assetTag: "P-101A",
+    source: "Predictive Scan",
+    severity: "Warning",
+    summary: "System flagged progressive 1X sideband growth around BPFO.",
+    confidence: 74,
+    primaryFault: "Developing outer race defect",
+    secondaryFault: "Possible contamination",
+    recommendedActions: ["Oil/grease sample", "Plan bearing kit"],
+    status: "Acknowledged",
+    acknowledgedBy: "R. Chen",
+    acknowledgedAt: "Yesterday, 11:40 AM"
+  }),
+  makeEvent({
+    id: "e6",
+    timestamp: "Today, 08:42 AM",
+    sortKey: 880,
+    assetName: "Extruder Gearbox GB-302",
+    assetTag: "GB-302",
+    source: "Automated Alarm",
+    severity: "Critical",
+    summary: "Severe gear mesh vibration — GMF peak 5.85 mm/s with sidebands.",
+    confidence: 91,
+    primaryFault: "Intermediate pinion tooth pitting",
+    secondaryFault: "Oil temperature excursion",
+    recommendedActions: ["Create urgent WO", "Pull oil sample for ferrography", "Reduce load if possible"],
+    status: "Pending"
+  }),
+  makeEvent({
+    id: "e7",
+    timestamp: "Today, 07:10 AM",
+    sortKey: 840,
+    assetName: "Extruder Gearbox GB-302",
+    assetTag: "GB-302",
+    source: "Predictive Scan",
+    severity: "Critical",
+    summary: "System 91% confidence of gear tooth defect progression on HSS.",
+    confidence: 91,
+    primaryFault: "Gear tooth pitting",
+    secondaryFault: "Lubricant degradation",
+    recommendedActions: ["Inspect sight glass", "Schedule gearbox inspection"],
+    status: "Acknowledged",
+    acknowledgedBy: "T. Okafor",
+    acknowledgedAt: "Today, 07:25 AM"
+  }),
+  makeEvent({
+    id: "e8",
+    timestamp: "Yesterday, 09:30 PM",
+    sortKey: 620,
+    assetName: "Extruder Gearbox GB-302",
+    assetTag: "GB-302",
+    source: "Automated Alarm",
+    severity: "Warning",
+    summary: "Oil temperature above warning (88°C sustained 12 min).",
+    confidence: 68,
+    primaryFault: "Thermal overload",
+    secondaryFault: "Possible cooler fouling",
+    recommendedActions: ["Check cooler flow", "Verify oil level"],
+    status: "Acknowledged",
+    acknowledgedBy: "T. Okafor",
+    acknowledgedAt: "Yesterday, 09:45 PM"
+  }),
+  makeEvent({
+    id: "e9",
+    timestamp: "Today, 10:05 AM",
+    sortKey: 910,
+    assetName: "Drive Motor M-101A",
+    assetTag: "M-101A",
+    source: "Predictive Scan",
+    severity: "Critical",
+    summary: "System detected stator insulation stress pattern + DE bearing heat rise.",
+    confidence: 82,
+    primaryFault: "DE bearing lubrication issue",
+    secondaryFault: "Possible soft foot",
+    recommendedActions: ["Ultrasound grease", "Check soft foot", "Megger if downtime allows"],
+    status: "Pending"
+  }),
+  makeEvent({
+    id: "e10",
+    timestamp: "Today, 05:55 AM",
+    sortKey: 800,
+    assetName: "Cooling Tower Fan 4",
+    assetTag: "FN-04",
+    source: "Automated Alarm",
+    severity: "Warning",
+    summary: "1X imbalance elevated to 3.3 mm/s after weather event.",
+    confidence: 77,
+    primaryFault: "Aerodynamic / mass imbalance",
+    secondaryFault: "Debris on blades",
+    recommendedActions: ["Inspect blade fouling", "Field balance if residual high"],
+    status: "Acknowledged",
+    acknowledgedBy: "R. Chen",
+    acknowledgedAt: "Today, 06:20 AM"
+  }),
+  makeEvent({
+    id: "e11",
+    timestamp: "Yesterday, 02:14 PM",
+    sortKey: 580,
+    assetName: "Cooling Tower Fan 4",
+    assetTag: "FN-04",
+    source: "Manual Check",
+    severity: "Info",
+    summary: "Manual route — blades cleaned, residual vibration pending recheck.",
+    confidence: 55,
+    primaryFault: "Fouling removed",
+    secondaryFault: "None",
+    recommendedActions: ["Recollect vibration tomorrow"],
+    status: "Resolved",
+    resolvedAt: "Yesterday, 03:00 PM",
+    resolutionNotes: "Washered blades; awaiting next route."
+  }),
+  makeEvent({
+    id: "e12",
+    timestamp: "Jul 28, 04:40 PM",
+    sortKey: 480,
+    assetName: "Screw Compressor RS37i",
+    assetTag: "CMP-37",
+    source: "Predictive Scan",
+    severity: "Warning",
+    summary: "System noted rising discharge temperature signature vs baseline.",
+    confidence: 71,
+    primaryFault: "Aftercooler efficiency drop",
+    secondaryFault: "Filter differential rising",
+    recommendedActions: ["Clean aftercooler", "Replace inlet filter"],
+    status: "Resolved",
+    acknowledgedBy: "S. Barrett",
+    acknowledgedAt: "Jul 28, 05:00 PM",
+    workOrder: "WO-8799",
+    workOrderAt: "Jul 28, 05:30 PM",
+    resolvedAt: "Jul 29, 11:00 AM",
+    resolutionNotes: "Cleaned cooler tubes; temps returned to baseline."
+  }),
+  makeEvent({
+    id: "e13",
+    timestamp: "Jul 28, 11:22 AM",
+    sortKey: 450,
+    assetName: "Primary Induction Motor",
+    assetTag: "M-210",
+    source: "Manual Check",
+    severity: "Warning",
+    summary: "Manual alignment check — angular offset 0.08° beyond tolerance.",
+    confidence: 66,
+    primaryFault: "Misalignment",
+    secondaryFault: "Coupling wear",
+    recommendedActions: ["Laser realign hot", "Inspect coupling inserts"],
+    status: "In Progress",
+    acknowledgedBy: "R. Chen",
+    acknowledgedAt: "Jul 28, 11:45 AM",
+    workOrder: "WO-8801",
+    workOrderAt: "Jul 28, 01:00 PM"
+  }),
+  makeEvent({
+    id: "e14",
+    timestamp: "Jul 27, 08:15 AM",
+    sortKey: 400,
+    assetName: "Slurry Recirc Pump P-402",
+    assetTag: "P-402",
+    source: "Automated Alarm",
+    severity: "Critical",
+    summary: "Cavitation signature — broadband high-frequency energy spike.",
+    confidence: 80,
+    primaryFault: "Cavitation / NPSH shortfall",
+    secondaryFault: "Strainer restriction",
+    recommendedActions: ["Clean suction strainer", "Verify tank level"],
+    status: "Resolved",
+    acknowledgedBy: "J. Whitfield",
+    acknowledgedAt: "Jul 27, 08:30 AM",
+    workOrder: "WO-8770",
+    workOrderAt: "Jul 27, 09:00 AM",
+    resolvedAt: "Jul 27, 02:15 PM",
+    resolutionNotes: "Strainer cleaned; cavitation energy normalized."
+  }),
+  makeEvent({
+    id: "e15",
+    timestamp: "Jul 26, 03:50 PM",
+    sortKey: 350,
+    assetName: "Conveyor Gearbox 3",
+    assetTag: "CV-GB-3",
+    source: "Predictive Scan",
+    severity: "Info",
+    summary: "System baseline — healthy mesh pattern, no action required.",
+    confidence: 94,
+    primaryFault: "None",
+    secondaryFault: "None",
+    recommendedActions: ["Continue monthly route"],
+    status: "Resolved",
+    resolvedAt: "Jul 26, 03:55 PM",
+    resolutionNotes: "Closed as informational."
+  }),
+  makeEvent({
+    id: "e16",
+    timestamp: "Jul 25, 10:12 AM",
+    sortKey: 300,
+    assetName: "Drive Motor M-101A",
+    assetTag: "M-101A",
+    source: "Automated Alarm",
+    severity: "Warning",
+    summary: "DE bearing temperature warning (78°C for 8 minutes).",
+    confidence: 69,
+    primaryFault: "Thermal rise at DE",
+    secondaryFault: "Possible overgreasing or undergreasing",
+    recommendedActions: ["Ultrasound-assisted greasing"],
+    status: "Acknowledged",
+    acknowledgedBy: "M. Delgado",
+    acknowledgedAt: "Jul 25, 10:40 AM"
+  }),
+  makeEvent({
+    id: "e17",
+    timestamp: "Jul 24, 07:05 AM",
+    sortKey: 250,
+    assetName: "Heat Exchanger Bundle 12",
+    assetTag: "HX-12",
+    source: "Manual Check",
+    severity: "Info",
+    summary: "Manual thermography — no hot spots on shell flanges.",
+    confidence: 88,
+    primaryFault: "None",
+    secondaryFault: "None",
+    recommendedActions: ["Archive IR images"],
+    status: "Resolved",
+    resolvedAt: "Jul 24, 07:20 AM"
+  }),
+  makeEvent({
+    id: "e18",
+    timestamp: "Jul 23, 01:40 PM",
+    sortKey: 200,
+    assetName: "Screw Compressor RS37i",
+    assetTag: "CMP-37",
+    source: "Automated Alarm",
+    severity: "Warning",
+    summary: "Filter DP alarm — inlet differential above setpoint.",
+    confidence: 73,
+    primaryFault: "Inlet filter loading",
+    secondaryFault: "None",
+    recommendedActions: ["Replace filter element"],
+    status: "Resolved",
+    workOrder: "WO-8755",
+    workOrderAt: "Jul 23, 02:10 PM",
+    resolvedAt: "Jul 23, 04:00 PM",
+    resolutionNotes: "Filter replaced; DP normal."
+  })
+];
+
+/** Group related alerts into incidents (same asset + high severity cluster). */
+function buildIncidents(events: LogEvent[]): Incident[] {
+  const pumpA = events.filter((e) => e.assetTag === "P-101A").sort((a, b) => b.sortKey - a.sortKey);
+  const gb302 = events.filter((e) => e.assetTag === "GB-302").sort((a, b) => b.sortKey - a.sortKey);
+  const fan = events.filter((e) => e.assetTag === "FN-04").sort((a, b) => b.sortKey - a.sortKey);
+  const singles = events.filter(
+    (e) => !["P-101A", "GB-302", "FN-04"].includes(e.assetTag)
+  );
+
+  const incidents: Incident[] = [];
+
+  if (pumpA.length) {
+    incidents.push({
+      id: "inc-402",
+      number: 402,
+      title: "Boiler Feed Pump A — Bearing Degradation",
+      assetName: "Boiler Feed Pump A",
+      assetTag: "P-101A",
+      status: "In Progress",
+      severity: "Critical",
+      events: pumpA
+    });
+  }
+  if (gb302.length) {
+    incidents.push({
+      id: "inc-418",
+      number: 418,
+      title: "Extruder Gearbox GB-302 — Gear Mesh Failure Path",
+      assetName: "Extruder Gearbox GB-302",
+      assetTag: "GB-302",
+      status: "Pending",
+      severity: "Critical",
+      events: gb302
+    });
+  }
+  if (fan.length) {
+    incidents.push({
+      id: "inc-391",
+      number: 391,
+      title: "Cooling Tower Fan 4 — Imbalance After Weather",
+      assetName: "Cooling Tower Fan 4",
+      assetTag: "FN-04",
+      status: "Acknowledged",
+      severity: "Warning",
+      events: fan
+    });
+  }
+
+  singles.forEach((e, idx) => {
+    incidents.push({
+      id: `inc-single-${e.id}`,
+      number: 500 + idx,
+      title: `${e.assetName} — ${e.primaryFault === "None" ? e.summary.slice(0, 48) : e.primaryFault}`,
+      assetName: e.assetName,
+      assetTag: e.assetTag,
+      status: e.status,
+      severity: e.severity,
+      events: [e]
+    });
+  });
+
+  return incidents.sort(
+    (a, b) => Math.max(...b.events.map((e) => e.sortKey)) - Math.max(...a.events.map((e) => e.sortKey))
+  );
+}
+
+/* ========================================================================== */
+/* UI helpers                                                                 */
+/* ========================================================================== */
+
+function severityBadge(sev: Severity) {
+  if (sev === "Critical") return "bg-red-500/15 text-red-300 border-red-500/40";
+  if (sev === "Warning") return "bg-amber-400/15 text-amber-300 border-amber-400/40";
+  return "bg-sky-500/15 text-sky-300 border-sky-500/40";
+}
+
+function statusBadge(status: LogStatus) {
+  if (status === "Resolved") return "bg-emerald-500/15 text-emerald-300 border-emerald-500/40";
+  if (status === "Acknowledged" || status === "In Progress")
+    return "bg-amber-400/15 text-amber-300 border-amber-400/40";
+  return "bg-slate-700/50 text-slate-300 border-slate-600";
+}
+
+function SourceIcon({ source }: { source: EventSource }) {
+  if (source === "Predictive Scan") return <Bot className="h-3.5 w-3.5 text-violet-300" />;
+  if (source === "Manual Check") return <Wrench className="h-3.5 w-3.5 text-sky-300" />;
+  return <AlertTriangle className="h-3.5 w-3.5 text-orange-300" />;
+}
+
+function Sparkline({ data }: { data: SparkPoint[] }) {
+  return (
+    <div className="h-12 w-40">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data}>
+          <Line type="monotone" dataKey="vib" stroke="#fbbf24" strokeWidth={1.5} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+/* ========================================================================== */
+/* Detail panel                                                               */
+/* ========================================================================== */
+
+function DetailPanel({
+  event,
+  onClose,
+  onSaveNotes,
+  onAck,
+  onCreateWo
+}: {
+  event: LogEvent;
+  onClose: () => void;
+  onSaveNotes: (notes: string) => void;
+  onAck: () => void;
+  onCreateWo: () => void;
+}) {
+  const [notes, setNotes] = useState(event.resolutionNotes);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button type="button" className="absolute inset-0 bg-black/60 backdrop-blur-sm cursor-pointer" onClick={onClose} aria-label="Close" />
+      <aside className="relative w-full max-w-lg h-full bg-slate-900 border-l border-slate-800 shadow-2xl overflow-y-auto flex flex-col">
+        <div className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur border-b border-slate-800 p-4 space-y-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[11px] font-mono text-amber-300 font-bold">{event.id.toUpperCase()}</p>
+              <h3 className="text-base font-bold text-white truncate">
+                {event.assetName} · {event.assetTag}
+              </h3>
+              <p className="text-[11px] text-slate-500">{event.timestamp}</p>
+            </div>
+            <button type="button" onClick={onClose} className="text-slate-500 hover:text-white cursor-pointer p-1">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <span className={`inline-flex px-2 py-0.5 rounded-md border text-[10px] font-bold ${severityBadge(event.severity)}`}>
+              {event.severity}
+            </span>
+            <span className={`inline-flex px-2 py-0.5 rounded-md border text-[10px] font-bold ${statusBadge(event.status)}`}>
+              {event.status}
+            </span>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-slate-700 text-[10px] font-bold text-slate-300">
+              <SourceIcon source={event.source} /> {event.source}
+            </span>
+          </div>
+        </div>
+
+        <div className="p-4 space-y-4 flex-1">
+          <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Diagnosis Details</p>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-slate-400">Diagnostic Confidence</span>
+              <span className="font-mono font-bold text-amber-300">{event.confidence}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+              <div className="h-full bg-amber-400" style={{ width: `${event.confidence}%` }} />
+            </div>
+            <p className="text-xs text-slate-300 pt-1">{event.summary}</p>
+            <p className="text-xs text-slate-400">
+              <span className="text-slate-500 font-bold">Primary: </span>
+              {event.primaryFault}
+            </p>
+            <p className="text-xs text-slate-400">
+              <span className="text-slate-500 font-bold">Secondary: </span>
+              {event.secondaryFault}
+            </p>
+            <ul className="text-xs text-slate-300 space-y-1 pt-1">
+              {event.recommendedActions.map((a) => (
+                <li key={a} className="flex gap-1.5">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                  {a}
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Vibration Snapshot</p>
+            <div className="h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={event.sparkline}>
+                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                  <XAxis dataKey="t" hide />
+                  <YAxis tick={{ fill: "#64748b", fontSize: 10 }} width={28} />
+                  <RechartsTooltip
+                    contentStyle={{ background: "#0f172a", border: "1px solid #334155", fontSize: 11 }}
+                  />
+                  <Line type="monotone" dataKey="vib" stroke="#fbbf24" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-3 space-y-3">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Resolution Tracker</p>
+            <TimelineStep label="Alert Triggered" value={event.timestamp} done />
+            <TimelineStep
+              label="Acknowledged by"
+              value={event.acknowledgedBy ? `${event.acknowledgedBy} (${event.acknowledgedAt})` : "—"}
+              done={!!event.acknowledgedBy}
+            />
+            <TimelineStep
+              label="Work Order Created"
+              value={event.workOrder ? `${event.workOrder} (${event.workOrderAt})` : "—"}
+              done={!!event.workOrder}
+            />
+            <TimelineStep label="Resolved" value={event.resolvedAt ?? "Open"} done={!!event.resolvedAt} />
+          </section>
+
+          <section className="space-y-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Resolution Notes</p>
+            <textarea
+              className={`${INPUT} min-h-[96px] resize-y`}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="How was this fixed?"
+            />
+            <button
+              type="button"
+              onClick={() => onSaveNotes(notes)}
+              className="min-h-[40px] px-4 rounded-xl bg-amber-400 text-slate-950 text-xs font-bold cursor-pointer"
+            >
+              Save Notes
+            </button>
+          </section>
+        </div>
+
+        <div className="sticky bottom-0 border-t border-slate-800 bg-slate-900 p-3 flex flex-wrap gap-2">
+          {event.status === "Pending" && (
+            <button
+              type="button"
+              onClick={onAck}
+              className="min-h-[40px] px-3 rounded-xl border border-emerald-500/40 text-emerald-300 text-xs font-bold cursor-pointer"
+            >
+              Acknowledge
+            </button>
+          )}
+          {!event.workOrder && (
+            <button
+              type="button"
+              onClick={onCreateWo}
+              className="min-h-[40px] px-3 rounded-xl border border-amber-400/40 text-amber-200 text-xs font-bold cursor-pointer"
+            >
+              Create Work Order
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="min-h-[40px] px-3 rounded-xl border border-slate-700 text-slate-300 text-xs font-bold cursor-pointer ml-auto"
+          >
+            Close
+          </button>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function TimelineStep({ label, value, done }: { label: string; value: string; done?: boolean }) {
+  return (
+    <div className="flex gap-3 text-xs">
+      <div className="flex flex-col items-center">
+        <span className={`h-2.5 w-2.5 rounded-full ${done ? "bg-amber-400" : "bg-slate-600"}`} />
+        <span className="flex-1 w-px bg-slate-800 min-h-[16px]" />
+      </div>
+      <div className="pb-2">
+        <p className="text-slate-500 font-bold">{label}</p>
+        <p className="text-slate-200">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ========================================================================== */
+/* Page                                                                       */
+/* ========================================================================== */
+
 export default function DiagnosisLogs({
   reports = [],
   onSelectReport,
   onDeleteReport,
   onStartDiagnosis
 }: DiagnosisLogsProps) {
-  
-  // Primary Logs Dataset State
-  const [logs, setLogs] = useState<LogEntry[]>(INITIAL_MOCK_LOGS);
+  const { toast } = useToast();
+  void reports;
+  void onSelectReport;
+  void onDeleteReport;
+  void onStartDiagnosis;
 
-  // Search & Filter States
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [assetTypeFilter, setAssetTypeFilter] = useState<string>("All");
-  const [severityFilter, setSeverityFilter] = useState<string>("All");
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
-  const [activePreset, setActivePreset] = useState<string>("default");
+  const [events, setEvents] = useState<LogEvent[]>([]);
+  const [equipTick, setEquipTick] = useState(0);
+  const [search, setSearch] = useState("");
+  const [assetSearch, setAssetSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [browseRoute, setBrowseRoute] = useState("");
+  const [browseAssetTag, setBrowseAssetTag] = useState("");
+  const [browseComponent, setBrowseComponent] = useState("");
+  const [selectedEquipTag, setSelectedEquipTag] = useState<string | null>(null);
+  const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
+  const [datePreset, setDatePreset] = useState<DatePreset>("30d");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"All" | LogStatus>("All");
+  const [sourceFilter, setSourceFilter] = useState<"All" | EventSource>("All");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(["inc-402"]));
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const searchRef = useRef<HTMLDivElement | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Selection & Bulk Actions
-  const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
-  
-  // Expanded Row State (Inline)
-  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const flatEquipment = useMemo(() => {
+    void equipTick;
+    return getFlatEquipment();
+  }, [equipTick]);
+  const equipmentRoutes = useMemo(() => {
+    void equipTick;
+    return getEquipmentData();
+  }, [equipTick]);
 
-  // Detailed Modal State
-  const [activeModalLog, setActiveModalLog] = useState<LogEntry | null>(null);
+  const selectedEquip = flatEquipment.find((e) => e.tag === selectedEquipTag) ?? null;
 
-  // Schedule Modal & Share Modal
-  const [showScheduleModal, setShowScheduleModal] = useState<boolean>(false);
-  const [showShareModal, setShowShareModal] = useState<boolean>(false);
-  const [shareEmail, setShareEmail] = useState<string>("shanedufrene1989@gmail.com");
-  const [shareSuccess, setShareSuccess] = useState<boolean>(false);
-
-  // Pagination State
-  const [currentPage, setCurrentPage] = useState<number>(1);
-  const [pageSize, setPageSize] = useState<number>(10);
-
-  // Toast Notification
-  const [toastMsg, setToastMsg] = useState<{ text: string; type: "success" | "info" | "warning" } | null>(null);
-
-  const showToast = (text: string, type: "success" | "info" | "warning" = "success") => {
-    setToastMsg({ text, type });
-    setTimeout(() => setToastMsg(null), 3500);
-  };
-
-  // Convert saved reports prop into LogEntry format if user has real saved reports
-  const mergedLogs = useMemo(() => {
-    if (!reports || reports.length === 0) return logs;
-
-    const convertedReports: LogEntry[] = reports.map((r) => {
-      const severityMap: Record<string, "Healthy" | "Warning" | "Critical"> = {
-        Critical: "Critical",
-        High: "Critical",
-        Medium: "Warning",
-        Low: "Healthy"
-      };
-
-      const data = r.data as any;
-      const sev = severityMap[data?.manager_summary?.severity || "Low"] || "Healthy";
-      const score = sev === "Critical" ? 45 : sev === "Warning" ? 72 : 94;
-
-      return {
-        id: r.id,
-        timestamp: r.date,
-        assetName: data?.manager_summary?.primary_fault ? `Asset (${r.category})` : "Monitored Machinery",
-        assetId: `asset-${r.id.slice(-4)}`,
-        serialNumber: r.fileName ? r.fileName.replace(".txt", "") : "SN-UNKNOWN",
-        assetType: r.category === "Electrical" ? "Motor" : "Pump",
-        diagnosticType: "Multi-Tech AI",
-        status: "Completed",
-        healthScore: score,
-        severity: sev,
-        keyFindings: data?.manager_summary?.summary || r.symptoms,
-        reviewed: true,
-        operator: "Reliability Engineer",
-        aiSummary: data?.manager_summary?.technical_narrative || r.symptoms,
-        vibrationPoints: [
-          { point: "Main Axis 1H", value: 3.2, unit: "mm/s RMS", isoLimit: 2.8, status: sev === "Critical" ? "Critical" : "Good" }
-        ],
-        faultFrequencies: data?.probable_faults?.map((f: any) => ({
-          frequencyHz: 120.0,
-          peakVal: "2.8 g",
-          faultType: f.fault,
-          severity: sev === "Critical" ? "Severe" : "Medium"
-        })) || [],
-        recommendedActions: data?.recommended_actions?.map((act: any, i: number) => ({
-          priority: i === 0 ? "P1 - Urgent" : "P2 - Planned",
-          action: act,
-          timeframe: i === 0 ? "Immediate" : "7 Days"
-        })) || []
-      };
-    });
-
-    // Combine converted user saved reports with initial mock logs, ensuring unique IDs
-    const existingIds = new Set(convertedReports.map((c) => c.id));
-    const uniqueMocks = logs.filter((m) => !existingIds.has(m.id));
-    return [...convertedReports, ...uniqueMocks];
-  }, [reports, logs]);
-
-  // Filtered dataset calculation
-  const filteredLogs = useMemo(() => {
-    return mergedLogs.filter((log) => {
-      // Search
-      if (searchQuery.trim()) {
-        const query = searchQuery.toLowerCase();
-        const matchName = log.assetName.toLowerCase().includes(query);
-        const matchId = log.id.toLowerCase().includes(query);
-        const matchSerial = log.serialNumber.toLowerCase().includes(query);
-        const matchFindings = log.keyFindings.toLowerCase().includes(query);
-        const matchOperator = log.operator.toLowerCase().includes(query);
-        if (!matchName && !matchId && !matchSerial && !matchFindings && !matchOperator) return false;
-      }
-
-      // Asset Type
-      if (assetTypeFilter !== "All" && log.assetType !== assetTypeFilter) return false;
-
-      // Severity
-      if (severityFilter !== "All") {
-        if (severityFilter === "Healthy" && log.healthScore < 80) return false;
-        if (severityFilter === "Warning" && (log.healthScore < 60 || log.healthScore >= 80)) return false;
-        if (severityFilter === "Critical" && log.healthScore >= 60 && log.status !== "Failed") return false;
-        if (severityFilter === "Failed" && log.status !== "Failed") return false;
-      }
-
-      // Date Range
-      if (fromDate) {
-        if (new Date(log.timestamp) < new Date(fromDate)) return false;
-      }
-      if (toDate) {
-        if (new Date(log.timestamp) > new Date(toDate + " 23:59:59")) return false;
-      }
-
-      return true;
-    });
-  }, [mergedLogs, searchQuery, assetTypeFilter, severityFilter, fromDate, toDate]);
-
-  // Paginated dataset calculation
-  const paginatedLogs = useMemo(() => {
-    const startIndex = (currentPage - 1) * pageSize;
-    return filteredLogs.slice(startIndex, startIndex + pageSize);
-  }, [filteredLogs, currentPage, pageSize]);
-
-  const totalPages = Math.ceil(filteredLogs.length / pageSize) || 1;
-
-  // Stats Analytics Calculation
-  const totalRuns = mergedLogs.length;
-  const avgHealth = Math.round(
-    mergedLogs.reduce((acc, curr) => acc + (curr.status === "Failed" ? 0 : curr.healthScore), 0) / (totalRuns || 1)
-  );
-  const criticalCount = mergedLogs.filter((l) => l.severity === "Critical" || l.healthScore < 60).length;
-  const warningCount = mergedLogs.filter((l) => l.severity === "Warning" && l.healthScore >= 60).length;
-  const healthyCount = mergedLogs.filter((l) => l.healthScore >= 80).length;
-
-  // Selection Checkbox Logic
-  const handleSelectAll = () => {
-    if (selectedLogIds.length === paginatedLogs.length) {
-      setSelectedLogIds([]);
-    } else {
-      setSelectedLogIds(paginatedLogs.map((l) => l.id));
-    }
-  };
-
-  const handleToggleSelectOne = (id: string) => {
-    if (selectedLogIds.includes(id)) {
-      setSelectedLogIds((prev) => prev.filter((item) => item !== id));
-    } else {
-      setSelectedLogIds((prev) => [...prev, id]);
-    }
-  };
-
-  // Bulk Actions
-  const handleBulkMarkReviewed = () => {
-    setLogs((prev) =>
-      prev.map((log) => (selectedLogIds.includes(log.id) ? { ...log, reviewed: true } : log))
+  const searchResults = useMemo(() => {
+    const q = assetSearch.trim().toLowerCase();
+    if (!q) return flatEquipment;
+    return flatEquipment.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        a.tag.toLowerCase().includes(q) ||
+        a.id.toLowerCase().includes(q) ||
+        a.location.toLowerCase().includes(q) ||
+        a.routeName.toLowerCase().includes(q) ||
+        a.hierarchyPath.toLowerCase().includes(q)
     );
-    showToast(`✓ Marked ${selectedLogIds.length} diagnostic run(s) as reviewed`, "success");
-    setSelectedLogIds([]);
-  };
+  }, [assetSearch, flatEquipment]);
 
-  const handleBulkDelete = () => {
-    if (window.confirm(`Are you sure you want to delete ${selectedLogIds.length} diagnostic log(s)?`)) {
-      setLogs((prev) => prev.filter((log) => !selectedLogIds.includes(log.id)));
-      showToast(`Deleted ${selectedLogIds.length} log entry(ies)`, "info");
-      setSelectedLogIds([]);
+  const routeOptions = useMemo(() => equipmentRoutes.map((r) => r.name), [equipmentRoutes]);
+
+  const assetOptions = useMemo(() => {
+    if (!browseRoute) return [] as FlatEquipAsset[];
+    return flatEquipment.filter((a) => a.routeName === browseRoute);
+  }, [browseRoute, flatEquipment]);
+
+  const componentOptions = useMemo(() => {
+    if (!browseAssetTag) return [] as EquipComponent[];
+    const asset = flatEquipment.find(
+      (a) => a.tag === browseAssetTag && (!browseRoute || a.routeName === browseRoute)
+    );
+    return asset?.components ?? [];
+  }, [browseRoute, browseAssetTag, flatEquipment]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setSearchOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [searchOpen]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    };
+  }, []);
+
+  const applyEquipmentSelection = (tag: string, component?: string | null) => {
+    const asset = flatEquipment.find((a) => a.tag === tag);
+    if (!asset) {
+      toast("Asset not found in Equipment DB.", "warning");
+      return;
     }
+    setSelectedEquipTag(tag);
+    setSelectedComponent(component ?? null);
+    setBrowseRoute(asset.routeName);
+    setBrowseAssetTag(asset.tag);
+    setBrowseComponent(component ?? "");
+    setAssetSearch("");
+    setSearchOpen(false);
+    toast(
+      component
+        ? `Showing logs for ${asset.name} · ${component}.`
+        : `Showing logs for ${asset.name} (${asset.tag}).`,
+      "success"
+    );
   };
 
-  const handleBulkExportCSV = () => {
-    const selectedData = mergedLogs.filter((l) => selectedLogIds.includes(l.id));
-    const headers = ["Diagnostic ID", "Timestamp", "Asset Name", "Asset Type", "Status", "Health Score", "Severity", "Findings", "Operator"];
-    const rows = selectedData.map((l) => [
-      l.id,
-      `"${l.timestamp}"`,
-      `"${l.assetName}"`,
-      l.assetType,
-      l.status,
-      l.healthScore,
-      l.severity,
-      `"${l.keyFindings.replace(/"/g, '""')}"`,
-      `"${l.operator}"`
-    ]);
-
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `motormedic_selected_logs_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    showToast(`✓ Exported ${selectedData.length} logs to CSV`, "success");
+  const clearEquipmentSelection = () => {
+    setSelectedEquipTag(null);
+    setSelectedComponent(null);
+    setBrowseRoute("");
+    setBrowseAssetTag("");
+    setBrowseComponent("");
+    setAssetSearch("");
   };
 
-  // Apply Quick Filter Presets
-  const handleApplyPreset = (presetKey: string) => {
-    setActivePreset(presetKey);
-    if (presetKey === "critical_30d") {
-      setSeverityFilter("Critical");
-      setAssetTypeFilter("All");
-      setFromDate("");
-      setToDate("");
-      showToast("Filter Applied: Critical & Attention Assets", "info");
-    } else if (presetKey === "gearboxes") {
-      setAssetTypeFilter("Gearbox");
-      setSeverityFilter("All");
-      showToast("Filter Applied: Gearboxes Only", "info");
-    } else if (presetKey === "healthy") {
-      setSeverityFilter("Healthy");
-      setAssetTypeFilter("All");
-      showToast("Filter Applied: Healthy Assets (80-100)", "info");
-    } else {
-      setSearchQuery("");
-      setAssetTypeFilter("All");
-      setSeverityFilter("All");
-      setFromDate("");
-      setToDate("");
-      showToast("Cleared all search and category filters", "info");
+  const addFromBrowse = () => {
+    if (!browseRoute || !browseAssetTag || !browseComponent) {
+      toast("Select Route, Asset, and Component first.", "warning");
+      return;
     }
+    applyEquipmentSelection(browseAssetTag, browseComponent);
   };
 
-  // Printable Report Generation
-  const handlePrintPDF = () => {
-    window.print();
+  const startHover = (id: string) => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = setTimeout(() => setHoverId(id), 160);
+  };
+
+  const endHover = () => {
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+    setHoverId(null);
+  };
+
+  const filteredEvents = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return events.filter((e) => {
+      if (selectedEquipTag && e.assetTag !== selectedEquipTag) return false;
+      if (statusFilter !== "All" && e.status !== statusFilter) return false;
+      if (sourceFilter !== "All" && e.source !== sourceFilter) return false;
+      if (datePreset === "7d" && e.sortKey < 500) return false;
+      if (datePreset === "custom" && customFrom && customTo) {
+        // mock: keep all when custom set for demo
+      }
+      if (!q) return true;
+      return (
+        e.assetName.toLowerCase().includes(q) ||
+        e.assetTag.toLowerCase().includes(q) ||
+        e.summary.toLowerCase().includes(q) ||
+        e.primaryFault.toLowerCase().includes(q)
+      );
+    });
+  }, [events, search, selectedEquipTag, statusFilter, sourceFilter, datePreset, customFrom, customTo]);
+
+  const incidents = useMemo(() => buildIncidents(filteredEvents), [filteredEvents]);
+
+  const summary = useMemo(() => {
+    const total = events.length;
+    const critical = events.filter((e) => e.severity === "Critical" && e.status !== "Resolved").length;
+    const bearingShare = Math.round(
+      (events.filter((e) => /bearing|bpfo|race/i.test(e.summary + e.primaryFault)).length / Math.max(1, events.length)) *
+        100
+    );
+    return {
+      total: 142,
+      critical: Math.max(8, critical),
+      avgResolution: "4.2 hrs",
+      insight: `${bearingShare}% of alerts were bearing-related this week.`
+    };
+  }, [events]);
+
+  const detail = events.find((e) => e.id === detailId) ?? null;
+
+  const toggleExpand = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const patchEvent = (id: string, patch: Partial<LogEvent>) => {
+    setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+  };
+
+  const exportCsv = () => {
+    const header = "id,timestamp,asset,tag,source,severity,status,summary\n";
+    const rows = filteredEvents
+      .map(
+        (e) =>
+          `"${e.id}","${e.timestamp}","${e.assetName}","${e.assetTag}","${e.source}","${e.severity}","${e.status}","${e.summary.replace(/"/g, "'")}"`
+      )
+      .join("\n");
+    const blob = new Blob([header + rows], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "diagnosis-logs.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("Diagnosis logs exported as CSV.", "success");
   };
 
   return (
-    <div className="space-y-6 text-slate-100 font-sans max-w-7xl mx-auto print:p-0 print:bg-white print:text-black">
-      
-      {/* ------------------- TOAST NOTIFICATION ------------------- */}
-      {toastMsg && (
-        <div className="fixed bottom-6 right-6 z-50 animate-bounce print:hidden">
-          <div className={`px-4 py-3 rounded-2xl border shadow-2xl backdrop-blur-md flex items-center gap-3 text-xs font-bold ${
-            toastMsg.type === "success"
-              ? "bg-emerald-950/90 border-emerald-500/50 text-emerald-300"
-              : toastMsg.type === "warning"
-              ? "bg-amber-950/90 border-amber-500/50 text-amber-300"
-              : "bg-slate-900/90 border-cyan-500/50 text-cyan-300"
-          }`}>
-            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
-            <span>{toastMsg.text}</span>
-          </div>
-        </div>
-      )}
-
-      {/* ------------------- TOP HEADER BAR ------------------- */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800 print:hidden">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-cyan-500/10 border border-cyan-500/20 rounded-2xl text-cyan-400 shadow-inner">
-            <Activity className="w-6 h-6 animate-pulse" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-white font-display tracking-tight flex items-center gap-2">
-              AI Diagnostic Logs & Vibration Runs
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-cyan-400">
-                Category IV Archive
-              </span>
-            </h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Historical spectrum analysis, health trends, and automated vibration scan records
-            </p>
-          </div>
-        </div>
-
-        {/* Quick Actions Panel */}
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <button
-            onClick={onStartDiagnosis}
-            className="px-4 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2"
-          >
-            <Zap className="w-4 h-4" />
-            <span>Run New Diagnosis</span>
-          </button>
-
-          <button
-            onClick={() => setShowScheduleModal(true)}
-            className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
-          >
-            <Clock className="w-4 h-4 text-amber-400" />
-            <span>Schedule Auto Scan</span>
-          </button>
-
-          <button
-            onClick={handleBulkExportCSV}
-            className="px-3.5 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-200 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
-            title="Download Complete Archive CSV"
-          >
-            <Download className="w-4 h-4 text-cyan-400" />
-            <span>Export Archive</span>
-          </button>
+    <div className="space-y-5 pb-8">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-white inline-flex items-center gap-2">
+            <Activity className="h-5 w-5 text-amber-400" />
+            Diagnosis Logs
+          </h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Automatically grouped incidents with inline context — less noise, faster decisions.
+          </p>
         </div>
       </div>
 
-      {/* ==================================================================== */}
-      {/* 1. VISUAL ANALYTICS SUMMARY (TOP SECTION)                            */}
-      {/* ==================================================================== */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 print:hidden">
-        
-        {/* Metric 1: Total Diagnostics Run */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Total Diagnostics Run</span>
-            <div className="text-2xl font-extrabold text-white font-mono flex items-baseline gap-2">
-              {totalRuns}
-              <span className="text-[11px] font-sans font-bold text-emerald-400">
-                +12% mo.
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400">Complete plant scan log</p>
-          </div>
-          <div className="p-3 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded-2xl">
-            <BarChart2 className="w-6 h-6" />
-          </div>
-        </div>
+      {flatEquipment.length === 0 || events.length === 0 ? (
+        <OnboardingEmptyState
+          variant="logs"
+          onDataChange={() => {
+            setEquipTick((n) => n + 1);
+            if (getFlatEquipment().length > 0 && events.length === 0) {
+              setEvents(MOCK_EVENTS);
+            } else if (getFlatEquipment().length === 0) {
+              setEvents([]);
+            }
+          }}
+        />
+      ) : null}
 
-        {/* Metric 2: Average Health Score */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Average Plant Health</span>
-            <div className="text-2xl font-extrabold text-white font-mono flex items-baseline gap-2">
-              {avgHealth} <span className="text-xs text-slate-500">/ 100</span>
-            </div>
-            {/* Health Bar Mini */}
-            <div className="w-28 h-1.5 bg-slate-800 rounded-full overflow-hidden mt-1 border border-slate-700">
-              <div 
-                className={`h-full ${avgHealth >= 80 ? "bg-emerald-400" : avgHealth >= 60 ? "bg-amber-400" : "bg-red-400"}`}
-                style={{ width: `${avgHealth}%` }}
-              />
-            </div>
-          </div>
-          <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-2xl">
-            <ShieldCheck className="w-6 h-6" />
-          </div>
-        </div>
-
-        {/* Metric 3: Most Common Fault Type */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Top Detected Signature</span>
-            <div className="text-sm font-extrabold text-amber-300 font-display truncate max-w-[150px]">
-              Bearing Outer Race (BPFO)
-            </div>
-            <p className="text-[11px] text-slate-400">28% of all fault occurrences</p>
-          </div>
-          <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded-2xl">
-            <AlertTriangle className="w-6 h-6" />
-          </div>
-        </div>
-
-        {/* Metric 4: Assets Needing Attention */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
-          <div className="space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Assets Needing Attention</span>
-            <div className="text-2xl font-extrabold text-red-400 font-mono flex items-baseline gap-2">
-              {criticalCount + warningCount}
-              <span className="text-[11px] font-sans font-bold text-slate-400">
-                ({criticalCount} Critical)
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400">ISO Zone C & D breaches</p>
-          </div>
-          <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-2xl">
-            <AlertOctagon className="w-6 h-6 animate-pulse" />
-          </div>
-        </div>
-
-      </div>
-
-      {/* Mini Trend & Status Distribution Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 print:hidden">
-        
-        {/* Diagnostics Activity Trend (2 Cols) */}
-        <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-850">
-            <div className="flex items-center gap-2">
-              <Activity className="w-4 h-4 text-cyan-400" />
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider font-display">
-                Diagnostics Activity Spectrum (Last 30 Days)
-              </h3>
-            </div>
-            <span className="text-[10px] font-mono text-slate-400">Daily Runs Baseline</span>
-          </div>
-
-          {/* HTML/CSS Bar Graph Visualizer */}
-          <div className="h-28 flex items-end justify-between gap-1.5 pt-4 px-2 border-b border-slate-800">
-            {[4, 6, 8, 3, 5, 12, 9, 14, 11, 7, 15, 10, 8, 18, 12, 9, 14, 16, 20, 13, 11, 8, 15, 19, 14, 10, 12, 16, 22, 18].map((val, idx) => (
-              <div key={idx} className="flex-1 flex flex-col items-center gap-1 group relative">
-                {/* Tooltip */}
-                <div className="absolute -top-7 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-950 text-cyan-300 text-[9px] font-mono px-1.5 py-0.5 rounded border border-slate-700 pointer-events-none whitespace-nowrap z-10">
-                  Day {idx + 1}: {val} scans
-                </div>
-                <div 
-                  className={`w-full rounded-t-sm transition-all duration-300 ${
-                    idx === 28 ? "bg-cyan-400 shadow-lg shadow-cyan-500/50" : val > 15 ? "bg-cyan-500/80" : "bg-slate-700 hover:bg-cyan-500/60"
-                  }`}
-                  style={{ height: `${(val / 22) * 100}%` }}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-            <span>July 1, 2026</span>
-            <span>July 15, 2026</span>
-            <span>Today (July 27)</span>
-          </div>
-        </div>
-
-        {/* Health Status Distribution Pie / Bar (1 Col) */}
-        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-          <div className="flex items-center gap-2 pb-2 border-b border-slate-850">
-            <PieChart className="w-4 h-4 text-emerald-400" />
-            <h3 className="text-xs font-bold text-white uppercase tracking-wider font-display">
-              Health Status Breakdown
-            </h3>
-          </div>
-
-          <div className="space-y-3 pt-1">
-            {/* Healthy Row */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs font-bold">
-                <span className="text-emerald-400 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" /> Healthy (80-100)
-                </span>
-                <span className="font-mono text-slate-200">{healthyCount} ({Math.round((healthyCount / totalRuns) * 100)}%)</span>
-              </div>
-              <div className="h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
-                <div className="h-full bg-emerald-400 rounded-full" style={{ width: `${(healthyCount / totalRuns) * 100}%` }} />
-              </div>
-            </div>
-
-            {/* Warning Row */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs font-bold">
-                <span className="text-amber-400 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400" /> Warning (60-79)
-                </span>
-                <span className="font-mono text-slate-200">{warningCount} ({Math.round((warningCount / totalRuns) * 100)}%)</span>
-              </div>
-              <div className="h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
-                <div className="h-full bg-amber-400 rounded-full" style={{ width: `${(warningCount / totalRuns) * 100}%` }} />
-              </div>
-            </div>
-
-            {/* Critical Row */}
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs font-bold">
-                <span className="text-red-400 flex items-center gap-1.5">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-400" /> Critical (0-59)
-                </span>
-                <span className="font-mono text-slate-200">{criticalCount} ({Math.round((criticalCount / totalRuns) * 100)}%)</span>
-              </div>
-              <div className="h-2 bg-slate-950 rounded-full overflow-hidden border border-slate-800">
-                <div className="h-full bg-red-400 rounded-full" style={{ width: `${(criticalCount / totalRuns) * 100}%` }} />
-              </div>
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* ==================================================================== */}
-      {/* 2. ADVANCED FILTERING & SEARCH PANEL                                 */}
-      {/* ==================================================================== */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-2xl space-y-4 print:hidden">
-        
-        {/* Preset Filter Pills */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-cyan-400" />
-            <span className="text-xs font-bold text-white uppercase tracking-wider font-display">Filter Presets:</span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => handleApplyPreset("all")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                activePreset === "all" ? "bg-cyan-500 text-slate-950 shadow-md" : "bg-slate-950 text-slate-400 border border-slate-800 hover:text-white"
-              }`}
-            >
-              All Records ({mergedLogs.length})
-            </button>
-
-            <button
-              onClick={() => handleApplyPreset("critical_30d")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                activePreset === "critical_30d" ? "bg-red-500 text-white shadow-md" : "bg-slate-950 text-red-400 border border-slate-800 hover:bg-red-950/40"
-              }`}
-            >
-              ⚠️ Critical & Attention
-            </button>
-
-            <button
-              onClick={() => handleApplyPreset("gearboxes")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                activePreset === "gearboxes" ? "bg-amber-500 text-slate-950 shadow-md" : "bg-slate-950 text-amber-400 border border-slate-800 hover:bg-amber-950/40"
-              }`}
-            >
-              ⚙️ Gearbox Scans
-            </button>
-
-            <button
-              onClick={() => handleApplyPreset("healthy")}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                activePreset === "healthy" ? "bg-emerald-500 text-slate-950 shadow-md" : "bg-slate-950 text-emerald-400 border border-slate-800 hover:bg-emerald-950/40"
-              }`}
-            >
-              ✅ Healthy Baseline
-            </button>
-          </div>
-        </div>
-
-        {/* Filter Controls Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3">
-          
-          {/* Search Bar (Col 4) */}
-          <div className="lg:col-span-4 relative">
-            <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-400 pointer-events-none" />
+      {flatEquipment.length > 0 && events.length > 0 ? (
+      <>
+      {/* Equipment selection — Trend Analyzer pattern */}
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3 overflow-visible">
+        <div className="space-y-2.5" ref={searchRef}>
+          {/* 1. Search — full width */}
+          <div className="relative w-full min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 pointer-events-none" />
             <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search asset, serial #, or diagnostic ID..."
-              className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-cyan-400 focus:outline-none rounded-xl pl-10 pr-4 py-2.5 text-xs text-white"
+              type="search"
+              value={assetSearch}
+              onChange={(e) => {
+                setAssetSearch(e.target.value);
+                setSearchOpen(true);
+              }}
+              onFocus={() => setSearchOpen(true)}
+              placeholder="Search assets by name, tag, ID, or location..."
+              className="w-full min-h-[40px] pl-9 pr-3 rounded-xl bg-slate-900 border border-slate-700 text-sm text-slate-200 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
             />
-            {searchQuery && (
-              <button 
-                onClick={() => setSearchQuery("")} 
-                className="absolute right-3 top-3 text-slate-500 hover:text-white"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
+            {searchOpen && (
+              <div className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 shadow-2xl p-1.5 space-y-0.5">
+                {searchResults.length === 0 ? (
+                  <p className="text-xs text-slate-500 px-2 py-3">No matching assets.</p>
+                ) : (
+                  searchResults.map((asset) => {
+                    const on = selectedEquipTag === asset.tag;
+                    return (
+                      <button
+                        key={asset.id}
+                        type="button"
+                        onClick={() => applyEquipmentSelection(asset.tag, asset.components[0]?.name ?? null)}
+                        className={`w-full text-left px-2.5 py-2 rounded-lg text-xs cursor-pointer ${
+                          on ? "bg-amber-400/10 text-amber-300" : "text-slate-300 hover:bg-slate-900"
+                        }`}
+                      >
+                        <span className="flex items-start gap-2">
+                          <span
+                            className={`mt-0.5 h-4 w-4 rounded border flex items-center justify-center shrink-0 ${
+                              on ? "bg-amber-400 border-amber-400 text-slate-950" : "border-slate-600"
+                            }`}
+                          >
+                            {on && <Check className="h-3 w-3" strokeWidth={3} />}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block font-bold truncate">
+                              {asset.name} · {asset.tag}
+                            </span>
+                            <span className="block text-[10px] text-slate-500 truncate mt-0.5">
+                              {asset.hierarchyPath}
+                            </span>
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
             )}
           </div>
 
-          {/* Asset Type Dropdown (Col 2) */}
-          <div className="lg:col-span-2 relative">
-            <select
-              value={assetTypeFilter}
-              onChange={(e) => setAssetTypeFilter(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-cyan-400 text-xs font-semibold text-slate-200 rounded-xl p-2.5 appearance-none focus:outline-none cursor-pointer pr-8"
-            >
-              <option value="All">All Asset Types</option>
-              <option value="Motor">Motors</option>
-              <option value="Pump">Pumps</option>
-              <option value="Gearbox">Gearboxes</option>
-              <option value="Fan">Fans & Blowers</option>
-              <option value="Compressor">Compressors</option>
-            </select>
-            <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
-          </div>
-
-          {/* Health Status Filter (Col 2) */}
-          <div className="lg:col-span-2 relative">
-            <select
-              value={severityFilter}
-              onChange={(e) => setSeverityFilter(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 focus:border-cyan-400 text-xs font-semibold text-slate-200 rounded-xl p-2.5 appearance-none focus:outline-none cursor-pointer pr-8"
-            >
-              <option value="All">All Health Statuses</option>
-              <option value="Healthy">Healthy (80-100)</option>
-              <option value="Warning">Warning (60-79)</option>
-              <option value="Critical">Critical (0-59)</option>
-              <option value="Failed">Failed Scans</option>
-            </select>
-            <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
-          </div>
-
-          {/* From Date (Col 2) */}
-          <div className="lg:col-span-2">
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 text-xs font-mono rounded-xl p-2.5 focus:outline-none focus:border-cyan-400"
-              placeholder="From Date"
-            />
-          </div>
-
-          {/* Clear Filters (Col 2) */}
-          <div className="lg:col-span-2 flex items-center">
-            <button
-              onClick={() => handleApplyPreset("clear")}
-              className="w-full py-2.5 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-300 hover:text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Reset Filters</span>
-            </button>
-          </div>
-
-        </div>
-      </div>
-
-      {/* ==================================================================== */}
-      {/* 3. BULK ACTIONS FLOATING TOOLBAR                                     */}
-      {/* ==================================================================== */}
-      {selectedLogIds.length > 0 && (
-        <div className="bg-cyan-950/90 border border-cyan-500/40 rounded-2xl p-4 shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in print:hidden">
-          <div className="flex items-center gap-3">
-            <CheckSquare className="w-5 h-5 text-cyan-400" />
-            <span className="text-xs font-bold text-white">
-              <strong className="text-cyan-300 font-mono text-sm">{selectedLogIds.length}</strong> log entry(ies) selected
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleBulkMarkReviewed}
-              className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-cyan-300 font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5"
-            >
-              <Check className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Mark Reviewed</span>
-            </button>
-
-            <button
-              onClick={handleBulkExportCSV}
-              className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-cyan-500/30 text-slate-200 font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5"
-            >
-              <Download className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Export CSV</span>
-            </button>
-
-            <button
-              onClick={handleBulkDelete}
-              className="px-3.5 py-1.5 bg-red-950/60 hover:bg-red-900/60 border border-red-500/30 text-red-300 font-bold text-xs rounded-xl transition-colors flex items-center gap-1.5"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Delete Selected</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ==================================================================== */}
-      {/* 4. MAIN LOGS TABLE GRID & EXPANDABLE ROWS                            */}
-      {/* ==================================================================== */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-950 border-b border-slate-800 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                <th className="p-4 w-10 text-center print:hidden">
-                  <button onClick={handleSelectAll} className="text-slate-400 hover:text-white">
-                    {selectedLogIds.length === paginatedLogs.length && paginatedLogs.length > 0 ? (
-                      <CheckSquare className="w-4 h-4 text-cyan-400" />
-                    ) : (
-                      <Square className="w-4 h-4" />
-                    )}
-                  </button>
-                </th>
-                <th className="p-4 font-display">Date / Time</th>
-                <th className="p-4 font-display">Asset & Serial #</th>
-                <th className="p-4 font-display">Diagnostic Type</th>
-                <th className="p-4 font-display text-center">Health Score</th>
-                <th className="p-4 font-display">Key Findings</th>
-                <th className="p-4 font-display text-right print:hidden">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-850 text-xs">
-              {paginatedLogs.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="p-12 text-center text-slate-400 space-y-2">
-                    <AlertCircle className="w-10 h-10 text-slate-600 mx-auto" />
-                    <p className="font-bold text-white">No Diagnostic Logs Match Criteria</p>
-                    <p className="text-xs text-slate-500">Try adjusting your keyword search, asset type, or date filters.</p>
-                  </td>
-                </tr>
-              ) : (
-                paginatedLogs.map((log) => {
-                  const isSelected = selectedLogIds.includes(log.id);
-                  const isExpanded = expandedLogId === log.id;
-                  
-                  // Score styling
-                  const scoreColor =
-                    log.status === "Failed"
-                      ? "text-red-400 bg-red-950/60 border-red-500/40"
-                      : log.healthScore >= 80
-                      ? "text-emerald-400 bg-emerald-950/60 border-emerald-500/40"
-                      : log.healthScore >= 60
-                      ? "text-amber-400 bg-amber-950/60 border-amber-500/40"
-                      : "text-red-400 bg-red-950/60 border-red-500/40";
-
-                  return (
-                    <React.Fragment key={log.id}>
-                      <tr className={`hover:bg-slate-850/60 transition-colors ${isSelected ? "bg-cyan-950/30" : ""}`}>
-                        
-                        {/* Checkbox */}
-                        <td className="p-4 text-center print:hidden">
-                          <button onClick={() => handleToggleSelectOne(log.id)} className="text-slate-400 hover:text-white">
-                            {isSelected ? <CheckSquare className="w-4 h-4 text-cyan-400" /> : <Square className="w-4 h-4" />}
-                          </button>
-                        </td>
-
-                        {/* Date / Time */}
-                        <td className="p-4 font-mono text-slate-300">
-                          <div className="font-bold text-white">{log.timestamp}</div>
-                          <div className="text-[10px] text-slate-500 font-mono">ID: {log.id}</div>
-                        </td>
-
-                        {/* Asset & Serial */}
-                        <td className="p-4">
-                          <div className="font-bold text-white font-display text-sm">{log.assetName}</div>
-                          <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
-                            <span className="px-1.5 py-0.2 bg-slate-800 rounded border border-slate-700 text-cyan-300">
-                              {log.assetType}
-                            </span>
-                            <span>S/N: {log.serialNumber}</span>
-                          </div>
-                        </td>
-
-                        {/* Diagnostic Type */}
-                        <td className="p-4 font-semibold text-slate-300">
-                          <span className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 flex items-center gap-1.5 w-fit">
-                            <Sparkles className="w-3 h-3 text-cyan-400" />
-                            {log.diagnosticType}
-                          </span>
-                        </td>
-
-                        {/* Health Score Pill */}
-                        <td className="p-4 text-center">
-                          <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl font-mono font-extrabold text-xs border ${scoreColor}`}>
-                            {log.status === "Failed" ? "FAIL" : `${log.healthScore} / 100`}
-                          </span>
-                        </td>
-
-                        {/* Key Findings */}
-                        <td className="p-4 max-w-xs text-slate-300 truncate font-sans" title={log.keyFindings}>
-                          {log.keyFindings}
-                        </td>
-
-                        {/* Actions */}
-                        <td className="p-4 text-right print:hidden">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
-                              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                              title={isExpanded ? "Collapse inline view" : "Expand inline view"}
-                            >
-                              {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                            </button>
-
-                            <button
-                              onClick={() => setActiveModalLog(log)}
-                              className="px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 font-bold text-xs rounded-xl transition-all flex items-center gap-1"
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              <span>View Report</span>
-                            </button>
-                          </div>
-                        </td>
-
-                      </tr>
-
-                      {/* Expandable Inline Row Details */}
-                      {isExpanded && (
-                        <tr className="bg-slate-950/80 border-b border-slate-800">
-                          <td colSpan={7} className="p-5 space-y-4">
-                            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
-                              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-                                <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider flex items-center gap-1.5 font-display">
-                                  <Sparkles className="w-4 h-4" />
-                                  AI Diagnostic Executive Technical Summary
-                                </span>
-                                <span className="text-[10px] text-slate-400 font-mono">
-                                  Inspected by: {log.operator}
-                                </span>
-                              </div>
-
-                              <p className="text-xs text-slate-200 leading-relaxed font-sans">
-                                {log.aiSummary}
-                              </p>
-
-                              {/* Vibration Points Mini Preview */}
-                              {log.vibrationPoints.length > 0 && (
-                                <div className="space-y-1.5 pt-2">
-                                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                    Spectral Measurement Points:
-                                  </span>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                                    {log.vibrationPoints.map((vp, idx) => (
-                                      <div key={idx} className="bg-slate-950 p-2 rounded-lg border border-slate-800 text-[11px] flex justify-between items-center">
-                                        <span className="text-slate-400 font-mono">{vp.point}</span>
-                                        <span className={`font-mono font-bold ${vp.status === "Critical" ? "text-red-400" : vp.status === "Warning" ? "text-amber-400" : "text-emerald-400"}`}>
-                                          {vp.value} {vp.unit}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-
-                              <div className="flex justify-end pt-1">
-                                <button
-                                  onClick={() => setActiveModalLog(log)}
-                                  className="text-xs text-cyan-400 hover:text-cyan-300 font-bold flex items-center gap-1 underline"
-                                >
-                                  Open Full Interactive Spectrum Report <ChevronRight className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination Footer Controls */}
-        <div className="p-4 bg-slate-950 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-400 print:hidden">
-          <div className="flex items-center gap-2">
-            <span>Showing</span>
-            <span className="font-bold text-white font-mono">
-              {filteredLogs.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}
-            </span>
-            <span>to</span>
-            <span className="font-bold text-white font-mono">
-              {Math.min(currentPage * pageSize, filteredLogs.length)}
-            </span>
-            <span>of</span>
-            <span className="font-bold text-white font-mono">{filteredLogs.length}</span>
-            <span>diagnostic entries</span>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Page Size Selector */}
-            <div className="flex items-center gap-2">
-              <span>Per page:</span>
+          {/* 2. Hierarchical dropdowns */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 min-w-0">
+            <div className="min-w-0">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
+                Select Route
+              </label>
               <select
-                value={pageSize}
+                value={browseRoute}
                 onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setCurrentPage(1);
+                  setBrowseRoute(e.target.value);
+                  setBrowseAssetTag("");
+                  setBrowseComponent("");
                 }}
-                className="bg-slate-900 border border-slate-800 text-white rounded-lg px-2 py-1 focus:outline-none"
+                className={SELECT}
               >
-                <option value={10}>10</option>
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
+                <option value="">Select Route</option>
+                {routeOptions.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
               </select>
             </div>
-
-            {/* Page Buttons */}
-            <div className="flex items-center gap-1">
-              <button
-                disabled={currentPage === 1}
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                className="px-3 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 disabled:opacity-40 rounded-lg transition-colors font-bold"
+            <div className="min-w-0">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
+                Select Asset
+              </label>
+              <select
+                value={browseAssetTag}
+                onChange={(e) => {
+                  setBrowseAssetTag(e.target.value);
+                  setBrowseComponent("");
+                }}
+                disabled={!browseRoute}
+                className={SELECT}
               >
-                Prev
-              </button>
-              <span className="px-2 font-mono text-cyan-400 font-bold">
-                {currentPage} / {totalPages}
-              </span>
-              <button
-                disabled={currentPage >= totalPages}
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                className="px-3 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 disabled:opacity-40 rounded-lg transition-colors font-bold"
+                <option value="">Select Asset</option>
+                {assetOptions.map((a) => (
+                  <option key={a.tag} value={a.tag}>
+                    {a.name} - {a.tag}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="min-w-0">
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
+                Select Component
+              </label>
+              <select
+                value={browseComponent}
+                onChange={(e) => setBrowseComponent(e.target.value)}
+                disabled={!browseAssetTag}
+                className={SELECT}
               >
-                Next
-              </button>
+                <option value="">Select Component</option>
+                {componentOptions.map((c) => (
+                  <option key={c.id} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
-        </div>
 
-      </div>
+          {/* 3. Add to selection */}
+          <button
+            type="button"
+            onClick={addFromBrowse}
+            className="min-h-[40px] px-4 rounded-xl bg-amber-400/15 border border-amber-400/40 text-amber-300 text-xs font-bold hover:bg-amber-400/25 cursor-pointer"
+          >
+            Add to selection
+          </button>
 
-      {/* ==================================================================== */}
-      {/* 5. DETAILED LOG VIEW MODAL                                           */}
-      {/* ==================================================================== */}
-      {activeModalLog && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-fade-in print:p-0 print:static print:bg-white">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-4xl w-full p-6 shadow-2xl space-y-6 relative max-h-[90vh] overflow-y-auto my-auto print:max-h-none print:shadow-none print:border-none print:bg-white print:text-black">
-            
-            {/* Modal Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800 print:border-black">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="px-2.5 py-0.5 rounded-md bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-mono text-[10px] font-bold">
-                    {activeModalLog.id}
-                  </span>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {activeModalLog.timestamp}
-                  </span>
-                </div>
-                <h2 className="text-2xl font-extrabold text-white font-display print:text-black">
-                  {activeModalLog.assetName}
-                </h2>
-                <p className="text-xs text-slate-400 print:text-gray-700">
-                  Serial Number: <strong className="text-slate-200 font-mono">{activeModalLog.serialNumber}</strong> | Type: {activeModalLog.assetType}
-                </p>
-              </div>
-
-              {/* Health Score Badge & Modal Close */}
-              <div className="flex items-center gap-3">
-                <div className="text-right">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Health Score</span>
-                  <span className={`text-2xl font-extrabold font-mono ${
-                    activeModalLog.healthScore >= 80 ? "text-emerald-400" : activeModalLog.healthScore >= 60 ? "text-amber-400" : "text-red-400"
-                  }`}>
-                    {activeModalLog.healthScore} / 100
-                  </span>
-                </div>
-
+          {selectedEquip && (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-0.5">
+              <span className="inline-flex max-w-full items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-amber-400/40 text-amber-300 text-[11px] font-bold w-fit">
+                <span className="truncate">
+                  {selectedEquip.name} · {selectedEquip.tag}
+                  {selectedComponent ? ` · ${selectedComponent}` : ""}
+                </span>
                 <button
-                  onClick={() => setActiveModalLog(null)}
-                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition-colors print:hidden"
+                  type="button"
+                  onClick={clearEquipmentSelection}
+                  className="hover:text-white cursor-pointer shrink-0 text-amber-400/80"
+                  aria-label="Clear equipment selection"
+                  title="Clear selection"
                 >
-                  <XCircle className="w-6 h-6" />
+                  <X className="h-3 w-3" />
                 </button>
-              </div>
-            </div>
-
-            {/* AI Technical Narrative Summary */}
-            <div className="bg-slate-950 p-5 rounded-2xl border border-slate-850 space-y-2 print:bg-gray-50 print:border-gray-200">
-              <h3 className="text-xs font-bold text-cyan-400 uppercase tracking-wider font-display flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-cyan-400" />
-                AI Generated Diagnostic Synthesis
-              </h3>
-              <p className="text-xs text-slate-200 leading-relaxed font-sans print:text-black">
-                {activeModalLog.aiSummary}
+              </span>
+              <p className="text-xs text-slate-400">
+                Showing{" "}
+                <span className="font-bold text-amber-300">{filteredEvents.length}</span>{" "}
+                {filteredEvents.length === 1 ? "log" : "logs"} for{" "}
+                <span className="font-semibold text-white">{selectedEquip.name}</span>
               </p>
             </div>
+          )}
+        </div>
+      </section>
 
-            {/* Vibration Measurements Table */}
-            {activeModalLog.vibrationPoints.length > 0 && (
-              <div className="space-y-3">
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider font-display flex items-center gap-2 print:text-black">
-                  <Activity className="w-4 h-4 text-cyan-400" />
-                  Vibration Measurement Points & ISO 10816 Limits
-                </h3>
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+        <SummaryCard label="Total Diagnoses (30 Days)" value={String(summary.total)} />
+        <SummaryCard label="Critical Incidents" value={String(summary.critical)} tone="red" />
+        <SummaryCard label="Avg. Resolution Time" value={summary.avgResolution} tone="green" />
+        <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 space-y-1">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-200/80 inline-flex items-center gap-1">
+            <Sparkles className="h-3.5 w-3.5" /> Weekly Insight
+          </p>
+          <p className="text-sm font-bold text-amber-100 leading-snug">{summary.insight}</p>
+        </div>
+      </div>
 
-                <div className="bg-slate-950 border border-slate-850 rounded-xl overflow-hidden">
-                  <table className="w-full text-left text-xs">
-                    <thead>
-                      <tr className="bg-slate-900 border-b border-slate-800 text-[10px] font-bold uppercase text-slate-400">
-                        <th className="p-3">Measurement Axis</th>
-                        <th className="p-3">Measured Value</th>
-                        <th className="p-3">ISO Limit</th>
-                        <th className="p-3 text-right">Condition Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-850 font-mono">
-                      {activeModalLog.vibrationPoints.map((pt, i) => (
-                        <tr key={i} className="hover:bg-slate-900/40">
-                          <td className="p-3 font-bold text-white">{pt.point}</td>
-                          <td className="p-3 text-cyan-300 font-extrabold">{pt.value} {pt.unit}</td>
-                          <td className="p-3 text-slate-400">{pt.isoLimit} {pt.unit}</td>
-                          <td className="p-3 text-right">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              pt.status === "Critical" ? "bg-red-500/20 text-red-300 border border-red-500/40" : pt.status === "Warning" ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
-                            }`}>
-                              {pt.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+      {/* Log filters */}
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3">
+        <div className="flex flex-col lg:flex-row gap-3 lg:items-center">
+          <div className="relative flex-1 min-w-0">
+            <Search className="h-4 w-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              className={`${INPUT} pl-10`}
+              placeholder="Search logs by asset, tag, or keyword..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <select
+              className={`${INPUT} w-auto`}
+              value={datePreset}
+              onChange={(e) => setDatePreset(e.target.value as DatePreset)}
+            >
+              <option value="7d">Last 7 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="custom">Custom</option>
+            </select>
+            {datePreset === "custom" && (
+              <>
+                <input type="date" className={`${INPUT} w-auto`} value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+                <input type="date" className={`${INPUT} w-auto`} value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+              </>
             )}
+            <select
+              className={`${INPUT} w-auto`}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as "All" | LogStatus)}
+            >
+              <option value="All">All Statuses</option>
+              <option value="Pending">Pending</option>
+              <option value="Acknowledged">Acknowledged</option>
+              <option value="In Progress">In Progress</option>
+              <option value="Resolved">Resolved</option>
+            </select>
+            <select
+              className={`${INPUT} w-auto`}
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value as "All" | EventSource)}
+            >
+              <option value="All">All Sources</option>
+              <option value="Predictive Scan">Predictive Scan</option>
+              <option value="Manual Check">Manual Check</option>
+              <option value="Automated Alarm">Automated Alarm</option>
+            </select>
+            <button
+              type="button"
+              onClick={exportCsv}
+              className="min-h-[40px] px-3 rounded-xl bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="h-3.5 w-3.5" /> Export Logs (CSV)
+            </button>
+          </div>
+        </div>
+      </section>
 
-            {/* Detected Fault Frequencies */}
-            {activeModalLog.faultFrequencies.length > 0 && (
-              <div className="space-y-3">
-                <h3 className="text-xs font-bold text-white uppercase tracking-wider font-display flex items-center gap-2 print:text-black">
-                  <AlertTriangle className="w-4 h-4 text-amber-400" />
-                  Dominant Fault Frequencies & Spectral Peaks
-                </h3>
+      {/* Smart feed */}
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl overflow-visible">
+        <div className="p-3 border-b border-slate-800">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-bold text-white px-1">Smart Log Feed</p>
+            <p className="text-[11px] text-slate-500">
+              {incidents.length} incidents · {filteredEvents.length} events
+            </p>
+          </div>
+        </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {activeModalLog.faultFrequencies.map((ff, i) => (
-                    <div key={i} className="bg-slate-950 p-3.5 rounded-xl border border-slate-850 flex items-center justify-between">
-                      <div className="space-y-0.5">
-                        <span className="text-xs font-bold text-white block">{ff.faultType}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">
-                          Frequency: <strong className="text-cyan-300">{ff.frequencyHz} Hz</strong> | Peak: {ff.peakVal}
+        <div className="max-h-[640px] overflow-y-auto divide-y divide-slate-800/80 rounded-b-2xl border-t border-slate-800">
+          {incidents.length === 0 && (
+            <p className="p-8 text-center text-sm text-slate-500">No logs match your filters.</p>
+          )}
+
+          {incidents.map((inc) => {
+            const isOpen = expanded.has(inc.id);
+            const multi = inc.events.length > 1;
+            return (
+              <div key={inc.id} className="bg-slate-900/40">
+                {/* Incident header */}
+                <button
+                  type="button"
+                  onClick={() => (multi ? toggleExpand(inc.id) : setDetailId(inc.events[0].id))}
+                  className="w-full text-left px-4 py-3 flex items-start gap-3 hover:bg-slate-800/40 transition-colors cursor-pointer"
+                >
+                  <span className="mt-1 text-slate-500">
+                    {multi ? (
+                      isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />
+                    ) : (
+                      <FileText className="h-4 w-4 text-slate-600" />
+                    )}
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-bold text-white">
+                        Incident #{inc.number}: {inc.title}
+                      </span>
+                      {multi && (
+                        <span className="inline-flex px-2 py-0.5 rounded-md border border-violet-500/30 bg-violet-500/10 text-violet-200 text-[10px] font-bold">
+                          {inc.events.length} related alerts
                         </span>
-                      </div>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        ff.severity === "Severe" ? "bg-red-500/20 text-red-300 border border-red-500/40" : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                      }`}>
-                        {ff.severity}
+                      )}
+                      <span className={`inline-flex px-2 py-0.5 rounded-md border text-[10px] font-bold ${statusBadge(inc.status)}`}>
+                        {inc.status}
+                      </span>
+                      <span className={`inline-flex px-2 py-0.5 rounded-md border text-[10px] font-bold ${severityBadge(inc.severity)}`}>
+                        {inc.severity}
                       </span>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Prioritized Recommended Actions */}
-            <div className="space-y-3">
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider font-display flex items-center gap-2 print:text-black">
-                <Wrench className="w-4 h-4 text-emerald-400" />
-                Prioritized Maintenance Action Plan
-              </h3>
-
-              <div className="space-y-2">
-                {activeModalLog.recommendedActions.map((rec, i) => (
-                  <div key={i} className="bg-slate-950 p-3.5 rounded-xl border border-slate-850 flex items-start gap-3">
-                    <span className="px-2 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 font-bold text-[10px] shrink-0 font-mono mt-0.5">
-                      {rec.priority}
-                    </span>
-                    <div className="space-y-0.5 flex-1">
-                      <p className="text-xs font-semibold text-slate-200">{rec.action}</p>
-                      <span className="text-[10px] text-slate-400 font-mono block">Recommended Timeframe: {rec.timeframe}</span>
-                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      {inc.assetTag} · Latest: {inc.events[0]?.timestamp}
+                    </p>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Modal Bottom Bar: Export & Share Actions */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 border-t border-slate-800 print:hidden">
-              <span className="text-[10px] text-slate-400 font-mono">
-                Operator: {activeModalLog.operator}
-              </span>
-
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setShowShareModal(true)}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-750 text-cyan-300 font-bold text-xs rounded-xl transition-all flex items-center gap-2"
-                >
-                  <Share2 className="w-4 h-4" />
-                  <span>Share Report</span>
                 </button>
 
-                <button
-                  onClick={handlePrintPDF}
-                  className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-xl transition-all flex items-center gap-2"
-                >
-                  <Printer className="w-4 h-4" />
-                  <span>Export Report PDF</span>
-                </button>
-              </div>
-            </div>
+                {/* Expanded / single events */}
+                {(isOpen || !multi) && (
+                  <div className={`${multi ? "pl-8 pr-3 pb-3 space-y-2" : "px-3 pb-3"}`}>
+                    {inc.events.map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="relative group rounded-xl border border-slate-800 bg-slate-950/50 p-3 hover:border-slate-600 transition-colors"
+                        onMouseEnter={() => startHover(ev.id)}
+                        onMouseLeave={endHover}
+                      >
+                        <div className="flex flex-col lg:flex-row lg:items-start gap-3">
+                          <div className="min-w-[140px] relative z-10">
+                            <p className="text-[11px] font-mono text-slate-400 inline-flex items-center gap-1">
+                              <Clock className="h-3 w-3" /> {ev.timestamp}
+                            </p>
+                            <p className="text-xs font-bold text-white mt-0.5">{ev.assetName}</p>
+                            <p className="text-[10px] font-mono text-amber-300">{ev.assetTag}</p>
+                            {hoverId === ev.id && (
+                              <div className="mt-2 rounded-xl border border-slate-700 bg-slate-800 p-2.5 shadow-2xl min-w-[180px] max-w-[200px]">
+                                <p className="text-[10px] font-bold text-white mb-1.5">Vibration context</p>
+                                <Sparkline data={ev.sparkline} />
+                                <p className="text-[9px] text-slate-400 mt-1 font-mono">mm/s RMS · pre-event</p>
+                              </div>
+                            )}
+                          </div>
 
-          </div>
+                          <div className="flex-1 min-w-0 space-y-1.5">
+                            <div className="flex flex-wrap gap-1.5 items-center">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-slate-700 text-[10px] font-bold text-slate-300">
+                                <SourceIcon source={ev.source} /> {ev.source}
+                              </span>
+                              <span className={`inline-flex px-2 py-0.5 rounded-md border text-[10px] font-bold ${severityBadge(ev.severity)}`}>
+                                {ev.severity}
+                              </span>
+                              <span className={`inline-flex px-2 py-0.5 rounded-md border text-[10px] font-bold ${statusBadge(ev.status)}`}>
+                                {ev.status}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-300 leading-relaxed">{ev.summary}</p>
+                          </div>
+
+                          <div className="flex flex-wrap gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setDetailId(ev.id)}
+                              className="min-h-[32px] px-2.5 rounded-lg border border-amber-400/40 text-amber-200 text-[10px] font-bold cursor-pointer"
+                            >
+                              View Full Report
+                            </button>
+                            {ev.status === "Pending" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  patchEvent(ev.id, {
+                                    status: "Acknowledged",
+                                    acknowledgedBy: "You",
+                                    acknowledgedAt: "Just now"
+                                  });
+                                  toast("Event acknowledged.", "success");
+                                }}
+                                className="min-h-[32px] px-2.5 rounded-lg border border-emerald-500/40 text-emerald-300 text-[10px] font-bold cursor-pointer"
+                              >
+                                Acknowledge
+                              </button>
+                            )}
+                            {!ev.workOrder && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const wo = `WO-${8800 + Math.floor(Math.random() * 90)}`;
+                                  patchEvent(ev.id, {
+                                    workOrder: wo,
+                                    workOrderAt: "Just now",
+                                    status: ev.status === "Pending" ? "In Progress" : ev.status
+                                  });
+                                  toast(`Work order ${wo} created.`, "success");
+                                }}
+                                className="min-h-[32px] px-2.5 rounded-lg border border-slate-600 text-slate-300 text-[10px] font-bold cursor-pointer"
+                              >
+                                Create Work Order
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
+      </section>
+
+      {detail && (
+        <DetailPanel
+          event={detail}
+          onClose={() => setDetailId(null)}
+          onSaveNotes={(notes) => {
+            patchEvent(detail.id, { resolutionNotes: notes });
+            toast("Resolution notes saved.", "success");
+          }}
+          onAck={() => {
+            patchEvent(detail.id, {
+              status: "Acknowledged",
+              acknowledgedBy: "You",
+              acknowledgedAt: "Just now"
+            });
+            toast("Event acknowledged.", "success");
+          }}
+          onCreateWo={() => {
+            const wo = `WO-${8800 + Math.floor(Math.random() * 90)}`;
+            patchEvent(detail.id, {
+              workOrder: wo,
+              workOrderAt: "Just now",
+              status: "In Progress"
+            });
+            toast(`Work order ${wo} created.`, "success");
+          }}
+        />
       )}
+      </>
+      ) : null}
+    </div>
+  );
+}
 
-      {/* ==================================================================== */}
-      {/* 6. SHARE REPORT EMAIL MODAL                                          */}
-      {/* ==================================================================== */}
-      {showShareModal && activeModalLog && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 relative">
-            <button
-              onClick={() => setShowShareModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
-            >
-              <XCircle className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-white font-display flex items-center gap-2">
-              <Mail className="w-5 h-5 text-cyan-400" />
-              Email Diagnostic Log Report
-            </h3>
-
-            <p className="text-xs text-slate-400">
-              Dispatch detailed PDF report for <strong className="text-white">{activeModalLog.assetName}</strong> to maintenance team.
-            </p>
-
-            <div className="space-y-2">
-              <label className="text-[10px] font-bold uppercase text-slate-300">Recipient Email</label>
-              <input
-                type="email"
-                value={shareEmail}
-                onChange={(e) => setShareEmail(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl p-3 text-xs focus:border-cyan-400 focus:outline-none"
-                placeholder="maintenance@motormedicpro.com"
-              />
-            </div>
-
-            {shareSuccess && (
-              <div className="p-3 bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 rounded-xl text-xs flex items-center gap-2">
-                <Check className="w-4 h-4 text-emerald-400" />
-                <span>Report successfully dispatched to {shareEmail}!</span>
-              </div>
-            )}
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setShowShareModal(false)}
-                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShareSuccess(true);
-                  setTimeout(() => {
-                    setShareSuccess(false);
-                    setShowShareModal(false);
-                    showToast(`Dispatched diagnostic summary to ${shareEmail}`, "success");
-                  }, 1200);
-                }}
-                className="px-5 py-2 bg-cyan-500 text-slate-950 rounded-xl text-xs font-extrabold flex items-center gap-2"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Send Dispatches</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==================================================================== */}
-      {/* 7. SCHEDULE AUTO DIAGNOSTICS MODAL                                   */}
-      {/* ==================================================================== */}
-      {showScheduleModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 relative">
-            <button
-              onClick={() => setShowScheduleModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-white"
-            >
-              <XCircle className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-base font-bold text-white font-display flex items-center gap-2">
-              <Clock className="w-5 h-5 text-amber-400" />
-              Schedule Automated Diagnostics
-            </h3>
-
-            <p className="text-xs text-slate-400">
-              Configure background automated spectrum polling and AI condition scans for connected plant sensors.
-            </p>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="text-[10px] font-bold uppercase text-slate-300 block mb-1">Polling Interval</label>
-                <select className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl p-2.5 focus:border-amber-400 focus:outline-none">
-                  <option value="1h">Every 1 Hour (High Criticality)</option>
-                  <option value="6h">Every 6 Hours (Standard)</option>
-                  <option value="24h">Daily (24 Hours)</option>
-                  <option value="7d">Weekly Scan</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-[10px] font-bold uppercase text-slate-300 block mb-1">Target Asset Route</label>
-                <select className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl p-2.5 focus:border-amber-400 focus:outline-none">
-                  <option value="all">All Plant Machinery Routes</option>
-                  <option value="line1">Polymer Line 1 Critical Assets</option>
-                  <option value="boilers">Powerhouse Boiler Pumps</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-3">
-              <button
-                onClick={() => setShowScheduleModal(false)}
-                className="px-4 py-2 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowScheduleModal(false);
-                  showToast("✓ Automated diagnostic polling schedule updated", "success");
-                }}
-                className="px-5 py-2 bg-amber-500 text-slate-950 rounded-xl text-xs font-extrabold flex items-center gap-2"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Save Schedule</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+function SummaryCard({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: string;
+  tone?: "red" | "green";
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4 space-y-1">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{label}</p>
+      <p
+        className={`text-2xl font-bold font-mono ${
+          tone === "red" ? "text-red-300" : tone === "green" ? "text-emerald-300" : "text-white"
+        }`}
+      >
+        {value}
+      </p>
     </div>
   );
 }

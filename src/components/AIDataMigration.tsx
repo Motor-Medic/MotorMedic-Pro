@@ -203,7 +203,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
   const unmappedCount = mappings.filter(m => !m.isMapped).length;
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 text-slate-100 font-sans" id="ai-data-migration-wizard">
+    <div className="space-y-6 w-full max-w-full text-slate-100 font-sans" id="ai-data-migration-wizard">
       
       {/* HEADER BANNER */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-2xl backdrop-blur-md">
@@ -213,14 +213,14 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
               <Wand2 className="w-5 h-5 animate-pulse" />
             </div>
             <h1 className="text-xl font-bold text-white tracking-tight font-display flex items-center gap-2">
-              AI Legacy Data Migration
+              Automated Legacy Data Migration
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-purple-950/80 border border-purple-500/30 text-purple-300">
                 Auto-Schema Mapper v2.4
               </span>
             </h1>
           </div>
           <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
-            Import legacy equipment spreadsheets (CSV/Excel) and leverage AI fuzzy schema matching to map old columns directly into MotorMedic Pro structure with real-time validation.
+            Import legacy equipment spreadsheets (CSV/Excel) and leverage automated fuzzy schema matching to map old columns directly into MotorMedic Pro structure with real-time validation.
           </p>
         </div>
 
@@ -241,7 +241,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           {[
             { step: 1, title: "1. File Upload", desc: "CSV/Excel Drag & Drop", icon: Upload },
-            { step: 2, title: "2. AI Column Mapping", desc: "Auto Schema Matcher", icon: Sparkles },
+            { step: 2, title: "2. Automated Column Mapping", desc: "Auto Schema Matcher", icon: Sparkles },
             { step: 3, title: "3. Preview & Validation", desc: "Error Checking & Clean", icon: CheckSquare },
             { step: 4, title: "4. Migration Progress", desc: "Database Import", icon: Database },
           ].map((item) => {
@@ -324,7 +324,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
                   <Sparkles className="w-6 h-6 text-purple-400 animate-pulse" />
                 </div>
                 <div className="space-y-1">
-                  <p className="text-sm font-bold text-white">AI is Analyzing Legacy Schema...</p>
+                  <p className="text-sm font-bold text-white">Analyzing Legacy Schema...</p>
                   <p className="text-xs text-slate-400 font-mono">File: {selectedFileName} ({fileSizeStr})</p>
                   <p className="text-[11px] text-purple-300 animate-pulse">Running semantic column mapping heuristics...</p>
                 </div>
@@ -370,7 +370,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
               <Info className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
               <div>
                 <strong className="text-slate-200 block mb-0.5">Flexible Header Names</strong>
-                <span className="text-slate-400 text-[11px]">No strict naming rules required. Our AI auto-detects column meanings.</span>
+                <span className="text-slate-400 text-[11px]">No strict naming rules required. The system auto-detects column meanings.</span>
               </div>
             </div>
             <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-start gap-2.5">
@@ -401,13 +401,13 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
             <div>
               <h2 className="text-lg font-bold text-white font-display flex items-center gap-2">
-                Step 2: AI Schema Column Mapping
+                Step 2: Automated Schema Column Mapping
                 <span className="px-2.5 py-0.5 rounded-md bg-purple-500/10 border border-purple-500/30 text-purple-300 text-xs font-mono">
                   8 Columns Detected
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Review how AI mapped legacy columns to MotorMedic Pro system fields. Adjust mappings using the dropdowns below.
+                Review how the system mapped legacy columns to MotorMedic Pro system fields. Adjust mappings using the dropdowns below.
               </p>
             </div>
 
@@ -423,7 +423,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
           <div className="space-y-3">
             <div className="hidden md:grid grid-cols-12 gap-4 text-[11px] font-bold uppercase tracking-wider text-slate-400 px-4">
               <div className="col-span-4">Legacy Column Header</div>
-              <div className="col-span-1 text-center">AI Match</div>
+              <div className="col-span-1 text-center">Auto Match</div>
               <div className="col-span-5">MotorMedic Pro Field</div>
               <div className="col-span-2 text-right">Status</div>
             </div>
@@ -542,7 +542,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
               <div className="space-y-1">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-red-400">Validation Errors Found</span>
                 <div className="text-2xl font-extrabold text-red-400 font-mono">{errorCount}</div>
-                <span className="text-[11px] text-red-400/80">Requires correction or AI auto-fix</span>
+                <span className="text-[11px] text-red-400/80">Requires correction or automated auto-fix</span>
               </div>
               <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl">
                 <AlertTriangle className="w-6 h-6 animate-pulse" />
@@ -573,7 +573,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
                 className="px-3.5 py-1.5 bg-purple-500 hover:bg-purple-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-md transition-all flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>AI Auto-Fix {errorCount} Errors</span>
+                <span>Auto-Fix {errorCount} Errors</span>
               </button>
             )}
           </div>
@@ -760,7 +760,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
                   : "bg-purple-500 hover:bg-purple-400 text-slate-950 shadow-lg cursor-pointer"
               }`}
             >
-              <span>{currentStep === 1 ? "Proceed to AI Mapping" : "Proceed to Validation"}</span>
+              <span>{currentStep === 1 ? "Proceed to Mapping" : "Proceed to Validation"}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           )}

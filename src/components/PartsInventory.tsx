@@ -39,7 +39,7 @@ export interface InventoryPart {
 }
 
 export const INITIAL_INVENTORY: InventoryPart[] = [
-  { id: 1, partNumber: "SKF-6205-2RS", description: "SKF 6205-2RS Sealed Ball Bearing", category: "Bearings", manufacturer: "SKF", quantityInStock: 18, unitPrice: 84.5, reorderLevel: 6, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 2, lastUpdated: "2026-07-18" },
+  { id: 1, partNumber: "SKF-NU314-ECP", description: "SKF NU 314 ECP Cylindrical Roller Bearing", category: "Bearings", manufacturer: "SKF", quantityInStock: 6, unitPrice: 312.0, reorderLevel: 2, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 5, lastUpdated: "2026-07-18" },
   { id: 2, partNumber: "ALN-SHIM-KIT", description: "Stainless Alignment Shims Kit, 0.002-0.125 in", category: "Alignment", manufacturer: "Precision Brand", quantityInStock: 9, unitPrice: 142, reorderLevel: 4, supplierName: "Applied Industrial", supplierContact: "sales@applied.com", leadTimeDays: 3, lastUpdated: "2026-07-11" },
   { id: 3, partNumber: "VBD-40-NEO", description: "Neoprene Vibration Damper Mount, 40 mm", category: "Dampers", manufacturer: "Vibrasystems", quantityInStock: 32, unitPrice: 38.75, reorderLevel: 10, supplierName: "Grainger", supplierContact: "1-800-472-4643", leadTimeDays: 1, lastUpdated: "2026-07-21" },
   { id: 4, partNumber: "NBR-3055-SL", description: "Nitrile Shaft Seal 30 x 55 x 7 mm", category: "Seals", manufacturer: "Freudenberg", quantityInStock: 24, unitPrice: 12.4, reorderLevel: 8, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 2, lastUpdated: "2026-06-29" },
@@ -435,7 +435,7 @@ export default function PartsInventoryModal({
                     type="text"
                     value={form.partNumber}
                     onChange={(e) => setField("partNumber", e.target.value)}
-                    placeholder="SKF-6205-2RS"
+                    placeholder="SKF-NU314-ECP"
                     className={`${inputClass} font-mono`}
                   />
                 </Field>

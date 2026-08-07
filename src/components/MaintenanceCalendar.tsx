@@ -1,966 +1,611 @@
-import React, { useMemo, useState } from "react";
-import {
-  Activity, AlertTriangle, ArrowLeft, ArrowRight, Calendar, ChevronDown, Clock,
-  Filter, Plus, Trash2, Wrench, X
-} from "lucide-react";
-import { useToast } from "./Toast";
+import React, { useState } from "react";
+import { Sparkles, Zap } from "lucide-react";
+
+/* ========================================================================== */
+/* Props (unchanged contract for App.tsx)                                     */
+/* ========================================================================== */
 
 interface MaintenanceCalendarProps {
   selectedCompanyId?: number;
+  onNavigateToTrends?: (assetId?: string) => void;
 }
 
-// ===== Date helpers (local time throughout to avoid UTC drift) =====
+const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
 
-const startOfDay = (date: Date) =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate());
+type CalTab = 1 | 2 | 3 | 4;
+type CalView = "month" | "week" | "gantt" | "list";
+type GroupBy = "asset" | "tech";
 
-const toIso = (date: Date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-
-const fromIso = (iso: string) => {
-  const [year, month, day] = iso.split("-").map(Number);
-  return new Date(year, month - 1, day);
-};
-
-const addDays = (date: Date, amount: number) => {
-  const copy = new Date(date);
-  copy.setDate(copy.getDate() + amount);
-  return copy;
-};
-
-const addMonths = (date: Date, amount: number) => {
-  const copy = new Date(date);
-  copy.setDate(1);
-  copy.setMonth(copy.getMonth() + amount);
-  return copy;
-};
-
-const startOfWeek = (date: Date) => addDays(startOfDay(date), -date.getDay());
-
-const isSameDay = (a: Date, b: Date) => toIso(a) === toIso(b);
-
-const formatTime = (time: string) => {
-  const [hours, minutes] = time.split(":").map(Number);
-  const period = hours >= 12 ? "PM" : "AM";
-  const display = hours % 12 === 0 ? 12 : hours % 12;
-  return `${display}:${String(minutes).padStart(2, "0")} ${period}`;
-};
-
-const TODAY = startOfDay(new Date());
-const rel = (offset: number) => toIso(addDays(TODAY, offset));
-
-const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-// ===== Domain =====
-
-type EventType = "emergency" | "pm" | "downtime";
-type Priority = "Critical" | "High" | "Medium" | "Low";
-type WorkOrderStatus = "Pending" | "In Progress" | "Completed";
-
-interface CalendarEvent {
-  id: number;
-  title: string;
-  assetName: string;
-  assetType: string;
-  type: EventType;
-  date: string;
-  time: string;
-  technician: string;
-  priority: Priority;
-  status: WorkOrderStatus;
-}
-
-const EVENT_TYPES: Record<EventType, { label: string; block: string; dot: string }> = {
-  emergency: {
-    label: "Emergency Work Order",
-    block: "bg-red-500/15 border-red-500/40 text-red-300 hover:bg-red-500/25",
-    dot: "bg-red-500"
-  },
-  pm: {
-    label: "Preventative Maintenance",
-    block: "bg-yellow-400/15 border-yellow-400/40 text-yellow-200 hover:bg-yellow-400/25",
-    dot: "bg-yellow-400"
-  },
-  downtime: {
-    label: "Scheduled Downtime",
-    block: "bg-blue-500/15 border-blue-500/40 text-blue-300 hover:bg-blue-500/25",
-    dot: "bg-blue-500"
-  }
-};
-
-const PRIORITY_BADGES: Record<Priority, string> = {
-  Critical: "bg-red-500/10 text-red-400 border-red-500/25",
-  High: "bg-orange-500/10 text-orange-400 border-orange-500/25",
-  Medium: "bg-yellow-400/10 text-yellow-400 border-yellow-400/25",
-  Low: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
-};
-
-const STATUS_BADGES: Record<WorkOrderStatus, string> = {
-  Pending: "bg-slate-700/20 text-slate-400 border-slate-700",
-  "In Progress": "bg-yellow-400/10 text-yellow-400 border-yellow-400/25",
-  Completed: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
-};
-
-const TECHNICIANS = ["M. Delgado", "R. Chen", "T. Okafor", "J. Whitfield", "S. Barrett"];
-const ASSET_TYPES = ["Pump", "Motor", "Fan", "Compressor", "Gearbox", "Line", "Electrical", "Route"];
-const STATUSES: WorkOrderStatus[] = ["Pending", "In Progress", "Completed"];
-const PRIORITIES: Priority[] = ["Critical", "High", "Medium", "Low"];
-
-// Anchored to the current date so the grid and the 7-day panel are never empty.
-const INITIAL_EVENTS: CalendarEvent[] = [
-  { id: 1, title: "Monthly Vibration Route", assetName: "Plant A — Route 1", assetType: "Route", type: "pm", date: rel(-3), time: "06:00", technician: "M. Delgado", priority: "Medium", status: "Completed" },
-  { id: 2, title: "Pump B Bearing Replacement", assetName: "Boiler Feed Pump B", assetType: "Pump", type: "emergency", date: rel(-1), time: "08:00", technician: "J. Whitfield", priority: "Critical", status: "Completed" },
-  { id: 3, title: "Monthly Vibration Route", assetName: "Plant A — Route 2", assetType: "Route", type: "pm", date: rel(0), time: "07:00", technician: "M. Delgado", priority: "Medium", status: "In Progress" },
-  { id: 4, title: "Gearbox Oil Sample", assetName: "Conveyor Gearbox 3", assetType: "Gearbox", type: "pm", date: rel(0), time: "13:30", technician: "R. Chen", priority: "Low", status: "Pending" },
-  { id: 5, title: "Plant Shutdown — Line 4", assetName: "Production Line 4", assetType: "Line", type: "downtime", date: rel(1), time: "09:00", technician: "S. Barrett", priority: "High", status: "Pending" },
-  { id: 6, title: "Motor Alignment Check", assetName: "Primary Induction Motor", assetType: "Motor", type: "pm", date: rel(2), time: "07:30", technician: "T. Okafor", priority: "Medium", status: "Pending" },
-  { id: 7, title: "Emergency Seal Repair", assetName: "Cooling Water Pump A", assetType: "Pump", type: "emergency", date: rel(3), time: "22:00", technician: "J. Whitfield", priority: "Critical", status: "Pending" },
-  { id: 8, title: "Fan Balance Correction", assetName: "Cooling Tower Fan 4", assetType: "Fan", type: "pm", date: rel(4), time: "08:00", technician: "R. Chen", priority: "Medium", status: "Pending" },
-  { id: 9, title: "Compressor Overhaul Window", assetName: "Screw Compressor RS37i", assetType: "Compressor", type: "downtime", date: rel(5), time: "06:00", technician: "S. Barrett", priority: "High", status: "Pending" },
-  { id: 10, title: "Quarterly Thermography Survey", assetName: "Substation 2", assetType: "Electrical", type: "pm", date: rel(6), time: "10:00", technician: "T. Okafor", priority: "Low", status: "Pending" },
-  { id: 11, title: "Impeller Inspection", assetName: "Boiler Feed Pump B", assetType: "Pump", type: "pm", date: rel(8), time: "14:00", technician: "M. Delgado", priority: "Medium", status: "Pending" },
-  { id: 12, title: "Emergency Coupling Replacement", assetName: "Conveyor Drive 2", assetType: "Motor", type: "emergency", date: rel(11), time: "08:00", technician: "J. Whitfield", priority: "High", status: "Pending" }
+const CAL_TABS: { id: CalTab; label: string }[] = [
+  { id: 1, label: "🗓️ Schedule & Dispatch" },
+  { id: 2, label: "👷 Resource & Skills" },
+  { id: 3, label: "📦 Parts & Downtime" },
+  { id: 4, label: "📋 PM/PdM Templates" }
 ];
 
-const inputClass =
-  "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-yellow-400/60";
-
-const selectClass =
-  "appearance-none bg-slate-950 border border-slate-800 rounded-lg pl-3 pr-8 py-2 text-[11px] font-bold text-slate-200 cursor-pointer focus:outline-none focus:border-yellow-400/60";
-
-type CalendarView = "month" | "week" | "day" | "list";
-
-const VIEWS: { id: CalendarView; label: string }[] = [
+const CAL_VIEWS: { id: CalView; label: string }[] = [
   { id: "month", label: "Month" },
   { id: "week", label: "Week" },
-  { id: "day", label: "Day" },
+  { id: "gantt", label: "Gantt" },
   { id: "list", label: "List" }
 ];
 
-// ===== Schedule modal =====
+interface WorkOrderPeek {
+  id: string;
+  title: string;
+  time: string;
+  tech: string;
+  tools: string;
+  parts: string;
+  vibration: string;
+  assetId: string;
+}
 
-function ScheduleModal({
-  defaultDate,
-  onCreate,
-  onClose
-}: {
-  defaultDate: string;
-  onCreate: (event: Omit<CalendarEvent, "id">) => void;
-  onClose: () => void;
-}) {
-  const { toast } = useToast();
-  const [title, setTitle] = useState("");
-  const [assetName, setAssetName] = useState("");
-  const [assetType, setAssetType] = useState(ASSET_TYPES[0]);
-  const [type, setType] = useState<EventType>("pm");
-  const [date, setDate] = useState(defaultDate);
-  const [time, setTime] = useState("08:00");
-  const [technician, setTechnician] = useState(TECHNICIANS[0]);
-  const [priority, setPriority] = useState<Priority>("Medium");
-  const [status, setStatus] = useState<WorkOrderStatus>("Pending");
+const FEATURED_WO: WorkOrderPeek = {
+  id: "wo-vib-p101a",
+  title: "Boiler Feed Pump A (Vib Route)",
+  time: "8:00 AM",
+  tech: "M. Delgado (Vib LII)",
+  tools: "Accelerometer kit, laser tachometer",
+  parts: "None (inspection route)",
+  vibration: "2.8 mm/s",
+  assetId: "P-101A"
+};
 
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!title.trim() || !assetName.trim()) {
-      toast("Task title and asset name are required.", "error");
-      return;
-    }
-    onCreate({
-      title: title.trim(),
-      assetName: assetName.trim(),
-      assetType,
-      type,
-      date,
-      time,
-      technician,
-      priority,
-      status
-    });
-  };
+const TECHNICIANS = [
+  {
+    name: "M. Delgado",
+    skills: "Vib LII, Laser Align",
+    hours: 36,
+    capacity: 48,
+    pct: 75,
+    bar: "bg-yellow-500",
+    certExpiry: "⚠️ Cert Expires Nov 12"
+  },
+  {
+    name: "J. Chen",
+    skills: "Ultrasound I, Oil Analysis",
+    hours: 22,
+    capacity: 48,
+    pct: 46,
+    bar: "bg-green-500",
+    certExpiry: null as string | null
+  },
+  {
+    name: "R. Okonkwo",
+    skills: "MCA, Thermography II",
+    hours: 44,
+    capacity: 48,
+    pct: 92,
+    bar: "bg-red-500",
+    certExpiry: null as string | null
+  }
+];
+
+const PARTS_ROWS = [
+  {
+    part: "SKF 6214 Bearing",
+    required: 2,
+    inStock: 5,
+    status: "ready" as const,
+    statusLabel: "🟢 Ready"
+  },
+  {
+    part: "Mechanical Seal Plan 53B",
+    required: 1,
+    inStock: 0,
+    status: "awaiting" as const,
+    statusLabel: "🟡 Awaiting Spare Parts"
+  }
+];
+
+const TEMPLATES = [
+  {
+    id: "monthly-vib",
+    title: "Monthly Vibration Route",
+    desc: "ISO 20816 broadband + spectral checkpoints for critical pumps."
+  },
+  {
+    id: "annual-bearing",
+    title: "Annual Bearing Inspection",
+    desc: "DE/NDE housing ΔT, ultrasound gSE, and grease purge verification."
+  },
+  {
+    id: "quarterly-align",
+    title: "Quarterly Laser Alignment",
+    desc: "Coupling soft-foot check and 2X harmonic baseline capture."
+  },
+  {
+    id: "oil-route",
+    title: "Bi-Weekly Oil Sample Route",
+    desc: "Wear metals, PQ index, and ISO cleanliness for gearbox sumps."
+  }
+];
+
+const MONTH_DAYS = Array.from({ length: 35 }, (_, i) => {
+  const day = i - 4; // mock Aug 2026 starting mid-week
+  return day >= 1 && day <= 31 ? day : null;
+});
+
+const tabBtn = (active: boolean) =>
+  `px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+    active
+      ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
+      : "bg-slate-800 border-slate-700 text-slate-400"
+  }`;
+
+export default function MaintenanceCalendar({
+  selectedCompanyId,
+  onNavigateToTrends
+}: MaintenanceCalendarProps) {
+  void selectedCompanyId;
+
+  const [activeCalTab, setActiveCalTab] = useState<CalTab>(1);
+  const [calView, setCalView] = useState<CalView>("month");
+  const [groupBy, setGroupBy] = useState<GroupBy>("asset");
+  const [selectedWO, setSelectedWO] = useState<WorkOrderPeek | null>(null);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <form
-        onSubmit={handleSubmit}
-        className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-lg max-h-[88vh] flex flex-col"
-      >
-        <div className="flex items-start justify-between gap-4 p-5 border-b border-slate-800">
+    <div className="w-full min-h-full bg-slate-950 text-white px-4 py-6 md:px-6">
+      {/* ===== GLOBAL HEADER ===== */}
+      <div className={`${CARD} mb-6`}>
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
           <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-yellow-400" />
-              <span>Schedule Maintenance</span>
-            </h3>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Adds the task to the planner calendar and the upcoming queue.
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+              Maintenance Calendar Engine
             </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close schedule form"
-            className="text-slate-500 hover:text-white transition-colors cursor-pointer shrink-0"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="p-5 overflow-y-auto flex-1 min-h-0 space-y-4">
-          <label className="block space-y-1.5">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-              Task Title<span className="text-yellow-400 ml-0.5">*</span>
-            </span>
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Monthly Vibration Route"
-              className={inputClass}
-            />
-          </label>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Asset Name<span className="text-yellow-400 ml-0.5">*</span>
-              </span>
-              <input
-                type="text"
-                value={assetName}
-                onChange={(e) => setAssetName(e.target.value)}
-                placeholder="Boiler Feed Pump B"
-                className={inputClass}
-              />
-            </label>
-
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Asset Type
-              </span>
-              <div className="relative">
-                <select
-                  value={assetType}
-                  onChange={(e) => setAssetType(e.target.value)}
-                  className={`${inputClass} appearance-none pr-9 cursor-pointer`}
-                >
-                  {ASSET_TYPES.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-                <ChevronDown className="h-3.5 w-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <div className="flex flex-wrap gap-2">
+              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
+                <span className="text-slate-300">WORK ORDERS: 31 Total </span>
+                <span className="text-red-500 font-semibold">(2 Overdue)</span>
               </div>
-            </label>
+              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-green-400 font-semibold">
+                PM RATIO: 80% Goal (Active)
+              </div>
+              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-yellow-500 font-semibold">
+                DOWNTIME COST: $116,300 Est.
+              </div>
+            </div>
           </div>
+          <div className="flex flex-wrap gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => alert("Optimizing schedule with AI constraint solver…")}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-500/40 text-cyan-400 text-xs font-semibold cursor-pointer hover:bg-cyan-500/10 transition-colors"
+            >
+              <Zap className="h-3.5 w-3.5" />
+              Optimize Schedule
+            </button>
+            <button
+              type="button"
+              onClick={() => alert("Opening New Work Order form…")}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold cursor-pointer transition-colors"
+            >
+              + New Work Order
+            </button>
+          </div>
+        </div>
+      </div>
 
-          <label className="block space-y-1.5">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-              Work Type
-            </span>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {(Object.keys(EVENT_TYPES) as EventType[]).map((key) => (
+      {/* ===== SUB-TAB NAV ===== */}
+      <div className="flex flex-wrap gap-2 mb-6">
+        {CAL_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveCalTab(tab.id)}
+            className={tabBtn(activeCalTab === tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ===== TAB 1: SCHEDULE & DISPATCH ===== */}
+      {activeCalTab === 1 && (
+        <>
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-6">
+            <div className="flex flex-wrap gap-2">
+              {CAL_VIEWS.map((view) => (
                 <button
-                  key={key}
+                  key={view.id}
                   type="button"
-                  onClick={() => setType(key)}
-                  className={`flex items-center gap-1.5 px-2.5 py-2 rounded-lg border text-[11px] font-bold cursor-pointer transition-colors ${
-                    type === key
-                      ? EVENT_TYPES[key].block
-                      : "bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300"
-                  }`}
+                  onClick={() => setCalView(view.id)}
+                  className={tabBtn(calView === view.id)}
                 >
-                  <span className={`h-2 w-2 rounded-full shrink-0 ${EVENT_TYPES[key].dot}`} />
-                  <span className="truncate">{EVENT_TYPES[key].label}</span>
+                  {view.label}
                 </button>
               ))}
             </div>
-          </label>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Date
-              </span>
-              <input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className={`${inputClass} font-mono`}
-              />
-            </label>
-
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Start Time
-              </span>
-              <input
-                type="time"
-                value={time}
-                onChange={(e) => setTime(e.target.value)}
-                className={`${inputClass} font-mono`}
-              />
-            </label>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Technician
-              </span>
-              <div className="relative">
-                <select
-                  value={technician}
-                  onChange={(e) => setTechnician(e.target.value)}
-                  className={`${inputClass} appearance-none pr-9 cursor-pointer`}
-                >
-                  {TECHNICIANS.map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
-                <ChevronDown className="h-3.5 w-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
-            </label>
-
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Priority
-              </span>
-              <div className="relative">
-                <select
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value as Priority)}
-                  className={`${inputClass} appearance-none pr-9 cursor-pointer`}
-                >
-                  {PRIORITIES.map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                </select>
-                <ChevronDown className="h-3.5 w-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
-            </label>
-
-            <label className="block space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-                Status
-              </span>
-              <div className="relative">
-                <select
-                  value={status}
-                  onChange={(e) => setStatus(e.target.value as WorkOrderStatus)}
-                  className={`${inputClass} appearance-none pr-9 cursor-pointer`}
-                >
-                  {STATUSES.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-                <ChevronDown className="h-3.5 w-3.5 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
-            </label>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 p-5 border-t border-slate-800">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-3 py-2 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white text-xs font-bold rounded-lg cursor-pointer transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className="flex items-center gap-1.5 px-4 py-2 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-xs font-bold rounded-lg cursor-pointer transition-colors"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>Schedule Task</span>
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-// ===== Event block =====
-
-function EventBlock({ event, onRemove }: { event: CalendarEvent; onRemove?: () => void }) {
-  return (
-    <div
-      className={`group w-full text-left rounded-md border px-1.5 py-1 transition-colors ${EVENT_TYPES[event.type].block}`}
-      title={`${formatTime(event.time)} · ${event.title} · ${event.assetName}`}
-    >
-      <div className="flex items-start gap-1">
-        <span className="flex-1 min-w-0">
-          <span className="block text-[9px] font-bold font-mono opacity-80">
-            {formatTime(event.time)}
-          </span>
-          <span className="block text-[10px] font-bold leading-tight truncate">
-            {event.title}
-          </span>
-        </span>
-        {onRemove && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemove();
-            }}
-            aria-label={`Remove ${event.title}`}
-            className="opacity-0 group-hover:opacity-100 transition-opacity text-current hover:text-red-400 shrink-0"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ===== Page =====
-
-export default function MaintenanceCalendar({ selectedCompanyId }: MaintenanceCalendarProps) {
-  const { toast } = useToast();
-  const [events, setEvents] = useState<CalendarEvent[]>(INITIAL_EVENTS);
-  const [view, setView] = useState<CalendarView>("month");
-  const [cursor, setCursor] = useState<Date>(TODAY);
-  const [technicianFilter, setTechnicianFilter] = useState("all");
-  const [assetTypeFilter, setAssetTypeFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [showModal, setShowModal] = useState(false);
-
-  const filteredEvents = useMemo(
-    () =>
-      events.filter((event) => {
-        if (technicianFilter !== "all" && event.technician !== technicianFilter) return false;
-        if (assetTypeFilter !== "all" && event.assetType !== assetTypeFilter) return false;
-        if (statusFilter !== "all" && event.status !== statusFilter) return false;
-        return true;
-      }),
-    [events, technicianFilter, assetTypeFilter, statusFilter]
-  );
-
-  const eventsByDate = useMemo(() => {
-    const map = new Map<string, CalendarEvent[]>();
-    filteredEvents.forEach((event) => {
-      const list = map.get(event.date) ?? [];
-      list.push(event);
-      map.set(event.date, list);
-    });
-    map.forEach((list) => list.sort((a, b) => a.time.localeCompare(b.time)));
-    return map;
-  }, [filteredEvents]);
-
-  const monthCells = useMemo(() => {
-    const firstOfMonth = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
-    const gridStart = startOfWeek(firstOfMonth);
-    return Array.from({ length: 42 }, (_, i) => addDays(gridStart, i));
-  }, [cursor]);
-
-  const weekCells = useMemo(() => {
-    const start = startOfWeek(cursor);
-    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  }, [cursor]);
-
-  const monthEvents = useMemo(
-    () =>
-      filteredEvents
-        .filter((event) => {
-          const date = fromIso(event.date);
-          return (
-            date.getFullYear() === cursor.getFullYear() && date.getMonth() === cursor.getMonth()
-          );
-        })
-        .sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`)),
-    [filteredEvents, cursor]
-  );
-
-  const upcoming = useMemo(() => {
-    const horizon = toIso(addDays(TODAY, 7));
-    const todayIso = toIso(TODAY);
-    return filteredEvents
-      .filter((event) => event.date >= todayIso && event.date <= horizon)
-      .sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`));
-  }, [filteredEvents]);
-
-  const filtersActive =
-    technicianFilter !== "all" || assetTypeFilter !== "all" || statusFilter !== "all";
-
-  // --- Navigation steps by the unit the active view represents ---
-  const shift = (direction: 1 | -1) => {
-    if (view === "month" || view === "list") setCursor((prev) => addMonths(prev, direction));
-    else if (view === "week") setCursor((prev) => addDays(prev, 7 * direction));
-    else setCursor((prev) => addDays(prev, direction));
-  };
-
-  const headingLabel = useMemo(() => {
-    if (view === "day") {
-      return cursor.toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "short",
-        day: "numeric",
-        year: "numeric"
-      });
-    }
-    if (view === "week") {
-      const start = startOfWeek(cursor);
-      const end = addDays(start, 6);
-      const startLabel = start.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      const endLabel = end.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric"
-      });
-      return `${startLabel} – ${endLabel}`;
-    }
-    return cursor.toLocaleDateString("en-US", { month: "long", year: "numeric" });
-  }, [cursor, view]);
-
-  const removeEvent = (id: number) => setEvents((prev) => prev.filter((e) => e.id !== id));
-
-  const createEvent = (draft: Omit<CalendarEvent, "id">) => {
-    const nextId = events.reduce((max, e) => Math.max(max, e.id), 0) + 1;
-    setEvents((prev) => [...prev, { ...draft, id: nextId }]);
-    setCursor(fromIso(draft.date));
-    setShowModal(false);
-    toast(`${draft.title} scheduled for ${fromIso(draft.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}.`, "success");
-  };
-
-  const openDay = (date: Date) => {
-    setCursor(date);
-    setView("day");
-  };
-
-  const renderDayCell = (date: Date, options: { compact: boolean }) => {
-    const iso = toIso(date);
-    const dayEvents = eventsByDate.get(iso) ?? [];
-    const inCurrentMonth = date.getMonth() === cursor.getMonth();
-    const isToday = isSameDay(date, TODAY);
-    const visible = options.compact ? dayEvents.slice(0, 3) : dayEvents;
-
-    return (
-      <div
-        key={iso}
-        onClick={() => openDay(date)}
-        className={`${options.compact ? "min-h-[104px]" : "min-h-[220px]"} bg-slate-800/40 border rounded-lg p-1.5 space-y-1 cursor-pointer transition-colors hover:border-slate-600 ${
-          isToday ? "border-yellow-400/60" : "border-slate-800"
-        } ${inCurrentMonth || !options.compact ? "" : "opacity-40"}`}
-      >
-        <div className="flex items-center justify-between px-0.5">
-          <span
-            className={`text-[11px] font-bold font-mono ${
-              isToday ? "text-yellow-400" : "text-slate-400"
-            }`}
-          >
-            {date.getDate()}
-          </span>
-          {dayEvents.length > 0 && (
-            <span className="text-[9px] font-bold text-slate-500 font-mono">
-              {dayEvents.length}
-            </span>
-          )}
-        </div>
-
-        {visible.map((event) => (
-          <EventBlock key={event.id} event={event} onRemove={() => removeEvent(event.id)} />
-        ))}
-
-        {options.compact && dayEvents.length > visible.length && (
-          <span className="block text-[9px] font-bold text-slate-500 px-0.5">
-            +{dayEvents.length - visible.length} more
-          </span>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="space-y-6">
-
-      {/* ===== Section A: Controls ===== */}
-      <section className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-4 space-y-4">
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-
-          {/* Month navigation */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => shift(-1)}
-              aria-label="Previous period"
-              className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white rounded-lg cursor-pointer transition-colors"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-            </button>
-            <h3 className="text-sm font-bold text-white min-w-[190px] text-center">
-              {headingLabel}
-            </h3>
-            <button
-              type="button"
-              onClick={() => shift(1)}
-              aria-label="Next period"
-              className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white rounded-lg cursor-pointer transition-colors"
-            >
-              <ArrowRight className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setCursor(TODAY)}
-              className="ml-1 px-3 py-2 bg-slate-950 border border-slate-800 hover:border-yellow-400/50 hover:text-yellow-400 text-slate-400 text-[11px] font-bold rounded-lg cursor-pointer transition-colors"
-            >
-              Today
-            </button>
-          </div>
-
-          {/* View toggles */}
-          <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-xl p-1">
-            {VIEWS.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setView(option.id)}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer transition-colors ${
-                  view === option.id
-                    ? "bg-yellow-400 text-slate-950"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setShowModal(true)}
-            className="flex items-center justify-center gap-1.5 px-4 py-2.5 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-xs font-bold rounded-xl cursor-pointer transition-colors shrink-0"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>Schedule Maintenance</span>
-          </button>
-        </div>
-
-        {/* Filters + legend */}
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pt-3 border-t border-slate-800">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-              <Filter className="h-3 w-3 text-yellow-400" />
-              <span>Filters</span>
-            </span>
-
-            <div className="relative">
+            <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+              Group By:
               <select
-                value={technicianFilter}
-                onChange={(e) => setTechnicianFilter(e.target.value)}
-                aria-label="Filter by technician"
-                className={selectClass}
+                value={groupBy}
+                onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+                className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white outline-none focus:border-cyan-500"
               >
-                <option value="all">All Technicians</option>
-                {TECHNICIANS.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
+                <option value="asset">Asset Route</option>
+                <option value="tech">Technician</option>
               </select>
-              <ChevronDown className="h-3 w-3 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
-
-            <div className="relative">
-              <select
-                value={assetTypeFilter}
-                onChange={(e) => setAssetTypeFilter(e.target.value)}
-                aria-label="Filter by asset type"
-                className={selectClass}
-              >
-                <option value="all">All Asset Types</option>
-                {ASSET_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-              <ChevronDown className="h-3 w-3 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
-
-            <div className="relative">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-                aria-label="Filter by work order status"
-                className={selectClass}
-              >
-                <option value="all">All Statuses</option>
-                {STATUSES.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-              <ChevronDown className="h-3 w-3 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
-
-            {filtersActive && (
-              <button
-                type="button"
-                onClick={() => {
-                  setTechnicianFilter("all");
-                  setAssetTypeFilter("all");
-                  setStatusFilter("all");
-                }}
-                className="px-2.5 py-2 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white text-[11px] font-bold rounded-lg cursor-pointer transition-colors"
-              >
-                Clear
-              </button>
-            )}
+            </label>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            {(Object.keys(EVENT_TYPES) as EventType[]).map((key) => (
-              <span key={key} className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-400">
-                <span className={`h-2 w-2 rounded-full ${EVENT_TYPES[key].dot}`} />
-                {EVENT_TYPES[key].label}
-              </span>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ===== Sections B + C ===== */}
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-
-        {/* Section B: Calendar */}
-        <section className="xl:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-4">
-          {view === "month" && (
-            <div className="overflow-x-auto">
-              <div className="min-w-[760px]">
-                <div className="grid grid-cols-7 gap-1.5 mb-1.5">
-                  {WEEKDAYS.map((day) => (
-                    <div
-                      key={day}
-                      className="text-center text-[10px] font-bold text-slate-500 uppercase tracking-widest py-1"
-                    >
-                      {day}
-                    </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-7 gap-1.5">
-                  {monthCells.map((date) => renderDayCell(date, { compact: true }))}
-                </div>
+          {calView === "month" && (
+            <div className={`${CARD} mb-6`}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-base font-bold text-white">August 2026</h3>
+                <p className="text-xs text-slate-400">
+                  Grouped by {groupBy === "asset" ? "Asset Route" : "Technician"}
+                </p>
+              </div>
+              <div className="grid grid-cols-7 gap-1 mb-1">
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+                  <div
+                    key={d}
+                    className="text-center text-[10px] font-bold uppercase tracking-widest text-slate-500 py-2"
+                  >
+                    {d}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {MONTH_DAYS.map((day, idx) => (
+                  <div
+                    key={idx}
+                    className="min-h-[88px] rounded-lg border border-white/10 bg-slate-950/50 p-1.5"
+                  >
+                    {day && (
+                      <>
+                        <p className="text-[10px] text-slate-500 mb-1">{day}</p>
+                        {day === 4 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedWO(FEATURED_WO)}
+                            className="w-full text-left rounded-md border border-red-500/40 bg-red-500/10 p-1.5 cursor-pointer hover:border-cyan-500/50 transition-colors"
+                          >
+                            <p className="text-[10px] font-bold text-white leading-tight">
+                              {FEATURED_WO.time} — {FEATURED_WO.title}
+                            </p>
+                            <span className="inline-flex mt-1 text-[9px] font-bold text-red-400">
+                              🔴 Sensor Triggered
+                            </span>
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
-          {view === "week" && (
-            <div className="overflow-x-auto">
-              <div className="min-w-[760px]">
-                <div className="grid grid-cols-7 gap-1.5 mb-1.5">
-                  {weekCells.map((date) => (
-                    <div key={toIso(date)} className="text-center py-1">
-                      <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                        {WEEKDAYS[date.getDay()]}
-                      </span>
-                      <span
-                        className={`block text-[11px] font-bold font-mono ${
-                          isSameDay(date, TODAY) ? "text-yellow-400" : "text-slate-400"
-                        }`}
-                      >
-                        {date.getDate()}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <div className="grid grid-cols-7 gap-1.5">
-                  {weekCells.map((date) => renderDayCell(date, { compact: false }))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {view === "day" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest flex items-center gap-1.5">
-                  <Clock className="h-4 w-4 text-yellow-400" />
-                  <span>{headingLabel}</span>
-                </h4>
-                <span className="text-[10px] font-bold text-slate-500 font-mono">
-                  {(eventsByDate.get(toIso(cursor)) ?? []).length} scheduled
-                </span>
-              </div>
-
-              {(eventsByDate.get(toIso(cursor)) ?? []).length === 0 ? (
-                <div className="text-center py-12 space-y-2">
-                  <Calendar className="h-8 w-8 text-slate-700 mx-auto" />
-                  <p className="text-xs font-bold text-slate-400">Nothing scheduled</p>
-                  <p className="text-[11px] text-slate-500">
-                    This day is clear for the current filters.
-                  </p>
-                </div>
-              ) : (
-                <ul className="space-y-2">
-                  {(eventsByDate.get(toIso(cursor)) ?? []).map((event) => (
-                    <li
-                      key={event.id}
-                      className="flex flex-col sm:flex-row sm:items-center gap-3 bg-slate-950/40 border border-slate-800 rounded-xl p-3.5"
-                    >
-                      <span className="text-xs font-bold text-yellow-400 font-mono w-24 shrink-0">
-                        {formatTime(event.time)}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={`h-2 w-2 rounded-full shrink-0 ${EVENT_TYPES[event.type].dot}`} />
-                          <span className="text-xs font-bold text-slate-100">{event.title}</span>
-                          <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${PRIORITY_BADGES[event.priority]}`}>
-                            {event.priority}
-                          </span>
-                          <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${STATUS_BADGES[event.status]}`}>
-                            {event.status}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-slate-400 mt-0.5">
-                          {event.assetName} · {event.technician}
-                        </p>
-                      </div>
+          {calView === "week" && (
+            <div className={`${CARD} mb-6`}>
+              <h3 className="text-base font-bold text-white mb-4">Week View</h3>
+              <div className="grid grid-cols-1 md:grid-cols-7 gap-2">
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => (
+                  <div
+                    key={d}
+                    className="rounded-lg border border-white/10 bg-slate-950/50 p-3 min-h-[120px]"
+                  >
+                    <p className="text-[10px] font-bold text-slate-500 mb-2">{d}</p>
+                    {i === 0 && (
                       <button
                         type="button"
-                        onClick={() => removeEvent(event.id)}
-                        aria-label={`Remove ${event.title}`}
-                        className="text-slate-600 hover:text-red-400 transition-colors cursor-pointer shrink-0"
+                        onClick={() => setSelectedWO(FEATURED_WO)}
+                        className="w-full text-left text-[10px] rounded border border-red-500/40 bg-red-500/10 p-2 cursor-pointer"
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        8:00 AM Vib Route
+                        <span className="block text-red-400 mt-1">🔴 Sensor Triggered</span>
                       </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-
-          {view === "list" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest flex items-center gap-1.5">
-                  <Activity className="h-4 w-4 text-yellow-400" />
-                  <span>{headingLabel} Schedule</span>
-                </h4>
-                <span className="text-[10px] font-bold text-slate-500 font-mono">
-                  {monthEvents.length} tasks
-                </span>
+                    )}
+                  </div>
+                ))}
               </div>
-
-              {monthEvents.length === 0 ? (
-                <div className="text-center py-12 space-y-2">
-                  <Calendar className="h-8 w-8 text-slate-700 mx-auto" />
-                  <p className="text-xs font-bold text-slate-400">No tasks this month</p>
-                  <p className="text-[11px] text-slate-500">
-                    Adjust the filters or schedule new maintenance.
-                  </p>
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[720px] border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-800">
-                        {["Date", "Time", "Task", "Asset", "Technician", "Priority", "Status"].map((heading) => (
-                          <th
-                            key={heading}
-                            className="text-left pb-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest"
-                          >
-                            {heading}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {monthEvents.map((event) => (
-                        <tr
-                          key={event.id}
-                          onClick={() => openDay(fromIso(event.date))}
-                          className="border-b border-slate-800/60 last:border-0 hover:bg-slate-950/40 cursor-pointer transition-colors"
-                        >
-                          <td className="py-2.5 pr-3 text-[11px] text-slate-300 font-mono whitespace-nowrap">
-                            {fromIso(event.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                          </td>
-                          <td className="py-2.5 pr-3 text-[11px] text-slate-400 font-mono whitespace-nowrap">
-                            {formatTime(event.time)}
-                          </td>
-                          <td className="py-2.5 pr-3">
-                            <span className="flex items-center gap-1.5">
-                              <span className={`h-2 w-2 rounded-full shrink-0 ${EVENT_TYPES[event.type].dot}`} />
-                              <span className="text-[11px] font-bold text-slate-200">{event.title}</span>
-                            </span>
-                          </td>
-                          <td className="py-2.5 pr-3 text-[11px] text-slate-400">{event.assetName}</td>
-                          <td className="py-2.5 pr-3 text-[11px] text-slate-400 whitespace-nowrap">{event.technician}</td>
-                          <td className="py-2.5 pr-3">
-                            <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold ${PRIORITY_BADGES[event.priority]}`}>
-                              {event.priority}
-                            </span>
-                          </td>
-                          <td className="py-2.5">
-                            <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold whitespace-nowrap ${STATUS_BADGES[event.status]}`}>
-                              {event.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
             </div>
           )}
-        </section>
 
-        {/* Section C: Upcoming */}
-        <aside className="xl:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-5 space-y-4 self-start">
-          <div className="pb-3 border-b border-slate-800">
-            <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest flex items-center gap-1.5">
-              <Clock className="h-4 w-4 text-yellow-400" />
-              <span>Upcoming Tasks</span>
-            </h4>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Next 7 days · {upcoming.length} scheduled
-            </p>
+          {calView === "gantt" && (
+            <div className={`${CARD} mb-6 overflow-x-auto`}>
+              <h3 className="text-base font-bold text-white mb-4">
+                Gantt — by {groupBy === "asset" ? "Asset Route" : "Technician"}
+              </h3>
+              <div className="min-w-[640px] space-y-3">
+                {(groupBy === "asset"
+                  ? ["P-101A Vib Route", "GB-302 Oil Sample", "MCC-12 IR Scan"]
+                  : ["M. Delgado", "J. Chen", "R. Okonkwo"]
+                ).map((row, i) => (
+                  <div key={row} className="flex items-center gap-3">
+                    <p className="w-40 shrink-0 text-xs text-slate-300 truncate">{row}</p>
+                    <div className="flex-1 h-8 rounded bg-slate-950 border border-white/10 relative">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedWO(FEATURED_WO)}
+                        className="absolute top-1 bottom-1 rounded bg-cyan-500/30 border border-cyan-500/50 cursor-pointer hover:bg-cyan-500/40"
+                        style={{ left: `${10 + i * 18}%`, width: "22%" }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {calView === "list" && (
+            <div className={`${CARD} mb-6`}>
+              <h3 className="text-base font-bold text-white mb-4">Work Order List</h3>
+              <div className="w-full overflow-x-auto rounded-lg border border-white/10">
+                <table className="w-full text-sm min-w-[640px]">
+                  <thead>
+                    <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
+                      <th className="px-3 py-2 font-bold">Time</th>
+                      <th className="px-3 py-2 font-bold">Work Order</th>
+                      <th className="px-3 py-2 font-bold">Tech</th>
+                      <th className="px-3 py-2 font-bold">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-white/10">
+                      <td className="px-3 py-2.5 text-slate-300">{FEATURED_WO.time}</td>
+                      <td className="px-3 py-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedWO(FEATURED_WO)}
+                          className="text-white font-medium hover:text-cyan-400 cursor-pointer"
+                        >
+                          {FEATURED_WO.title}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2.5 text-slate-400">{FEATURED_WO.tech}</td>
+                      <td className="px-3 py-2.5 text-red-400 text-xs font-bold">
+                        🔴 Sensor Triggered
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Quick-Peek panel (static, scrolls with page — not fixed) */}
+          {selectedWO && (
+            <div className={`${CARD} mb-6 border-cyan-500/30`}>
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 mb-1">
+                    Quick Peek
+                  </p>
+                  <h3 className="text-base font-bold text-white">
+                    {selectedWO.time} — {selectedWO.title}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedWO(null)}
+                  className="text-slate-400 hover:text-white text-xs cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">
+                    Assigned Tech
+                  </p>
+                  <p className="text-sm text-white">{selectedWO.tech}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">
+                    Required Tools / Parts
+                  </p>
+                  <p className="text-sm text-slate-300">{selectedWO.tools}</p>
+                  <p className="text-xs text-slate-500 mt-1">{selectedWO.parts}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">
+                    Live Sensor Health
+                  </p>
+                  <p className="text-sm text-red-400 font-semibold">
+                    Vibration: {selectedWO.vibration} 🔴
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => onNavigateToTrends?.(selectedWO.assetId)}
+                    className="mt-2 text-xs text-cyan-400 hover:text-cyan-300 cursor-pointer underline"
+                  >
+                    Open Trend Analyzer →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ===== TAB 2: RESOURCE & SKILLS ===== */}
+      {activeCalTab === 2 && (
+        <>
+          <div className={`${CARD} mb-6`}>
+            <h3 className="text-base font-bold text-white mb-4">
+              Technician Workload Heatmap
+            </h3>
+            <div className="space-y-4">
+              {TECHNICIANS.map((tech) => (
+                <div key={tech.name}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-white">
+                        {tech.name}{" "}
+                        <span className="text-slate-400 font-normal">({tech.skills})</span>
+                      </p>
+                      {tech.certExpiry && (
+                        <span className="text-xs text-yellow-500 font-semibold">
+                          {tech.certExpiry}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      {tech.hours}h / {tech.capacity}h Assigned
+                    </p>
+                  </div>
+                  <div className="w-full h-2 bg-slate-800 rounded">
+                    <div
+                      className={`h-2 ${tech.bar} rounded`}
+                      style={{ width: `${tech.pct}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {upcoming.length === 0 ? (
-            <div className="text-center py-8 space-y-2">
-              <AlertTriangle className="h-7 w-7 text-slate-700 mx-auto" />
-              <p className="text-xs font-bold text-slate-400">Nothing upcoming</p>
-              <p className="text-[11px] text-slate-500">No tasks match the current filters.</p>
+          <div className={`${CARD} mb-6`}>
+            <h3 className="text-base font-bold text-white mb-3">Skill-to-WO Lockout</h3>
+            <div className="rounded-lg border border-white/10 bg-slate-950/60 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-white">
+                  WO-4481 — P-101A High-Freq Bearing Diagnostics
+                </p>
+                <p className="text-xs text-slate-400 mt-1">
+                  Attempted assign: R. Okonkwo (MCA / Thermography)
+                </p>
+              </div>
+              <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-slate-300">
+                Status: 🔒 Locked (Requires Vibration LII)
+              </span>
             </div>
-          ) : (
-            <ul className="space-y-2">
-              {upcoming.map((event) => (
-                <li
-                  key={event.id}
-                  onClick={() => openDay(fromIso(event.date))}
-                  className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 space-y-1.5 hover:border-slate-700 cursor-pointer transition-colors"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-bold text-yellow-400 font-mono">
-                      {fromIso(event.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                      {" · "}
-                      {formatTime(event.time)}
-                    </span>
-                    <span className={`h-2 w-2 rounded-full shrink-0 ${EVENT_TYPES[event.type].dot}`} />
-                  </div>
+          </div>
+        </>
+      )}
 
-                  <p className="text-xs font-bold text-slate-100 leading-snug">{event.title}</p>
-                  <p className="text-[11px] text-slate-400 truncate">{event.assetName}</p>
+      {/* ===== TAB 3: PARTS & DOWNTIME ===== */}
+      {activeCalTab === 3 && (
+        <>
+          <div className={`${CARD} mb-6`}>
+            <h3 className="text-base font-bold text-white mb-4">
+              Kitting &amp; Parts Reservation
+            </h3>
+            <div className="w-full overflow-x-auto rounded-lg border border-white/10">
+              <table className="w-full text-sm min-w-[560px]">
+                <thead>
+                  <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
+                    <th className="px-3 py-2 font-bold">Part</th>
+                    <th className="px-3 py-2 font-bold">Required</th>
+                    <th className="px-3 py-2 font-bold">In Stock</th>
+                    <th className="px-3 py-2 font-bold">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {PARTS_ROWS.map((row) => (
+                    <tr key={row.part} className="border-t border-white/10">
+                      <td className="px-3 py-2.5 text-white font-medium">{row.part}</td>
+                      <td className="px-3 py-2.5 text-slate-300">{row.required}</td>
+                      <td className="px-3 py-2.5 text-slate-300">{row.inStock}</td>
+                      <td className="px-3 py-2.5">
+                        <span
+                          className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
+                            row.status === "ready"
+                              ? "bg-green-500/15 border border-green-500/30 text-green-400"
+                              : "bg-yellow-500/15 border border-yellow-500/30 text-yellow-400"
+                          }`}
+                        >
+                          {row.statusLabel}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-                  <div className="flex items-center justify-between gap-2 pt-1">
-                    <span className="text-[10px] text-slate-500 flex items-center gap-1 min-w-0">
-                      <Wrench className="h-3 w-3 shrink-0" />
-                      <span className="truncate">{event.technician}</span>
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded border text-[10px] font-bold shrink-0 ${PRIORITY_BADGES[event.priority]}`}>
-                      {event.priority}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </aside>
-      </div>
+          <div className={`${CARD} mb-6`}>
+            <h3 className="text-base font-bold text-white mb-1">
+              Production Schedule Collision Detector
+            </h3>
+            <p className="text-xs text-slate-400 mb-4">
+              Planned Downtime (61h) overlapping with Production Run
+            </p>
+            <div className="relative h-14 rounded-lg border border-white/10 bg-slate-950 overflow-hidden mb-4">
+              <div
+                className="absolute top-2 bottom-2 left-[8%] w-[55%] rounded bg-blue-500/30 border border-blue-400/40"
+                title="Production Run"
+              />
+              <div
+                className="absolute top-3 bottom-3 left-[35%] w-[40%] rounded bg-yellow-500/40 border border-yellow-400/50"
+                title="Planned Downtime 61h"
+              />
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <span className="text-[10px] font-bold text-yellow-300 bg-slate-950/80 px-2 py-0.5 rounded border border-yellow-500/30">
+                  Collision Zone
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3 text-[10px] text-slate-400 mb-4">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500/60" /> Production Run
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-yellow-500/70" /> Planned Downtime (61h)
+              </span>
+            </div>
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+              <p className="text-sm font-semibold text-yellow-400">
+                Financial Exposure: $14,500 (Planned) + $45,000 (Unplanned Penalty Risk)
+              </p>
+            </div>
+          </div>
+        </>
+      )}
 
-      {showModal && (
-        <ScheduleModal
-          defaultDate={toIso(cursor)}
-          onCreate={createEvent}
-          onClose={() => setShowModal(false)}
-        />
+      {/* ===== TAB 4: PM/PdM TEMPLATE STUDIO ===== */}
+      {activeCalTab === 4 && (
+        <>
+          <div className={`${CARD} mb-6`}>
+            <h3 className="text-base font-bold text-white mb-2">
+              Condition-Based Trigger Rules
+            </h3>
+            <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-4 flex items-start gap-3">
+              <Sparkles className="h-4 w-4 text-cyan-400 shrink-0 mt-0.5" />
+              <p className="text-sm text-slate-200">
+                <span className="font-mono text-cyan-300">
+                  IF gSE &gt; 3.5 OR Bearing Temp &gt; 85°C
+                </span>
+                <span className="text-slate-400"> → </span>
+                <span className="font-semibold text-white">
+                  Auto-generate Priority 1 PdM Work Order
+                </span>
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            {TEMPLATES.map((tpl) => (
+              <div key={tpl.id} className={CARD}>
+                <h4 className="text-base font-bold text-white mb-2">{tpl.title}</h4>
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">{tpl.desc}</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => alert(`Generating work order from template: ${tpl.title}`)}
+                    className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Generate Work Order
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      alert(`Executing immediate route from template: ${tpl.title}`)
+                    }
+                    className="px-3 py-1.5 rounded-lg border border-cyan-500/40 text-cyan-400 text-xs font-semibold cursor-pointer hover:bg-cyan-500/10 transition-colors"
+                  >
+                    ⚡ Execute Immediate Route
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );

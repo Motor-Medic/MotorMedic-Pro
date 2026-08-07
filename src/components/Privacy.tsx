@@ -61,7 +61,7 @@ export default function Privacy({ onBack }: PrivacyProps) {
               We process your industrial data strictly to run predictive diagnostics and maintain reliability reporting workflows:
             </p>
             <ul className="list-disc pl-5 text-slate-400 text-sm space-y-1.5">
-              <li>Computing AI-driven Multi-Agent machinery consensus diagnostics.</li>
+              <li>Computing multi-agent machinery consensus diagnostics.</li>
               <li>Rendering high-fidelity vibration trend charts and plant health dashboards.</li>
               <li>Dispatching critical SMS and email alerts for high-severity bearing failures or LOTO notifications.</li>
               <li>Analyzing technician feedback inputs to optimize the localized diagnostics learning loop.</li>
@@ -88,7 +88,7 @@ export default function Privacy({ onBack }: PrivacyProps) {
               <span className="text-[#10b981]">4.</span> Third-Party Subprocessors & Services
             </h2>
             <p className="text-slate-400">
-              To process payments, host databases, and run AI models safely, we integrate with secure third-party services. We ensure your information is strictly proxied and kept confidential.
+              To process payments, host databases, and run predictive models safely, we integrate with secure third-party services. We ensure your information is strictly proxied and kept confidential.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-slate-300 mt-2">
               <div className="bg-[#0b101d] p-4 rounded-xl border border-slate-800/50">
@@ -96,8 +96,8 @@ export default function Privacy({ onBack }: PrivacyProps) {
                 <p className="text-xs text-slate-400 mt-1">Stripe, Inc. processes recurring subscriptions, credit card verification, and enterprise billing securely under PCI-DSS standards.</p>
               </div>
               <div className="bg-[#0b101d] p-4 rounded-xl border border-slate-800/50">
-                <p className="font-semibold text-white">AI Inference Processing</p>
-                <p className="text-xs text-slate-400 mt-1">Google Gemini API, Groq Cloud, OpenRouter, and DeepSeek process raw machine data proxies. API keys are managed server-side and never exposed to the client.</p>
+                <p className="font-semibold text-white">Diagnostic Inference Processing</p>
+                <p className="text-xs text-slate-400 mt-1">Secure diagnostic inference providers process raw machine data proxies. API keys are managed server-side and never exposed to the client.</p>
               </div>
               <div className="bg-[#0b101d] p-4 rounded-xl border border-slate-800/50">
                 <p className="font-semibold text-white">Cloud Hosting & Database</p>

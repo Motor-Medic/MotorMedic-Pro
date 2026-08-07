@@ -20,6 +20,9 @@ import AnalysisReport from "./components/AnalysisReport";
 import RootCauseAnalysis from "./components/RootCauseAnalysis";
 import MaintenanceCalendar from "./components/MaintenanceCalendar";
 import FMEA from "./components/FMEA";
+import ScrollToTop from "./components/ScrollToTop";
+import AppLink from "./components/AppLink";
+import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigation";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
   Sun, Moon, Sparkles, FileText, Target, Calendar
@@ -65,7 +68,7 @@ export default function App() {
     localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
   }, [selectedCompanyId]);
 
-  const [activeTab, setActiveTab] = useState<"dashboard" | "diagnose" | "history" | "trends" | "sensors" | "assets" | "admin" | "alerts" | "migration" | "analysis" | "rca" | "calendar" | "fmea">("dashboard");
+  const [activeTab, setActiveTab] = useState<AppTab>(() => tabFromPath(window.location.pathname) ?? "dashboard");
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("motormedic_theme") || "dark";
   });
@@ -91,7 +94,13 @@ export default function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentPath(window.location.pathname);
+      const path = window.location.pathname;
+      setCurrentPath(path);
+      const tab = tabFromPath(path);
+      if (tab) {
+        setActiveTab(tab);
+        setSelectedReport(null);
+      }
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -126,6 +135,7 @@ export default function App() {
     technologyType: string | null;
     collectionPointId?: number | string | null;
   } | null>(null);
+  const [trendsAssetId, setTrendsAssetId] = useState<string | undefined>(undefined);
 
   const handleStartDiagnosis = (
     plantId: number | null, 
@@ -136,7 +146,7 @@ export default function App() {
     collectionPointId?: number | string | null
   ) => {
     setTargetContext({ plantId, routeId, assetId, componentId, technologyType, collectionPointId });
-    setActiveTab("diagnose");
+    navigateToTab("diagnose");
   };
 
   useEffect(() => {
@@ -154,8 +164,8 @@ export default function App() {
     
     // Clear states
     setUser(null);
-    setActiveTab("dashboard");
     setSelectedReport(null);
+    setActiveTab("dashboard");
 
     // Replace history entries and reload to guarantee "Back" button blocks access
     window.history.pushState(null, "", window.location.origin);
@@ -199,7 +209,7 @@ export default function App() {
   const handleOnboardingComplete = () => {
     localStorage.setItem("motor_medic_onboarding_skipped", "false");
     setShowOnboarding(false);
-    setActiveTab("dashboard");
+    navigateToTab("dashboard");
     // Trigger any reload or custom events needed to refresh components
     window.location.reload();
   };
@@ -737,53 +747,80 @@ export default function App() {
 
   const systemHealth = calculateSystemHealth();
 
+  // Navigation identity for scroll-to-top (SPA uses tab state, not Next.js routes)
+  const scrollRouteKey = [
+    currentPath,
+    showLegalDoc ?? "",
+    user ? activeTab : "logged-out",
+    selectedReport?.id ?? ""
+  ].join("|");
+
   if (currentPath === "/terms") {
     return (
-      <Terms
-        onBack={() => {
-          window.history.pushState(null, "", "/");
-          setCurrentPath("/");
-        }}
-      />
+      <>
+        <ScrollToTop routeKey={scrollRouteKey} />
+        <Terms
+          onBack={() => {
+            window.history.pushState(null, "", "/");
+            setCurrentPath("/");
+          }}
+        />
+      </>
     );
   }
 
   if (currentPath === "/privacy") {
     return (
-      <Privacy
-        onBack={() => {
-          window.history.pushState(null, "", "/");
-          setCurrentPath("/");
-        }}
-      />
+      <>
+        <ScrollToTop routeKey={scrollRouteKey} />
+        <Privacy
+          onBack={() => {
+            window.history.pushState(null, "", "/");
+            setCurrentPath("/");
+          }}
+        />
+      </>
     );
   }
 
   if (showLegalDoc) {
-    return showLegalDoc === "terms" ? (
-      <Terms onBack={() => setShowLegalDoc(null)} />
-    ) : (
-      <Privacy onBack={() => setShowLegalDoc(null)} />
+    return (
+      <>
+        <ScrollToTop routeKey={scrollRouteKey} />
+        {showLegalDoc === "terms" ? (
+          <Terms onBack={() => setShowLegalDoc(null)} />
+        ) : (
+          <Privacy onBack={() => setShowLegalDoc(null)} />
+        )}
+      </>
     );
   }
 
   if (!user) {
-    return <Login onLoginSuccess={(u) => setUser(u)} onShowLegal={(tab) => setShowLegalDoc(tab)} />;
+    return (
+      <>
+        <ScrollToTop routeKey={scrollRouteKey} />
+        <Login onLoginSuccess={(u) => setUser(u)} onShowLegal={(tab) => setShowLegalDoc(tab)} />
+      </>
+    );
   }
 
   return (
-    <div className={`min-h-screen flex flex-col transition-colors duration-200 ${
+    <div
+      className={`min-h-screen w-full flex flex-col transition-colors duration-200 ${
       theme === "dark" ? "bg-[#080c14] text-slate-100" : "bg-slate-50 text-slate-900"
-    }`}>
+    }`}
+    >
+      <ScrollToTop routeKey={scrollRouteKey} />
       {/* Dynamic Background Noise/Glow effect */}
       <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-yellow-500/5 rounded-full filter blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-cyan-500/5 rounded-full filter blur-[120px] pointer-events-none"></div>
 
-      {/* Sticky Header */}
-      <header className={`sticky top-0 z-40 backdrop-blur-md border-b px-4 sm:px-6 py-4 transition-colors duration-200 ${
+      {/* Top Header — sticky chrome; page body scrolls beneath */}
+      <header className={`sticky top-0 shrink-0 z-40 backdrop-blur-md border-b px-4 sm:px-6 lg:px-8 py-4 transition-colors duration-200 ${
         theme === "dark" ? "bg-[#0c1220]/95 border-slate-800/80" : "bg-white/95 border-slate-200"
       }`}>
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+        <div className="w-full max-w-full flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             {/* Hamburger Menu Button */}
             <button
@@ -932,223 +969,207 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Container */}
-      <div className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 flex flex-col lg:flex-row gap-6 relative z-10">
-        {/* Desktop Sidebar Navigation (Column width 2.5/12) */}
-        <nav className="hidden lg:block lg:w-56 shrink-0 space-y-2">
-          <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-3 pb-1">Primary Modules</p>
-          <button
-            onClick={() => {
-              setActiveTab("dashboard");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "dashboard" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-          >
-            <Database className="w-4.5 h-4.5" />
-            <span>Health Dashboard</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("assets");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "assets" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-          >
-            <Folder className="w-4.5 h-4.5" />
-            <span>Equipment DB</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("migration");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "migration" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-          >
-            <Sparkles className="w-4.5 h-4.5 text-yellow-400" />
-            <span>AI Data Migration</span>
-          </button>
-
-          {user?.role !== 'mechanic' && (
-            <button
-              onClick={() => {
-                setActiveTab("diagnose");
-                setSelectedReport(null);
-              }}
+      {/* Main Container — sidebar + content scroll together with the page */}
+      <div className="flex w-full max-w-full flex-1 flex-col lg:flex-row relative z-10">
+        {/* Desktop Sidebar Navigation — static flex child (no sticky/overflow trap) */}
+        <nav className={`hidden lg:flex lg:flex-col w-60 xl:w-64 shrink-0 p-4 xl:p-5 border-r ${
+          theme === "dark" ? "bg-[#0a101c]/80 border-slate-800" : "bg-white/80 border-slate-200"
+        }`}>
+          {/* OVERVIEW */}
+          <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-4 px-3">Overview</p>
+          <div className="space-y-1">
+            <AppLink
+              href={TAB_TO_PATH.dashboard}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "diagnose" && !selectedReport
+                activeTab === "dashboard" && !selectedReport
                   ? "bg-yellow-400 text-slate-950 shadow font-bold"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
               }`}
             >
-              <Wrench className="w-4.5 h-4.5" />
-              <span>Run Diagnostics</span>
-            </button>
-          )}
+              <Database className="w-4.5 h-4.5" />
+              <span>Health Dashboard</span>
+            </AppLink>
 
-          {user?.role !== 'mechanic' && (
-            <button
-              onClick={() => {
-                setActiveTab("sensors");
-                setSelectedReport(null);
-              }}
+            <AppLink
+              href={TAB_TO_PATH.assets}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "sensors" && !selectedReport
+                activeTab === "assets" && !selectedReport
                   ? "bg-yellow-400 text-slate-950 shadow font-bold"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
               }`}
             >
-              <Compass className="w-4.5 h-4.5" />
-              <span>Mounting Planner</span>
-            </button>
-          )}
+              <Folder className="w-4.5 h-4.5" />
+              <span>Equipment DB</span>
+            </AppLink>
+          </div>
 
-          {user?.role !== 'mechanic' && (
-            <button
-              onClick={() => {
-                setActiveTab("trends");
-                setSelectedReport(null);
-              }}
+          {/* MONITORING & ANALYTICS */}
+          <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Monitoring & Analytics</p>
+          <div className="space-y-1">
+            {user?.role !== 'mechanic' && (
+              <AppLink
+                href={TAB_TO_PATH.diagnose}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "diagnose" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+              >
+                <Wrench className="w-4.5 h-4.5" />
+                <span>Run Diagnostics</span>
+              </AppLink>
+            )}
+
+            {user?.role !== 'mechanic' && (
+              <AppLink
+                href={TAB_TO_PATH.trends}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "trends" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+              >
+                <LineChart className="w-4.5 h-4.5" />
+                <span>Trend Analyzer</span>
+              </AppLink>
+            )}
+
+            {user?.role !== 'mechanic' && (
+              <AppLink
+                href={TAB_TO_PATH.sensors}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "sensors" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+              >
+                <Compass className="w-4.5 h-4.5" />
+                <span>Mounting Planner</span>
+              </AppLink>
+            )}
+
+            <AppLink
+              href={TAB_TO_PATH.migration}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "trends" && !selectedReport
+                activeTab === "migration" && !selectedReport
                   ? "bg-yellow-400 text-slate-950 shadow font-bold"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
               }`}
             >
-              <LineChart className="w-4.5 h-4.5" />
-              <span>Trend Analyzer</span>
-            </button>
-          )}
+              <Sparkles className="w-4.5 h-4.5 text-yellow-400" />
+              <span>Automated Data Migration</span>
+            </AppLink>
+          </div>
 
-          <button
-            onClick={() => {
-              setActiveTab("analysis");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "analysis" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-            id="sidebar-analysis-btn"
-          >
-            <FileText className="w-4.5 h-4.5" />
-            <span>Analysis Reports</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("rca");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "rca" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-            id="sidebar-rca-btn"
-          >
-            <Target className="w-4.5 h-4.5" />
-            <span>Root Cause Analysis</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("fmea");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "fmea" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-            id="sidebar-fmea-btn"
-          >
-            <ShieldAlert className="w-4.5 h-4.5" />
-            <span>FMEA Analysis</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("calendar");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "calendar" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-            id="sidebar-calendar-btn"
-          >
-            <Calendar className="w-4.5 h-4.5" />
-            <span>Maintenance Calendar</span>
-          </button>
-
-          <button
-            onClick={() => {
-              setActiveTab("history");
-              setSelectedReport(null);
-            }}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-              activeTab === "history" && !selectedReport
-                ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-            }`}
-          >
-            <Clock className="w-4.5 h-4.5" />
-            <span>Diagnosis Logs</span>
-          </button>
-
-          {user?.role !== 'mechanic' && (
-            <button
-              onClick={() => {
-                setActiveTab("admin");
-                setSelectedReport(null);
-              }}
+          {/* RELIABILITY ENGINEERING */}
+          <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Reliability Engineering</p>
+          <div className="space-y-1">
+            <AppLink
+              href={TAB_TO_PATH.analysis}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "admin" && !selectedReport
+                activeTab === "analysis" && !selectedReport
                   ? "bg-yellow-400 text-slate-950 shadow font-bold"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
               }`}
-              id="sidebar-admin-btn"
+              id="sidebar-analysis-btn"
             >
-              <Settings className="w-4.5 h-4.5" />
-              <span>Tenant Settings</span>
-            </button>
-          )}
+              <FileText className="w-4.5 h-4.5" />
+              <span>Analysis Reports</span>
+            </AppLink>
 
-          {user?.role !== 'mechanic' && (
-            <button
-              onClick={() => {
-                setActiveTab("alerts");
-                setSelectedReport(null);
-              }}
+            <AppLink
+              href={TAB_TO_PATH.rca}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "alerts" && !selectedReport
+                activeTab === "rca" && !selectedReport
                   ? "bg-yellow-400 text-slate-950 shadow font-bold"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
               }`}
-              id="sidebar-alerts-btn"
+              id="sidebar-rca-btn"
             >
-              <Bell className="w-4.5 h-4.5" />
-              <span>Alerts Control</span>
-            </button>
+              <Target className="w-4.5 h-4.5" />
+              <span>Root Cause Analysis</span>
+            </AppLink>
+
+            <AppLink
+              href={TAB_TO_PATH.fmea}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "fmea" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-fmea-btn"
+            >
+              <ShieldAlert className="w-4.5 h-4.5" />
+              <span>FMEA Analysis</span>
+            </AppLink>
+          </div>
+
+          {/* OPERATIONS & ALERTS */}
+          <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Operations & Alerts</p>
+          <div className="space-y-1">
+            <AppLink
+              href={TAB_TO_PATH.calendar}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "calendar" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-calendar-btn"
+            >
+              <Calendar className="w-4.5 h-4.5" />
+              <span>Maintenance Calendar</span>
+            </AppLink>
+
+            {user?.role !== 'mechanic' && (
+              <AppLink
+                href={TAB_TO_PATH.alerts}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "alerts" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+                id="sidebar-alerts-btn"
+              >
+                <Bell className="w-4.5 h-4.5" />
+                <span>Alerts Control</span>
+              </AppLink>
+            )}
+
+            <AppLink
+              href={TAB_TO_PATH.history}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "history" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+            >
+              <Clock className="w-4.5 h-4.5" />
+              <span>Diagnosis Logs</span>
+            </AppLink>
+          </div>
+
+          {/* ADMINISTRATION */}
+          {user?.role !== 'mechanic' && (
+            <>
+              <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Administration</p>
+              <div className="space-y-1">
+                <AppLink
+                  href={TAB_TO_PATH.admin}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                    activeTab === "admin" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                  }`}
+                  id="sidebar-admin-btn"
+                >
+                  <Settings className="w-4.5 h-4.5" />
+                  <span>Tenant Settings</span>
+                </AppLink>
+              </div>
+            </>
           )}
 
-          <div className="pt-4 border-t border-slate-900 mt-4 space-y-2">
+          <div className="pt-4 border-t border-slate-900 mt-6 space-y-2">
             <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-3">Legal & Policy</p>
             <div className="flex flex-col gap-1.5 pl-3 text-[11px] text-slate-400">
               <button
@@ -1170,14 +1191,18 @@ export default function App() {
             <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-4 text-xs space-y-2">
               <span className="font-bold text-slate-300">Integrations active:</span>
               <p className="text-[10px] text-slate-400 leading-normal">
-                Standard client-side local cache synchronized with Google Gemini 3.5 structured schemas.
+                Standard client-side local cache synchronized with MotorMedic structured diagnostic schemas.
               </p>
             </div>
           </div>
         </nav>
 
-        {/* Content Panel */}
-        <main className="flex-1 min-w-0 bg-[#0c1220]/55 border border-slate-900/80 rounded-2xl p-4 sm:p-6 shadow-xl relative backdrop-blur-sm">
+        {/* Content Panel — no independent scrollbar; page body scrolls */}
+        <main
+          id="main-scroll-area"
+          className="flex-1 min-w-0 w-full p-4 sm:p-6 lg:p-8 pb-24 lg:pb-8 relative"
+        >
+          <div className="w-full max-w-full min-w-0 bg-[#0c1220]/55 border border-slate-900/80 rounded-2xl p-4 sm:p-6 shadow-xl relative backdrop-blur-sm">
           {selectedReport ? (
             <ReportDetails
               report={selectedReport}
@@ -1188,8 +1213,7 @@ export default function App() {
             <Dashboard
               companyId={selectedCompanyId}
               onNavigate={(tab) => {
-                setActiveTab(tab as any);
-                setSelectedReport(null);
+                navigateToTab(tab as AppTab);
               }}
               onSelectReport={(report) => setSelectedReport(report)}
               onStartQuickAnalysis={() => {
@@ -1201,7 +1225,7 @@ export default function App() {
                   technologyType: null,
                   quickAnalysisMode: true
                 });
-                setActiveTab("diagnose");
+                navigateToTab("diagnose");
               }}
               onAddAsset={() => setShowOnboarding(true)}
             />
@@ -1215,24 +1239,39 @@ export default function App() {
               setSelectedCompanyId={setSelectedCompanyId}
               subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
               onNavigateToMigration={() => {
-                setActiveTab("migration");
-                setSelectedReport(null);
+                navigateToTab("migration");
+              }}
+              onNavigateToTrends={(assetId) => {
+                setTrendsAssetId(assetId);
+                navigateToTab("trends");
               }}
             />
           ) : activeTab === "migration" ? (
             <AIDataMigration 
               selectedCompanyId={selectedCompanyId} 
               onNavigateToAssets={() => {
-                setActiveTab("assets");
-                setSelectedReport(null);
+                navigateToTab("assets");
               }}
             />
           ) : activeTab === "analysis" ? (
-            <AnalysisReport selectedCompanyId={selectedCompanyId} />
+            <AnalysisReport
+              selectedCompanyId={selectedCompanyId}
+              onNavigateToCalendar={(asset) =>
+                navigateToTab("calendar", {
+                  asset: asset || "Boiler Feed Pump A - P-101A"
+                })
+              }
+            />
           ) : activeTab === "rca" ? (
             <RootCauseAnalysis selectedCompanyId={selectedCompanyId} />
           ) : activeTab === "calendar" ? (
-            <MaintenanceCalendar selectedCompanyId={selectedCompanyId} />
+            <MaintenanceCalendar
+              selectedCompanyId={selectedCompanyId}
+              onNavigateToTrends={(assetId) => {
+                if (assetId) setTrendsAssetId(assetId);
+                navigateToTab("trends");
+              }}
+            />
           ) : activeTab === "fmea" ? (
             <FMEA selectedCompanyId={selectedCompanyId} />
           ) : activeTab === "diagnose" ? (
@@ -1243,11 +1282,15 @@ export default function App() {
               onClearTargetContext={() => setTargetContext(null)}
               selectedCompanyId={selectedCompanyId}
               subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
+              onNavigateToCalendar={(asset) =>
+                navigateToTab("calendar", asset ? { asset } : undefined)
+              }
             />
           ) : activeTab === "trends" ? (
             <Trends 
               selectedCompanyId={selectedCompanyId} 
               subscriptionPlan={companies.find(c => c.id === selectedCompanyId)?.subscription_plan || "vibration_only"}
+              selectedAssetId={trendsAssetId}
             />
           ) : activeTab === "admin" ? (
             <AdminPanel
@@ -1267,6 +1310,30 @@ export default function App() {
               onClearHistory={handleClearHistory}
             />
           )}
+          </div>
+
+          {/* Legal Footer — scrolls with main content */}
+          <footer className="w-full py-6 mt-8 border-t border-slate-900 text-center text-slate-500 text-[11px] relative z-20" id="app-legal-footer">
+            <div className="w-full max-w-full flex flex-col sm:flex-row items-center justify-between gap-4">
+              <span className="font-sans">© 2026 MotorMedic Pro. All rights reserved.</span>
+              <div className="flex items-center gap-6">
+                <button
+                  onClick={() => setShowLegalDoc("terms")}
+                  className="hover:text-yellow-400 hover:underline transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
+                  id="footer-terms-btn"
+                >
+                  Terms of Service
+                </button>
+                <button
+                  onClick={() => setShowLegalDoc("privacy")}
+                  className="hover:text-yellow-400 hover:underline transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
+                  id="footer-privacy-btn"
+                >
+                  Privacy Policy
+                </button>
+              </div>
+            </div>
+          </footer>
         </main>
       </div>
 
@@ -1274,8 +1341,7 @@ export default function App() {
       <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-50 bg-[#0c1220]/95 backdrop-blur-md border-t border-slate-800/80 px-2 py-2.5 flex justify-around items-center">
         <button
           onClick={() => {
-            setActiveTab("dashboard");
-            setSelectedReport(null);
+            navigateToTab("dashboard");
           }}
           className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
             activeTab === "dashboard" && !selectedReport ? "text-yellow-400" : "text-slate-400"
@@ -1287,8 +1353,7 @@ export default function App() {
 
         <button
           onClick={() => {
-            setActiveTab("assets");
-            setSelectedReport(null);
+            navigateToTab("assets");
           }}
           className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
             activeTab === "assets" && !selectedReport ? "text-yellow-400" : "text-slate-400"
@@ -1300,8 +1365,7 @@ export default function App() {
 
         <button
           onClick={() => {
-            setActiveTab("diagnose");
-            setSelectedReport(null);
+            navigateToTab("diagnose");
           }}
           className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
             activeTab === "diagnose" && !selectedReport ? "text-yellow-400" : "text-slate-400"
@@ -1313,8 +1377,7 @@ export default function App() {
 
         <button
           onClick={() => {
-            setActiveTab("sensors");
-            setSelectedReport(null);
+            navigateToTab("sensors");
           }}
           className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
             activeTab === "sensors" && !selectedReport ? "text-yellow-400" : "text-slate-400"
@@ -1326,8 +1389,7 @@ export default function App() {
 
         <button
           onClick={() => {
-            setActiveTab("trends");
-            setSelectedReport(null);
+            navigateToTab("trends");
           }}
           className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
             activeTab === "trends" && !selectedReport ? "text-yellow-400" : "text-slate-400"
@@ -1339,8 +1401,7 @@ export default function App() {
 
         <button
           onClick={() => {
-            setActiveTab("history");
-            setSelectedReport(null);
+            navigateToTab("history");
           }}
           className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
             activeTab === "history" && !selectedReport ? "text-yellow-400" : "text-slate-400"
@@ -1350,32 +1411,6 @@ export default function App() {
           <span className="text-[9px]">History</span>
         </button>
       </nav>
-
-      {/* Legal Footer */}
-      <footer className="w-full py-6 mt-auto border-t border-slate-900 bg-[#080c14] text-center text-slate-500 text-[11px] relative z-20" id="app-legal-footer">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <span className="font-sans">© 2026 MotorMedic Pro. All rights reserved.</span>
-          <div className="flex items-center gap-6">
-            <button
-              onClick={() => setShowLegalDoc("terms")}
-              className="hover:text-yellow-400 hover:underline transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
-              id="footer-terms-btn"
-            >
-              Terms of Service
-            </button>
-            <button
-              onClick={() => setShowLegalDoc("privacy")}
-              className="hover:text-yellow-400 hover:underline transition-colors cursor-pointer bg-transparent border-none p-0 outline-none font-sans"
-              id="footer-privacy-btn"
-            >
-              Privacy Policy
-            </button>
-          </div>
-        </div>
-      </footer>
-      
-      {/* Mobile nav spacing */}
-      <div className="h-16 lg:hidden shrink-0"></div>
 
       {/* Responsive Slide-out Drawer Menu (Hamburger) */}
       {isHamburgerOpen && (
@@ -1401,231 +1436,207 @@ export default function App() {
               </button>
             </div>
 
-            <div className="space-y-1.5 flex-1">
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-2 pb-1">Primary Modules</p>
-              
-              <button
-                onClick={() => {
-                  setActiveTab("dashboard");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "dashboard" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-              >
-                <Database className="w-5 h-5 shrink-0" />
-                <span>Health Dashboard</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveTab("assets");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "assets" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-              >
-                <Folder className="w-5 h-5 shrink-0" />
-                <span>Equipment DB</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveTab("migration");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "migration" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-              >
-                <Sparkles className="w-5 h-5 shrink-0 text-yellow-400" />
-                <span>AI Data Migration</span>
-              </button>
-
-              {user?.role !== 'mechanic' && (
-                <button
-                  onClick={() => {
-                    setActiveTab("diagnose");
-                    setSelectedReport(null);
-                    setIsHamburgerOpen(false);
-                  }}
+            <div className="flex-1">
+              <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-0 px-2">Overview</p>
+              <div className="space-y-1.5">
+                <AppLink
+                  href={TAB_TO_PATH.dashboard}
+                  onClick={() => setIsHamburgerOpen(false)}
                   className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "diagnose" && !selectedReport
+                    activeTab === "dashboard" && !selectedReport
                       ? "bg-yellow-400 text-slate-950 shadow font-bold"
                       : "text-slate-300 hover:text-white active:bg-slate-900"
                   }`}
                 >
-                  <Wrench className="w-5 h-5 shrink-0" />
-                  <span>Run Diagnostics</span>
-                </button>
-              )}
+                  <Database className="w-5 h-5 shrink-0" />
+                  <span>Health Dashboard</span>
+                </AppLink>
 
-              {user?.role !== 'mechanic' && (
-                <button
-                  onClick={() => {
-                    setActiveTab("sensors");
-                    setSelectedReport(null);
-                    setIsHamburgerOpen(false);
-                  }}
+                <AppLink
+                  href={TAB_TO_PATH.assets}
+                  onClick={() => setIsHamburgerOpen(false)}
                   className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "sensors" && !selectedReport
+                    activeTab === "assets" && !selectedReport
                       ? "bg-yellow-400 text-slate-950 shadow font-bold"
                       : "text-slate-300 hover:text-white active:bg-slate-900"
                   }`}
                 >
-                  <Compass className="w-5 h-5 shrink-0" />
-                  <span>Mounting Planner</span>
-                </button>
-              )}
+                  <Folder className="w-5 h-5 shrink-0" />
+                  <span>Equipment DB</span>
+                </AppLink>
+              </div>
 
-              {user?.role !== 'mechanic' && (
-                <button
-                  onClick={() => {
-                    setActiveTab("trends");
-                    setSelectedReport(null);
-                    setIsHamburgerOpen(false);
-                  }}
+              <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Monitoring & Analytics</p>
+              <div className="space-y-1.5">
+                {user?.role !== 'mechanic' && (
+                  <AppLink
+                    href={TAB_TO_PATH.diagnose}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "diagnose" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                  >
+                    <Wrench className="w-5 h-5 shrink-0" />
+                    <span>Run Diagnostics</span>
+                  </AppLink>
+                )}
+
+                {user?.role !== 'mechanic' && (
+                  <AppLink
+                    href={TAB_TO_PATH.trends}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "trends" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                  >
+                    <LineChart className="w-5 h-5 shrink-0" />
+                    <span>Trend Analyzer</span>
+                  </AppLink>
+                )}
+
+                {user?.role !== 'mechanic' && (
+                  <AppLink
+                    href={TAB_TO_PATH.sensors}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "sensors" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                  >
+                    <Compass className="w-5 h-5 shrink-0" />
+                    <span>Mounting Planner</span>
+                  </AppLink>
+                )}
+
+                <AppLink
+                  href={TAB_TO_PATH.migration}
+                  onClick={() => setIsHamburgerOpen(false)}
                   className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "trends" && !selectedReport
+                    activeTab === "migration" && !selectedReport
                       ? "bg-yellow-400 text-slate-950 shadow font-bold"
                       : "text-slate-300 hover:text-white active:bg-slate-900"
                   }`}
                 >
-                  <LineChart className="w-5 h-5 shrink-0" />
-                  <span>Trend Analyzer</span>
-                </button>
-              )}
+                  <Sparkles className="w-5 h-5 shrink-0 text-yellow-400" />
+                  <span>Automated Data Migration</span>
+                </AppLink>
+              </div>
 
-              <button
-                onClick={() => {
-                  setActiveTab("analysis");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "analysis" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-                id="drawer-analysis-btn"
-              >
-                <FileText className="w-5 h-5 shrink-0" />
-                <span>Analysis Reports</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveTab("rca");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "rca" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-                id="drawer-rca-btn"
-              >
-                <Target className="w-5 h-5 shrink-0" />
-                <span>Root Cause Analysis</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveTab("fmea");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "fmea" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-                id="drawer-fmea-btn"
-              >
-                <ShieldAlert className="w-5 h-5 shrink-0" />
-                <span>FMEA Analysis</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveTab("calendar");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "calendar" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-                id="drawer-calendar-btn"
-              >
-                <Calendar className="w-5 h-5 shrink-0" />
-                <span>Maintenance Calendar</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setActiveTab("history");
-                  setSelectedReport(null);
-                  setIsHamburgerOpen(false);
-                }}
-                className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                  activeTab === "history" && !selectedReport
-                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                    : "text-slate-300 hover:text-white active:bg-slate-900"
-                }`}
-              >
-                <Clock className="w-5 h-5 shrink-0" />
-                <span>Diagnosis Logs</span>
-              </button>
-
-              {user?.role !== 'mechanic' && (
-                <button
-                  onClick={() => {
-                    setActiveTab("admin");
-                    setSelectedReport(null);
-                    setIsHamburgerOpen(false);
-                  }}
+              <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Reliability Engineering</p>
+              <div className="space-y-1.5">
+                <AppLink
+                  href={TAB_TO_PATH.analysis}
+                  onClick={() => setIsHamburgerOpen(false)}
                   className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "admin" && !selectedReport
+                    activeTab === "analysis" && !selectedReport
                       ? "bg-yellow-400 text-slate-950 shadow font-bold"
                       : "text-slate-300 hover:text-white active:bg-slate-900"
                   }`}
-                  id="drawer-admin-btn"
+                  id="drawer-analysis-btn"
                 >
-                  <Settings className="w-5 h-5 shrink-0" />
-                  <span>Tenant Settings</span>
-                </button>
-              )}
+                  <FileText className="w-5 h-5 shrink-0" />
+                  <span>Analysis Reports</span>
+                </AppLink>
 
-              {user?.role !== 'mechanic' && (
-                <button
-                  onClick={() => {
-                    setActiveTab("alerts");
-                    setSelectedReport(null);
-                    setIsHamburgerOpen(false);
-                  }}
+                <AppLink
+                  href={TAB_TO_PATH.rca}
+                  onClick={() => setIsHamburgerOpen(false)}
                   className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "alerts" && !selectedReport
+                    activeTab === "rca" && !selectedReport
                       ? "bg-yellow-400 text-slate-950 shadow font-bold"
                       : "text-slate-300 hover:text-white active:bg-slate-900"
                   }`}
-                  id="drawer-alerts-btn"
+                  id="drawer-rca-btn"
                 >
-                  <Bell className="w-5 h-5 shrink-0 animate-pulse" />
-                  <span>Alerts Control</span>
-                </button>
+                  <Target className="w-5 h-5 shrink-0" />
+                  <span>Root Cause Analysis</span>
+                </AppLink>
+
+                <AppLink
+                  href={TAB_TO_PATH.fmea}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "fmea" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-fmea-btn"
+                >
+                  <ShieldAlert className="w-5 h-5 shrink-0" />
+                  <span>FMEA Analysis</span>
+                </AppLink>
+              </div>
+
+              <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Operations & Alerts</p>
+              <div className="space-y-1.5">
+                <AppLink
+                  href={TAB_TO_PATH.calendar}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "calendar" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-calendar-btn"
+                >
+                  <Calendar className="w-5 h-5 shrink-0" />
+                  <span>Maintenance Calendar</span>
+                </AppLink>
+
+                {user?.role !== 'mechanic' && (
+                  <AppLink
+                    href={TAB_TO_PATH.alerts}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "alerts" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                    id="drawer-alerts-btn"
+                  >
+                    <Bell className="w-5 h-5 shrink-0 animate-pulse" />
+                    <span>Alerts Control</span>
+                  </AppLink>
+                )}
+
+                <AppLink
+                  href={TAB_TO_PATH.history}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "history" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                >
+                  <Clock className="w-5 h-5 shrink-0" />
+                  <span>Diagnosis Logs</span>
+                </AppLink>
+              </div>
+
+              {user?.role !== 'mechanic' && (
+                <>
+                  <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Administration</p>
+                  <div className="space-y-1.5">
+                    <AppLink
+                      href={TAB_TO_PATH.admin}
+                      onClick={() => setIsHamburgerOpen(false)}
+                      className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                        activeTab === "admin" && !selectedReport
+                          ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                          : "text-slate-300 hover:text-white active:bg-slate-900"
+                      }`}
+                      id="drawer-admin-btn"
+                    >
+                      <Settings className="w-5 h-5 shrink-0" />
+                      <span>Tenant Settings</span>
+                    </AppLink>
+                  </div>
+                </>
               )}
             </div>
 
@@ -1669,7 +1680,7 @@ export default function App() {
         />
       )}
 
-      {/* Custom AI Chatbot */}
+      {/* Support Chatbot */}
       <AIChatbot />
 
     </div>

@@ -47,7 +47,7 @@ export default function ResultsLoadingSkeleton({ progress, message }: ResultsLoa
               </span>
               <h3 className="font-mono font-black text-xs text-white uppercase tracking-widest flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-yellow-400 animate-spin" />
-                AI Category IV Analyst Pipeline Active
+                Category IV Analyst Pipeline Active
               </h3>
             </div>
             <p className="text-[11px] text-slate-400 font-sans">
@@ -74,7 +74,7 @@ export default function ResultsLoadingSkeleton({ progress, message }: ResultsLoa
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <Cpu className={`w-4 h-4 ${s1Completed ? "text-emerald-400" : s1Active ? "text-yellow-400" : "text-slate-500"}`} />
-                <span className="text-[11px] font-mono font-bold text-white">Stage 1: Vision AI Extractor</span>
+                <span className="text-[11px] font-mono font-bold text-white">Stage 1: Vision Feature Extractor</span>
               </div>
               {s1Completed ? (
                 <span className="text-emerald-400 text-xs font-bold font-mono">✅</span>
@@ -85,7 +85,7 @@ export default function ResultsLoadingSkeleton({ progress, message }: ResultsLoa
               )}
             </div>
             <p className="text-[10px] text-slate-400 font-sans mb-3 h-7 leading-relaxed">
-              Step 1: Extracting spectrum features via Vision AI...
+              Step 1: Extracting spectrum features via vision analysis...
             </p>
             <div className="space-y-1">
               <div className="w-full bg-slate-950 h-1.5 rounded-full overflow-hidden border border-slate-850">

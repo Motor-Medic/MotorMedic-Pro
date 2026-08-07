@@ -1,0 +1,1003 @@
+import React, { useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  CheckCircle2,
+  ChevronDown,
+  Info,
+  Power,
+  RotateCcw,
+  Upload
+} from "lucide-react";
+
+type McaAccordionSection = "fingerprint" | "config" | "phase" | "insulation";
+export type McaMode = "static" | "dynamic" | "online";
+type InsulationTestType = "PI" | "DAR";
+type TestConnectionPoint = "terminals" | "mcc";
+
+type PhasePair = "uv" | "vw" | "wu";
+
+type PhaseMetrics = {
+  resistance: string;
+  impedance: string;
+  inductance: string;
+  inductanceMin: string;
+  inductanceMax: string;
+  phaseAngle: string;
+  ifRatio: string;
+};
+
+const WINDING_CONFIGS = ["Wye/Star", "Delta", "Wound Rotor", "Synchronous"] as const;
+
+const RATED_VOLTAGES = ["208V", "480V", "2300V", "4160V", "13.8kV"] as const;
+
+const INSULATION_CLASSES = [
+  "Class A 105°C",
+  "Class B 130°C",
+  "Class F 155°C",
+  "Class H 180°C"
+] as const;
+
+const INSULATION_TYPES = [
+  "Form-Wound (Medium/High Voltage)",
+  "Random-Wound (Low Voltage)"
+] as const;
+
+const NEMA_DESIGNS = ["A", "B", "C", "D"] as const;
+
+const MEGGER_VOLTAGES = ["250V", "500V", "1000V", "2500V", "5000V"] as const;
+
+const PHASE_PAIRS: { id: PhasePair; label: string }[] = [
+  { id: "uv", label: "U–V" },
+  { id: "vw", label: "V–W" },
+  { id: "wu", label: "W–U" }
+];
+
+const MODE_CARDS: {
+  id: McaMode;
+  title: string;
+  hint: string;
+  Icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  {
+    id: "static",
+    title: "De-Energized (Static)",
+    hint: "Standard 3-minute health check",
+    Icon: Power
+  },
+  {
+    id: "dynamic",
+    title: "De-Energized (Dynamic)",
+    hint: "Manually rotating shaft for rotor bar cracks",
+    Icon: RotateCcw
+  },
+  {
+    id: "online",
+    title: "Energized (Online)",
+    hint: "Power quality analysis while running",
+    Icon: Activity
+  }
+];
+
+const emptyPhase = (): PhaseMetrics => ({
+  resistance: "",
+  impedance: "",
+  inductance: "",
+  inductanceMin: "",
+  inductanceMax: "",
+  phaseAngle: "",
+  ifRatio: ""
+});
+
+const fieldLabel = "text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block";
+const inputCls =
+  "bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full";
+const selectCls = `${inputCls} appearance-none cursor-pointer pr-10`;
+const helperCls = "mt-1.5 text-[11px] text-slate-500 leading-snug";
+
+function AccordionShell({
+  id,
+  title,
+  open,
+  onToggle,
+  children
+}: {
+  id: McaAccordionSection;
+  title: string;
+  open: boolean;
+  onToggle: (id: McaAccordionSection) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-slate-900/50 border border-white/10 rounded-xl mb-4 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        className="w-full p-4 flex justify-between items-center cursor-pointer hover:bg-slate-800/50 transition-colors bg-slate-900"
+        aria-expanded={open}
+      >
+        <span className="text-sm font-bold text-white uppercase tracking-wider text-left">
+          {title}
+        </span>
+        <ChevronDown
+          className={`h-5 w-5 text-slate-400 shrink-0 transition-transform duration-300 ${
+            open ? "rotate-180 text-yellow-400" : ""
+          }`}
+        />
+      </button>
+      {open && (
+        <div className="p-6 border-t border-white/5 bg-slate-950/30 space-y-5">{children}</div>
+      )}
+    </div>
+  );
+}
+
+export interface McaInputAccordionsProps {
+  onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
+}
+
+export default function McaInputAccordions({ onToast }: McaInputAccordionsProps) {
+  const [openSections, setOpenSections] = useState<McaAccordionSection[]>([
+    "fingerprint",
+    "config"
+  ]);
+  const [mcaMode, setMcaMode] = useState<McaMode>("static");
+
+  // Section 1 — Fingerprint
+  const [windingConfig, setWindingConfig] = useState<string>("Wye/Star");
+  const [hpKw, setHpKw] = useState("");
+  const [ratedVoltage, setRatedVoltage] = useState<string>("480V");
+  const [fla, setFla] = useState("");
+  const [insulationClass, setInsulationClass] = useState<string>("Class F 155°C");
+  const [insulationType, setInsulationType] = useState<string>(
+    "Random-Wound (Low Voltage)"
+  );
+  const [nemaDesign, setNemaDesign] = useState<string>("B");
+  const [serviceFactor, setServiceFactor] = useState("1.15");
+  const [statorSlots, setStatorSlots] = useState("");
+  const [rotorBars, setRotorBars] = useState("");
+
+  // Section 2 — Config
+  const [tvsBaseline, setTvsBaseline] = useState("");
+  const [windingTemp, setWindingTemp] = useState("");
+  const [ambientTemp, setAmbientTemp] = useState("");
+
+  // Section 3 — Phase-to-phase (offline) / Online PQ
+  const [testConnectionPoint, setTestConnectionPoint] =
+    useState<TestConnectionPoint>("terminals");
+  const [phases, setPhases] = useState<Record<PhasePair, PhaseMetrics>>({
+    uv: emptyPhase(),
+    vw: emptyPhase(),
+    wu: emptyPhase()
+  });
+  const [voltageUnbalance, setVoltageUnbalance] = useState("");
+  const [currentUnbalance, setCurrentUnbalance] = useState("");
+  const [voltageThd, setVoltageThd] = useState("");
+  const [currentThd, setCurrentThd] = useState("");
+  const [powerFactor, setPowerFactor] = useState("");
+
+  // Section 4 — Insulation
+  const [megohms, setMegohms] = useState("");
+  const [capacitanceCg, setCapacitanceCg] = useState("");
+  const [capacitanceUnit, setCapacitanceUnit] = useState<"nF" | "µF">("nF");
+  const [dissipationFactor, setDissipationFactor] = useState("");
+  const [testVoltage, setTestVoltage] = useState<string>("1000V");
+  const [insulationTestType, setInsulationTestType] = useState<InsulationTestType>("PI");
+  const [reading1Min, setReading1Min] = useState("");
+  const [reading10Min, setReading10Min] = useState("");
+  const [reading30s, setReading30s] = useState("");
+  const [reading60s, setReading60s] = useState("");
+  const [uploadName, setUploadName] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const isOnline = mcaMode === "online";
+  const isDynamic = mcaMode === "dynamic";
+
+  const ratedVoltageVolts = useMemo(() => {
+    const raw = ratedVoltage.trim().toLowerCase();
+    if (raw.endsWith("kv")) {
+      const n = parseFloat(raw.replace("kv", ""));
+      return Number.isFinite(n) ? n * 1000 : null;
+    }
+    const n = parseFloat(raw.replace(/[^\d.]/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }, [ratedVoltage]);
+
+  const isLowVoltageMotor =
+    ratedVoltageVolts != null && ratedVoltageVolts < 480;
+
+  const testVoltageVolts = useMemo(() => {
+    const n = parseFloat(testVoltage.replace(/[^\d.]/g, ""));
+    return Number.isFinite(n) ? n : null;
+  }, [testVoltage]);
+
+  const showHighVoltageWarning =
+    isLowVoltageMotor && testVoltageVolts != null && testVoltageVolts > 500;
+
+  const piRatio = useMemo(() => {
+    const one = parseFloat(reading1Min);
+    const ten = parseFloat(reading10Min);
+    if (!Number.isFinite(one) || !Number.isFinite(ten) || one <= 0) return null;
+    return (ten / one).toFixed(2);
+  }, [reading1Min, reading10Min]);
+
+  const darRatio = useMemo(() => {
+    const thirty = parseFloat(reading30s);
+    const sixty = parseFloat(reading60s);
+    if (!Number.isFinite(thirty) || !Number.isFinite(sixty) || thirty <= 0) return null;
+    return (sixty / thirty).toFixed(2);
+  }, [reading30s, reading60s]);
+
+  const toggleSection = (id: McaAccordionSection) => {
+    setOpenSections((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
+    );
+  };
+
+  const updatePhase = (pair: PhasePair, key: keyof PhaseMetrics, value: string) => {
+    setPhases((prev) => ({
+      ...prev,
+      [pair]: { ...prev[pair], [key]: value }
+    }));
+  };
+
+  const handleFile = (file: File) => {
+    const ok =
+      /\.(mca|csv|xlsx?)$/i.test(file.name) ||
+      file.type.includes("csv") ||
+      file.type.includes("sheet");
+    if (!ok) {
+      onToast?.("Upload .mca, .csv, or Excel analyzer export files.", "warning");
+      return;
+    }
+    setUploadName(file.name);
+    onToast?.(`MCA file ready: ${file.name}`, "success");
+  };
+
+  return (
+    <div className="space-y-0">
+      {/* SECTION 1 — Motor Electromagnetic Fingerprint */}
+      <AccordionShell
+        id="fingerprint"
+        title="1. Motor Electromagnetic Fingerprint"
+        open={openSections.includes("fingerprint")}
+        onToggle={toggleSection}
+      >
+        <div>
+          <span className={fieldLabel}>Winding Configuration</span>
+          <div className="flex flex-wrap gap-2">
+            {WINDING_CONFIGS.map((cfg) => (
+              <button
+                key={cfg}
+                type="button"
+                onClick={() => setWindingConfig(cfg)}
+                className={`min-h-[36px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
+                  windingConfig === cfg
+                    ? "bg-yellow-500 text-slate-900 border-yellow-500"
+                    : "bg-slate-950 text-slate-400 border-slate-700 hover:border-yellow-500/50 hover:text-slate-200"
+                }`}
+              >
+                {cfg}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
+            Nameplate Genetics
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Horsepower (HP) / kW</span>
+              <input
+                type="number"
+                value={hpKw}
+                onChange={(e) => setHpKw(e.target.value)}
+                placeholder="e.g. 100"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Rated Voltage</span>
+              <div className="relative">
+                <select
+                  value={ratedVoltage}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setRatedVoltage(next);
+                    const raw = next.trim().toLowerCase();
+                    const volts = raw.endsWith("kv")
+                      ? parseFloat(raw.replace("kv", "")) * 1000
+                      : parseFloat(raw.replace(/[^\d.]/g, ""));
+                    if (Number.isFinite(volts) && volts < 480) {
+                      const tv = parseFloat(testVoltage.replace(/[^\d.]/g, ""));
+                      if (Number.isFinite(tv) && tv > 500) setTestVoltage("500V");
+                    }
+                  }}
+                  className={selectCls}
+                >
+                  {RATED_VOLTAGES.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Full Load Amps (FLA)</span>
+              <input
+                type="number"
+                value={fla}
+                onChange={(e) => setFla(e.target.value)}
+                placeholder="e.g. 124"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Insulation Class</span>
+              <div className="relative">
+                <select
+                  value={insulationClass}
+                  onChange={(e) => setInsulationClass(e.target.value)}
+                  className={selectCls}
+                >
+                  {INSULATION_CLASSES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Insulation Type</span>
+              <div className="relative">
+                <select
+                  value={insulationType}
+                  onChange={(e) => setInsulationType(e.target.value)}
+                  className={selectCls}
+                >
+                  {INSULATION_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+              <p className={helperCls}>
+                Form-wound motors require different degradation tolerances for surge/DF testing.
+              </p>
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>NEMA Design Letter</span>
+              <div className="relative">
+                <select
+                  value={nemaDesign}
+                  onChange={(e) => setNemaDesign(e.target.value)}
+                  className={selectCls}
+                >
+                  {NEMA_DESIGNS.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Service Factor</span>
+              <input
+                type="number"
+                step="0.01"
+                value={serviceFactor}
+                onChange={(e) => setServiceFactor(e.target.value)}
+                placeholder="1.15"
+                className={inputCls}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
+            Rotor / Stator Geometry{" "}
+            <span className="normal-case tracking-normal font-medium text-slate-600">
+              (optional)
+            </span>
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Number of Stator Slots</span>
+              <input
+                type="number"
+                value={statorSlots}
+                onChange={(e) => setStatorSlots(e.target.value)}
+                placeholder="e.g. 48"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Number of Rotor Bars</span>
+              <input
+                type="number"
+                value={rotorBars}
+                onChange={(e) => setRotorBars(e.target.value)}
+                placeholder="e.g. 40"
+                className={inputCls}
+              />
+            </label>
+          </div>
+        </div>
+      </AccordionShell>
+
+      {/* SECTION 2 — Test Configuration & Baseline */}
+      <AccordionShell
+        id="config"
+        title="2. Test Configuration & Baseline"
+        open={openSections.includes("config")}
+        onToggle={toggleSection}
+      >
+        <div>
+          <span className={fieldLabel}>Test Mode</span>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {MODE_CARDS.map(({ id, title, hint, Icon }) => {
+              const active = mcaMode === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setMcaMode(id)}
+                  className={`text-left p-4 rounded-xl border cursor-pointer transition-all min-h-[110px] ${
+                    active
+                      ? "border-yellow-500 bg-yellow-500/10"
+                      : "border-white/10 bg-slate-950/50 hover:border-yellow-500/50"
+                  }`}
+                >
+                  <Icon
+                    className={`h-5 w-5 mb-2 ${active ? "text-yellow-400" : "text-slate-500"}`}
+                  />
+                  <p className={`text-sm font-bold leading-tight ${active ? "text-white" : "text-slate-200"}`}>
+                    {title}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-snug">{hint}</p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="max-w-md space-y-2">
+          <label className="block min-w-0">
+            <span className={fieldLabel}>TVS Baseline Reference</span>
+            <input
+              type="number"
+              step="0.01"
+              value={tvsBaseline}
+              onChange={(e) => setTvsBaseline(e.target.value)}
+              placeholder="e.g. 1.02"
+              className={inputCls}
+            />
+            <p className={helperCls}>
+              Test Value Static — The motor&apos;s &ldquo;birth&rdquo; signature for rapid
+              degradation detection.
+            </p>
+          </label>
+          <span
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
+            title="Copper/aluminum temperature correction applied behind the scenes."
+          >
+            ⚙️ Winding resistance normalized to 40°C; Insulation metrics normalized to 20°C
+            per IEEE 43.
+            <Info className="h-3 w-3 shrink-0 opacity-80" aria-hidden />
+          </span>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
+            Temperature Correction
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Winding Temperature (°C)</span>
+              <input
+                type="number"
+                value={windingTemp}
+                onChange={(e) => setWindingTemp(e.target.value)}
+                placeholder="e.g. 35"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Ambient Temperature (°C)</span>
+              <input
+                type="number"
+                value={ambientTemp}
+                onChange={(e) => setAmbientTemp(e.target.value)}
+                placeholder="e.g. 22"
+                className={inputCls}
+              />
+            </label>
+          </div>
+          <p className={helperCls}>
+            Used to auto-correct Ohms readings to a standard 40°C baseline.
+          </p>
+        </div>
+      </AccordionShell>
+
+      {/* SECTION 3 — Offline phase OR Online PQ (min-height reduces layout jump) */}
+      <AccordionShell
+        id="phase"
+        title={
+          isOnline
+            ? "3. High-Fidelity Data Ingestion (Online Electrical)"
+            : "3. High-Fidelity Data Ingestion (Phase-to-Phase)"
+        }
+        open={openSections.includes("phase")}
+        onToggle={toggleSection}
+      >
+        <div className="min-h-[280px]">
+          {!isOnline ? (
+            <>
+              <div className="mb-4">
+                <span className={fieldLabel}>Test Connection Point</span>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTestConnectionPoint("terminals")}
+                    className={`min-h-[36px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
+                      testConnectionPoint === "terminals"
+                        ? "bg-yellow-500 text-slate-900 border-yellow-500"
+                        : "bg-slate-950 text-slate-400 border-slate-700 hover:border-yellow-500/50"
+                    }`}
+                  >
+                    Motor Terminals (Direct)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTestConnectionPoint("mcc")}
+                    className={`min-h-[36px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
+                      testConnectionPoint === "mcc"
+                        ? "bg-yellow-500 text-slate-900 border-yellow-500"
+                        : "bg-slate-950 text-slate-400 border-slate-700 hover:border-yellow-500/50"
+                    }`}
+                  >
+                    Motor Control Center (MCC) / VFD Output
+                  </button>
+                </div>
+                {testConnectionPoint === "mcc" && (
+                  <div className="mt-2 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2.5 text-xs text-yellow-200/90 leading-snug">
+                    ⚠️ Testing through VFD/cables may mask faults. Cable impedance/capacitance
+                    compensation will be applied.
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <p className="text-[11px] text-slate-500">
+                  4-wire bridge precision · IEEE / NETA phase balance
+                </p>
+                {isDynamic && (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
+                    Dynamic Mode: Continuous waveform capture active
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {PHASE_PAIRS.map(({ id, label }) => (
+                  <div
+                    key={id}
+                    className="rounded-xl border border-white/10 bg-slate-950/60 p-3 space-y-2.5"
+                  >
+                    <p className="text-xs font-bold text-yellow-400 uppercase tracking-wider text-center pb-1 border-b border-white/5">
+                      {label}
+                    </p>
+                    <label className="block min-w-0">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                        Resistance (mΩ)
+                      </span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={phases[id].resistance}
+                        onChange={(e) => updatePhase(id, "resistance", e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                      />
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                        Impedance (Z – Ω)
+                      </span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={phases[id].impedance}
+                        onChange={(e) => updatePhase(id, "impedance", e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                      />
+                    </label>
+                    {isDynamic ? (
+                      <div className="min-w-0">
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className="block min-w-0">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                              Inductance Min (mH)
+                            </span>
+                            <input
+                              type="number"
+                              step="any"
+                              value={phases[id].inductanceMin}
+                              onChange={(e) =>
+                                updatePhase(id, "inductanceMin", e.target.value)
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                            />
+                          </label>
+                          <label className="block min-w-0">
+                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                              Inductance Max (mH)
+                            </span>
+                            <input
+                              type="number"
+                              step="any"
+                              value={phases[id].inductanceMax}
+                              onChange={(e) =>
+                                updatePhase(id, "inductanceMax", e.target.value)
+                              }
+                              className="bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                            />
+                          </label>
+                        </div>
+                        <p className="mt-1.5 text-[10px] text-slate-500 leading-snug">
+                          Captures peak-to-peak inductance variance over 360° rotation for rotor
+                          bar crack detection.
+                        </p>
+                      </div>
+                    ) : (
+                      <label className="block min-w-0">
+                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                          Inductance (L – mH)
+                        </span>
+                        <input
+                          type="number"
+                          step="any"
+                          value={phases[id].inductance}
+                          onChange={(e) => updatePhase(id, "inductance", e.target.value)}
+                          className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                        />
+                      </label>
+                    )}
+                    <label className="block min-w-0">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                        Phase Angle (θ – °)
+                      </span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={phases[id].phaseAngle}
+                        onChange={(e) => updatePhase(id, "phaseAngle", e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                      />
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
+                        I/F Ratio
+                      </span>
+                      <input
+                        type="number"
+                        step="any"
+                        value={phases[id].ifRatio}
+                        onChange={(e) => updatePhase(id, "ifRatio", e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full"
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-2">
+                Online Electrical Parameters
+              </p>
+              <p className={helperCls}>
+                Active power quality analysis. Phase-to-phase bridge measurements are unavailable
+                while energized.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Voltage Unbalance (%)</span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={voltageUnbalance}
+                    onChange={(e) => setVoltageUnbalance(e.target.value)}
+                    className={inputCls}
+                  />
+                </label>
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Current Unbalance (%)</span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={currentUnbalance}
+                    onChange={(e) => setCurrentUnbalance(e.target.value)}
+                    className={inputCls}
+                  />
+                </label>
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Voltage THD (V-THD %)</span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={voltageThd}
+                    onChange={(e) => setVoltageThd(e.target.value)}
+                    className={inputCls}
+                  />
+                </label>
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Current THD (I-THD %)</span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={currentThd}
+                    onChange={(e) => setCurrentThd(e.target.value)}
+                    className={inputCls}
+                  />
+                </label>
+                <label className="block min-w-0">
+                  <span className={fieldLabel}>Power Factor (Cos Φ)</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    max={1}
+                    value={powerFactor}
+                    onChange={(e) => setPowerFactor(e.target.value)}
+                    placeholder="0.85"
+                    className={inputCls}
+                  />
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+      </AccordionShell>
+
+      {/* SECTION 4 — Insulation & Upload */}
+      <AccordionShell
+        id="insulation"
+        title="4. Insulation to Ground & File Upload"
+        open={openSections.includes("insulation")}
+        onToggle={toggleSection}
+      >
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
+            Insulation to Ground (Megger)
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Megohms (MΩ) @ Test Voltage</span>
+              <input
+                type="number"
+                step="any"
+                value={megohms}
+                onChange={(e) => setMegohms(e.target.value)}
+                placeholder="2500"
+                className={inputCls}
+              />
+            </label>
+            <div className="block min-w-0">
+              <span className={fieldLabel}>Capacitance to Ground (Cg)</span>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  step="any"
+                  value={capacitanceCg}
+                  onChange={(e) => setCapacitanceCg(e.target.value)}
+                  placeholder="0.00"
+                  className={inputCls}
+                />
+                <div className="relative w-24 shrink-0">
+                  <select
+                    value={capacitanceUnit}
+                    onChange={(e) => setCapacitanceUnit(e.target.value as "nF" | "µF")}
+                    className={selectCls}
+                  >
+                    <option value="nF">nF</option>
+                    <option value="µF">µF</option>
+                  </select>
+                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+                </div>
+              </div>
+              <p className={helperCls}>
+                Early-stage contamination detection (moisture/carbon dust spikes Cg before IR
+                drops).
+              </p>
+            </div>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Test Voltage Used</span>
+              <div className="relative">
+                <select
+                  value={testVoltage}
+                  onChange={(e) => setTestVoltage(e.target.value)}
+                  className={selectCls}
+                >
+                  {MEGGER_VOLTAGES.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                      {isLowVoltageMotor && parseFloat(v) > 500 ? " (caution)" : ""}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+              {isLowVoltageMotor && !showHighVoltageWarning && (
+                <p className={helperCls}>
+                  Low-voltage motor (&lt;480V) — recommended max test voltage: 500V
+                </p>
+              )}
+              {showHighVoltageWarning && (
+                <p className="mt-1.5 text-[11px] text-red-400 leading-snug font-medium">
+                  ⚠️ High voltage may damage low-voltage windings. Recommended max: 500V.
+                </p>
+              )}
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Dissipation Factor / Power Factor (tan δ)</span>
+              <div className="relative">
+                <input
+                  type="number"
+                  step="any"
+                  value={dissipationFactor}
+                  onChange={(e) => setDissipationFactor(e.target.value)}
+                  placeholder="0.0"
+                  className={`${inputCls} pr-8`}
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">
+                  %
+                </span>
+              </div>
+              <p className={helperCls}>Evaluates insulation voids in high-voltage motors.</p>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
+            Dielectric Absorption / Polarization Index
+          </p>
+          <div className="mb-4">
+            <span className={fieldLabel}>Evaluate Via</span>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setInsulationTestType("PI")}
+                className={`min-h-[36px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
+                  insulationTestType === "PI"
+                    ? "bg-yellow-500 text-slate-900 border-yellow-500"
+                    : "bg-slate-950 text-slate-400 border-slate-700 hover:border-yellow-500/50"
+                }`}
+              >
+                PI Ratio (10m / 1m)
+              </button>
+              <button
+                type="button"
+                onClick={() => setInsulationTestType("DAR")}
+                className={`min-h-[36px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
+                  insulationTestType === "DAR"
+                    ? "bg-yellow-500 text-slate-900 border-yellow-500"
+                    : "bg-slate-950 text-slate-400 border-slate-700 hover:border-yellow-500/50"
+                }`}
+              >
+                DAR Ratio (60s / 30s)
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 min-h-[76px]">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>
+                {insulationTestType === "PI"
+                  ? "1-Minute Reading (MΩ)"
+                  : "30-Second Reading (MΩ)"}
+              </span>
+              <input
+                type="number"
+                step="any"
+                value={insulationTestType === "PI" ? reading1Min : reading30s}
+                onChange={(e) =>
+                  insulationTestType === "PI"
+                    ? setReading1Min(e.target.value)
+                    : setReading30s(e.target.value)
+                }
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>
+                {insulationTestType === "PI"
+                  ? "10-Minute Reading (MΩ)"
+                  : "60-Second Reading (MΩ)"}
+              </span>
+              <input
+                type="number"
+                step="any"
+                value={insulationTestType === "PI" ? reading10Min : reading60s}
+                onChange={(e) =>
+                  insulationTestType === "PI"
+                    ? setReading10Min(e.target.value)
+                    : setReading60s(e.target.value)
+                }
+                className={inputCls}
+              />
+            </label>
+          </div>
+          <div className="mt-3 min-h-[56px] rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 inline-flex items-baseline gap-3">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              {insulationTestType === "PI" ? "PI Ratio" : "DAR Ratio"}
+            </span>
+            <span className="text-xl font-black text-yellow-400 tabular-nums">
+              {insulationTestType === "PI" ? (piRatio ?? "—") : (darRatio ?? "—")}
+            </span>
+            <span className="text-[11px] text-slate-500">
+              {insulationTestType === "PI" ? "10-min ÷ 1-min" : "60s ÷ 30s"}
+            </span>
+          </div>
+        </div>
+
+        <div>
+          <span className={fieldLabel}>Analyzer File Upload</span>
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const file = e.dataTransfer.files?.[0];
+              if (file) handleFile(file);
+            }}
+            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-8 text-center cursor-pointer transition-colors"
+          >
+            <Upload className="h-7 w-7 text-yellow-400 mx-auto mb-2" />
+            <p className="text-sm font-bold text-white">
+              Drop .mca, .csv, or analyzer export here
+            </p>
+            <p className="text-xs text-slate-500 mt-1">
+              Supports: .mca, .csv (Auto-extracts data from ALL-TEST Pro, PdMA, Baker/SKF
+              exports)
+            </p>
+            <p className="text-xs text-cyan-400/90 mt-2 animate-pulse">
+              📄 AI will auto-parse and fill all fields from legacy formats
+            </p>
+            {uploadName && (
+              <p className="mt-2 text-xs text-yellow-300 inline-flex items-center gap-1.5">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                {uploadName}
+              </p>
+            )}
+          </button>
+          <p className={`${helperCls} mt-2`}>
+            To upload from legacy systems (ALL-TEST, PdMA), export your data ledger via the
+            &lsquo;Single Asset CSV/Excel Export&rsquo; wizard inside your instrument software
+            first.
+          </p>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".mca,.csv,text/csv,.xlsx,.xls"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleFile(f);
+            }}
+          />
+        </div>
+      </AccordionShell>
+    </div>
+  );
+}

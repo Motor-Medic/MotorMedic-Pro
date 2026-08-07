@@ -94,7 +94,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                   <p className="text-slate-600 leading-relaxed text-sm">
                     MotorMedic Pro is an advanced, multi-tenant, cloud-based industrial condition monitoring and 
                     predictive maintenance software-as-a-service (SaaS) platform. The Service integrates 
-                    AI-assisted machinery diagnostic tools, vibration signal analysis engines, infrared thermal 
+                    automated machinery diagnostic tools, vibration signal analysis engines, infrared thermal 
                     profile mapping, motor current signature analysis (MCA), and historical trending algorithms. 
                     The Service is designed to assist reliability engineers, maintenance teams, and mechanical 
                     technicians in flagging machine anomalies, identifying failures early, and optimizing maintenance 
@@ -152,7 +152,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     You are **STRICTLY PROHIBITED** from:
                   </p>
                   <ul className="list-disc pl-5 text-slate-600 text-sm space-y-1">
-                    <li>Reverse-engineering, decompiling, or disassembling the proprietary AI debate loop or diagnostics algorithms.</li>
+                    <li>Reverse-engineering, decompiling, or disassembling the proprietary diagnostic debate loop or diagnostics algorithms.</li>
                     <li>Using automated bots, web scrapers, or scripts to flood the API endpoints.</li>
                     <li>Uploading corrupted files, malicious software, or execution vectors intended to disrupt system containers.</li>
                     <li>Using diagnostic data to construct a competing machine learning platform.</li>
@@ -183,7 +183,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                   </h4>
                   <div className="space-y-3 text-amber-900 text-xs leading-relaxed">
                     <p>
-                      <strong>AI Diagnostic Disclaimer:</strong> The artificial intelligence models and multi-agent debate loops 
+                      <strong>Diagnostic Disclaimer:</strong> The predictive models and multi-agent debate loops 
                       integrated within MotorMedic Pro provide engineering suggestions, baseline trends, and probable fault hypotheses. 
                       These suggestions **DO NOT** guarantee mechanical or operational accuracy. The Customer and its certified reliability 
                       personnel bear absolute responsibility for validating any diagnostic findings and supervising physical engineering decisions.
@@ -324,8 +324,8 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                       <p className="text-xs mt-1">Google Cloud Platform (Cloud Run containers) and Neon DB store application files, logs, and datasets.</p>
                     </div>
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                      <p className="font-semibold text-slate-800">AI Inference Processing</p>
-                      <p className="text-xs mt-1">Google Gemini API, Groq Cloud, DeepSeek, and OpenRouter are utilized as secure subprocessors to compute machine diagnostics.</p>
+                      <p className="font-semibold text-slate-800">Diagnostic Inference Processing</p>
+                      <p className="text-xs mt-1">Secure diagnostic inference providers are utilized as subprocessors to compute machine diagnostics.</p>
                     </div>
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
                       <p className="font-semibold text-slate-800">Email & Alert Dispatch</p>

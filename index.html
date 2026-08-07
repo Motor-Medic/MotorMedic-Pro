@@ -7,12 +7,18 @@
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2523d4af37' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-4l-3 9L9 3l-3 9H2'/%3E%3C/svg%3E" />
 
     <style>
-      html, body {
+      html, body, #root {
+        min-height: 100%;
+        margin: 0;
         background-color: #080c14;
+      }
+      body {
+        overflow-x: hidden;
+        overflow-y: auto;
       }
     </style>
   </head>
-  <body>
+  <body class="min-h-screen bg-slate-950 text-white">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

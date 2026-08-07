@@ -193,7 +193,7 @@ export default function WorkOrderGenerator({
   const [description, setDescription] = useState(() => {
     const actions = recommendations.length
       ? recommendations.map((r) => `- [${r.priority}] ${r.text}`).join("\n")
-      : "- No AI recommendations were returned for this analysis.";
+      : "- No automated recommendations were returned for this analysis.";
     return (
       `Vibration analysis of ${assetName} (${tagId}) returned fault code ${faultCode} at ${faultSeverity.toLowerCase()} severity.\n\n` +
       `Recommended actions:\n${actions}\n\n` +
