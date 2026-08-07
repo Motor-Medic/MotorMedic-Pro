@@ -180,7 +180,15 @@ export interface EquipRoute {
   assets: EquipAsset[];
   plantId?: string;
   unitId?: string;
-  collectionFrequency?: "Weekly" | "Monthly" | "Quarterly";
+  collectionFrequency?:
+    | "Daily"
+    | "Weekly"
+    | "Bi-Weekly"
+    | "Monthly"
+    | "Bi-Monthly"
+    | "Quarterly"
+    | "Semi-Annually"
+    | "Annually";
 }
 
 export interface EquipPlant {

@@ -66,9 +66,14 @@ const LEVELS: {
 ];
 
 const FREQUENCIES: NonNullable<EquipRoute["collectionFrequency"]>[] = [
+  "Daily",
   "Weekly",
+  "Bi-Weekly",
   "Monthly",
-  "Quarterly"
+  "Bi-Monthly",
+  "Quarterly",
+  "Semi-Annually",
+  "Annually"
 ];
 
 const MACHINE_TYPES = [
@@ -666,9 +671,7 @@ export default function AddEquipmentModal({
         speedRpm: assetRpm ? Number(assetRpm) || undefined : undefined,
         status: "Normal",
         overallVibration: 1.0,
-        components: expressAsset
-          ? [{ id: uid("comp"), name: "Motor DE", bearingType: undefined }]
-          : []
+        components: []
       };
       store.routes[routeIdx] = {
         ...route,
@@ -1020,8 +1023,8 @@ export default function AddEquipmentModal({
               )}
               {expressAsset && (
                 <p className="text-[11px] text-slate-500">
-                  Express mode saves name, tag, and route — a default Motor DE
-                  component is attached automatically.
+                  Express mode saves name, tag, and route only — add components
+                  afterward from the hierarchy tree.
                 </p>
               )}
             </div>

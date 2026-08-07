@@ -6,11 +6,13 @@ import {
   ImageIcon,
   Loader2,
   Plus,
+  Trash2,
   Upload,
   X
 } from "lucide-react";
 import {
   ensureSitePlantRoot,
+  clearAllData,
   getEquipmentStore,
   loadDemoData,
   saveActiveDbSelection,
@@ -30,6 +32,7 @@ import {
   type EquipUnit,
   type EquipmentStore
 } from "../data/equipmentDb";
+import { useToast } from "./Toast";
 
 /* ========================================================================== */
 /* Types                                                                      */
@@ -127,6 +130,18 @@ const QUICK_ADD_BTN =
 const QUICK_ADD_BTN_ACTIVE =
   "border-amber-400 text-amber-300 bg-amber-950/40 hover:bg-amber-950/50 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap border";
 
+/** Route collection-interval options for the Route create form. */
+const FREQUENCIES: NonNullable<EquipRoute["collectionFrequency"]>[] = [
+  "Daily",
+  "Weekly",
+  "Bi-Weekly",
+  "Monthly",
+  "Bi-Monthly",
+  "Quarterly",
+  "Semi-Annually",
+  "Annually"
+];
+
 /** Ideal parent kinds for each creatable level (plant always allowed via facility bucket). */
 const IDEAL_PARENT: Record<Exclude<ExplorerKind, "plant">, ExplorerKind[]> = {
   unit: ["plant"],
@@ -201,7 +216,7 @@ function fileToLightweightDataUrl(file: File): Promise<string> {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Failed to read file"));
     reader.onload = () => {
-      const img = new Image();
+      const img = new window.Image();
       img.onerror = () => reject(new Error("Failed to decode image"));
       img.onload = () => {
         const maxEdge = 800;
@@ -271,6 +286,76 @@ function patchNodePhoto(
       })
     }))
   };
+}
+
+/**
+ * Cascade-delete a hierarchy node from the persisted store.
+ * Plant / licensed site root cannot be deleted.
+ */
+function deleteNodeFromStore(
+  store: EquipmentStore,
+  nodeId: string,
+  kind: ExplorerKind
+): EquipmentStore {
+  if (kind === "plant" || nodeId === SITE_PLANT_ID) return store;
+
+  if (kind === "unit") {
+    return {
+      ...store,
+      units: store.units.filter((u) => u.id !== nodeId),
+      routes: store.routes.filter((r) => r.unitId !== nodeId)
+    };
+  }
+
+  if (kind === "route") {
+    return {
+      ...store,
+      routes: store.routes.filter((r) => r.id !== nodeId)
+    };
+  }
+
+  if (kind === "asset") {
+    return {
+      ...store,
+      routes: store.routes.map((r) => ({
+        ...r,
+        assets: r.assets.filter((a) => a.id !== nodeId)
+      }))
+    };
+  }
+
+  if (kind === "component") {
+    return {
+      ...store,
+      routes: store.routes.map((r) => ({
+        ...r,
+        assets: r.assets.map((a) => ({
+          ...a,
+          components: a.components.filter((c) => c.id !== nodeId)
+        }))
+      }))
+    };
+  }
+
+  if (kind === "point") {
+    return {
+      ...store,
+      routes: store.routes.map((r) => ({
+        ...r,
+        assets: r.assets.map((a) => ({
+          ...a,
+          components: a.components.map((c) => ({
+            ...c,
+            collectionPoints: (c.collectionPoints ?? []).filter(
+              (p) => p.id !== nodeId
+            )
+          }))
+        }))
+      }))
+    };
+  }
+
+  return store;
 }
 
 function EquipmentPhotoUploader({
@@ -662,10 +747,13 @@ export default function EquipmentExplorer({
 }: {
   userPlantName?: string;
 }) {
+  const { toast } = useToast();
   const facilityName =
     (userPlantName && userPlantName.trim()) || "Main Facility";
 
   const [tick, setTick] = useState(0);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ExplorerNode | null>(null);
   const store = useMemo(() => {
     void tick;
     return ensureSitePlantRoot(facilityName);
@@ -754,6 +842,79 @@ export default function EquipmentExplorer({
     refresh();
     setMode("idle");
     setSelectedNodeId(SITE_PLANT_ID);
+    setExpanded({ [SITE_PLANT_ID]: true });
+    setConfirmResetOpen(false);
+    toast("Demo plant hierarchy loaded.", "success");
+  };
+
+  const handleConfirmReset = () => {
+    clearAllData(facilityName);
+    refresh();
+    setMode("idle");
+    setError("");
+    setParentNodeId(SITE_PLANT_ID);
+    setSelectedNodeId(SITE_PLANT_ID);
+    setExpanded({ [SITE_PLANT_ID]: true });
+    setConfirmResetOpen(false);
+    saveActiveDbSelection({
+      nodeId: SITE_PLANT_ID,
+      kind: "plant",
+      routeName: "",
+      assetTag: "",
+      assetId: "",
+      componentName: "",
+      componentId: "",
+      path: facilityName,
+      updatedAt: Date.now()
+    });
+    toast("Database reset to clean state.", "success");
+  };
+
+  const requestDeleteNode = (node: ExplorerNode) => {
+    if (node.id === SITE_PLANT_ID || node.kind === "plant") return;
+    setDeleteTarget(node);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!deleteTarget) return;
+    if (deleteTarget.id === SITE_PLANT_ID || deleteTarget.kind === "plant") {
+      setDeleteTarget(null);
+      return;
+    }
+    const label = deleteTarget.label;
+    const parentId = deleteTarget.parentId || SITE_PLANT_ID;
+    const next = deleteNodeFromStore(
+      cloneStore(getEquipmentStore()),
+      deleteTarget.id,
+      deleteTarget.kind
+    );
+    // Drop empty facility-direct bucket route if nothing left in it
+    const fac = next.routes.find((r) => r.id === SITE_FACILITY_ROUTE_ID);
+    if (fac) {
+      const holding = fac.assets.find(
+        (a) => a.id === SITE_FACILITY_HOLDING_ASSET_ID
+      );
+      const hasRealAssets = fac.assets.some(
+        (a) => a.id !== SITE_FACILITY_HOLDING_ASSET_ID
+      );
+      const holdingEmpty =
+        !holding ||
+        (holding.components.filter((c) => c.id !== SITE_FACILITY_POINTS_COMP_ID)
+          .length === 0 &&
+          (holding.components.find((c) => c.id === SITE_FACILITY_POINTS_COMP_ID)
+            ?.collectionPoints?.length ?? 0) === 0);
+      if (!hasRealAssets && holdingEmpty) {
+        next.routes = next.routes.filter((r) => r.id !== SITE_FACILITY_ROUTE_ID);
+      }
+    }
+    saveEquipmentStore(next);
+    refresh();
+    setMode("idle");
+    setError("");
+    setSelectedNodeId(parentId);
+    setParentNodeId(SITE_PLANT_ID);
+    setDeleteTarget(null);
+    toast(`"${label}" successfully deleted.`, "success");
   };
 
   /* ---- Form fields (create) ---- */
@@ -963,7 +1124,7 @@ export default function EquipmentExplorer({
         status: "Normal",
         overallVibration: 1.0,
         photoUrl: formPhotoUrl || undefined,
-        components: [{ id: uid("comp"), name: "Motor DE" }]
+        components: []
       };
       next.routes[routeIdx] = {
         ...route,
@@ -1188,6 +1349,19 @@ export default function EquipmentExplorer({
               +
             </button>
           )}
+          {!isPinnedRoot ? (
+            <button
+              type="button"
+              title={`Delete ${KIND_LABEL[node.kind]}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                requestDeleteNode(node);
+              }}
+              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 h-6 w-6 rounded-md border border-red-800/60 bg-red-950/40 text-red-300 cursor-pointer hover:bg-red-900/60 flex items-center justify-center"
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          ) : null}
         </div>
         {hasKids && isOpen
           ? node.children.map((child) => renderTreeNode(child, depth + 1))
@@ -1226,7 +1400,7 @@ export default function EquipmentExplorer({
           })}
         </div>
       </div>
-      <div className="flex items-center gap-3 shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0 flex-wrap justify-end">
         <span
           className="hidden sm:block w-px h-6 bg-slate-700"
           aria-hidden
@@ -1238,6 +1412,14 @@ export default function EquipmentExplorer({
         >
           <span>🧪</span>
           <span>Load Demo Data</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirmResetOpen(true)}
+          className="bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/80 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+        >
+          <span>🗑️</span>
+          <span>Clear Database</span>
         </button>
       </div>
     </div>
@@ -1922,16 +2104,29 @@ export default function EquipmentExplorer({
               {KIND_ICON[selectedNode.kind]} {selectedNode.label}
             </h3>
           </div>
-          {CHILD_OF[selectedNode.kind] && (
-            <button
-              type="button"
-              onClick={() => beginCreateChild(selectedNode)}
-              className={BTN_CYAN}
-            >
-              <Plus className="h-4 w-4" />
-              Add {KIND_LABEL[CHILD_OF[selectedNode.kind]!]}
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {CHILD_OF[selectedNode.kind] && (
+              <button
+                type="button"
+                onClick={() => beginCreateChild(selectedNode)}
+                className={BTN_CYAN}
+              >
+                <Plus className="h-4 w-4" />
+                Add {KIND_LABEL[CHILD_OF[selectedNode.kind]!]}
+              </button>
+            )}
+            {selectedNode.id !== SITE_PLANT_ID &&
+            selectedNode.kind !== "plant" ? (
+              <button
+                type="button"
+                onClick={() => requestDeleteNode(selectedNode)}
+                className="min-h-[40px] px-3 rounded-xl border border-red-800/80 bg-red-950/40 hover:bg-red-900/60 text-red-300 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete Node
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {canAttachPhoto && (
@@ -2111,6 +2306,90 @@ export default function EquipmentExplorer({
             className="max-w-full max-h-[85vh] rounded-xl border border-amber-400/40 object-contain shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
+        </div>
+      ) : null}
+
+      {confirmResetOpen ? (
+        <div
+          className="fixed inset-0 z-[110] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-db-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-[#0A0E1A] shadow-2xl p-5 space-y-4">
+            <div>
+              <h3
+                id="reset-db-title"
+                className="text-base font-bold text-white tracking-tight"
+              >
+                Reset Equipment Database?
+              </h3>
+              <p className="text-sm text-slate-400 mt-2 leading-relaxed">
+                This action will clear all Units, Routes, Assets, Components, and
+                Collection Points from your tree. You will be left with a clean,
+                licensed facility root.
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmResetOpen(false)}
+                className={BTN_GHOST}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmReset}
+                className="min-h-[40px] px-4 rounded-xl bg-red-950/60 hover:bg-red-900/80 text-red-200 border border-red-700/80 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+              >
+                <span>🗑️</span>
+                Confirm Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteTarget ? (
+        <div
+          className="fixed inset-0 z-[110] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-node-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-[#0A0E1A] shadow-2xl p-5 space-y-4">
+            <div>
+              <h3
+                id="delete-node-title"
+                className="text-base font-bold text-white tracking-tight"
+              >
+                Delete &quot;{deleteTarget.label}&quot;?
+              </h3>
+              <p className="text-sm text-slate-400 mt-2 leading-relaxed">
+                This action cannot be undone and will delete this{" "}
+                {KIND_LABEL[deleteTarget.kind]} along with all of its child
+                items.
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                className={BTN_GHOST}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                className="min-h-[40px] px-4 rounded-xl bg-red-950/60 hover:bg-red-900/80 text-red-200 border border-red-700/80 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+              >
+                <Trash2 className="h-4 w-4" />
+                Confirm Delete
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>
