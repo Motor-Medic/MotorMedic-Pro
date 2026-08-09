@@ -1,14 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Camera,
+  CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ClipboardCheck,
+  Download,
+  FileText,
   ImageIcon,
   Loader2,
   Pencil,
   Plus,
+  Printer,
   Trash2,
   Upload,
+  Wrench,
   X
 } from "lucide-react";
 import {
@@ -850,6 +858,13 @@ export default function EquipmentExplorer({
   const [createKind, setCreateKind] = useState<ExplorerKind>("unit");
   const [parentNodeId, setParentNodeId] = useState<string | null>(SITE_PLANT_ID);
   const [error, setError] = useState("");
+  const [pdmReportOpen, setPdmReportOpen] = useState(false);
+  const [pdmReportData, setPdmReportData] = useState<{
+    technology: string;
+    lastAssessment: string;
+  } | null>(null);
+  const [pdmActiveTab, setPdmActiveTab] = useState<string>("vibration");
+  const [workOrderExpanded, setWorkOrderExpanded] = useState(false);
 
   const selectedNode = findNode(tree, selectedNodeId);
   const parentNode = findNode(tree, parentNodeId);
@@ -2263,22 +2278,20 @@ export default function EquipmentExplorer({
                 >
                   <td className="px-3 py-2.5 align-middle">
                     {row.monitored && row.lastAssessment ? (
-                      <a
-                        href={row.reportUrl || "#"}
-                        onClick={(e) => {
-                          if (!row.reportUrl || row.reportUrl === "#") {
-                            e.preventDefault();
-                            toast(
-                              `Opening latest ${row.technology} report…`,
-                              "info"
-                            );
-                          }
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPdmReportData({
+                            technology: row.technology,
+                            lastAssessment: row.lastAssessment!
+                          });
+                          setPdmReportOpen(true);
                         }}
-                        className="inline-flex items-center rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-colors"
-                        title={`Latest ${row.technology} report`}
+                        className="inline-flex items-center rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-colors cursor-pointer"
+                        title={`Open ${row.technology} PdM Health & Assessment Report`}
                       >
                         {row.lastAssessment}
-                      </a>
+                      </button>
                     ) : (
                       <span className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
                         Not Monitored
@@ -2595,6 +2608,572 @@ export default function EquipmentExplorer({
                 <span>🗑️</span>
                 Confirm Reset
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pdmReportOpen && pdmReportData ? (
+        <div
+          className="fixed inset-0 z-[120] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pdm-report-title"
+        >
+          <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl border border-amber-500/30 bg-[#0A0E1A] shadow-[0_0_60px_rgba(255,199,0,0.15)]">
+            {/* Sticky Header */}
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-3 p-5 border-b border-amber-500/30 bg-[#0A0E1A]/95 backdrop-blur-md rounded-t-2xl">
+              <div className="space-y-1 min-w-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/80">
+                  PdM Health & Assessment Report
+                </p>
+                <h2
+                  id="pdm-report-title"
+                  className="text-lg font-bold text-white truncate"
+                >
+                  Report #{pdmReportData.technology.substring(0, 4).toUpperCase()}-{Date.now().toString().slice(-6)}
+                </h2>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                  <span className="text-slate-400">
+                    Asset:{" "}
+                    <span className="text-white font-semibold">
+                      {selectedNode?.label || "—"}
+                    </span>
+                  </span>
+                  <span className="text-slate-500">|</span>
+                  <span className="text-slate-400">
+                    Inspection Date:{" "}
+                    <span className="text-white font-semibold">
+                      {pdmReportData.lastAssessment}
+                    </span>
+                  </span>
+                </div>
+                <span className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-1 text-[11px] font-bold text-red-300">
+                  <span className="h-2 w-2 rounded-full bg-red-400 animate-pulse" />
+                  ALARM: DE Bearing Fault
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="p-1.5 rounded-lg border border-slate-700 bg-slate-900/80 text-slate-400 hover:text-[#FFC700] hover:border-[#FFC700]/50 cursor-pointer transition-colors"
+                  aria-label="Print report"
+                  title="Print / Download PDF"
+                >
+                  <Printer className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPdmReportOpen(false);
+                    setPdmReportData(null);
+                    setWorkOrderExpanded(false);
+                    setPdmActiveTab("vibration");
+                  }}
+                  className="p-1.5 rounded-lg border border-slate-700 bg-slate-900/80 text-slate-400 hover:text-white hover:border-slate-500 cursor-pointer transition-colors"
+                  aria-label="Close report"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-5">
+              {/* Executive Summary */}
+              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 p-4 space-y-3">
+                <h3 className="text-sm font-bold text-[#FFC700] flex items-center gap-2">
+                  <span className="h-5 w-5 rounded-md bg-[#FFC700]/15 border border-[#FFC700]/30 flex items-center justify-center text-[11px]">
+                    📋
+                  </span>
+                  Executive Summary & Diagnostic Findings
+                </h3>
+                <p className="text-sm text-slate-300 leading-relaxed">
+                  {pdmReportData.technology === "Vibration"
+                    ? "Vibration FFT analysis confirms an Outer Race Defect (BPFO) on the drive-end bearing with a peak amplitude of 0.48 in/s at 4× RPM harmonics. Impacting modulation is present across the 2–6 kHz demodulation band, consistent with advanced spalling."
+                    : pdmReportData.technology === "Thermography"
+                      ? "Infrared thermography reveals a +62°F Delta-T anomaly at the drive-end bearing housing relative to ambient and adjacent equipment. The thermal gradient pattern is indicative of inadequate lubrication film and increased frictional heating."
+                      : pdmReportData.technology === "Ultrasound"
+                        ? "Airborne/structure-borne ultrasound heterodyne readings show elevated decibel levels (52 dBµV) at the DE bearing location with characteristic crackling signatures consistent with early-stage subsurface fatigue spalling."
+                        : pdmReportData.technology === "Lubrication"
+                          ? "Oil analysis returns elevated ferrous wear particle counts (ISO 4406: 22/19/14) with moderate viscosity degradation. Spectrometric analysis indicates early-stage bearing alloy wear metals trending upward over the last two sampling intervals."
+                          : pdmReportData.technology === "Temperature"
+                            ? "Continuous temperature monitoring logs show a +18°F sustained deviation above baseline on the NDE bearing housing during steady-state operation, with a gradual upward trend over the preceding 72 run-hours."
+                            : pdmReportData.technology === "MCA - Online"
+                              ? "Online Motor Circuit Analysis detects a 4.7% impedance imbalance across Phase A–B with elevated current draw of 6.2% above nameplate. Rotor bar slot pass frequency sidebands suggest early rotor degradation."
+                              : pdmReportData.technology === "MCA - Offline"
+                                ? "Offline MCA testing identifies a stator winding insulation resistance drop to 85 MΩ (baseline 210 MΩ) with a polarization index of 1.6, indicating moisture ingress and early insulation breakdown."
+                                : "Comprehensive PdM assessment indicates developing failure modes requiring attention. Review attached full diagnostic dataset for detailed waveform and spectral analysis."}
+                </p>
+              </div>
+
+              {/* ===== Multi-Technology Diagnostic Tabs ===== */}
+              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 overflow-hidden">
+                <div className="border-b border-slate-800 bg-slate-950/60 px-2 pt-2">
+                  <div className="flex flex-wrap gap-1">
+                    {([
+                      { id: "vibration", icon: "📈", label: "Vibration Analysis" },
+                      { id: "thermography", icon: "🌡️", label: "IR Thermography" },
+                      { id: "ultrasound", icon: "🔊", label: "Ultrasound" },
+                      { id: "mca", icon: "⚡", label: "Motor Circuit Analysis" },
+                      { id: "oil", icon: "🛢️", label: "Fluid & Oil Diagnostics" }
+                    ] as const).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setPdmActiveTab(tab.id)}
+                        className={`min-h-[34px] px-3 rounded-t-lg text-[11px] font-bold cursor-pointer transition-all whitespace-nowrap flex items-center gap-1.5 ${
+                          pdmActiveTab === tab.id
+                            ? "bg-slate-900 text-[#FFC700] border border-b-0 border-amber-500/30 -mb-px relative z-10"
+                            : "text-slate-500 hover:text-slate-300 hover:bg-slate-900/50 border border-transparent"
+                        }`}
+                      >
+                        <span>{tab.icon}</span>
+                        <span className="hidden sm:inline">{tab.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="p-4">
+                  {/* Vibration Analysis Tab */}
+                  {pdmActiveTab === "vibration" && (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>📈</span> Vibration Spectral Analysis
+                        </h4>
+                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
+                          FFT Spectrum — DE Bearing, Horizontal
+                        </span>
+                      </div>
+                      {/* FFT Spectral Breakdown Bar */}
+                      <div className="space-y-2">
+                        {[
+                          { label: "1× RPM", freq: "1780 RPM", amp: 0.12, max: 0.6, color: "bg-emerald-500/70", unit: "in/s pk" },
+                          { label: "4.2× BPFO", freq: "84.2 Hz", amp: 0.48, max: 0.6, color: "bg-red-500/70", unit: "in/s pk" },
+                          { label: "7.1× BSF", freq: "142.7 Hz", amp: 0.31, max: 0.6, color: "bg-amber-500/70", unit: "in/s pk" },
+                          { label: "2× Line Freq", freq: "120 Hz", amp: 0.08, max: 0.6, color: "bg-cyan-500/60", unit: "in/s pk" }
+                        ].map((bar) => (
+                          <div key={bar.label} className="space-y-0.5">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-slate-300 font-semibold">{bar.label}</span>
+                              <span className="text-slate-500">{bar.freq}</span>
+                              <span className={`font-bold ${bar.amp > 0.35 ? "text-red-300" : bar.amp > 0.2 ? "text-amber-300" : "text-emerald-300"}`}>
+                                {bar.amp.toFixed(2)} {bar.unit}
+                              </span>
+                            </div>
+                            <div className="h-3 rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${bar.color} transition-all`}
+                                style={{ width: `${Math.min(100, (bar.amp / bar.max) * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800">
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Peak-to-Peak Accel</p>
+                          <p className="text-lg font-bold text-red-300">12.4 <span className="text-xs font-normal text-slate-400">g</span></p>
+                          <p className="text-[10px] text-red-400/70">Alert: 6.0 g</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Overall Velocity</p>
+                          <p className="text-lg font-bold text-amber-300">0.52 <span className="text-xs font-normal text-slate-400">in/s pk</span></p>
+                          <p className="text-[10px] text-amber-400/70">Alert: 0.35 in/s</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* IR Thermography Tab */}
+                  {pdmActiveTab === "thermography" && (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>🌡️</span> Infrared Thermography
+                        </h4>
+                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
+                          Hot-Spot Comparison Panel
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-red-200">DE Bearing</span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-300">
+                              <AlertTriangle className="h-3 w-3" /> CRITICAL
+                            </span>
+                          </div>
+                          <p className="text-2xl font-bold text-red-300">184<span className="text-sm text-red-400">°F</span></p>
+                          <p className="text-[10px] text-slate-500">Baseline: 144°F</p>
+                        </div>
+                        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-emerald-200">ODE Bearing</span>
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                              <CheckCircle2 className="h-3 w-3" /> NORMAL
+                            </span>
+                          </div>
+                          <p className="text-2xl font-bold text-emerald-300">122<span className="text-sm text-emerald-400">°F</span></p>
+                          <p className="text-[10px] text-slate-500">Baseline: 118°F</p>
+                        </div>
+                      </div>
+                      <div className="rounded-lg bg-slate-950/70 p-3 flex items-center justify-between">
+                        <span className="text-xs text-slate-300 font-semibold">Delta-T (DE − ODE)</span>
+                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-1 text-sm font-bold text-red-300">
+                          +62°F <span className="text-[10px] text-red-400 font-normal">ALARM</span>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Ultrasound Tab */}
+                  {pdmActiveTab === "ultrasound" && (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>🔊</span> Airborne / Structure-Borne Ultrasound
+                        </h4>
+                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
+                          Heterodyne — DE Bearing Housing
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">dB µV Level</p>
+                          <p className="text-xl font-bold text-amber-300">52 <span className="text-xs text-slate-400">dBµV</span></p>
+                          <p className="text-[10px] text-amber-400/70">Alert: 35 dBµV</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Crest Factor</p>
+                          <p className="text-xl font-bold text-red-300">7.1</p>
+                          <p className="text-[10px] text-red-400/70">Alert: 5.0</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1 col-span-2 sm:col-span-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Acoustic Friction</p>
+                          <p className="text-xl font-bold text-red-300">HIGH</p>
+                          <p className="text-[10px] text-red-400/70">Mechanical Impact</p>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 space-y-1.5">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                          Lubrication State vs. Mechanical Impact
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden">
+                            <div className="h-full w-[28%] rounded-full bg-emerald-500/60" />
+                          </div>
+                          <span className="text-[10px] text-emerald-300 font-bold">Lubrication: 28%</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden">
+                            <div className="h-full w-[72%] rounded-full bg-red-500/60" />
+                          </div>
+                          <span className="text-[10px] text-red-300 font-bold">Impact: 72%</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MCA Tab */}
+                  {pdmActiveTab === "mca" && (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>⚡</span> Motor Circuit Analysis (MCA)
+                        </h4>
+                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
+                          Offline Static Test @ 1000V
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Phase Resistance Unbalance</p>
+                          <p className="text-xl font-bold text-amber-300">4.7<span className="text-sm text-amber-400">%</span></p>
+                          <p className="text-[10px] text-amber-400/70">Alert: 5.0%</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Phase Inductance Unbalance</p>
+                          <p className="text-xl font-bold text-red-300">8.2<span className="text-sm text-red-400">%</span></p>
+                          <p className="text-[10px] text-red-400/70">Alert: 6.0%</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Insulation Resistance</p>
+                          <p className="text-xl font-bold text-red-300">85 <span className="text-xs text-slate-400">MΩ</span></p>
+                          <p className="text-[10px] text-red-400/70">Baseline: 210 MΩ</p>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+                          Polarization Index (PI)
+                        </p>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1 h-3 rounded-full bg-slate-800 overflow-hidden">
+                            <div className="h-full w-[32%] rounded-full bg-red-500/60" />
+                          </div>
+                          <span className="text-sm font-bold text-red-300">1.6</span>
+                          <span className="text-[10px] text-red-400">(Min: 2.0)</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Oil Diagnostics Tab */}
+                  {pdmActiveTab === "oil" && (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
+                          <span>🛢️</span> Fluid & Oil Diagnostics
+                        </h4>
+                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
+                          ISO 4406 — Synthetic PAO Gear Oil
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">ISO Cleanliness</p>
+                          <p className="text-lg font-bold text-red-300">19/16/13</p>
+                          <p className="text-[10px] text-red-400/70">Target: 17/14/11</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Viscosity @ 40°C</p>
+                          <p className="text-lg font-bold text-amber-300">68.2 <span className="text-xs text-slate-400">cSt</span></p>
+                          <p className="text-[10px] text-amber-400/70">Nominal: 68 cSt</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Water Content</p>
+                          <p className="text-lg font-bold text-amber-300">420 <span className="text-xs text-slate-400">ppm</span></p>
+                          <p className="text-[10px] text-amber-400/70">Alert: 300 ppm</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">TAN</p>
+                          <p className="text-lg font-bold text-emerald-300">0.8 <span className="text-xs text-slate-400">mgKOH/g</span></p>
+                          <p className="text-[10px] text-emerald-400/70">Alert: 2.0</p>
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 space-y-2">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                          Elemental Wear Debris (ppm)
+                        </p>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="text-center">
+                            <p className="text-xs text-slate-400">Fe (Iron)</p>
+                            <p className="text-lg font-bold text-red-300">142 <span className="text-[10px] text-red-400">ppm</span></p>
+                            <p className="text-[10px] text-red-400/70">Alert: 80 ppm</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-xs text-slate-400">Cu (Copper)</p>
+                            <p className="text-lg font-bold text-amber-300">38 <span className="text-[10px] text-amber-400">ppm</span></p>
+                            <p className="text-[10px] text-amber-400/70">Alert: 25 ppm</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-xs text-slate-400">Pb (Lead)</p>
+                            <p className="text-lg font-bold text-emerald-300">6 <span className="text-[10px] text-emerald-400">ppm</span></p>
+                            <p className="text-[10px] text-emerald-400/70">Alert: 15 ppm</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Corrective Action Plan */}
+              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 p-4 space-y-3">
+                <h3 className="text-sm font-bold text-[#FFC700] flex items-center gap-2">
+                  <span className="h-5 w-5 rounded-md bg-[#FFC700]/15 border border-[#FFC700]/30 flex items-center justify-center text-[11px]">
+                    🔧
+                  </span>
+                  Corrective Action Plan
+                </h3>
+                <ol className="space-y-3">
+                  <li className="flex items-start gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3">
+                    <span className="shrink-0 mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-red-500/20 border border-red-500/40 text-[10px] font-bold text-red-300">
+                      P1
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-red-200">
+                        CRITICAL — Schedule DE Bearing Replacement
+                      </p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                        Schedule drive-end bearing replacement within 14 days.
+                        Order replacement bearing kit (SKF 6320 C3 or equivalent)
+                        and coordinate outage window with operations. Monitor
+                        vibration trending daily until replacement is completed.
+                      </p>
+                    </div>
+                  </li>
+                  <li className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                    <span className="shrink-0 mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-bold text-amber-300">
+                      P2
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-amber-200">
+                        HIGH — Increase Monitoring Frequency
+                      </p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                        Escalate {pdmReportData.technology} route collection
+                        from monthly to weekly until bearing replacement is
+                        executed. Configure automated alert thresholds at 0.55
+                        in/s for BPFO amplitude.
+                      </p>
+                    </div>
+                  </li>
+                  <li className="flex items-start gap-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
+                    <span className="shrink-0 mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[10px] font-bold text-cyan-300">
+                      P3
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-cyan-200">
+                        MEDIUM — Root Cause Analysis
+                      </p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                        Perform precision shaft alignment verification and
+                        review lubrication PM compliance history. Inspect
+                        bearing housing seals for contamination ingress and
+                        evaluate adequacy of current relubrication schedule.
+                      </p>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+
+              {/* ===== CMMS Work Order Generator ===== */}
+              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setWorkOrderExpanded((v) => !v)}
+                  className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-slate-800/30 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="h-6 w-6 rounded-md bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-sm">
+                      <Wrench className="h-3.5 w-3.5 text-amber-400" />
+                    </span>
+                    <div>
+                      <h3 className="text-sm font-bold text-[#FFC700]">
+                        CMMS Work Order Generator
+                      </h3>
+                      <p className="text-[10px] text-slate-500">
+                        Auto-populated from report findings
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${workOrderExpanded ? "rotate-180" : ""}`} />
+                </button>
+
+                {workOrderExpanded && (
+                  <div className="border-t border-slate-800 p-4 space-y-4">
+                    {/* WO Header */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="rounded-lg bg-slate-950/70 p-3 space-y-1">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Work Order ID</p>
+                        <p className="text-sm font-bold text-white font-mono">WO-2026-8842</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-950/70 p-3 space-y-1">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Assigned Trade / Craft</p>
+                        <p className="text-sm font-bold text-white">Mechanical Reliability Specialist</p>
+                      </div>
+                      <div className="rounded-lg bg-slate-950/70 p-3 space-y-1">
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Target Priority</p>
+                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-bold text-red-300">
+                          <AlertTriangle className="h-3 w-3" />
+                          High — Priority 2: Execute within 14 days
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Required Parts */}
+                    <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 space-y-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                        <ClipboardCheck className="h-3 w-3" /> Required Parts List
+                      </p>
+                      <div className="space-y-1.5">
+                        {[
+                          { part: "6314-C3 Deep Groove Ball Bearing", qty: "1 EA", note: "SKF or equivalent" },
+                          { part: "Synthetic Polyurea Grease", qty: "1 Tube", note: "NLGI #2, high-temp" },
+                          { part: "Bearing Housing Gasket Set", qty: "1 Set", note: "Viton / FKM material" },
+                          { part: "Shaft Locking Collar & Snap Ring", qty: "1 Kit", note: "Per OEM spec" }
+                        ].map((item, i) => (
+                          <div key={i} className="flex items-center justify-between gap-2 text-xs">
+                            <span className="text-slate-200 font-medium">{item.part}</span>
+                            <span className="text-slate-500 shrink-0">{item.qty}</span>
+                            <span className="text-[10px] text-slate-600 hidden sm:inline">{item.note}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Safety & LOTO */}
+                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                        <AlertTriangle className="h-3 w-3" /> Safety & LOTO Requirements
+                      </p>
+                      <div className="space-y-1.5">
+                        {[
+                          "Complete LOTO — Lock out main breaker & disconnect switch per NFPA 70E",
+                          "Verify zero energy state with qualified electrician",
+                          "Confined space entry permit (if bearing housing access requires)",
+                          "PPE: Arc flash rated (Cat II), cut-resistant gloves, safety glasses, steel-toe boots",
+                          "Pre-job safety briefing & JSA sign-off by area supervisor"
+                        ].map((item, i) => (
+                          <label key={i} className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" className="mt-0.5 shrink-0 accent-amber-500" />
+                            <span>{item}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* WO Actions */}
+                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => toast("Work Order WO-2026-8842 submitted to CMMS queue.", "success")}
+                        className="min-h-[38px] px-4 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-xs font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        Submit to CMMS
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => toast("Work Order exported as PDF.", "info")}
+                        className="min-h-[38px] px-4 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-xs font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-1.5"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        Export WO PDF
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Sticky Footer Action Bar */}
+              <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 pt-3 pb-1 border-t border-amber-500/30 bg-[#0A0E1A]/95 backdrop-blur-md -mx-5 px-5 rounded-b-2xl">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="min-h-[44px] px-5 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-2 shadow-[0_0_16px_rgba(255,199,0,0.25)]"
+                >
+                  <Printer className="h-4 w-4" />
+                  Print / Download PDF Report
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPdmReportOpen(false);
+                    setPdmReportData(null);
+                    setWorkOrderExpanded(false);
+                    setPdmActiveTab("vibration");
+                  }}
+                  className="min-h-[44px] px-5 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-sm font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-2"
+                >
+                  <X className="h-4 w-4" />
+                  Close Report
+                </button>
+              </div>
             </div>
           </div>
         </div>
