@@ -21,6 +21,8 @@ export interface CollectionPointDraft {
   current_value: number;
 }
 
+export type LineFrequency = "50Hz" | "60Hz";
+
 export interface ComponentDraft {
   id: string;
   name: string;
@@ -38,6 +40,8 @@ export interface ComponentDraft {
   model: string;
   serial_number: string;
   notes: string;
+  /** null = neither 50Hz nor 60Hz pre-selected */
+  line_frequency: LineFrequency | null;
   shafts: ShaftConfig[];
   collection_points: CollectionPointDraft[];
 }
@@ -112,6 +116,7 @@ export interface ComponentFormResult {
   model: string;
   serial_number: string;
   notes: string;
+  line_frequency: LineFrequency | null;
   shafts: ShaftConfig[];
 }
 
@@ -406,6 +411,7 @@ function emptyComponent(type = "Motor DE"): ComponentDraft {
     model: "",
     serial_number: "",
     notes: "",
+    line_frequency: null,
     shafts: defaultShafts(1),
     collection_points: []
   };
@@ -431,20 +437,24 @@ export function defaultShafts(count = 2): ShaftConfig[] {
   });
 }
 
-function emptyPoint(shaftName: string, direction: PointDirection = "Radial Horizontal"): CollectionPointDraft {
-  const short =
-    direction === "Radial Horizontal" ? "Horizontal" : direction === "Radial Vertical" ? "Vertical" : "Axial";
+function emptyPoint(index: number): CollectionPointDraft {
   return {
     id: uid("pt"),
-    name: `${shaftName} - ${short}`,
-    direction,
-    quality: direction === "Axial" ? "Acceptable" : "Ideal",
-    surface_finish: "Machined bearing housing",
-    recommended_mounting: "Stud mount on bearing cap",
+    name: `Point ${index}`,
+    direction: "Radial Horizontal",
+    quality: "Ideal",
+    surface_finish: "",
+    recommended_mounting: "",
     iso_reference: "ISO 10816-3",
     last_reading: "",
     current_value: 0
   };
+}
+
+/** Create N sequentially named points starting at startIndex (default Point 1…). */
+export function makeSequentialPoints(count: number, startIndex = 1): CollectionPointDraft[] {
+  const n = Math.max(0, Math.floor(count));
+  return Array.from({ length: n }, (_, i) => emptyPoint(startIndex + i));
 }
 
 /** Multi-shaft editor with per-shaft bearings + nested collection points */
@@ -458,6 +468,8 @@ export function ShaftEditor({
   title?: string;
 }) {
   const [expanded, setExpanded] = useState<number | null>(0);
+  const [customOpenFor, setCustomOpenFor] = useState<number | null>(null);
+  const [customCount, setCustomCount] = useState("3");
 
   const ratios = useMemo(() => {
     const out: string[] = [];
@@ -505,15 +517,16 @@ export function ShaftEditor({
     setExpanded(shafts.length);
   };
 
-  const addPoint = (shaftIdx: number) => {
+  const addPoints = (shaftIdx: number, count: number) => {
     const shaft = shafts[shaftIdx];
-    const dirs: PointDirection[] = ["Radial Horizontal", "Radial Vertical", "Axial"];
-    const used = new Set((shaft.collection_points || []).map((p) => p.direction));
-    const nextDir = dirs.find((d) => !used.has(d)) ?? "Radial Horizontal";
+    const existing = shaft.collection_points || [];
+    const startIndex = existing.length + 1;
     patch(shaftIdx, {
-      collection_points: [...(shaft.collection_points || []), emptyPoint(shaft.name, nextDir)]
+      collection_points: [...existing, ...makeSequentialPoints(count, startIndex)]
     });
   };
+
+  const addPoint = (shaftIdx: number) => addPoints(shaftIdx, 1);
 
   const patchPoint = (shaftIdx: number, pointId: string, partial: Partial<CollectionPointDraft>) => {
     const shaft = shafts[shaftIdx];
@@ -529,6 +542,14 @@ export function ShaftEditor({
     patch(shaftIdx, {
       collection_points: (shaft.collection_points || []).filter((p) => p.id !== pointId)
     });
+  };
+
+  const applyCustom = (shaftIdx: number) => {
+    const n = Math.floor(Number(customCount));
+    if (!Number.isFinite(n) || n < 1) return;
+    addPoints(shaftIdx, Math.min(n, 48));
+    setCustomOpenFor(null);
+    setCustomCount("3");
   };
 
   return (
@@ -611,7 +632,7 @@ export function ShaftEditor({
                   </div>
 
                   <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
                         Collection Points on this Shaft
                       </p>
@@ -620,47 +641,75 @@ export function ShaftEditor({
                         onClick={() => addPoint(idx)}
                         className="min-h-[32px] px-2.5 rounded-lg bg-amber-400/10 border border-amber-400/40 text-amber-300 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
                       >
-                        <Plus className="h-3.5 w-3.5" /> Add Collection Point
+                        <Plus className="h-3.5 w-3.5" /> Add Point
                       </button>
                     </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mr-0.5">Quick add</span>
+                      {([2, 4, 6, 8] as const).map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => {
+                            addPoints(idx, n);
+                            setCustomOpenFor(null);
+                          }}
+                          className="min-h-[28px] px-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-200 text-[11px] font-bold hover:border-amber-400/50 hover:text-amber-300 cursor-pointer"
+                        >
+                          +{n}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => setCustomOpenFor(customOpenFor === idx ? null : idx)}
+                        className={`min-h-[28px] px-2 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                          customOpenFor === idx
+                            ? "bg-amber-400/15 border-amber-400/50 text-amber-300"
+                            : "bg-slate-950 border-slate-700 text-slate-200 hover:border-amber-400/50 hover:text-amber-300"
+                        }`}
+                      >
+                        Custom
+                      </button>
+                    </div>
+                    {customOpenFor === idx && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          min={1}
+                          max={48}
+                          className={`${INPUT} max-w-[6rem]`}
+                          value={customCount}
+                          onChange={(e) => setCustomCount(e.target.value)}
+                          placeholder="Count"
+                          aria-label="Custom point count"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => applyCustom(idx)}
+                          className="min-h-[36px] px-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold cursor-pointer"
+                        >
+                          Add Custom
+                        </button>
+                      </div>
+                    )}
                     {pts.length === 0 && (
-                      <p className="text-[11px] text-slate-500">No points — add Horizontal / Vertical / Axial.</p>
+                      <p className="text-[11px] text-slate-500">No points yet — defaults to Point 1 &amp; Point 2, or use quick add.</p>
                     )}
                     {pts.map((p) => (
-                      <div key={p.id} className="rounded-lg border border-slate-700 bg-slate-950/60 p-2.5 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div key={p.id} className="rounded-lg border border-slate-700 bg-slate-950/60 p-2.5 flex gap-2 items-center">
                         <input
                           className={INPUT}
                           value={p.name}
                           onChange={(e) => patchPoint(idx, p.id, { name: e.target.value })}
                           placeholder="Point name"
                         />
-                        <select
-                          className={SELECT}
-                          value={p.direction}
-                          onChange={(e) => patchPoint(idx, p.id, { direction: e.target.value as PointDirection })}
+                        <button
+                          type="button"
+                          onClick={() => removePoint(idx, p.id)}
+                          className="px-2 text-red-400 text-[10px] font-bold cursor-pointer shrink-0"
                         >
-                          <option>Radial Horizontal</option>
-                          <option>Radial Vertical</option>
-                          <option>Axial</option>
-                        </select>
-                        <div className="flex gap-1">
-                          <select
-                            className={SELECT}
-                            value={p.quality}
-                            onChange={(e) => patchPoint(idx, p.id, { quality: e.target.value as PointQuality })}
-                          >
-                            <option>Ideal</option>
-                            <option>Acceptable</option>
-                            <option>Not Recommended</option>
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => removePoint(idx, p.id)}
-                            className="px-2 text-red-400 text-[10px] font-bold cursor-pointer shrink-0"
-                          >
-                            ×
-                          </button>
-                        </div>
+                          ×
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -692,44 +741,9 @@ export function ShaftEditor({
   );
 }
 
-/** Standard H/V/Axial points for a component type */
-export function autoPointsForType(componentType: string, baseVib = 1.5): CollectionPointDraft[] {
-  const prefix = componentType;
-  return [
-    {
-      id: uid("pt"),
-      name: `${prefix} - Horizontal`,
-      direction: "Radial Horizontal",
-      quality: "Ideal",
-      surface_finish: "Machined bearing housing",
-      recommended_mounting: "Stud mount on bearing cap",
-      iso_reference: "ISO 10816-3",
-      last_reading: new Date().toISOString().slice(0, 10),
-      current_value: Number(baseVib.toFixed(2))
-    },
-    {
-      id: uid("pt"),
-      name: `${prefix} - Vertical`,
-      direction: "Radial Vertical",
-      quality: "Ideal",
-      surface_finish: "Machined bearing housing",
-      recommended_mounting: "Stud mount on bearing cap (12 o'clock)",
-      iso_reference: "ISO 10816-3",
-      last_reading: new Date().toISOString().slice(0, 10),
-      current_value: Number((baseVib * 0.92).toFixed(2))
-    },
-    {
-      id: uid("pt"),
-      name: `${prefix} - Axial`,
-      direction: "Axial",
-      quality: "Acceptable",
-      surface_finish: "End bell / housing face",
-      recommended_mounting: "Magnet or adhesive pad if stud unavailable",
-      iso_reference: "ISO 10816-3",
-      last_reading: new Date().toISOString().slice(0, 10),
-      current_value: Number((baseVib * 0.75).toFixed(2))
-    }
-  ];
+/** Default collection points: Point 1 and Point 2 */
+export function autoPointsForType(_componentType?: string, _baseVib = 1.5): CollectionPointDraft[] {
+  return makeSequentialPoints(2, 1);
 }
 
 function FormField({
@@ -894,94 +908,104 @@ export function ComponentSpecFields({
             placeholder="e.g. Motor DE"
           />
         </FormField>
-        <FormField label="Component Type" required>
-          <select
-            className={SELECT}
-            value={knownTypes.includes(value.component_type) ? value.component_type : "Other"}
-            onChange={(e) => {
-              const t = e.target.value;
-              if (t === "Other") {
-                onChange({ ...value, component_type: customType || "Other" });
-                return;
-              }
-              const tpl = [...COMPONENT_TYPE_KB, ...savedTypes].find(
-                (x) => x.type.toLowerCase() === t.toLowerCase()
-              );
-              if (tpl) onChange(applyTemplate(value, tpl));
-              else {
-                onChange({
-                  ...value,
-                  component_type: t,
-                  name: value.name || t,
-                  collection_points: autoPointsForType(t)
-                });
-              }
-              setCustomType("");
-              setAiHits([]);
-            }}
-          >
-            {knownTypes.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-            <option value="Other">Other (custom / smart lookup)</option>
-          </select>
-        </FormField>
-
-        {(value.component_type === "Other" || isUnknownType || customType) && (
-          <FormField label="Custom Type Name" className="sm:col-span-2" required>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                className={INPUT}
-                value={customType || (isUnknownType ? value.component_type : "")}
-                onChange={(e) => {
-                  setCustomType(e.target.value);
-                  onChange({ ...value, component_type: e.target.value || "Other", name: value.name || e.target.value });
-                }}
-                placeholder="e.g. Helical Gear Reducer"
-              />
-              <button
-                type="button"
-                disabled={aiBusy}
-                onClick={() => runAiLookup()}
-                className="min-h-[40px] px-3 rounded-xl bg-sky-500/15 border border-sky-400/40 text-sky-300 text-xs font-bold inline-flex items-center justify-center gap-1.5 hover:bg-sky-500/25 cursor-pointer disabled:opacity-50 shrink-0"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                {aiBusy ? "Looking up…" : "Smart Lookup"}
-              </button>
-              <button
-                type="button"
-                onClick={saveCurrentAsType}
-                className="min-h-[40px] px-3 rounded-xl bg-amber-400/10 border border-amber-400/40 text-amber-300 text-xs font-bold cursor-pointer hover:bg-amber-400/20 shrink-0"
-              >
-                Save Type
-              </button>
-            </div>
+        <div className="space-y-2 min-w-0">
+          <FormField label="Component Type" required>
+            <select
+              className={SELECT}
+              value={knownTypes.includes(value.component_type) ? value.component_type : "Other"}
+              onChange={(e) => {
+                const t = e.target.value;
+                if (t === "Other") {
+                  onChange({ ...value, component_type: customType || "Other" });
+                  return;
+                }
+                const tpl = [...COMPONENT_TYPE_KB, ...savedTypes].find(
+                  (x) => x.type.toLowerCase() === t.toLowerCase()
+                );
+                if (tpl) onChange(applyTemplate(value, tpl));
+                else {
+                  onChange({
+                    ...value,
+                    component_type: t,
+                    name: value.name || t,
+                    collection_points: autoPointsForType(t)
+                  });
+                }
+                setCustomType("");
+                setAiHits([]);
+              }}
+            >
+              {knownTypes.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+              <option value="Other">Other (custom / smart lookup)</option>
+            </select>
           </FormField>
-        )}
 
-        {showAi && aiHits.length > 0 && (
-          <div className="sm:col-span-2 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 space-y-2">
-            <p className="text-[10px] font-bold text-sky-300 uppercase tracking-wider">Suggestions</p>
-            {aiHits.map(({ match, source }) => (
-              <button
-                key={`${source}-${match.type}`}
-                type="button"
-                onClick={() => applyHit(match)}
-                className="w-full text-left rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 hover:border-sky-400/50 cursor-pointer transition-colors"
-              >
-                <p className="text-sm font-bold text-white">{match.type}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  {match.rpm ? `${match.rpm} RPM` : "—"} · {match.bearing_de || "bearing TBD"} · {match.lubrication_type}
-                  {match.gear_teeth ? ` · ${match.gear_teeth} gear teeth` : ""}
-                  {match.fan_blades ? ` · ${match.fan_blades} blades` : ""}
-                  <span className="text-slate-600"> · {source === "saved" ? "Saved" : "KB"}</span>
-                </p>
-                {match.notes && <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">{match.notes}</p>}
-              </button>
-            ))}
-          </div>
-        )}
+          {(value.component_type === "Other" || isUnknownType || customType) && (
+            <div className="space-y-2">
+              <FormField label="Enter Custom Equipment Type" required>
+                <input
+                  className={INPUT}
+                  value={customType || (isUnknownType ? value.component_type : "")}
+                  onChange={(e) => {
+                    setCustomType(e.target.value);
+                    onChange({
+                      ...value,
+                      component_type: e.target.value || "Other",
+                      name: value.name || e.target.value
+                    });
+                  }}
+                  placeholder="e.g. Helical Gear Reducer"
+                />
+              </FormField>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={aiBusy}
+                  onClick={() => runAiLookup()}
+                  className="min-h-[40px] px-3 rounded-xl bg-sky-500/15 border border-sky-400/40 text-sky-300 text-xs font-bold inline-flex items-center justify-center gap-1.5 hover:bg-sky-500/25 cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {aiBusy ? "Looking up…" : "⚡ AI Kinematic Spec Search"}
+                </button>
+                <button
+                  type="button"
+                  onClick={saveCurrentAsType}
+                  className="min-h-[40px] px-3 rounded-xl bg-amber-400/10 border border-amber-400/40 text-amber-300 text-xs font-bold cursor-pointer hover:bg-amber-400/20 shrink-0"
+                >
+                  Save Type
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
+      {showAi && aiHits.length > 0 && (
+        <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 space-y-2">
+          <p className="text-[10px] font-bold text-sky-300 uppercase tracking-wider">Suggestions</p>
+          {aiHits.map(({ match, source }) => (
+            <button
+              key={`${source}-${match.type}`}
+              type="button"
+              onClick={() => applyHit(match)}
+              className="w-full text-left rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 hover:border-sky-400/50 cursor-pointer transition-colors"
+            >
+              <p className="text-sm font-bold text-white">{match.type}</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {match.rpm ? `${match.rpm} RPM` : "—"} · {match.bearing_de || "bearing TBD"} · {match.lubrication_type}
+                {match.gear_teeth ? ` · ${match.gear_teeth} gear teeth` : ""}
+                {match.fan_blades ? ` · ${match.fan_blades} blades` : ""}
+                <span className="text-slate-600"> · {source === "saved" ? "Saved" : "KB"}</span>
+              </p>
+              {match.notes && <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">{match.notes}</p>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <FormField label="Bearing Type DE">
           <input
             className={INPUT}
@@ -1007,6 +1031,29 @@ export function ComponentSpecFields({
         </datalist>
         <FormField label="RPM">
           <input type="number" className={INPUT} value={value.rpm} onChange={(e) => onChange({ ...value, rpm: e.target.value })} />
+        </FormField>
+        <FormField label="Line Frequency">
+          <div className="min-h-[40px] flex rounded-xl border border-slate-700 overflow-hidden">
+            {(["50Hz", "60Hz"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() =>
+                  onChange({
+                    ...value,
+                    line_frequency: (value.line_frequency ?? null) === f ? null : f
+                  })
+                }
+                className={`flex-1 text-sm font-bold cursor-pointer transition-colors ${
+                  (value.line_frequency ?? null) === f
+                    ? "bg-amber-400/20 text-amber-300"
+                    : "bg-slate-950 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
         </FormField>
         <FormField label="Horsepower">
           <input type="number" className={INPUT} value={value.horsepower} onChange={(e) => onChange({ ...value, horsepower: e.target.value })} />
@@ -1067,7 +1114,7 @@ export function ComponentSpecFields({
               (s.collection_points || []).map((p) => (
                 <li key={p.id} className="text-xs text-slate-400 flex justify-between gap-2">
                   <span className="text-slate-200 font-medium truncate">{p.name}</span>
-                  <span className="shrink-0">{s.name} · {p.direction}</span>
+                  <span className="shrink-0">{s.name}</span>
                 </li>
               ))
             )}
@@ -1104,6 +1151,7 @@ export function draftToComponentResult(d: ComponentDraft): ComponentFormResult {
     model: d.model.trim(),
     serial_number: d.serial_number.trim(),
     notes: d.notes.trim(),
+    line_frequency: d.line_frequency ?? null,
     shafts
   };
 }
@@ -1128,7 +1176,11 @@ export function AddComponentModal({
   initial?: Partial<ComponentDraft>;
   title?: string;
 }) {
-  const [draft, setDraft] = useState<ComponentDraft>(() => ({ ...emptyComponent(), ...initial }));
+  const [draft, setDraft] = useState<ComponentDraft>(() => ({
+    ...emptyComponent(),
+    ...initial,
+    line_frequency: initial?.line_frequency ?? null
+  }));
   const [error, setError] = useState("");
   const [aiMsg, setAiMsg] = useState("");
 
@@ -1199,9 +1251,7 @@ export function AddCollectionPointModal({
   initial?: Partial<CollectionPointFormResult>;
   title?: string;
 }) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [direction, setDirection] = useState<PointDirection>(initial?.direction ?? "Radial Horizontal");
-  const [quality, setQuality] = useState<PointQuality>(initial?.quality ?? "Ideal");
+  const [name, setName] = useState(initial?.name ?? "Point 1");
   const [surface, setSurface] = useState(initial?.surface_finish ?? "");
   const [mounting, setMounting] = useState(initial?.recommended_mounting ?? "");
   const [iso, setIso] = useState(initial?.iso_reference ?? "ISO 10816-3");
@@ -1210,7 +1260,7 @@ export function AddCollectionPointModal({
   return (
     <ModalShell
       title={title}
-      subtitle="Define where and how vibration is measured"
+      subtitle="Define where vibration is measured"
       onClose={onClose}
       footer={
         <>
@@ -1226,8 +1276,8 @@ export function AddCollectionPointModal({
               }
               onSave({
                 name: name.trim(),
-                direction,
-                quality,
+                direction: initial?.direction ?? "Radial Horizontal",
+                quality: initial?.quality ?? "Ideal",
                 surface_finish: surface.trim(),
                 recommended_mounting: mounting.trim(),
                 iso_reference: iso.trim() || "ISO 10816-3"
@@ -1241,31 +1291,17 @@ export function AddCollectionPointModal({
       }
     >
       {error && <p className="text-xs text-red-400 mb-3">{error}</p>}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <FormField label="Point Name" required className="sm:col-span-2">
-          <input className={INPUT} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Motor DE - Horizontal" />
+      <div className="grid grid-cols-1 gap-3">
+        <FormField label="Point Name" required>
+          <input className={INPUT} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Point 1" />
         </FormField>
-        <FormField label="Direction" required>
-          <select className={SELECT} value={direction} onChange={(e) => setDirection(e.target.value as PointDirection)}>
-            <option>Radial Horizontal</option>
-            <option>Radial Vertical</option>
-            <option>Axial</option>
-          </select>
-        </FormField>
-        <FormField label="Quality" required>
-          <select className={SELECT} value={quality} onChange={(e) => setQuality(e.target.value as PointQuality)}>
-            <option>Ideal</option>
-            <option>Acceptable</option>
-            <option>Not Recommended</option>
-          </select>
-        </FormField>
-        <FormField label="Surface Finish" className="sm:col-span-2">
+        <FormField label="Surface Finish">
           <textarea className={`${INPUT} min-h-[64px] py-2`} value={surface} onChange={(e) => setSurface(e.target.value)} placeholder="Machined housing, painted, cast…" />
         </FormField>
-        <FormField label="Recommended Mounting" className="sm:col-span-2">
+        <FormField label="Recommended Mounting">
           <textarea className={`${INPUT} min-h-[64px] py-2`} value={mounting} onChange={(e) => setMounting(e.target.value)} placeholder="Stud mount on bearing cap…" />
         </FormField>
-        <FormField label="ISO Standard Reference" className="sm:col-span-2">
+        <FormField label="ISO Standard Reference">
           <input className={INPUT} value={iso} onChange={(e) => setIso(e.target.value)} placeholder="ISO 10816-3" />
         </FormField>
       </div>
@@ -1377,7 +1413,15 @@ export function AddAssetWizard({
   const [gearTeeth, setGearTeeth] = useState(initialAsset?.gear_teeth != null ? String(initialAsset.gear_teeth) : "");
 
   const [components, setComponents] = useState<ComponentDraft[]>(
-    () => initialAsset?.components?.length ? initialAsset.components : []
+    () =>
+      initialAsset?.components?.length
+        ? initialAsset.components.map((c) => ({
+            ...emptyComponent(c.component_type || "Motor DE"),
+            ...c,
+            line_frequency: c.line_frequency ?? null,
+            shafts: c.shafts?.length ? c.shafts : defaultShafts(1)
+          }))
+        : []
   );
   const [editingCompIdx, setEditingCompIdx] = useState<number | null>(null);
 
@@ -1420,10 +1464,6 @@ export function AddAssetWizard({
     if (step === 0) {
       if (!name.trim()) {
         setError("Asset name is required.");
-        return false;
-      }
-      if (!tag.trim()) {
-        setError("Tag ID is required.");
         return false;
       }
       if (!routeId) {
@@ -1509,7 +1549,7 @@ export function AddAssetWizard({
           <FormField label="Asset Name" required>
             <input className={INPUT} value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
-          <FormField label="Tag ID" required>
+          <FormField label="Tag ID">
             <input className={INPUT} value={tag} onChange={(e) => setTag(e.target.value)} placeholder="P-101A" />
           </FormField>
           <FormField label="Asset Type" required>
@@ -1624,7 +1664,7 @@ export function AddAssetWizard({
       {step === 3 && (
         <div className="space-y-3">
           <p className="text-xs text-slate-400">
-            Standard points were auto-generated from component types. Customize names or quality as needed.
+            Defaults to Point 1 and Point 2. Rename points as needed, or add more with quick presets on the component form.
           </p>
           {allPoints.length === 0 ? (
             <p className="text-sm text-slate-500 border border-dashed border-slate-700 rounded-xl p-6 text-center">
@@ -1632,13 +1672,11 @@ export function AddAssetWizard({
             </p>
           ) : (
             <div className="overflow-x-auto rounded-xl border border-slate-700">
-              <table className="w-full text-xs text-left min-w-[520px]">
+              <table className="w-full text-xs text-left min-w-[360px]">
                 <thead className="bg-slate-950 text-slate-500 uppercase">
                   <tr className="border-b border-slate-700">
                     <th className="px-2 py-2">Point</th>
                     <th className="px-2 py-2">Component</th>
-                    <th className="px-2 py-2">Direction</th>
-                    <th className="px-2 py-2">Quality</th>
                     <th className="px-2 py-2">ISO</th>
                   </tr>
                 </thead>
@@ -1668,32 +1706,6 @@ export function AddAssetWizard({
                           />
                         </td>
                         <td className="px-2 py-1.5 text-slate-400">{c.name}</td>
-                        <td className="px-2 py-1.5 text-slate-400">{p.direction}</td>
-                        <td className="px-2 py-1.5">
-                          <select
-                            className="bg-slate-950 border border-slate-700 rounded px-1 text-slate-200"
-                            value={p.quality}
-                            onChange={(e) => {
-                              const v = e.target.value as PointQuality;
-                              setComponents((prev) =>
-                                prev.map((comp, i) =>
-                                  i !== ci
-                                    ? comp
-                                    : {
-                                        ...comp,
-                                        collection_points: comp.collection_points.map((pt, j) =>
-                                          j === pi ? { ...pt, quality: v } : pt
-                                        )
-                                      }
-                                )
-                              );
-                            }}
-                          >
-                            <option>Ideal</option>
-                            <option>Acceptable</option>
-                            <option>Not Recommended</option>
-                          </select>
-                        </td>
                         <td className="px-2 py-1.5 text-slate-500">{p.iso_reference}</td>
                       </tr>
                     ))

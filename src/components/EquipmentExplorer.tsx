@@ -5,6 +5,7 @@ import {
   ChevronRight,
   ImageIcon,
   Loader2,
+  Pencil,
   Plus,
   Trash2,
   Upload,
@@ -22,8 +23,6 @@ import {
   SITE_FACILITY_POINTS_COMP_ID,
   SITE_FACILITY_ROUTE_ID,
   SITE_PLANT_ID,
-  type ComponentKinematics,
-  type CouplingType,
   type EquipAsset,
   type EquipCollectionPoint,
   type EquipComponent,
@@ -33,6 +32,9 @@ import {
   type EquipmentStore
 } from "../data/equipmentDb";
 import { useToast } from "./Toast";
+import ComponentKinematicsSpecsForm, {
+  type CbmKinematics
+} from "./ComponentKinematicsSpecsForm";
 
 /* ========================================================================== */
 /* Types                                                                      */
@@ -56,7 +58,43 @@ export interface ExplorerNode {
 }
 
 type PanelMode = "idle" | "create" | "edit";
-type KinSubTab = "limits" | "faults" | "bearings";
+
+type DetailTab =
+  | "Location Profile"
+  | "Equipment Maintenance Plan"
+  | "Exceptions"
+  | "Feedback";
+
+const DETAIL_TABS: DetailTab[] = [
+  "Location Profile",
+  "Equipment Maintenance Plan",
+  "Exceptions",
+  "Feedback"
+];
+
+/** Core CBM technologies for the Equipment Maintenance Plan matrix. */
+type CbmTechRow = {
+  technology: string;
+  monitored: boolean;
+  /** Latest assessment timestamp shown as a green badge when monitored */
+  lastAssessment?: string;
+  reportUrl?: string;
+};
+
+const CBM_TECH_MATRIX: CbmTechRow[] = [
+  {
+    technology: "Vibration",
+    monitored: true,
+    lastAssessment: "1/8/2026 8:35 AM",
+    reportUrl: "#"
+  },
+  { technology: "Thermography", monitored: false },
+  { technology: "Ultrasound", monitored: false },
+  { technology: "Lubrication", monitored: false },
+  { technology: "Temperature", monitored: false },
+  { technology: "MCA - Online", monitored: false },
+  { technology: "MCA - Offline", monitored: false }
+];
 
 const CHILD_OF: Record<ExplorerKind, ExplorerKind | null> = {
   plant: "unit",
@@ -94,23 +132,6 @@ const COMPONENT_TYPES: EquipComponentType[] = [
   "Screw / Reciprocating Compressor",
   "Machine Tool Spindle",
   "Other (Custom / AI Spec Search)"
-];
-
-const MOTOR_POLES: NonNullable<ComponentKinematics["motorPoles"]>[] = [
-  "2",
-  "4",
-  "6",
-  "8",
-  "10",
-  "12"
-];
-
-const COUPLING_TYPES: CouplingType[] = [
-  "Flexible Grid",
-  "Gear",
-  "Disc",
-  "Direct Rigid",
-  "Belt"
 ];
 
 const QUICK_ADD_LEVELS: {
@@ -151,13 +172,7 @@ const IDEAL_PARENT: Record<Exclude<ExplorerKind, "plant">, ExplorerKind[]> = {
   point: ["component", "plant"]
 };
 
-const KIN_TABS: { id: KinSubTab; label: string }[] = [
-  { id: "limits", label: "⚡ Operating Limits" },
-  { id: "faults", label: "🎯 Kinematics & Faults" },
-  { id: "bearings", label: "🧱 Bearings & Coupling" }
-];
-
-const DEFAULT_KIN: ComponentKinematics = {
+const DEFAULT_KIN: CbmKinematics = {
   ratedRpm: "1780",
   lineFrequency: "60Hz",
   motorPoles: "4",
@@ -467,7 +482,7 @@ function EquipmentPhotoUploader({
   );
 }
 
-function aiExtractSchema(customType: string): ComponentKinematics {
+function aiExtractSchema(customType: string): CbmKinematics {
   const q = customType.toLowerCase();
   if (q.includes("decanter") || q.includes("centrifuge")) {
     return {
@@ -656,6 +671,64 @@ function findNode(
   return null;
 }
 
+/** Collect ancestor ids from root → node for expand / breadcrumb navigation. */
+function collectAncestorIds(
+  nodes: ExplorerNode[],
+  id: string | null
+): string[] {
+  if (!id) return [];
+  const walk = (
+    list: ExplorerNode[],
+    trail: string[]
+  ): string[] | null => {
+    for (const n of list) {
+      const next = [...trail, n.id];
+      if (n.id === id) return next;
+      const hit = walk(n.children, next);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return walk(nodes, []) ?? [];
+}
+
+function lookupEditableEntity(
+  store: EquipmentStore,
+  node: ExplorerNode
+): {
+  unit?: EquipUnit;
+  route?: EquipRoute;
+  asset?: EquipAsset;
+  component?: EquipComponent;
+  point?: EquipCollectionPoint;
+} {
+  if (node.kind === "unit") {
+    return { unit: store.units.find((u) => u.id === node.id) };
+  }
+  if (node.kind === "route") {
+    return { route: store.routes.find((r) => r.id === node.id) };
+  }
+  for (const route of store.routes) {
+    for (const asset of route.assets) {
+      if (node.kind === "asset" && asset.id === node.id) {
+        return { asset };
+      }
+      for (const comp of asset.components) {
+        if (node.kind === "component" && comp.id === node.id) {
+          return { component: comp };
+        }
+        if (node.kind === "point") {
+          const point = (comp.collectionPoints ?? []).find(
+            (p) => p.id === node.id
+          );
+          if (point) return { point };
+        }
+      }
+    }
+  }
+  return {};
+}
+
 /** Facility has no units/routes/assets yet (root plant always exists). */
 function isFacilityEmpty(store: EquipmentStore): boolean {
   if (store.units.length > 0) return false;
@@ -773,6 +846,7 @@ export default function EquipmentExplorer({
     SITE_PLANT_ID
   );
   const [mode, setMode] = useState<PanelMode>("idle");
+  const [detailTab, setDetailTab] = useState<DetailTab>("Location Profile");
   const [createKind, setCreateKind] = useState<ExplorerKind>("unit");
   const [parentNodeId, setParentNodeId] = useState<string | null>(SITE_PLANT_ID);
   const [error, setError] = useState("");
@@ -794,6 +868,14 @@ export default function EquipmentExplorer({
     mode === "create"
       ? withFacilityPrefix(parentNode?.path || facilityName)
       : withFacilityPrefix(selectedNode?.path || facilityName);
+
+  const breadcrumbSegments = useMemo(() => {
+    const raw = contextPath.replace(/➔/g, "➔");
+    return raw
+      .split(/\s*➔\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }, [contextPath]);
 
   const refresh = () => setTick((n) => n + 1);
 
@@ -937,8 +1019,7 @@ export default function EquipmentExplorer({
   );
   const [customEquipType, setCustomEquipType] = useState("");
   const [showSpecs, setShowSpecs] = useState(true);
-  const [kinTab, setKinTab] = useState<KinSubTab>("limits");
-  const [kin, setKin] = useState<ComponentKinematics>({ ...DEFAULT_KIN });
+  const [kin, setKin] = useState<CbmKinematics>({ ...DEFAULT_KIN });
   const [aiSearching, setAiSearching] = useState(false);
   const [aiExtracted, setAiExtracted] = useState(false);
   const aiTimerRef = useRef<number | null>(null);
@@ -948,11 +1029,6 @@ export default function EquipmentExplorer({
     useState<EquipCollectionPoint["orientation"]>("Horizontal");
   const [pointMeas, setPointMeas] =
     useState<EquipCollectionPoint["measurementType"]>("Vibration");
-
-  const patchKin = <K extends keyof ComponentKinematics>(
-    key: K,
-    value: ComponentKinematics[K]
-  ) => setKin((prev) => ({ ...prev, [key]: value }));
 
   useEffect(() => {
     return () => {
@@ -974,7 +1050,6 @@ export default function EquipmentExplorer({
     setCompType("Electric Motor (AC / DC / VFD)");
     setCustomEquipType("");
     setShowSpecs(true);
-    setKinTab("limits");
     setKin({ ...DEFAULT_KIN });
     setAiExtracted(false);
     setPointName("");
@@ -1014,6 +1089,259 @@ export default function EquipmentExplorer({
     beginCreate(kind, resolveQuickAddParent(kind));
   };
 
+  const EDITABLE_KINDS: ExplorerKind[] = [
+    "unit",
+    "route",
+    "asset",
+    "component",
+    "point"
+  ];
+
+  const beginEdit = (node: ExplorerNode) => {
+    if (!EDITABLE_KINDS.includes(node.kind)) {
+      setSelectedNodeId(node.id);
+      setMode("idle");
+      setError("");
+      return;
+    }
+    resetFormFields();
+    const entity = lookupEditableEntity(store, node);
+    if (node.kind === "unit" && entity.unit) {
+      setUnitName(entity.unit.name);
+    } else if (node.kind === "route" && entity.route) {
+      setRouteName(entity.route.name);
+      setRouteFreq(entity.route.collectionFrequency || "Monthly");
+    } else if (node.kind === "asset" && entity.asset) {
+      setAssetName(entity.asset.name);
+      setAssetTag(entity.asset.tag || "");
+      setMachineType(entity.asset.machineType || "");
+      setAssetRpm(
+        entity.asset.speedRpm != null ? String(entity.asset.speedRpm) : ""
+      );
+      setFormPhotoUrl(entity.asset.photoUrl || "");
+    } else if (node.kind === "component" && entity.component) {
+      setCompName(entity.component.name);
+      setCompType(entity.component.componentType);
+      setCustomEquipType(
+        entity.component.kinematics?.customEquipmentType || ""
+      );
+      setFormPhotoUrl(entity.component.photoUrl || "");
+      if (entity.component.kinematics) {
+        setKin({ ...DEFAULT_KIN, ...entity.component.kinematics });
+        setShowSpecs(true);
+      } else {
+        setKin({ ...DEFAULT_KIN });
+        setShowSpecs(false);
+      }
+    } else if (node.kind === "point" && entity.point) {
+      setPointName(entity.point.name);
+      setPointOrient(entity.point.orientation || "Horizontal");
+      setPointMeas(entity.point.measurementType || "Vibration");
+    } else {
+      setError("Could not load this node for editing.");
+      setSelectedNodeId(node.id);
+      setMode("idle");
+      return;
+    }
+
+    setCreateKind(node.kind);
+    setSelectedNodeId(node.id);
+    setParentNodeId(node.parentId);
+    setMode("edit");
+    setError("");
+    const ancestors = collectAncestorIds(tree, node.id);
+    setExpanded((prev) => {
+      const next = { ...prev };
+      for (const id of ancestors) next[id] = true;
+      return next;
+    });
+  };
+
+  const handleUpdate = () => {
+    if (!selectedNodeId || !EDITABLE_KINDS.includes(createKind)) return;
+    setError("");
+    const next = cloneStore(getEquipmentStore());
+    next.plants = [
+      {
+        id: SITE_PLANT_ID,
+        name: facilityName,
+        location:
+          next.plants.find((p) => p.id === SITE_PLANT_ID)?.location ||
+          facilityName,
+        facilityType:
+          next.plants.find((p) => p.id === SITE_PLANT_ID)?.facilityType ||
+          "Power Plant"
+      }
+    ];
+
+    if (createKind === "unit") {
+      if (!unitName.trim()) {
+        setError("Unit / Area name is required.");
+        return;
+      }
+      const idx = next.units.findIndex((u) => u.id === selectedNodeId);
+      if (idx < 0) {
+        setError("Unit not found.");
+        return;
+      }
+      next.units[idx] = { ...next.units[idx], name: unitName.trim() };
+      saveEquipmentStore(next);
+      refresh();
+      cancelForm();
+      setSelectedNodeId(selectedNodeId);
+      toast("Unit updated.", "success");
+      return;
+    }
+
+    if (createKind === "route") {
+      if (!routeName.trim()) {
+        setError("Route name is required.");
+        return;
+      }
+      const idx = next.routes.findIndex((r) => r.id === selectedNodeId);
+      if (idx < 0) {
+        setError("Route not found.");
+        return;
+      }
+      next.routes[idx] = {
+        ...next.routes[idx],
+        name: routeName.trim(),
+        collectionFrequency: routeFreq
+      };
+      saveEquipmentStore(next);
+      refresh();
+      cancelForm();
+      setSelectedNodeId(selectedNodeId);
+      toast("Route updated.", "success");
+      return;
+    }
+
+    if (createKind === "asset") {
+      if (!assetName.trim()) {
+        setError("Asset name is required.");
+        return;
+      }
+      let found = false;
+      next.routes = next.routes.map((r) => ({
+        ...r,
+        assets: r.assets.map((a) => {
+          if (a.id !== selectedNodeId) return a;
+          found = true;
+          return {
+            ...a,
+            name: assetName.trim(),
+            tag: assetTag.trim().toUpperCase(),
+            machineType: machineType.trim() || undefined,
+            speedRpm: assetRpm ? Number(assetRpm) || undefined : undefined,
+            photoUrl: formPhotoUrl || undefined
+          };
+        })
+      }));
+      if (!found) {
+        setError("Asset not found.");
+        return;
+      }
+      saveEquipmentStore(next);
+      refresh();
+      cancelForm();
+      setSelectedNodeId(selectedNodeId);
+      toast("Asset updated.", "success");
+      return;
+    }
+
+    if (createKind === "component") {
+      if (!compName.trim()) {
+        setError("Component name is required.");
+        return;
+      }
+      if (
+        compType === "Other (Custom / AI Spec Search)" &&
+        !customEquipType.trim()
+      ) {
+        setError("Enter a custom equipment type.");
+        return;
+      }
+      const kinematics: CbmKinematics | undefined = showSpecs
+        ? {
+            ...kin,
+            customEquipmentType:
+              compType === "Other (Custom / AI Spec Search)"
+                ? customEquipType.trim()
+                : kin.customEquipmentType
+          }
+        : undefined;
+      const rpmNum = Number(kinematics?.ratedRpm || "");
+      let found = false;
+      next.routes = next.routes.map((r) => ({
+        ...r,
+        assets: r.assets.map((a) => ({
+          ...a,
+          components: a.components.map((c) => {
+            if (c.id !== selectedNodeId) return c;
+            found = true;
+            return {
+              ...c,
+              name: compName.trim(),
+              componentType: compType,
+              bearingType: kinematics?.bearingDe || kinematics?.bearingNde,
+              speedRpm:
+                Number.isFinite(rpmNum) && rpmNum > 0 ? rpmNum : c.speedRpm,
+              isoClass: kinematics?.isoClass ?? c.isoClass,
+              kinematics,
+              photoUrl: formPhotoUrl || undefined
+            };
+          })
+        }))
+      }));
+      if (!found) {
+        setError("Component not found.");
+        return;
+      }
+      saveEquipmentStore(next);
+      refresh();
+      cancelForm();
+      setSelectedNodeId(selectedNodeId);
+      toast("Component updated.", "success");
+      return;
+    }
+
+    if (createKind === "point") {
+      if (!pointName.trim()) {
+        setError("Point name is required.");
+        return;
+      }
+      let found = false;
+      next.routes = next.routes.map((r) => ({
+        ...r,
+        assets: r.assets.map((a) => ({
+          ...a,
+          components: a.components.map((c) => ({
+            ...c,
+            collectionPoints: (c.collectionPoints ?? []).map((p) => {
+              if (p.id !== selectedNodeId) return p;
+              found = true;
+              return {
+                ...p,
+                name: pointName.trim(),
+                orientation: pointOrient,
+                measurementType: pointMeas
+              };
+            })
+          }))
+        }))
+      }));
+      if (!found) {
+        setError("Collection point not found.");
+        return;
+      }
+      saveEquipmentStore(next);
+      refresh();
+      cancelForm();
+      setSelectedNodeId(selectedNodeId);
+      toast("Collection point updated.", "success");
+    }
+  };
+
   const runAiSpecSearch = () => {
     if (!customEquipType.trim()) {
       setError("Enter a custom equipment type before running AI search.");
@@ -1026,7 +1354,6 @@ export default function EquipmentExplorer({
     aiTimerRef.current = window.setTimeout(() => {
       setKin(aiExtractSchema(customEquipType));
       setShowSpecs(true);
-      setKinTab("faults");
       setAiSearching(false);
       setAiExtracted(true);
       aiTimerRef.current = null;
@@ -1149,7 +1476,7 @@ export default function EquipmentExplorer({
         setError("Enter a custom equipment type.");
         return;
       }
-      const kinematics: ComponentKinematics | undefined = showSpecs
+      const kinematics: CbmKinematics | undefined = showSpecs
         ? {
             ...kin,
             customEquipmentType:
@@ -1284,16 +1611,25 @@ export default function EquipmentExplorer({
     const canAddChild =
       CHILD_OF[node.kind] != null && node.kind !== "point";
     const isPinnedRoot = node.id === SITE_PLANT_ID;
+    const canEdit = EDITABLE_KINDS.includes(node.kind);
+    const indentPx = depth * 18 + 10;
 
     return (
-      <div key={node.id}>
+      <div key={node.id} className="relative">
+        {depth > 0 ? (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-0 bottom-0 w-px bg-slate-800/90"
+            style={{ left: `${(depth - 1) * 18 + 18}px` }}
+          />
+        ) : null}
         <div
-          className={`group flex items-center gap-1 rounded-lg px-1.5 py-1.5 transition-colors border ${
+          className={`group flex items-center gap-1.5 rounded-lg py-1.5 pr-1.5 pl-1.5 transition-all border border-l-[3px] ${
             selected
-              ? "bg-[#FFC700]/15 border-[#FFC700]/50 shadow-[0_0_12px_rgba(255,199,0,0.2)]"
-              : "border-transparent hover:bg-slate-800/70"
+              ? "bg-[#FFC700]/12 border-[#FFC700]/45 border-l-[#FFC700] shadow-[0_0_12px_rgba(255,199,0,0.18)]"
+              : "border-transparent border-l-transparent hover:bg-slate-800/75 hover:border-l-[#FFC700]/55"
           }`}
-          style={{ paddingLeft: `${depth * 12 + 6}px` }}
+          style={{ paddingLeft: `${indentPx}px` }}
         >
           {hasKids ? (
             <button
@@ -1301,7 +1637,7 @@ export default function EquipmentExplorer({
               onClick={() =>
                 setExpanded((prev) => ({ ...prev, [node.id]: !isOpen }))
               }
-              className="text-slate-500 hover:text-slate-300 cursor-pointer shrink-0"
+              className="text-slate-500 hover:text-[#FFC700] cursor-pointer shrink-0 rounded-md p-0.5 transition-colors"
               aria-label={isOpen ? "Collapse" : "Expand"}
             >
               {isOpen ? (
@@ -1311,7 +1647,9 @@ export default function EquipmentExplorer({
               )}
             </button>
           ) : (
-            <span className="w-3.5 shrink-0" />
+            <span className="w-3.5 shrink-0 flex items-center justify-center">
+              <span className="h-1 w-1 rounded-full bg-slate-600" />
+            </span>
           )}
           <button
             type="button"
@@ -1320,22 +1658,41 @@ export default function EquipmentExplorer({
               setMode("idle");
               setError("");
             }}
-            className={`flex-1 min-w-0 text-left text-xs cursor-pointer truncate ${
+            className={`flex-1 min-w-0 text-left text-xs cursor-pointer truncate flex items-center gap-1.5 ${
               selected
                 ? "text-[#FFC700] font-bold"
                 : isPinnedRoot
                   ? "text-slate-100 font-semibold"
-                  : "text-slate-200"
+                  : "text-slate-200 group-hover:text-slate-50"
             }`}
           >
-            <span className="mr-1">{KIND_ICON[node.kind]}</span>
-            {node.label}
+            <span className="shrink-0" aria-hidden>
+              {KIND_ICON[node.kind]}
+            </span>
+            <span className="truncate">{node.label}</span>
             {isPinnedRoot ? (
-              <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+              <span className="ml-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
                 Licensed Site
               </span>
             ) : null}
           </button>
+          {canEdit ? (
+            <button
+              type="button"
+              title={`Edit ${KIND_LABEL[node.kind]}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                beginEdit(node);
+              }}
+              className={`shrink-0 h-6 w-6 rounded-md border border-[#FFC700]/40 bg-[#FFC700]/10 text-[#FFC700] cursor-pointer hover:bg-[#FFC700]/25 hover:border-[#FFC700]/70 flex items-center justify-center transition-all ${
+                selected
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+          ) : null}
           {canAddChild && (
             <button
               type="button"
@@ -1344,7 +1701,11 @@ export default function EquipmentExplorer({
                 e.stopPropagation();
                 beginCreateChild(node);
               }}
-              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 h-6 w-6 rounded-md border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-500/30 flex items-center justify-center"
+              className={`shrink-0 h-6 w-6 rounded-md border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-500/30 flex items-center justify-center transition-opacity ${
+                selected
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
             >
               +
             </button>
@@ -1357,7 +1718,11 @@ export default function EquipmentExplorer({
                 e.stopPropagation();
                 requestDeleteNode(node);
               }}
-              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 h-6 w-6 rounded-md border border-red-800/60 bg-red-950/40 text-red-300 cursor-pointer hover:bg-red-900/60 flex items-center justify-center"
+              className={`shrink-0 h-6 w-6 rounded-md border border-red-800/60 bg-red-950/40 text-red-300 cursor-pointer hover:bg-red-900/60 flex items-center justify-center transition-opacity ${
+                selected
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
             >
               <Trash2 className="h-3 w-3" />
             </button>
@@ -1430,7 +1795,7 @@ export default function EquipmentExplorer({
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-base font-bold text-white">
-          Add {KIND_LABEL[createKind]}
+          {mode === "edit" ? "Edit" : "Add"} {KIND_LABEL[createKind]}
         </h3>
         <button
           type="button"
@@ -1630,371 +1995,11 @@ export default function EquipmentExplorer({
           </button>
 
           {showSpecs && (
-            <div className="rounded-lg border border-slate-800 bg-[#0A0E1A] p-3 sm:p-4 space-y-3">
-              <div className="flex flex-wrap gap-1.5">
-                {KIN_TABS.map((tab) => {
-                  const on = kinTab === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      type="button"
-                      onClick={() => setKinTab(tab.id)}
-                      className={`min-h-[34px] px-2.5 rounded-lg text-[11px] font-bold cursor-pointer transition-all ${
-                        on
-                          ? "bg-[#FFC700]/15 text-[#FFC700] border border-[#FFC700]/50"
-                          : "bg-slate-900 text-slate-400 border border-slate-800"
-                      }`}
-                    >
-                      {tab.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div
-                key={kinTab}
-                className="grid grid-cols-1 sm:grid-cols-2 gap-3 animate-[fadeIn_0.2s_ease]"
-              >
-                {kinTab === "limits" && (
-                  <>
-                    <Field label="HP / kW Rating">
-                      <input
-                        className={INPUT}
-                        value={kin.motorHpKw ?? ""}
-                        onChange={(e) => patchKin("motorHpKw", e.target.value)}
-                        placeholder="150 / 112"
-                      />
-                    </Field>
-                    <Field label="Rated RPM">
-                      <input
-                        className={INPUT}
-                        value={kin.ratedRpm ?? ""}
-                        onChange={(e) => patchKin("ratedRpm", e.target.value)}
-                        placeholder="1780"
-                      />
-                    </Field>
-                    <Field label="Min Operating Speed (VFD)">
-                      <input
-                        className={INPUT}
-                        value={kin.minOperatingRpm ?? ""}
-                        onChange={(e) =>
-                          patchKin("minOperatingRpm", e.target.value)
-                        }
-                        placeholder="600"
-                      />
-                    </Field>
-                    <Field label="Max Operating Speed (VFD)">
-                      <input
-                        className={INPUT}
-                        value={kin.maxOperatingRpm ?? ""}
-                        onChange={(e) =>
-                          patchKin("maxOperatingRpm", e.target.value)
-                        }
-                        placeholder="3600"
-                      />
-                    </Field>
-                    <Field label="Line Frequency">
-                      <div className="min-h-[40px] flex rounded-xl border border-slate-700 overflow-hidden">
-                        {(["50Hz", "60Hz"] as const).map((f) => (
-                          <button
-                            key={f}
-                            type="button"
-                            onClick={() => patchKin("lineFrequency", f)}
-                            className={`flex-1 text-sm font-bold cursor-pointer ${
-                              kin.lineFrequency === f
-                                ? "bg-[#FFC700]/20 text-[#FFC700]"
-                                : "bg-slate-900 text-slate-400"
-                            }`}
-                          >
-                            {f}
-                          </button>
-                        ))}
-                      </div>
-                    </Field>
-                  </>
-                )}
-
-                {kinTab === "faults" && (
-                  <>
-                    {compType === "Electric Motor (AC / DC / VFD)" && (
-                      <>
-                        <Field label="Motor Poles">
-                          <select
-                            className={INPUT}
-                            value={kin.motorPoles ?? "4"}
-                            onChange={(e) =>
-                              patchKin(
-                                "motorPoles",
-                                e.target.value as NonNullable<
-                                  ComponentKinematics["motorPoles"]
-                                >
-                              )
-                            }
-                          >
-                            {MOTOR_POLES.map((p) => (
-                              <option key={p} value={p}>
-                                {p}-Pole
-                              </option>
-                            ))}
-                          </select>
-                        </Field>
-                        <Field label="Rotor Bars">
-                          <input
-                            className={INPUT}
-                            value={kin.rotorBars ?? ""}
-                            onChange={(e) => patchKin("rotorBars", e.target.value)}
-                            placeholder="48, 58"
-                          />
-                        </Field>
-                        <Field label="Stator Slots">
-                          <input
-                            className={INPUT}
-                            value={kin.statorSlots ?? ""}
-                            onChange={(e) =>
-                              patchKin("statorSlots", e.target.value)
-                            }
-                            placeholder="72"
-                          />
-                        </Field>
-                      </>
-                    )}
-                    {(compType === "Centrifugal Pump" ||
-                      compType === "Positive Displacement / Gear Pump") && (
-                      <>
-                        <Field label="Impeller Vane Count">
-                          <input
-                            className={INPUT}
-                            value={kin.impellerVanes ?? ""}
-                            onChange={(e) =>
-                              patchKin("impellerVanes", e.target.value)
-                            }
-                            placeholder="5, 7"
-                          />
-                        </Field>
-                        <Field label="Pump Stages">
-                          <input
-                            className={INPUT}
-                            value={kin.pumpStages ?? ""}
-                            onChange={(e) =>
-                              patchKin("pumpStages", e.target.value)
-                            }
-                            placeholder="1"
-                          />
-                        </Field>
-                        <Field label="Volute Clearance">
-                          <input
-                            className={INPUT}
-                            value={kin.voluteClearance ?? ""}
-                            onChange={(e) =>
-                              patchKin("voluteClearance", e.target.value)
-                            }
-                            placeholder="0.015 in"
-                          />
-                        </Field>
-                      </>
-                    )}
-                    {compType === "Gearbox / Speed Reducer" && (
-                      <>
-                        <Field label="Stage 1 Pinion (Z1)">
-                          <input
-                            className={INPUT}
-                            value={kin.gearTeethZ1 ?? ""}
-                            onChange={(e) =>
-                              patchKin("gearTeethZ1", e.target.value)
-                            }
-                          />
-                        </Field>
-                        <Field label="Stage 1 Gear (Z2)">
-                          <input
-                            className={INPUT}
-                            value={kin.gearTeethZ2 ?? ""}
-                            onChange={(e) =>
-                              patchKin("gearTeethZ2", e.target.value)
-                            }
-                          />
-                        </Field>
-                        <Field label="Stage 2 Pinion (Z3)">
-                          <input
-                            className={INPUT}
-                            value={kin.gearTeethZ3 ?? ""}
-                            onChange={(e) =>
-                              patchKin("gearTeethZ3", e.target.value)
-                            }
-                          />
-                        </Field>
-                        <Field label="Stage 2 Gear (Z4)">
-                          <input
-                            className={INPUT}
-                            value={kin.gearTeethZ4 ?? ""}
-                            onChange={(e) =>
-                              patchKin("gearTeethZ4", e.target.value)
-                            }
-                          />
-                        </Field>
-                        <Field label="Overall Ratio">
-                          <input
-                            className={INPUT}
-                            value={kin.gearboxRatio ?? ""}
-                            onChange={(e) =>
-                              patchKin("gearboxRatio", e.target.value)
-                            }
-                            placeholder="14.6:1"
-                          />
-                        </Field>
-                      </>
-                    )}
-                    {compType === "Fan / Blower (Centrifugal / Axial)" && (
-                      <>
-                        <Field label="Fan Blade Count">
-                          <input
-                            className={INPUT}
-                            value={kin.fanBladeCount ?? ""}
-                            onChange={(e) =>
-                              patchKin("fanBladeCount", e.target.value)
-                            }
-                          />
-                        </Field>
-                        <Field label="Drive Type">
-                          <select
-                            className={INPUT}
-                            value={kin.driveArrangement ?? "Direct Drive"}
-                            onChange={(e) =>
-                              patchKin(
-                                "driveArrangement",
-                                e.target.value as NonNullable<
-                                  ComponentKinematics["driveArrangement"]
-                                >
-                              )
-                            }
-                          >
-                            <option value="Direct Drive">Direct Drive</option>
-                            <option value="Belt Drive">Belt Drive</option>
-                          </select>
-                        </Field>
-                        <Field label="Motor Sheave Ø (D1)">
-                          <input
-                            className={INPUT}
-                            value={kin.motorSheaveDia ?? ""}
-                            onChange={(e) =>
-                              patchKin("motorSheaveDia", e.target.value)
-                            }
-                            disabled={kin.driveArrangement !== "Belt Drive"}
-                          />
-                        </Field>
-                        <Field label="Fan Sheave Ø (D2)">
-                          <input
-                            className={INPUT}
-                            value={kin.fanSheaveDia ?? ""}
-                            onChange={(e) =>
-                              patchKin("fanSheaveDia", e.target.value)
-                            }
-                            disabled={kin.driveArrangement !== "Belt Drive"}
-                          />
-                        </Field>
-                      </>
-                    )}
-                    {compType === "Screw / Reciprocating Compressor" && (
-                      <>
-                        <Field label="Male Lobe Count">
-                          <input
-                            className={INPUT}
-                            value={kin.maleLobeCount ?? ""}
-                            onChange={(e) =>
-                              patchKin("maleLobeCount", e.target.value)
-                            }
-                            placeholder="4"
-                          />
-                        </Field>
-                        <Field label="Female Lobe Count">
-                          <input
-                            className={INPUT}
-                            value={kin.femaleLobeCount ?? ""}
-                            onChange={(e) =>
-                              patchKin("femaleLobeCount", e.target.value)
-                            }
-                            placeholder="6"
-                          />
-                        </Field>
-                      </>
-                    )}
-                    {(compType === "Machine Tool Spindle" ||
-                      compType === "Other (Custom / AI Spec Search)") && (
-                      <>
-                        <Field label="Custom / Spindle Class">
-                          <input
-                            className={INPUT}
-                            value={
-                              kin.spindleClass ?? kin.customEquipmentType ?? ""
-                            }
-                            onChange={(e) => {
-                              patchKin("spindleClass", e.target.value);
-                              patchKin("customEquipmentType", e.target.value);
-                            }}
-                          />
-                        </Field>
-                        <Field label="Max RPM">
-                          <input
-                            className={INPUT}
-                            value={kin.maxOperatingRpm ?? ""}
-                            onChange={(e) =>
-                              patchKin("maxOperatingRpm", e.target.value)
-                            }
-                          />
-                        </Field>
-                      </>
-                    )}
-                  </>
-                )}
-
-                {kinTab === "bearings" && (
-                  <>
-                    <Field label="DE Bearing Part #">
-                      <input
-                        className={INPUT}
-                        value={kin.bearingDe ?? ""}
-                        onChange={(e) => patchKin("bearingDe", e.target.value)}
-                        placeholder="SKF 6320 C3"
-                      />
-                    </Field>
-                    <Field label="NDE Bearing Part #">
-                      <input
-                        className={INPUT}
-                        value={kin.bearingNde ?? ""}
-                        onChange={(e) => patchKin("bearingNde", e.target.value)}
-                        placeholder="SKF 6215 C3"
-                      />
-                    </Field>
-                    <Field label="Thrust Bearing Part #">
-                      <input
-                        className={INPUT}
-                        value={kin.thrustBearing ?? ""}
-                        onChange={(e) =>
-                          patchKin("thrustBearing", e.target.value)
-                        }
-                      />
-                    </Field>
-                    <Field label="Coupling Type">
-                      <select
-                        className={INPUT}
-                        value={kin.couplingType ?? "Flexible Grid"}
-                        onChange={(e) =>
-                          patchKin(
-                            "couplingType",
-                            e.target.value as CouplingType
-                          )
-                        }
-                      >
-                        {COUPLING_TYPES.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                  </>
-                )}
-              </div>
-            </div>
+            <ComponentKinematicsSpecsForm
+              value={kin}
+              onChange={setKin}
+              componentType={compType}
+            />
           )}
         </div>
       )}
@@ -2052,8 +2057,14 @@ export default function EquipmentExplorer({
         <button type="button" onClick={cancelForm} className={BTN_GHOST}>
           Cancel
         </button>
-        <button type="button" onClick={handleSave} className={BTN_PRIMARY}>
-          Save {KIND_LABEL[createKind]}
+        <button
+          type="button"
+          onClick={mode === "edit" ? handleUpdate : handleSave}
+          className={BTN_PRIMARY}
+        >
+          {mode === "edit"
+            ? `Save ${KIND_LABEL[createKind]} Changes`
+            : `Save ${KIND_LABEL[createKind]}`}
         </button>
       </div>
     </div>
@@ -2093,7 +2104,7 @@ export default function EquipmentExplorer({
     const canAttachPhoto =
       selectedNode.kind === "asset" || selectedNode.kind === "component";
 
-    return (
+    const locationProfile = (
       <div className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -2105,6 +2116,16 @@ export default function EquipmentExplorer({
             </h3>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {EDITABLE_KINDS.includes(selectedNode.kind) ? (
+              <button
+                type="button"
+                onClick={() => beginEdit(selectedNode)}
+                className="min-h-[40px] px-3 rounded-xl border border-[#FFC700]/45 bg-[#FFC700]/10 hover:bg-[#FFC700]/20 text-[#FFC700] text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+              >
+                <Pencil className="h-4 w-4" />
+                Edit {KIND_LABEL[selectedNode.kind]}
+              </button>
+            ) : null}
             {CHILD_OF[selectedNode.kind] && (
               <button
                 type="button"
@@ -2161,18 +2182,205 @@ export default function EquipmentExplorer({
         )}
 
         <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-300 space-y-2">
-          <p>
-            <span className="text-slate-500 text-xs font-bold uppercase tracking-wider">
-              Path
-            </span>
-            <br />
-            {withFacilityPrefix(selectedNode.path).replace(/➔/g, " ➔ ")}
+          <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">
+            Path
           </p>
+          <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
+            {withFacilityPrefix(selectedNode.path)
+              .split(/\s*➔\s*/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((seg, i, arr) => (
+                <React.Fragment key={`${seg}-${i}`}>
+                  {i > 0 ? (
+                    <ChevronRight
+                      className="h-3.5 w-3.5 text-[#FFC700]/60 shrink-0"
+                      aria-hidden
+                    />
+                  ) : null}
+                  <span
+                    className={
+                      i === arr.length - 1
+                        ? "text-white font-semibold"
+                        : "text-slate-400"
+                    }
+                  >
+                    {seg}
+                  </span>
+                </React.Fragment>
+              ))}
+          </div>
           <p className="text-xs text-slate-500">
             {selectedNode.children.length} child node
             {selectedNode.children.length === 1 ? "" : "s"}
           </p>
         </div>
+      </div>
+    );
+
+    const maintenancePlan = (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+              Multi-Tech Matrix
+            </p>
+            <h3 className="text-sm font-bold text-white mt-1">
+              Equipment Maintenance Plan
+            </h3>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            {KIND_ICON[selectedNode.kind]} {selectedNode.label}
+          </p>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50 shadow-[inset_0_1px_0_rgba(255,199,0,0.04)]">
+          <table className="w-full text-left text-xs min-w-[560px]">
+            <thead>
+              <tr className="border-b border-slate-800 bg-slate-900/80">
+                {(
+                  [
+                    "Assessment Status",
+                    "Technology",
+                    "Manage",
+                    "Data / Reports"
+                  ] as const
+                ).map((col) => (
+                  <th
+                    key={col}
+                    className="px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-[#FFC700]/90 whitespace-nowrap"
+                  >
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {CBM_TECH_MATRIX.map((row) => (
+                <tr
+                  key={row.technology}
+                  className="border-b border-slate-800/80 last:border-b-0 hover:bg-slate-900/50 transition-colors"
+                >
+                  <td className="px-3 py-2.5 align-middle">
+                    {row.monitored && row.lastAssessment ? (
+                      <a
+                        href={row.reportUrl || "#"}
+                        onClick={(e) => {
+                          if (!row.reportUrl || row.reportUrl === "#") {
+                            e.preventDefault();
+                            toast(
+                              `Opening latest ${row.technology} report…`,
+                              "info"
+                            );
+                          }
+                        }}
+                        className="inline-flex items-center rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-colors"
+                        title={`Latest ${row.technology} report`}
+                      >
+                        {row.lastAssessment}
+                      </a>
+                    ) : (
+                      <span className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
+                        Not Monitored
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 align-middle">
+                    <span
+                      className={
+                        row.monitored
+                          ? "text-slate-100 font-semibold"
+                          : "text-slate-500 font-medium"
+                      }
+                    >
+                      {row.technology}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5 align-middle">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        toast(
+                          row.monitored
+                            ? `Manage ${row.technology} monitoring…`
+                            : `Enable ${row.technology} monitoring…`,
+                          "info"
+                        )
+                      }
+                      className={`min-h-[30px] px-2.5 rounded-lg text-[11px] font-bold cursor-pointer transition-colors border ${
+                        row.monitored
+                          ? "border-[#FFC700]/40 bg-[#FFC700]/10 text-[#FFC700] hover:bg-[#FFC700]/20"
+                          : "border-slate-700 bg-slate-900 text-slate-500 hover:border-slate-600 hover:text-slate-300"
+                      }`}
+                    >
+                      {row.monitored ? "Manage" : "Enable"}
+                    </button>
+                  </td>
+                  <td className="px-3 py-2.5 align-middle">
+                    {row.monitored ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          toast(
+                            `Viewing ${row.technology} collection data / waveforms…`,
+                            "info"
+                          )
+                        }
+                        className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900 text-base leading-none cursor-pointer hover:border-[#FFC700]/50 hover:bg-[#FFC700]/10 transition-colors inline-flex items-center justify-center"
+                        title="View raw collection data / waveforms"
+                        aria-label={`View ${row.technology} collection data`}
+                      >
+                        ⏳
+                      </button>
+                    ) : (
+                      <span className="text-slate-600 text-[11px]">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="space-y-4">
+        <nav
+          aria-label="Detail tabs"
+          className="flex flex-wrap gap-1 rounded-xl border border-slate-800 bg-slate-950/60 p-1"
+        >
+          {DETAIL_TABS.map((tab) => {
+            const active = detailTab === tab;
+            return (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setDetailTab(tab)}
+                className={`min-h-[36px] px-3 rounded-lg text-[11px] sm:text-xs font-bold cursor-pointer transition-all whitespace-nowrap ${
+                  active
+                    ? "bg-[#FFC700]/15 text-[#FFC700] border border-[#FFC700]/50 shadow-[0_0_10px_rgba(255,199,0,0.15)]"
+                    : "text-slate-400 border border-transparent hover:text-slate-200 hover:bg-slate-800/70"
+                }`}
+              >
+                {tab}
+              </button>
+            );
+          })}
+        </nav>
+
+        {detailTab === "Location Profile" ? (
+          locationProfile
+        ) : detailTab === "Equipment Maintenance Plan" ? (
+          maintenancePlan
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-4 py-10 text-center">
+            <p className="text-sm font-semibold text-slate-200">{detailTab}</p>
+            <p className="text-xs text-slate-500 mt-1.5 max-w-sm mx-auto leading-relaxed">
+              Content for this tab will appear here.
+            </p>
+          </div>
+        )}
       </div>
     );
   };
@@ -2193,14 +2401,38 @@ export default function EquipmentExplorer({
 
       <div className="flex-1 flex flex-col md:flex-row min-h-0 border-t border-slate-800">
         {/* LEFT — Tree */}
-        <aside className="w-full md:w-[320px] md:max-w-[30%] shrink-0 border-b md:border-b-0 md:border-r border-slate-800 bg-slate-950/40 flex flex-col min-h-[280px] md:min-h-0">
-          <div className="shrink-0 p-3 border-b border-slate-800">
+        <aside className="w-full md:w-[340px] md:max-w-[34%] shrink-0 border-b md:border-b-0 md:border-r border-slate-800 bg-gradient-to-b from-slate-950/80 to-slate-950/40 flex flex-col min-h-[280px] md:min-h-0">
+          <div className="shrink-0 p-3 border-b border-slate-800 space-y-2">
             <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
               Plant Hierarchy Explorer
             </p>
+            <nav
+              aria-label="Hierarchy breadcrumb"
+              className="flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px] leading-snug"
+            >
+              {breadcrumbSegments.map((seg, i) => (
+                <React.Fragment key={`${seg}-${i}`}>
+                  {i > 0 ? (
+                    <ChevronRight
+                      className="h-3 w-3 text-slate-600 shrink-0"
+                      aria-hidden
+                    />
+                  ) : null}
+                  <span
+                    className={
+                      i === breadcrumbSegments.length - 1
+                        ? "text-[#FFC700] font-semibold"
+                        : "text-slate-400"
+                    }
+                  >
+                    {seg}
+                  </span>
+                </React.Fragment>
+              ))}
+            </nav>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-2">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden p-2 pl-1">
             {empty ? (
               <div className="space-y-2">
                 {siteRoot ? renderTreeNode(siteRoot, 0) : null}
@@ -2222,15 +2454,32 @@ export default function EquipmentExplorer({
             <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
               Contextual Details &amp; Kinematics Editor
             </p>
-            <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-3 py-2.5 flex items-center gap-3">
+            <div className="rounded-xl border border-slate-700/80 bg-slate-900/50 px-3 py-2.5 flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <p className="text-sm text-cyan-50 break-words">
-                  <span className="mr-1.5">📍</span>
-                  <span className="font-bold text-cyan-200">Location Context:</span>{" "}
-                  <span className="text-white font-medium">
-                    {contextPath.replace(/➔/g, " ➔ ")}
-                  </span>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1.5">
+                  Location Context
                 </p>
+                <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-sm">
+                  {breadcrumbSegments.map((seg, i) => (
+                    <React.Fragment key={`ctx-${seg}-${i}`}>
+                      {i > 0 ? (
+                        <ChevronRight
+                          className="h-3.5 w-3.5 text-[#FFC700]/70 shrink-0"
+                          aria-hidden
+                        />
+                      ) : null}
+                      <span
+                        className={
+                          i === breadcrumbSegments.length - 1
+                            ? "text-white font-semibold"
+                            : "text-slate-400"
+                        }
+                      >
+                        {seg}
+                      </span>
+                    </React.Fragment>
+                  ))}
+                </div>
               </div>
               {selectedNode &&
               (selectedNode.kind === "asset" ||
@@ -2261,7 +2510,7 @@ export default function EquipmentExplorer({
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 sm:p-5">
-            {empty && mode !== "create" ? (
+            {empty && mode !== "create" && mode !== "edit" ? (
               <div className="h-full min-h-[240px] flex flex-col items-center justify-center gap-3 text-center">
                 <p className="text-slate-400 text-sm max-w-md leading-relaxed">
                   Your licensed site{" "}
@@ -2275,7 +2524,7 @@ export default function EquipmentExplorer({
                   above to start building under the facility.
                 </p>
               </div>
-            ) : mode === "create" ? (
+            ) : mode === "create" || mode === "edit" ? (
               renderCreateForm()
             ) : (
               renderIdleDetail()
