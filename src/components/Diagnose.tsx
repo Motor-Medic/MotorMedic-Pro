@@ -40,16 +40,57 @@ import {
   getActiveDbSelection,
   getFlatEquipment,
   loadDemoData,
+  type EquipComponent,
   type FlatEquipAsset
 } from "../data/equipmentDb";
+import {
+  ANALYZE_VIBRATION_API_PATH,
+  type ApiSeverity,
+  type VibrationAnalysisResult
+} from "../lib/consensusEngine";
+import {
+  applyTickDensityRoleCorrection,
+  cropAllChartRegions,
+  peakXPercent,
+  peakYPercent,
+  requestSpectrumRegionDetection,
+  type ChartAxisRange,
+  type ChartRegionDetectStatus,
+  type ChartRegionKind,
+  type CroppedChartRegions,
+  type SpectrumChartPeak,
+  type SpectrumRegionDetection
+} from "../lib/spectrumChartRegions";
+import {
+  saveAnalysisResult,
+  setAnalysisBaseline
+} from "../lib/analysisPersistence";
+import {
+  ANALYZE_THERMOGRAPHY_API_PATH,
+  mapThermographyToUiResult,
+  normalizeThermographyResult,
+  thermographyPeaksForSave,
+  type ThermographyResult
+} from "../lib/thermographyAnalysis";
+import {
+  ANALYZE_ULTRASOUND_API_PATH,
+  mapUltrasoundToUiResult,
+  normalizeUltrasoundResult,
+  ultrasoundPeaksForSave,
+  type UltrasoundResult
+} from "../lib/ultrasoundAnalysis";
 import VibrationInputAccordions, {
   type DriveConfig,
   type VibAccordionSection,
   type VibDataSource
 } from "./VibrationInputAccordions";
-import ThermographyInputAccordions from "./ThermographyInputAccordions";
+import ThermographyInputAccordions, {
+  type ThermographyTelemetrySnapshot
+} from "./ThermographyInputAccordions";
 import ThermographyResultsDashboard from "./ThermographyResultsDashboard";
-import UltrasoundInputAccordions from "./UltrasoundInputAccordions";
+import UltrasoundInputAccordions, {
+  type UltrasoundInputSnapshot
+} from "./UltrasoundInputAccordions";
 import UltrasoundResultsDashboard from "./UltrasoundResultsDashboard";
 import McaInputAccordions from "./McaInputAccordions";
 import McaResultsDashboard from "./McaResultsDashboard";
@@ -155,6 +196,692 @@ interface FaultFinding {
   detail: string;
 }
 
+async function blobUrlToDataUrl(url: string): Promise<string> {
+  const res = await fetch(url);
+  const blob = await res.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Failed to encode spectrum image."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Cropped analyzer panel with optional peak markers overlaid in plot space. */
+function CroppedChartPanel({
+  title,
+  imageUrl,
+  peaks,
+  regionKind,
+  axis,
+  emptyHint,
+  className = "h-64",
+  onExpand
+}: {
+  title?: string;
+  imageUrl: string;
+  peaks: SpectrumChartPeak[];
+  regionKind: ChartRegionKind;
+  axis?: ChartAxisRange;
+  emptyHint?: string;
+  className?: string;
+  onExpand?: () => void;
+}) {
+  const markers = peaks.filter(
+    (p) => !p.chart || p.chart === regionKind
+  );
+
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      className={`relative flex w-full items-center justify-center overflow-hidden rounded-lg border border-slate-800 bg-slate-950 text-left ${className} ${
+        onExpand ? "cursor-zoom-in hover:border-cyan-500/40 focus:outline-none focus:ring-1 focus:ring-cyan-500/50" : ""
+      }`}
+      title={onExpand ? "Click to expand" : title || "Cropped chart region"}
+    >
+      {title ? (
+        <span className="sr-only">{title}</span>
+      ) : null}
+      <div className="relative inline-flex h-full max-h-full w-full max-w-full items-center justify-center">
+        <img
+          src={imageUrl}
+          alt={title || "Cropped chart region"}
+          className="max-h-full max-w-full object-contain"
+          draggable={false}
+        />
+        {markers.map((p, i) => {
+          const left = peakXPercent(p.frequencyHz, axis);
+          const top =
+            p.amplitude > 0
+              ? peakYPercent(p.amplitude, axis)
+              : 18;
+          return (
+            <div
+              key={`${regionKind}-${p.frequencyHz}-${i}`}
+              className="pointer-events-none absolute z-10"
+              style={{ left: `${left}%`, top: `${top}%`, transform: "translate(-50%, -100%)" }}
+              title={`${p.label || "Peak"} · ${p.frequencyHz} Hz · ${p.amplitude}`}
+            >
+              <div className="flex flex-col items-center">
+                <span className="mb-0.5 max-w-[9rem] truncate rounded bg-red-950/90 px-1.5 py-0.5 text-[9px] font-semibold text-red-200 border border-red-500/40">
+                  {p.label || `${p.frequencyHz} Hz`}
+                </span>
+                <span className="h-0 w-0 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent border-t-red-400" />
+                <span className="mt-[-1px] h-2.5 w-2.5 rounded-full border-2 border-white bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.7)]" />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {markers.length === 0 && emptyHint ? (
+        <span className="pointer-events-none absolute bottom-2 left-2 text-[10px] text-slate-500">
+          {emptyHint}
+        </span>
+      ) : null}
+      {onExpand ? (
+        <span className="pointer-events-none absolute right-2 top-2 rounded bg-slate-950/80 px-1.5 py-0.5 text-[10px] text-slate-400 border border-slate-700">
+          Expand
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function CroppedChartExpandModal({
+  title,
+  imageUrl,
+  peaks,
+  regionKind,
+  axis,
+  onClose
+}: {
+  title: string;
+  imageUrl: string;
+  peaks: SpectrumChartPeak[];
+  regionKind: ChartRegionKind;
+  axis?: ChartAxisRange;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const markers = peaks.filter((p) => !p.chart || p.chart === regionKind);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 sm:p-8"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+          <h3 className="text-sm font-bold text-white truncate">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800 hover:text-white cursor-pointer"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="relative flex min-h-[50vh] flex-1 items-center justify-center bg-slate-950 p-4">
+          <div className="relative inline-flex max-h-[75vh] max-w-full items-center justify-center">
+            <img
+              src={imageUrl}
+              alt={title}
+              className="max-h-[75vh] max-w-full object-contain"
+              draggable={false}
+            />
+            {markers.map((p, i) => {
+              const left = peakXPercent(p.frequencyHz, axis);
+              const top =
+                p.amplitude > 0 ? peakYPercent(p.amplitude, axis) : 18;
+              return (
+                <div
+                  key={`modal-${regionKind}-${p.frequencyHz}-${i}`}
+                  className="pointer-events-none absolute z-10"
+                  style={{
+                    left: `${left}%`,
+                    top: `${top}%`,
+                    transform: "translate(-50%, -100%)"
+                  }}
+                >
+                  <div className="flex flex-col items-center">
+                    <span className="mb-0.5 max-w-[12rem] truncate rounded bg-red-950/90 px-2 py-0.5 text-[11px] font-semibold text-red-200 border border-red-500/40">
+                      {p.label || `${p.frequencyHz} Hz`}
+                    </span>
+                    <span className="h-0 w-0 border-l-[6px] border-r-[6px] border-t-[7px] border-l-transparent border-r-transparent border-t-red-400" />
+                    <span className="mt-[-1px] h-3 w-3 rounded-full border-2 border-white bg-red-500" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function mapApiSeverityToUi(sev: ApiSeverity | string | undefined): Severity {
+  if (sev === "CRITICAL") return "HIGH";
+  if (sev === "ANOMALY") return "MEDIUM";
+  return "LOW";
+}
+
+function isPlaceholderFaultTitle(title: string | undefined | null): boolean {
+  const t = String(title || "").trim().toLowerCase();
+  if (!t) return true;
+  return /^(none|n\/?a|normal|no\s*faults?|none detected|no fault detected|healthy|ok|null|undefined|unresolved|continue monitoring)$/i.test(
+    t
+  );
+}
+
+function apiSeverityRank(sev: ApiSeverity | string | undefined): number {
+  if (sev === "CRITICAL") return 3;
+  if (sev === "ANOMALY") return 2;
+  return 1;
+}
+
+function healthScoreForSeverity(sev: ApiSeverity): number {
+  if (sev === "CRITICAL") return 32;
+  if (sev === "ANOMALY") return 58;
+  return 92;
+}
+
+type IdentifiedFault = VibrationAnalysisResult["identifiedFaults"][number];
+
+function nearHz(hz: number, target: number, tol: number): boolean {
+  return Number.isFinite(hz) && Number.isFinite(target) && Math.abs(hz - target) <= tol;
+}
+
+/**
+ * Map Vision-extracted spectrum peaks into fault findings when the consensus
+ * payload omits identifiedFaults (common when referee returns NORMAL/"None").
+ */
+function inferFaultsFromPeaks(
+  peaks: SpectrumChartPeak[] | undefined,
+  ratedRpm?: number
+): IdentifiedFault[] {
+  if (!peaks?.length) return [];
+
+  const usable = peaks.filter(
+    (p) => Number.isFinite(p.frequencyHz) && p.frequencyHz > 0
+  );
+  if (!usable.length) return [];
+
+  const labeled1x = usable.find((p) =>
+    /1\s*x|running\s*speed|shaft/i.test(String(p.label || ""))
+  );
+  const oneX =
+    ratedRpm && ratedRpm > 0
+      ? ratedRpm / 60
+      : labeled1x?.frequencyHz ||
+        usable.find((p) => p.frequencyHz >= 15 && p.frequencyHz <= 70)?.frequencyHz ||
+        29.8;
+
+  const byAmp = [...usable].sort(
+    (a, b) => (b.amplitude || 0) - (a.amplitude || 0)
+  );
+  const faults: IdentifiedFault[] = [];
+  const pushUnique = (fault: IdentifiedFault) => {
+    const key = fault.title.toLowerCase();
+    if (faults.some((f) => f.title.toLowerCase() === key)) return;
+    faults.push(fault);
+  };
+
+  const bpfoPeak =
+    usable.find((p) => /bpfo|outer\s*race/i.test(String(p.label || ""))) ||
+    usable.find(
+      (p) =>
+        p.frequencyHz >= Math.max(80, oneX * 3.5) &&
+        p.frequencyHz <= oneX * 12 &&
+        !nearHz(p.frequencyHz, oneX, 2) &&
+        !nearHz(p.frequencyHz, oneX * 2, 3)
+    ) ||
+    byAmp.find(
+      (p) =>
+        p.frequencyHz >= 100 &&
+        p.frequencyHz <= 250 &&
+        !nearHz(p.frequencyHz, oneX, 2) &&
+        !nearHz(p.frequencyHz, oneX * 2, 3)
+    );
+
+  if (bpfoPeak) {
+    pushUnique({
+      title: "Outer Race Bearing Defect (BPFO)",
+      frequencyHz: bpfoPeak.frequencyHz,
+      confidencePercent: Math.min(
+        96,
+        Math.max(78, Math.round(70 + (bpfoPeak.amplitude || 0) * 3))
+      ),
+      severity: "CRITICAL",
+      description:
+        bpfoPeak.label
+          ? `Vision peak "${bpfoPeak.label}" at ${bpfoPeak.frequencyHz} Hz matches outer-race bearing defect family.`
+          : `Dominant non-synchronous peak at ${bpfoPeak.frequencyHz} Hz is consistent with BPFO (outer race defect).`
+    });
+  }
+
+  const twoXPeak =
+    usable.find((p) => /2\s*x|misalign/i.test(String(p.label || ""))) ||
+    usable.find((p) => nearHz(p.frequencyHz, oneX * 2, Math.max(1.5, oneX * 0.08)));
+  const oneXPeak =
+    labeled1x ||
+    usable.find((p) => nearHz(p.frequencyHz, oneX, Math.max(1.2, oneX * 0.06)));
+
+  if (twoXPeak || (oneXPeak && (oneXPeak.amplitude || 0) > 0.5)) {
+    pushUnique({
+      title: "Angular Misalignment",
+      frequencyHz: twoXPeak?.frequencyHz || oneXPeak?.frequencyHz || oneX * 2,
+      confidencePercent: twoXPeak ? 87 : 78,
+      severity: "ANOMALY",
+      description:
+        "Elevated 1X/2X running-speed peaks consistent with angular misalignment."
+    });
+  }
+
+  if (oneXPeak) {
+    pushUnique({
+      title: "Unbalance",
+      frequencyHz: oneXPeak.frequencyHz,
+      confidencePercent: 81,
+      severity: "ANOMALY",
+      description:
+        "Dominant 1X radial energy suggests residual unbalance. Verify coupling balance and rotor trim."
+    });
+  }
+
+  const noiseLike = usable.find((p) =>
+    /noise|floor|broadband|random/i.test(String(p.label || ""))
+  );
+  if (noiseLike || usable.length >= 3) {
+    pushUnique({
+      title: "Elevated Noise Floor",
+      frequencyHz: noiseLike?.frequencyHz || 0,
+      confidencePercent: 72,
+      severity: "NORMAL",
+      description:
+        "Broadband / low-level spectral energy elevated — possible early lubrication variance or minor looseness."
+    });
+  }
+
+  return faults;
+}
+
+/**
+ * Keep banner, primary fault, health score, and identified-fault list consistent.
+ * Prefer API faults; if missing, seed from primaryFault and/or Vision peaks.
+ */
+function reconcileAnalysisResult(
+  raw: VibrationAnalysisResult,
+  options?: { peaks?: SpectrumChartPeak[]; ratedRpm?: number }
+): VibrationAnalysisResult {
+  let identifiedFaults = (raw.identifiedFaults || []).filter(
+    (f) => f && !isPlaceholderFaultTitle(f.title)
+  );
+
+  // Referee often returns a real primaryFault with an empty identifiedFaults[].
+  if (
+    identifiedFaults.length === 0 &&
+    raw.primaryFault &&
+    !isPlaceholderFaultTitle(raw.primaryFault.title)
+  ) {
+    identifiedFaults = [
+      {
+        title: raw.primaryFault.title,
+        frequencyHz: Number(raw.primaryFault.frequencyHz) || 0,
+        confidencePercent: Math.round(
+          Number(raw.primaryFault.confidencePercent) || 80
+        ),
+        severity: (raw.primaryFault.severity as ApiSeverity) || "ANOMALY",
+        description:
+          raw.summary ||
+          "Primary consensus finding elevated from empty identifiedFaults list."
+      }
+    ];
+  }
+
+  // Vision peaks are evidence — derive fault families when consensus omitted them.
+  if (identifiedFaults.length === 0) {
+    identifiedFaults = inferFaultsFromPeaks(options?.peaks, options?.ratedRpm);
+  }
+
+  let severity = String(raw.severity || "NORMAL").toUpperCase() as ApiSeverity;
+  if (severity !== "NORMAL" && severity !== "ANOMALY" && severity !== "CRITICAL") {
+    severity = "ANOMALY";
+  }
+
+  if (identifiedFaults.length > 0) {
+    const worstFaultSev = identifiedFaults.reduce<ApiSeverity>((acc, f) => {
+      const s = String(f.severity || "ANOMALY").toUpperCase() as ApiSeverity;
+      const normalized =
+        s === "CRITICAL" || s === "ANOMALY" || s === "NORMAL" ? s : "ANOMALY";
+      return apiSeverityRank(normalized) > apiSeverityRank(acc) ? normalized : acc;
+    }, "NORMAL");
+
+    if (
+      apiSeverityRank(worstFaultSev) > apiSeverityRank(severity) ||
+      severity === "NORMAL"
+    ) {
+      severity = worstFaultSev === "NORMAL" ? "ANOMALY" : worstFaultSev;
+    }
+  } else {
+    severity = "NORMAL";
+  }
+
+  let primaryFault = raw.primaryFault ? { ...raw.primaryFault } : undefined;
+  const primaryIsPlaceholder = isPlaceholderFaultTitle(primaryFault?.title);
+
+  if (identifiedFaults.length > 0 && primaryIsPlaceholder) {
+    const top = [...identifiedFaults].sort((a, b) => {
+      const bySev = apiSeverityRank(b.severity) - apiSeverityRank(a.severity);
+      if (bySev !== 0) return bySev;
+      return (b.confidencePercent || 0) - (a.confidencePercent || 0);
+    })[0];
+    primaryFault = {
+      title: top.title,
+      frequencyHz: Number(top.frequencyHz) || 0,
+      confidencePercent: Math.round(Number(top.confidencePercent) || 0),
+      severity: (top.severity as ApiSeverity) || severity,
+      actionWindow:
+        top.severity === "CRITICAL"
+          ? "Immediate repair required within 7 days."
+          : top.severity === "ANOMALY"
+            ? "Schedule inspection within 14–30 days."
+            : "Continue routine monitoring."
+    };
+  } else if (identifiedFaults.length === 0) {
+    primaryFault = {
+      title: "None Detected",
+      frequencyHz: 0,
+      confidencePercent: Math.max(Number(primaryFault?.confidencePercent) || 0, 90),
+      severity: "NORMAL",
+      actionWindow: "Continue routine monitoring."
+    };
+  } else if (primaryFault) {
+    primaryFault.severity = (primaryFault.severity as ApiSeverity) || severity;
+  }
+
+  let overallHealthScore = Number(raw.overallHealthScore);
+  if (!Number.isFinite(overallHealthScore)) {
+    overallHealthScore = healthScoreForSeverity(severity);
+  }
+  if (
+    identifiedFaults.length > 0 &&
+    severity !== "NORMAL" &&
+    overallHealthScore > 75
+  ) {
+    overallHealthScore = healthScoreForSeverity(severity);
+  }
+  if (
+    severity === "NORMAL" &&
+    identifiedFaults.length === 0 &&
+    overallHealthScore < 80
+  ) {
+    overallHealthScore = healthScoreForSeverity("NORMAL");
+  }
+
+  let summary = String(raw.summary || "").trim();
+  if (identifiedFaults.length > 0) {
+    if (
+      !summary ||
+      /normal operation|continue monitoring|no fault|healthy|none detected/i.test(
+        summary
+      )
+    ) {
+      summary = `Consensus analysis: ${primaryFault?.title} at ${
+        primaryFault?.frequencyHz || "—"
+      } Hz (${severity}). ${identifiedFaults.length} fault signature(s) identified.`;
+    }
+  } else if (
+    !summary ||
+    /critical|anomaly|defect|bpfo|misalign|unbalance|fault/i.test(summary)
+  ) {
+    summary =
+      "No actionable fault signatures identified. Continue routine monitoring.";
+  }
+
+  const { financialImpact, repairRecommendations } = computeFinancialImpactFromFault(
+    primaryFault?.title
+  );
+
+  return {
+    ...raw,
+    severity,
+    overallHealthScore: Math.max(0, Math.min(100, Math.round(overallHealthScore))),
+    primaryFault: primaryFault!,
+    identifiedFaults,
+    summary,
+    financialImpact,
+    repairRecommendations
+  };
+}
+
+function formatUsd(n: number | undefined): string {
+  const value = Number.isFinite(n as number) ? Number(n) : 0;
+  return value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0
+  });
+}
+
+type FaultCostProfile = {
+  kind:
+    | "misalignment"
+    | "unbalance"
+    | "bearing"
+    | "looseness"
+    | "loose_connection"
+    | "overheating"
+    | "none"
+    | "generic";
+  preventiveRepairCost: number;
+  repairHours: number;
+  repairRecommendations: string[];
+};
+
+const DOWNTIME_RATE_PER_HOUR = 5000;
+const REACTIVE_MAINTENANCE_MULTIPLIER = 5;
+
+function classifyFaultForCosting(primaryFaultTitle: string | undefined | null): FaultCostProfile {
+  const title = String(primaryFaultTitle || "").trim();
+  if (!title || isPlaceholderFaultTitle(title) || /none detected|normal|healthy|no fault/i.test(title)) {
+    return {
+      kind: "none",
+      preventiveRepairCost: 0,
+      repairHours: 0,
+      repairRecommendations: [
+        "Continue routine condition monitoring on the current route interval.",
+        "Archive this spectrum as a baseline for future comparison.",
+        "Re-run analysis if noise, temperature, or load conditions change."
+      ]
+    };
+  }
+
+  // Thermal / IR faults — check before mechanical "looseness" (Loose Connection ≠ mechanical looseness)
+  if (
+    /loose\s*connection|high[\s-]*resistance|contact\s*resistance|lug|bus\s*bar|terminal|stab/i.test(
+      title
+    )
+  ) {
+    return {
+      kind: "loose_connection",
+      preventiveRepairCost: 750,
+      repairHours: 3,
+      repairRecommendations: [
+        "De-energize and follow LOTO / NFPA 70E arc-flash PPE before opening the enclosure.",
+        "Inspect the hot phase lug/bus joint for discoloration, pitting, or oxide.",
+        "Clean mating surfaces and apply OEM-approved anti-oxidant compound.",
+        "Retorque the connection to manufacturer specifications; replace damaged hardware.",
+        "Re-energize under load and re-scan within 24 hours to verify ΔT is within NFPA 70B limits."
+      ]
+    };
+  }
+
+  if (
+    /overheat|hot\s*spot|hotspot|thermal\s*anomal|elevated\s*temp|heat\s*rise|Δt|delta[\s-]*t/i.test(
+      title
+    )
+  ) {
+    return {
+      kind: "overheating",
+      preventiveRepairCost: 1200,
+      repairHours: 4,
+      repairRecommendations: [
+        "Confirm load current vs nameplate and normalize ΔT to 100% load per NFPA 70B.",
+        "Identify the heat source (connection, winding, bearing housing, or enclosure).",
+        "Correct the root cause (retorque, cooling path, insulation, or lubrication as applicable).",
+        "Verify emissivity and reflected-temperature settings before the verification scan.",
+        "Document as-found / as-left radiometric images and close the CMMS work order."
+      ]
+    };
+  }
+
+  if (/misalign|angular|offset|soft\s*foot|coupling\s*align/i.test(title)) {
+    return {
+      kind: "misalignment",
+      preventiveRepairCost: 800,
+      repairHours: 4,
+      repairRecommendations: [
+        "Lock out / tag out the machine and verify zero energy before mechanical work.",
+        "Inspect soft foot, baseplate flatness, and coupling condition.",
+        "Perform precision laser shaft alignment targeting angular misalignment correction.",
+        "Install or adjust shims per the alignment report; re-check soft foot.",
+        "Run the machine and confirm 1X/2X vibration reduction vs this baseline."
+      ]
+    };
+  }
+
+  if (/unbalance|imbalance|1x\b|rotor\s*balance|fan\s*balance/i.test(title)) {
+    return {
+      kind: "unbalance",
+      preventiveRepairCost: 600,
+      repairHours: 3,
+      repairRecommendations: [
+        "Inspect the rotor/fan for missing balance weights, buildup, or damaged blades.",
+        "Clean the rotating assembly and remove any process debris.",
+        "Perform single- or two-plane field balancing at operating speed.",
+        "Verify 1X amplitude is below alarm limits after balance correction.",
+        "Document trial weights and final correction in the CMMS work order."
+      ]
+    };
+  }
+
+  if (/bearing|bpfo|bpfi|bsf|ftf|race|spall|outer\s*race|inner\s*race/i.test(title)) {
+    return {
+      kind: "bearing",
+      preventiveRepairCost: 2500,
+      repairHours: 8,
+      repairRecommendations: [
+        "Allocate the correct replacement bearing from inventory (match DE/NDE OEM spec).",
+        "Schedule planned downtime and complete lock out / tag out before disassembly.",
+        "Remove the defective bearing; inspect shaft/housing fits and lubrication condition.",
+        "Install the new bearing per OEM procedure with correct clearance and grease fill.",
+        "Verify soft foot and holding-down bolts, then remount and remeasure BPFO/BPFI."
+      ]
+    };
+  }
+
+  if (/loose|looseness|bolt|mount|structural\s*resonance|mechanical\s*looseness/i.test(title)) {
+    return {
+      kind: "looseness",
+      preventiveRepairCost: 500,
+      repairHours: 2,
+      repairRecommendations: [
+        "Inspect foundation bolts, bearing housings, and foot mounts for play or missing hardware.",
+        "Torque all fasteners to OEM specification; replace stretched or damaged bolts.",
+        "Check for cracked feet, worn fits, or damaged dowels that allow movement.",
+        "Re-run vibration at 1X and harmonics to confirm looseness signatures are gone.",
+        "Update the CMMS with torque values and any hardware replaced."
+      ]
+    };
+  }
+
+  return {
+    kind: "generic",
+    preventiveRepairCost: 1000,
+    repairHours: 4,
+    repairRecommendations: [
+      `Investigate primary finding: ${title}.`,
+      "Plan a controlled outage and verify machine isolation (LOTO) before corrective work.",
+      "Correct the root cause identified in the consensus analysis, then remount sensors securely.",
+      "Remeasure vibration post-repair and compare against this diagnostic baseline.",
+      "Close the work order with as-found / as-left amplitudes and photos."
+    ]
+  };
+}
+
+function computeFinancialImpactFromFault(primaryFaultTitle: string | undefined | null): {
+  financialImpact: {
+    preventiveRepairCost: number;
+    failureCostIfDelayed: number;
+    downtimeLossPerHour: number;
+  };
+  repairRecommendations: string[];
+  estimatedRepairHours: number;
+} {
+  const profile = classifyFaultForCosting(primaryFaultTitle);
+  const preventiveRepairCost = profile.preventiveRepairCost;
+  const failureCostIfDelayed = preventiveRepairCost * REACTIVE_MAINTENANCE_MULTIPLIER;
+  // Stored total downtime loss ($5,000/hr × repair hours) — displayed as Downtime Loss
+  const downtimeLossPerHour = DOWNTIME_RATE_PER_HOUR * profile.repairHours;
+  return {
+    financialImpact: {
+      preventiveRepairCost,
+      failureCostIfDelayed,
+      downtimeLossPerHour
+    },
+    repairRecommendations: profile.repairRecommendations,
+    estimatedRepairHours: profile.repairHours
+  };
+}
+
+/**
+ * Legacy local thermography builder removed — use POST /api/analyze-thermography
+ * via mapThermographyToUiResult (src/lib/thermographyAnalysis.ts).
+ */
+
+function severityBannerCopy(sev: ApiSeverity | string | undefined): {
+  title: string;
+  wrap: string;
+  icon: string;
+} {
+  if (sev === "CRITICAL") {
+    return {
+      title: "Critical Fault / Immediate Repair Required",
+      wrap: "border-red-500/50 bg-gradient-to-r from-red-950/80 via-red-900/40 to-red-950/60 text-red-100 shadow-[0_0_28px_rgba(239,68,68,0.18)]",
+      icon: "text-red-300"
+    };
+  }
+  if (sev === "ANOMALY") {
+    return {
+      title: "Anomaly Detected — Schedule Inspection",
+      wrap: "border-amber-500/50 bg-gradient-to-r from-amber-950/80 via-amber-900/40 to-amber-950/60 text-amber-100 shadow-[0_0_28px_rgba(245,158,11,0.16)]",
+      icon: "text-amber-300"
+    };
+  }
+  return {
+    title: "Normal Operation — Continue Monitoring",
+    wrap: "border-emerald-500/40 bg-gradient-to-r from-emerald-950/70 via-emerald-900/30 to-emerald-950/50 text-emerald-100 shadow-[0_0_24px_rgba(16,185,129,0.12)]",
+    icon: "text-emerald-300"
+  };
+}
+
 /* ========================================================================== */
 /* Mock diagnostic case — Boiler Feed Pump A / Motor DE                       */
 /* ========================================================================== */
@@ -225,18 +952,48 @@ function inferComponentType(asset: FlatEquipAsset): string {
   return "Pump";
 }
 
+function parseHpFromKin(motorHpKw?: string): number {
+  if (!motorHpKw) return 100;
+  const m = motorHpKw.match(/([\d.]+)/);
+  return m ? Number(m[1]) || 100 : 100;
+}
+
+function formatVoltage(v?: string): string {
+  if (!v || !v.trim()) return "460V";
+  const t = v.trim();
+  return /v/i.test(t) ? t : `${t}V`;
+}
+
+function lookupStoreComponent(
+  asset: DiagnoseAsset | FlatEquipAsset,
+  componentName: string
+): EquipComponent | undefined {
+  const tag = "tag" in asset ? asset.tag : "";
+  const id = asset.id;
+  const flat =
+    getFlatEquipment().find((a) => a.id === id) ||
+    getFlatEquipment().find((a) => a.tag === tag);
+  return flat?.components.find((c) => c.name === componentName);
+}
+
 function flatToDiagnoseAsset(asset: FlatEquipAsset): DiagnoseAsset {
   const comps = asset.components.map((c) => c.name).filter(Boolean);
+  const primary = asset.components[0];
+  const kin = primary?.kinematics;
   return {
     id: asset.id,
     label: `${asset.name} - ${asset.tag}`,
     tag: asset.tag,
     route: asset.routeName,
     location: asset.location,
-    bearing: asset.bearingType || asset.components[0]?.bearingType || "SKF 6320 C3",
-    rpm: asset.speedRpm ?? asset.components[0]?.speedRpm ?? 1780,
-    hp: 100,
-    voltage: "460V",
+    bearing:
+      kin?.bearingDe ||
+      asset.bearingType ||
+      primary?.bearingType ||
+      "SKF 6320 C3",
+    rpm: Number(kin?.ratedRpm) || asset.speedRpm || primary?.speedRpm || 1780,
+    hp: parseHpFromKin(kin?.motorHpKw),
+    voltage: formatVoltage(kin?.voltage),
     oilType: "ISO VG 68",
     components: comps.length > 0 ? comps : ["Motor DE"],
     isoZone: "Zone B",
@@ -524,27 +1281,37 @@ const FAULTS: FaultFinding[] = [
     amplitude: "4.2 mm/s",
     confidence: 94,
     detail:
-      "Bearing SKF 6320 C3 on Motor DE showing classic outer race defect signature with matching 2x harmonic at 304 Hz."
+      "Bearing outer race defect signature with matching harmonic family — schedule DE bearing replacement."
   },
   {
     id: "f2",
     severity: "MEDIUM",
-    title: "Slight Misalignment (1X Peak)",
-    frequency: "29.8 Hz (1X RPM)",
+    title: "Angular Misalignment",
+    frequency: "29.8 Hz (1X / 2X)",
     amplitude: "1.8 mm/s",
     confidence: 87,
     detail:
-      "Elevated 1X running speed peak suggests minor angular misalignment. Check coupling alignment."
+      "Elevated 1X/2X running-speed peaks with cross-channel phase shift consistent with angular misalignment."
   },
   {
     id: "f3",
+    severity: "MEDIUM",
+    title: "Unbalance",
+    frequency: "29.7 Hz (1X RPM)",
+    amplitude: "1.4 mm/s",
+    confidence: 81,
+    detail:
+      "Dominant 1X radial energy suggests residual unbalance. Verify coupling balance and impeller/fan trim."
+  },
+  {
+    id: "f4",
     severity: "LOW",
     title: "Elevated Noise Floor",
     frequency: "Broadband",
     amplitude: "0.5 mm/s floor",
     confidence: 72,
     detail:
-      "Slight increase in broadband noise. Possible early lubrication issue or minor looseness."
+      "Slight increase in broadband noise. Possible early lubrication variance or minor looseness."
   }
 ];
 
@@ -732,6 +1499,16 @@ export default function Diagnose({
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [analysisResult, setAnalysisResult] =
+    useState<VibrationAnalysisResult | null>(null);
+  const [analysisError, setAnalysisError] = useState<{
+    title: string;
+    message: string;
+    errorType?: string;
+  } | null>(null);
+  const [analysisSource, setAnalysisSource] = useState<"api" | "local" | null>(
+    null
+  );
   const [stepIdx, setStepIdx] = useState(0);
   const [progress, setProgress] = useState(0);
   const [unit, setUnit] = useState<UnitMode>("velocity");
@@ -777,9 +1554,59 @@ export default function Diagnose({
 
   const [spectrumUpload, setSpectrumUpload] = useState<UploadedFileMeta | null>(null);
   const [thermalUpload, setThermalUpload] = useState<UploadedFileMeta | null>(null);
+  const [thermographyPeaks, setThermographyPeaks] = useState<{
+    hotspot_temp: number;
+    reference_temp: number;
+    delta_t: number;
+  } | null>(null);
+  const [ultrasoundPeaks, setUltrasoundPeaks] = useState<{
+    peak_dbmv: number;
+    rms_dbmv: number;
+    baseline_dbmv?: number;
+    delta_db?: number;
+    mode?: string;
+  } | null>(null);
+  const [ultrasoundSnapshot, setUltrasoundSnapshot] =
+    useState<UltrasoundInputSnapshot | null>(null);
+  const [thermoTelemetry, setThermoTelemetry] =
+    useState<ThermographyTelemetrySnapshot | null>(null);
   const [rawUpload, setRawUpload] = useState<UploadedFileMeta | null>(null);
+  const [chartRegionStatus, setChartRegionStatus] =
+    useState<ChartRegionDetectStatus>("idle");
+  const [chartRegionDetection, setChartRegionDetection] =
+    useState<SpectrumRegionDetection | null>(null);
+  const [croppedCharts, setCroppedCharts] = useState<CroppedChartRegions>({});
+  const [chartRegionError, setChartRegionError] = useState<string | null>(null);
+  const [expandedCrop, setExpandedCrop] = useState<{
+    kind: ChartRegionKind;
+    title: string;
+    imageUrl: string;
+  } | null>(null);
+  const [savedAnalysisId, setSavedAnalysisId] = useState<string | null>(null);
+  const [isSavingAnalysis, setIsSavingAnalysis] = useState(false);
+  const [showManagerReport, setShowManagerReport] = useState(false);
+  const analysisStartedAtRef = useRef<string | null>(null);
+  const thermographyPeaksRef = useRef<unknown[] | null>(null);
+  const thermographyPolyRef = useRef<{
+    asset_type?: string | null;
+    phase_a_temp?: number | null;
+    phase_b_temp?: number | null;
+    phase_c_temp?: number | null;
+    measured_amps?: number | null;
+    rated_amps?: number | null;
+    de_bearing_temp?: number | null;
+    ode_bearing_temp?: number | null;
+    refractory_skin_temp?: number | null;
+    max_allowable_limit?: number | null;
+    i2r_normalized_delta_t?: number | null;
+  } | null>(null);
+  const ultrasoundPeaksRef = useRef<unknown[] | null>(null);
 
   const [measurementLocation, setMeasurementLocation] = useState<string>("Motor DE");
+  const [measurementPoint, setMeasurementPoint] = useState("1H");
+  const [rmsVelocity, setRmsVelocity] = useState("");
+  const [peakAcceleration, setPeakAcceleration] = useState("");
+  const [operatingTemp, setOperatingTemp] = useState("");
   const [machineCriticality, setMachineCriticality] = useState<string>("Essential");
   const [timeSinceService, setTimeSinceService] = useState("4,500 hours");
   const [ambientTemp, setAmbientTemp] = useState("72");
@@ -793,7 +1620,7 @@ export default function Diagnose({
   const [showAdvancedParams, setShowAdvancedParams] = useState(false);
 
   // Vibration enterprise accordion form
-  const [openVibSection, setOpenVibSection] = useState<VibAccordionSection | null>("kinematics");
+  const [openVibSection, setOpenVibSection] = useState<VibAccordionSection | null>(null);
   const [driveConfig, setDriveConfig] = useState<DriveConfig>("Direct-Coupled");
   const [drivePulleyDia, setDrivePulleyDia] = useState("");
   const [drivenPulleyDia, setDrivenPulleyDia] = useState("");
@@ -854,6 +1681,7 @@ export default function Diagnose({
   const chartRef = useRef<HTMLDivElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const analysisTimersRef = useRef<number[]>([]);
+  const chartRegionJobRef = useRef(0);
 
   const [equipTick, setEquipTick] = useState(0);
 
@@ -921,6 +1749,7 @@ export default function Diagnose({
     setOpenVibSection("kinematics");
     setDataSource("upload");
     setMeasurementLocation(component || "Motor DE");
+    setMeasurementPoint("1H");
     setFmax("10,000 Hz");
     setLor("1600");
     setWindowing("Hanning");
@@ -934,6 +1763,7 @@ export default function Diagnose({
     setAcqUnits("Velocity mm/s");
     setAnalysisDepth("standard");
     if (activeTech !== "vibration") setActiveTech("vibration");
+    applyComponentKinematics(match, component || match.components[0] || "Motor DE");
 
     toast(
       `Pre-filled from Equipment DB: ${match.tag}${component ? ` · ${component}` : ""}`,
@@ -957,21 +1787,104 @@ export default function Diagnose({
     [browseAssetTag, browseRoute, diagnoseAssets]
   );
   const componentOptions = selectedAsset?.components ?? [];
-  const hasVibIngestedData = Boolean(
-    spectrumUpload ||
-      rawUpload ||
-      (dataSource === "manual" && manualOverall.trim()) ||
-      (dataSource === "realtime" && realtimeStatus === "live") ||
-      (dataSource === "latest" && latestReadingMeta)
-  );
+  const hasSpectrumImage = Boolean(spectrumUpload?.preview);
+  const hasThermalImage = Boolean(thermalUpload?.preview);
+  const useCroppedFft = Boolean(croppedCharts.fft);
+  const useCroppedTwf = Boolean(croppedCharts.twf);
+  const useCroppedEnvelope = Boolean(croppedCharts.envelope);
+  const chartOverlayPeaks = useMemo(() => {
+    const fromVision = chartRegionDetection?.peaks || [];
+    if (fromVision.length > 0) return fromVision;
+    const pf = analysisResult?.primaryFault;
+    if (!pf?.frequencyHz) return [] as SpectrumChartPeak[];
+    return [
+      {
+        frequencyHz: pf.frequencyHz,
+        amplitude: 0,
+        label: pf.title,
+        chart: "fft" as const
+      }
+    ];
+  }, [chartRegionDetection, analysisResult]);
   const equipmentReady = Boolean(
     browseRoute && browseAssetTag && browseComponent && selectedAsset
   );
   const canRun =
     activeTech === "vibration"
-      ? equipmentReady && hasVibIngestedData
-      : equipmentReady;
+      ? equipmentReady && hasSpectrumImage
+      : activeTech === "ir"
+        ? equipmentReady && hasThermalImage
+        : equipmentReady;
   const runButtonReady = canRun && !isAnalyzing;
+
+  const displayFaults: FaultFinding[] = useMemo(() => {
+    // Never mix API NORMAL/"None" headers with the demo FAULTS mock list.
+    if (analysisResult) {
+      return (analysisResult.identifiedFaults || []).map((f, i) => ({
+        id: `api-fault-${i}`,
+        severity: mapApiSeverityToUi(f.severity),
+        title: f.title,
+        frequency: f.frequencyHz
+          ? `${f.frequencyHz} Hz`
+          : selectedTech === "ir"
+            ? "ΔT"
+            : /noise|floor|broadband/i.test(f.title)
+              ? "Broadband"
+              : "—",
+        amplitude: "—",
+        confidence: Math.round(f.confidencePercent ?? 0),
+        detail: f.description || ""
+      }));
+    }
+    return FAULTS;
+  }, [analysisResult, selectedTech]);
+
+  const repairSteps = useMemo(
+    () =>
+      analysisResult?.repairRecommendations?.length
+        ? analysisResult.repairRecommendations
+        : analysisResult
+          ? []
+          : IMMEDIATE_ACTIONS,
+    [analysisResult]
+  );
+
+  const financial = analysisResult?.financialImpact;
+  const preventiveCost = Number(financial?.preventiveRepairCost) || 0;
+  const failureCost = Number(financial?.failureCostIfDelayed) || 0;
+  // downtimeLossPerHour stores total downtime loss ($5k/hr × repair hours)
+  const downtimeLoss = Number(financial?.downtimeLossPerHour) || 0;
+  const roiPercent =
+    preventiveCost > 0
+      ? Math.round(((failureCost - preventiveCost) / preventiveCost) * 100)
+      : 0;
+  const primaryFault = analysisResult?.primaryFault;
+  const apiSeverity = analysisResult?.severity ?? (analysisResult ? "NORMAL" : "CRITICAL");
+  const banner = severityBannerCopy(apiSeverity);
+  const primaryUiSeverity = mapApiSeverityToUi(
+    primaryFault?.severity ?? apiSeverity
+  );
+  const hasDetectedFaults = displayFaults.length > 0;
+  const primaryTitleDisplay = primaryFault?.title
+    ? primaryFault.title
+    : hasDetectedFaults
+      ? displayFaults[0].title
+      : analysisResult
+        ? "None Detected"
+        : "Outer Race Bearing Defect (BPFO)";
+  const primaryFreqDisplay =
+    selectedTech === "ir"
+      ? "ΔT 50°F"
+      : primaryFault?.frequencyHz && primaryFault.frequencyHz > 0
+        ? `${primaryFault.frequencyHz} Hz`
+        : hasDetectedFaults
+          ? displayFaults[0].frequency
+          : analysisResult
+            ? "—"
+            : "152 Hz";
+  const primaryConfidenceDisplay =
+    primaryFault?.confidencePercent ??
+    (hasDetectedFaults ? displayFaults[0].confidence : analysisResult ? 90 : 94);
   const specTabs = useMemo(() => getSpecTabs(componentType), [componentType]);
   const activeSpecFields = useMemo(
     () => fieldsFor(componentType, specTab),
@@ -1050,34 +1963,90 @@ export default function Diagnose({
     setShowAdvancedParams(false);
     // Never keep another tech's results visible after switching modality
     setShowResults(false);
+    setAnalysisResult(null);
+    setAnalysisSource(null);
+    setSavedAnalysisId(null);
   }, [activeTech]);
+
+  const applyComponentKinematics = useCallback(
+    (asset: DiagnoseAsset, componentName: string) => {
+      const comp = lookupStoreComponent(asset, componentName);
+      const kin = comp?.kinematics as
+        | (NonNullable<EquipComponent["kinematics"]> & {
+            voltage?: string;
+            operationalDuty?: string;
+          })
+        | undefined;
+      const rpm =
+        kin?.ratedRpm?.replace(/[^\d.]/g, "") ||
+        (comp?.speedRpm != null ? String(comp.speedRpm) : "") ||
+        String(asset.rpm);
+      const de =
+        kin?.bearingDe || comp?.bearingType || asset.bearing || "SKF 6320 C3";
+      const nde = kin?.bearingNde || de;
+      const hp =
+        kin?.motorHpKw?.match(/[\d.]+/)?.[0] ||
+        String(asset.hp);
+      const voltage = formatVoltage(kin?.voltage || asset.voltage);
+
+      setVibRpm(rpm);
+      setOperatingRpm(rpm);
+      setBearingType(de);
+      setBearingNde(nde);
+      setMotorHp(hp);
+      setMcaVoltage(voltage);
+      setMeasurementLocation(componentName || "Motor DE");
+      if (kin?.rotorBars) setRotorBars(kin.rotorBars);
+      if (kin?.statorSlots) setStatorSlots(kin.statorSlots);
+      if (kin?.lineFrequency) {
+        setLineFrequency(
+          kin.lineFrequency === "50Hz" ? "50 Hz" : "60 Hz"
+        );
+      }
+      if (kin?.driveArrangement === "Belt Drive") {
+        setDriveConfig("Belt-Driven");
+      } else if (kin?.gearboxRatio || kin?.gearTeethZ1) {
+        setDriveConfig("Gearbox-Driven");
+      } else {
+        setDriveConfig("Direct-Coupled");
+      }
+      if (kin?.fanBladeCount) setBladeVaneCount(kin.fanBladeCount);
+      if (kin?.impellerVanes) setBladeVaneCount(kin.impellerVanes);
+      if (kin?.motorSheaveDia) setDrivePulleyDia(kin.motorSheaveDia);
+      if (kin?.fanSheaveDia) setDrivenPulleyDia(kin.fanSheaveDia);
+      if (kin?.gearTeethZ1) setToothZ1(kin.gearTeethZ1);
+      if (kin?.gearTeethZ2) setToothZ2(kin.gearTeethZ2);
+      setMachineSpecs((prev) => ({
+        ...prev,
+        rpm,
+        bearingDe: de,
+        horsepower: hp,
+        voltage: voltage.replace(/[^\d.]/g, "")
+      }));
+    },
+    []
+  );
 
   useEffect(() => {
     if (!selectedAsset) return;
-    setVibRpm(String(selectedAsset.rpm));
-    setOperatingRpm(String(selectedAsset.rpm));
-    setBearingType(selectedAsset.bearing);
-    setBearingNde(selectedAsset.bearing);
-    setMotorHp(String(selectedAsset.hp));
-    setMcaVoltage(selectedAsset.voltage);
     setIsoZone(selectedAsset.isoZone);
     setComponentType(selectedAsset.componentType);
     setManufacturer(selectedAsset.manufacturer);
     setSpecName(selectedAsset.label);
     setSpecTab("core");
     setCustomComponentType("");
-    setMachineSpecs({
-      ...emptySpecsFor(selectedAsset.componentType),
-      rpm: String(selectedAsset.rpm),
-      bearingDe: selectedAsset.bearing,
-      horsepower: String(selectedAsset.hp),
-      voltage: selectedAsset.voltage.replace(/[^\d.]/g, ""),
-      isoZone: selectedAsset.isoZone
+    setBrowseComponent((prev) => {
+      const next = selectedAsset.components.includes(prev)
+        ? prev
+        : selectedAsset.components[0] ?? "";
+      return next;
     });
-    setBrowseComponent((prev) =>
-      selectedAsset.components.includes(prev) ? prev : selectedAsset.components[0] ?? ""
-    );
   }, [selectedAsset]);
+
+  useEffect(() => {
+    if (!selectedAsset || !browseComponent) return;
+    applyComponentKinematics(selectedAsset, browseComponent);
+  }, [selectedAsset, browseComponent, applyComponentKinematics]);
 
   const clearAnalysisTimers = () => {
     analysisTimersRef.current.forEach((t) => window.clearTimeout(t));
@@ -1092,26 +2061,306 @@ export default function Diagnose({
     []
   );
 
-  // Animate health gauge 0 → 38 when results appear
+  // Animate health gauge when results appear
   useEffect(() => {
     if (!showResults) {
       setGaugeScore(0);
       return;
     }
+    const target = analysisResult?.overallHealthScore ?? HEALTH_SCORE_TARGET;
     let frame = 0;
     const start = performance.now();
     const duration = 1000;
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
       const eased = 1 - Math.pow(1 - t, 3);
-      setGaugeScore(Math.round(HEALTH_SCORE_TARGET * eased));
+      setGaugeScore(Math.round(target * eased));
       if (t < 1) frame = window.requestAnimationFrame(tick);
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [showResults]);
+  }, [showResults, analysisResult?.overallHealthScore]);
 
-  const handleRunAnalysis = () => {
+  const analysisTypeForTech = (tech: Technology = activeTech): string => {
+    if (tech === "ir") return "thermography";
+    return tech;
+  };
+
+  const applyAnalysisResult = (
+    result: VibrationAnalysisResult,
+    source: "api" | "local",
+    peaks?: SpectrumChartPeak[],
+    options?: { analysisType?: string; skipPeakInference?: boolean }
+  ) => {
+    const ratedRpm = Number(vibRpm) || Number(selectedAsset?.rpm) || undefined;
+    const reconciled = reconcileAnalysisResult(result, {
+      peaks: options?.skipPeakInference
+        ? undefined
+        : peaks?.length
+          ? peaks
+          : chartRegionDetection?.peaks,
+      ratedRpm:
+        options?.skipPeakInference
+          ? undefined
+          : Number.isFinite(ratedRpm) && (ratedRpm as number) > 0
+            ? ratedRpm
+            : undefined
+    });
+    setAnalysisResult(reconciled);
+    setAnalysisSource(source);
+    setAnalysisError(null);
+    setShowResults(true);
+    setProgress(100);
+    setStepIdx(ANALYSIS_STEPS.length);
+    window.setTimeout(() => {
+      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+
+    // Persist to PostgreSQL so Trend / Alerts / Reports / Logs stay in sync.
+    void persistAnalysisToDatabase(
+      reconciled,
+      peaks,
+      options?.analysisType || analysisTypeForTech()
+    );
+  };
+
+  const persistAnalysisToDatabase = async (
+    reconciled: VibrationAnalysisResult,
+    peaks?: SpectrumChartPeak[],
+    analysisType: string = "vibration"
+  ) => {
+    setIsSavingAnalysis(true);
+    try {
+      // Prefer tag (stable across Equipment DB ↔ Postgres), then id/label
+      const assetKey =
+        (browseAssetTag && String(browseAssetTag).trim()) ||
+        (selectedAsset?.tag && String(selectedAsset.tag).trim()) ||
+        (selectedAsset?.id != null ? String(selectedAsset.id) : null) ||
+        selectedAsset?.label ||
+        "unknown-asset";
+
+      const faultList = (reconciled.identifiedFaults || []).map((f) => ({
+        title: f.title,
+        frequencyHz: f.frequencyHz,
+        frequency:
+          f.frequencyHz > 0
+            ? `${f.frequencyHz} Hz`
+            : analysisType === "thermography"
+              ? "ΔT"
+              : analysisType === "ultrasound"
+                ? "dBµV"
+                : undefined,
+        confidence: f.confidencePercent,
+        confidencePercent: f.confidencePercent,
+        severity: f.severity,
+        description: f.description,
+        detail: f.description
+      }));
+
+      // Also include UI-mapped HIGH/MEDIUM/LOW for alert creation
+      const faultListForSave = faultList.map((f) => ({
+        ...f,
+        severity: mapApiSeverityToUi(f.severity)
+      }));
+
+      const peakPayload =
+        analysisType === "thermography"
+          ? thermographyPeaksRef.current || []
+          : analysisType === "ultrasound"
+            ? ultrasoundPeaksRef.current || []
+            : peaks?.length
+              ? peaks
+              : chartRegionDetection?.peaks?.length
+                ? chartRegionDetection.peaks
+                : [];
+
+      const imageUrl =
+        analysisType === "thermography"
+          ? thermalUpload?.preview || null
+          : spectrumUpload?.preview || null;
+
+      const saved = await saveAnalysisResult({
+        asset_id: assetKey,
+        component: browseComponent || null,
+        health_score: reconciled.overallHealthScore,
+        primary_fault: reconciled.primaryFault?.title || null,
+        fault_list: faultListForSave,
+        peaks: peakPayload,
+        spectrum_image_url: imageUrl,
+        recommendations: reconciled.repairRecommendations || [],
+        financial_impact: {
+          preventiveRepairCost: reconciled.financialImpact?.preventiveRepairCost ?? 0,
+          failureCostIfDelayed: reconciled.financialImpact?.failureCostIfDelayed ?? 0,
+          downtimeLossPerHour: reconciled.financialImpact?.downtimeLossPerHour ?? 0,
+          downtimeRatePerHour: DOWNTIME_RATE_PER_HOUR,
+          estimatedRepairHours:
+            DOWNTIME_RATE_PER_HOUR > 0
+              ? Math.round(
+                  (Number(reconciled.financialImpact?.downtimeLossPerHour) || 0) /
+                    DOWNTIME_RATE_PER_HOUR
+                )
+              : 0,
+          roiPercent:
+            (Number(reconciled.financialImpact?.preventiveRepairCost) || 0) > 0
+              ? Math.round(
+                  (((Number(reconciled.financialImpact?.failureCostIfDelayed) || 0) -
+                    (Number(reconciled.financialImpact?.preventiveRepairCost) || 0)) /
+                    (Number(reconciled.financialImpact?.preventiveRepairCost) || 1)) *
+                    100
+                )
+              : 0
+        },
+        severity: reconciled.severity,
+        summary: reconciled.summary,
+        consensus_details: reconciled.consensusDetails || null,
+        analysis_type: analysisType,
+        started_at: analysisStartedAtRef.current,
+        create_alerts_for_high: true,
+        ...(analysisType === "thermography" && thermographyPolyRef.current
+          ? thermographyPolyRef.current
+          : {})
+      });
+
+      setSavedAnalysisId(saved.analysis?.id || null);
+      toast(
+        saved.alerts_created > 0
+          ? `Analysis saved · ${saved.alerts_created} alert(s) created`
+          : "Analysis saved to database",
+        "success"
+      );
+    } catch (err) {
+      console.error("[Diagnose] Failed to persist analysis:", err);
+      toast(
+        err instanceof Error
+          ? `Could not save analysis: ${err.message}`
+          : "Could not save analysis to database",
+        "warning"
+      );
+    } finally {
+      setIsSavingAnalysis(false);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    try {
+      const { jsPDF } = await import("jspdf");
+      const doc = new jsPDF();
+      const asset = selectedAsset?.label || browseAssetTag || "Asset";
+      const y0 = 14;
+      doc.setFontSize(16);
+      doc.text(
+        selectedTech === "ir"
+          ? "MotorMedic Pro — Thermography Analysis Report"
+          : "MotorMedic Pro — Vibration Analysis Report",
+        14,
+        y0
+      );
+      doc.setFontSize(11);
+      doc.text(`Asset: ${asset}`, 14, y0 + 10);
+      doc.text(`Component: ${browseComponent || "—"}`, 14, y0 + 17);
+      doc.text(
+        `Health Score: ${analysisResult?.overallHealthScore ?? gaugeScore} / 100`,
+        14,
+        y0 + 24
+      );
+      doc.text(
+        `Severity: ${analysisResult?.severity || apiSeverity}`,
+        14,
+        y0 + 31
+      );
+      doc.text(
+        `Primary Fault: ${primaryTitleDisplay}`,
+        14,
+        y0 + 38
+      );
+      doc.text(`Frequency: ${primaryFreqDisplay}`, 14, y0 + 45);
+      doc.text(
+        `Confidence: ${primaryConfidenceDisplay}%`,
+        14,
+        y0 + 52
+      );
+
+      let y = y0 + 64;
+      doc.setFontSize(12);
+      doc.text("Identified Faults", 14, y);
+      y += 7;
+      doc.setFontSize(10);
+      const faults =
+        displayFaults.length > 0
+          ? displayFaults
+          : [{ title: "None Detected", frequency: "—", confidence: 0, severity: "LOW" as const, detail: "", id: "none", amplitude: "—" }];
+      for (const f of faults.slice(0, 8)) {
+        const line = `• ${f.title} | ${f.frequency} | ${f.confidence}% | ${f.severity}`;
+        doc.text(line.substring(0, 95), 14, y);
+        y += 6;
+        if (y > 270) {
+          doc.addPage();
+          y = 20;
+        }
+      }
+
+      y += 6;
+      doc.setFontSize(12);
+      doc.text("Financial Impact", 14, y);
+      y += 7;
+      doc.setFontSize(10);
+      doc.text(`Preventive repair: ${formatUsd(preventiveCost)}`, 14, y);
+      y += 6;
+      doc.text(`Failure if delayed: ${formatUsd(failureCost)}`, 14, y);
+      y += 6;
+      doc.text(`Downtime loss: ${formatUsd(downtimeLoss)}`, 14, y);
+
+      y += 10;
+      doc.setFontSize(12);
+      doc.text("Recommendations", 14, y);
+      y += 7;
+      doc.setFontSize(10);
+      for (const step of (repairSteps.length ? repairSteps : ["Continue monitoring."]).slice(0, 8)) {
+        const wrapped = doc.splitTextToSize(`• ${step}`, 180);
+        doc.text(wrapped, 14, y);
+        y += wrapped.length * 5 + 2;
+        if (y > 270) {
+          doc.addPage();
+          y = 20;
+        }
+      }
+
+      if (analysisResult?.summary) {
+        y += 6;
+        doc.setFontSize(12);
+        doc.text("Summary", 14, y);
+        y += 7;
+        doc.setFontSize(10);
+        const summaryLines = doc.splitTextToSize(analysisResult.summary, 180);
+        doc.text(summaryLines, 14, y);
+      }
+
+      const fileSafe = asset.replace(/[^\w.-]+/g, "_").slice(0, 40);
+      doc.save(`MotorMedic_${fileSafe}_Vibration.pdf`);
+      toast("PDF report downloaded.", "success");
+    } catch (err) {
+      console.error("[Diagnose] PDF export failed:", err);
+      toast("PDF export failed.", "error");
+    }
+  };
+
+  const handleSetBaseline = async () => {
+    if (!savedAnalysisId) {
+      toast("Save an analysis first, then set it as baseline.", "warning");
+      return;
+    }
+    try {
+      await setAnalysisBaseline(savedAnalysisId);
+      toast("Session saved as baseline for future comparisons.", "success");
+    } catch (err) {
+      toast(
+        err instanceof Error ? err.message : "Failed to set baseline.",
+        "error"
+      );
+    }
+  };
+
+  const handleRunAnalysis = async () => {
     console.log("Starting analysis for:", selectedAsset, browseComponent, activeTech);
     if (!canRun) {
       toast("Select Route, Asset, and Component first.", "warning");
@@ -1119,40 +2368,459 @@ export default function Diagnose({
     }
     if (isAnalyzing) return;
 
+    analysisStartedAtRef.current = new Date().toISOString();
+    setSavedAnalysisId(null);
+
+    if (activeTech === "ir") {
+      // Thermography: AI vision pipeline → persist + show results
+      setShowResults(false);
+      setAnalysisResult(null);
+      setGaugeScore(0);
+      setStepIdx(0);
+      setProgress(12);
+      setIsAnalyzing(true);
+      setAnalysisError(null);
+      thermographyPeaksRef.current = null;
+      thermographyPolyRef.current = null;
+      clearAnalysisTimers();
+
+      ANALYSIS_STEPS.forEach((_, i) => {
+        if (i === 0) return;
+        analysisTimersRef.current.push(
+          window.setTimeout(() => {
+            setStepIdx((prev) => Math.max(prev, i));
+            setProgress((p) =>
+              Math.min(90, Math.max(p, Math.round(((i + 1) / ANALYSIS_STEPS.length) * 85)))
+            );
+          }, Math.round(i * 700))
+        );
+      });
+
+      try {
+        if (!thermalUpload?.preview) {
+          throw new Error("Upload a thermal image before running Advanced Diagnostic.");
+        }
+
+        const imageBase64 = await blobUrlToDataUrl(thermalUpload.preview);
+        const tel = thermoTelemetry || {};
+        const metadata = {
+          asset: selectedAsset?.label || browseAssetTag,
+          assetTag: selectedAsset?.tag || browseAssetTag,
+          component: browseComponent,
+          route: browseRoute,
+          location: selectedAsset?.location,
+          voltage: selectedAsset?.voltage,
+          loadPercent: loadPercentage || 46,
+          fileName: thermalUpload.name,
+          tempUnit: tel.tempUnit === "°C" ? "°C" : "°F",
+          // Existing physics from IR accordions (optional)
+          ambientTemp: tel.ambientTemp,
+          humidity: tel.humidity,
+          windSpeed: tel.windSpeed,
+          solarCondition: tel.solarCondition,
+          emissivity: tel.emissivity,
+          reflectedTemp: tel.reflectedTemp,
+          distance: tel.distance,
+          distanceUnit: tel.distanceUnit,
+          // Polymorphic telemetry → DB columns
+          asset_type: tel.asset_type,
+          phase_a_temp: tel.phase_a_temp ?? null,
+          phase_b_temp: tel.phase_b_temp ?? null,
+          phase_c_temp: tel.phase_c_temp ?? null,
+          measured_amps: tel.measured_amps ?? null,
+          rated_amps: tel.rated_amps ?? null,
+          de_bearing_temp: tel.de_bearing_temp ?? null,
+          ode_bearing_temp: tel.ode_bearing_temp ?? null,
+          refractory_skin_temp: tel.refractory_skin_temp ?? null,
+          max_allowable_limit: tel.max_allowable_limit ?? null
+        };
+
+        const res = await fetch(ANALYZE_THERMOGRAPHY_API_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageBase64, metadata })
+        });
+
+        const payload = await res.json().catch(() => ({}));
+
+        if (!res.ok || payload?.success === false) {
+          const title =
+            payload?.title ||
+            (res.status === 404
+              ? "API Endpoint Not Found"
+              : "Thermography Analysis Error");
+          const message =
+            payload?.message ||
+            payload?.error ||
+            payload?.detail ||
+            `Thermography analysis failed (${res.status})`;
+          const restartHint =
+            res.status === 404
+              ? " Restart the MotorMedic Pro server (npm run dev) so POST /api/analyze-thermography is registered."
+              : "";
+          setAnalysisError({
+            title: String(title),
+            message: String(message) + restartHint,
+            errorType: payload?.errorType
+          });
+          setIsAnalyzing(false);
+          clearAnalysisTimers();
+          toast(String(title), "error");
+          return;
+        }
+
+        const thermoRaw =
+          payload?.data && typeof payload.data === "object"
+            ? payload.data
+            : payload;
+        const thermo: ThermographyResult = normalizeThermographyResult(thermoRaw);
+        const basePeaks = thermographyPeaksForSave(thermo);
+        const poly =
+          thermoRaw &&
+          typeof thermoRaw === "object" &&
+          (thermoRaw as { polymorphic_fields?: Record<string, unknown> })
+            .polymorphic_fields &&
+          typeof (thermoRaw as { polymorphic_fields?: unknown }).polymorphic_fields ===
+            "object"
+            ? ((thermoRaw as { polymorphic_fields: Record<string, unknown> })
+                .polymorphic_fields as Record<string, unknown>)
+            : {};
+        // Prefer operator telemetry, then server-calculated polymorphic fields
+        const enrichedPeak = {
+          ...((basePeaks[0] as object) || {}),
+          type: "thermography",
+          asset_type: tel.asset_type ?? poly.asset_type ?? null,
+          phase_a_temp:
+            tel.phase_a_temp ??
+            (typeof poly.phase_a_temp === "number" ? poly.phase_a_temp : null),
+          phase_b_temp:
+            tel.phase_b_temp ??
+            (typeof poly.phase_b_temp === "number" ? poly.phase_b_temp : null),
+          phase_c_temp:
+            tel.phase_c_temp ??
+            (typeof poly.phase_c_temp === "number" ? poly.phase_c_temp : null),
+          measured_amps:
+            tel.measured_amps ??
+            (typeof poly.measured_amps === "number" ? poly.measured_amps : null),
+          rated_amps:
+            tel.rated_amps ??
+            (typeof poly.rated_amps === "number" ? poly.rated_amps : null),
+          de_bearing_temp:
+            tel.de_bearing_temp ??
+            (typeof poly.de_bearing_temp === "number"
+              ? poly.de_bearing_temp
+              : null),
+          ode_bearing_temp:
+            tel.ode_bearing_temp ??
+            (typeof poly.ode_bearing_temp === "number"
+              ? poly.ode_bearing_temp
+              : null),
+          refractory_skin_temp:
+            tel.refractory_skin_temp ??
+            (typeof poly.refractory_skin_temp === "number"
+              ? poly.refractory_skin_temp
+              : null),
+          max_allowable_limit:
+            tel.max_allowable_limit ??
+            (typeof poly.max_allowable_limit === "number"
+              ? poly.max_allowable_limit
+              : null),
+          i2r_normalized_delta_t:
+            typeof poly.i2r_normalized_delta_t === "number"
+              ? poly.i2r_normalized_delta_t
+              : null,
+          current_amps:
+            tel.measured_amps ??
+            (typeof poly.measured_amps === "number" ? poly.measured_amps : null)
+        };
+        thermographyPeaksRef.current = [enrichedPeak, ...basePeaks.slice(1)];
+        // Stash polymorphic columns for save-analysis-result INSERT
+        thermographyPolyRef.current = {
+          asset_type: tel.asset_type || null,
+          phase_a_temp: tel.phase_a_temp ?? null,
+          phase_b_temp: tel.phase_b_temp ?? null,
+          phase_c_temp: tel.phase_c_temp ?? null,
+          measured_amps: tel.measured_amps ?? null,
+          rated_amps: tel.rated_amps ?? null,
+          de_bearing_temp: tel.de_bearing_temp ?? null,
+          ode_bearing_temp: tel.ode_bearing_temp ?? null,
+          refractory_skin_temp: tel.refractory_skin_temp ?? null,
+          max_allowable_limit: tel.max_allowable_limit ?? null,
+          i2r_normalized_delta_t:
+            typeof poly.i2r_normalized_delta_t === "number"
+              ? poly.i2r_normalized_delta_t
+              : null
+        };
+        setThermographyPeaks(thermo.peaks);
+        const irResult = mapThermographyToUiResult(thermo);
+
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        applyAnalysisResult(irResult, "api", undefined, {
+          analysisType: "thermography",
+          skipPeakInference: true
+        });
+        toast("Thermography diagnostic complete.", "success");
+      } catch (err) {
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        const message =
+          err instanceof Error ? err.message : "Failed to run thermography analysis.";
+        setAnalysisError({
+          title: "Thermography Analysis Error",
+          message,
+          errorType: "VISION_ERROR"
+        });
+        toast(message, "error");
+      }
+      return;
+    }
+
+    if (activeTech === "ultrasound") {
+      // Ultrasound: placeholder AI pipeline → persist + show results
+      setShowResults(false);
+      setAnalysisResult(null);
+      setGaugeScore(0);
+      setStepIdx(0);
+      setProgress(12);
+      setIsAnalyzing(true);
+      setAnalysisError(null);
+      ultrasoundPeaksRef.current = null;
+      clearAnalysisTimers();
+
+      ANALYSIS_STEPS.forEach((_, i) => {
+        if (i === 0) return;
+        analysisTimersRef.current.push(
+          window.setTimeout(() => {
+            setStepIdx((prev) => Math.max(prev, i));
+            setProgress((p) =>
+              Math.min(90, Math.max(p, Math.round(((i + 1) / ANALYSIS_STEPS.length) * 85)))
+            );
+          }, Math.round(i * 700))
+        );
+      });
+
+      try {
+        const snap = ultrasoundSnapshot || {};
+        const metadata = {
+          ...snap,
+          asset: selectedAsset?.label || browseAssetTag || snap.asset,
+          assetTag: selectedAsset?.tag || browseAssetTag || snap.assetTag,
+          component: browseComponent || snap.component,
+          route: browseRoute || snap.route,
+          location: selectedAsset?.location || snap.location,
+          heterodyneKhz: snap.heterodyneKhz || usFrequency,
+          gainDb: snap.gainDb || usGain,
+          peakDbuV: snap.peakDbuV || undefined,
+          rmsDbuV: snap.rmsDbuV || undefined
+        };
+
+        const res = await fetch(ANALYZE_ULTRASOUND_API_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ metadata })
+        });
+
+        const payload = await res.json().catch(() => ({}));
+
+        if (!res.ok || payload?.success === false) {
+          const title =
+            payload?.title ||
+            (res.status === 404
+              ? "API Endpoint Not Found"
+              : "Ultrasound Analysis Error");
+          const message =
+            payload?.message ||
+            payload?.error ||
+            payload?.detail ||
+            `Ultrasound analysis failed (${res.status})`;
+          const restartHint =
+            res.status === 404
+              ? " Restart the MotorMedic Pro server (npm run dev) so POST /api/analyze-ultrasound is registered."
+              : "";
+          setAnalysisError({
+            title: String(title),
+            message: String(message) + restartHint,
+            errorType: payload?.errorType
+          });
+          setIsAnalyzing(false);
+          clearAnalysisTimers();
+          toast(String(title), "error");
+          return;
+        }
+
+        const ueRaw =
+          payload?.data && typeof payload.data === "object"
+            ? payload.data
+            : payload;
+        const ue: UltrasoundResult = normalizeUltrasoundResult(ueRaw);
+        ultrasoundPeaksRef.current = ultrasoundPeaksForSave(ue);
+        setUltrasoundPeaks(ue.peaks);
+        const ueResult = mapUltrasoundToUiResult(ue);
+
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        applyAnalysisResult(ueResult, "api", undefined, {
+          analysisType: "ultrasound",
+          skipPeakInference: true
+        });
+        toast("Ultrasound diagnostic complete.", "success");
+      } catch (err) {
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        const message =
+          err instanceof Error ? err.message : "Failed to run ultrasound analysis.";
+        setAnalysisError({
+          title: "Ultrasound Analysis Error",
+          message,
+          errorType: "ANALYSIS_ERROR"
+        });
+        toast(message, "error");
+      }
+      return;
+    }
+
+    if (activeTech !== "vibration") {
+      // Other non-vibration techs keep the lightweight simulated path
+      setUnit("velocity");
+      setFmaxView("standard");
+      setShowResults(false);
+      setGaugeScore(0);
+      setStepIdx(0);
+      setProgress(10);
+      setIsAnalyzing(true);
+      clearAnalysisTimers();
+      const totalMs = 2500;
+      const stepMs = totalMs / ANALYSIS_STEPS.length;
+      ANALYSIS_STEPS.forEach((_, i) => {
+        if (i === 0) return;
+        analysisTimersRef.current.push(
+          window.setTimeout(() => {
+            setStepIdx(i);
+            setProgress(Math.round(((i + 1) / ANALYSIS_STEPS.length) * 95));
+          }, Math.round(i * stepMs))
+        );
+      });
+      analysisTimersRef.current.push(
+        window.setTimeout(() => {
+          setIsAnalyzing(false);
+          setShowResults(true);
+          setProgress(100);
+        }, totalMs)
+      );
+      return;
+    }
+
+    setAnalysisError(null);
     setUnit("velocity");
     setFmaxView("standard");
     setShowResults(false);
     setGaugeScore(0);
     setStepIdx(0);
-    setProgress(10);
+    setProgress(12);
     setIsAnalyzing(true);
     clearAnalysisTimers();
 
-    const totalMs = 2500;
-    const stepMs = totalMs / ANALYSIS_STEPS.length;
-
+    // Soft progress while waiting on Gemini / consensus pipeline
     ANALYSIS_STEPS.forEach((_, i) => {
       if (i === 0) return;
       analysisTimersRef.current.push(
         window.setTimeout(() => {
-          setStepIdx(i);
-          setProgress(Math.round(((i + 1) / ANALYSIS_STEPS.length) * 95));
-        }, Math.round(i * stepMs))
+          setStepIdx((prev) => Math.max(prev, i));
+          setProgress((p) => Math.min(90, Math.max(p, Math.round(((i + 1) / ANALYSIS_STEPS.length) * 85))));
+        }, Math.round(i * 700))
       );
     });
 
-    analysisTimersRef.current.push(
-      window.setTimeout(() => {
-        setStepIdx(ANALYSIS_STEPS.length);
-        setProgress(100);
+    try {
+      if (!spectrumUpload?.preview) {
+        throw new Error(
+          "Upload a spectrum chart image before running Advanced Diagnostic."
+        );
+      }
+
+      const imageBase64 = await blobUrlToDataUrl(spectrumUpload.preview);
+      const componentSpecs = {
+        asset: selectedAsset?.label || browseAssetTag,
+        component: browseComponent,
+        motorHpKw: motorHp,
+        ratedRpm: vibRpm,
+        lineFrequency,
+        bearingDe: bearingType,
+        bearingNde,
+        rotorBars,
+        statorSlots
+      };
+      const telemetry = {
+        measurementLocation,
+        measurementPoint,
+        rmsVelocity: rmsVelocity || manualOverall,
+        peakAcceleration: peakAcceleration || manualPeakVue,
+        operatingTemp: operatingTemp || ambientTemp,
+        loadCondition: loadCondition || undefined,
+        loadPercentage,
+        fmax,
+        lor
+      };
+
+      const res = await fetch(ANALYZE_VIBRATION_API_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64, componentSpecs, telemetry })
+      });
+
+      const payload = await res.json().catch(() => ({}));
+
+      if (!res.ok || payload?.success === false) {
+        const errorType = String(payload?.errorType || "");
+        const title =
+          payload?.title ||
+          (errorType === "SIGNAL_UNREADABLE"
+            ? "OpenAI Vision Error"
+            : errorType === "CONSENSUS_DIVERGENCE" || errorType === "GATEWAY_TIMEOUT"
+              ? "Consensus Diagnostic Error"
+              : res.status === 404
+                ? "API Endpoint Not Found"
+                : "Consensus Diagnostic Error");
+        const message =
+          payload?.message ||
+          payload?.error ||
+          payload?.detail ||
+          `Consensus diagnostic failed (${res.status})`;
+        const restartHint =
+          res.status === 404
+            ? " Restart the MotorMedic Pro server (npm run dev) so POST /api/analyze-vibration is registered."
+            : "";
+        setAnalysisError({
+          title: String(title),
+          message: String(message) + restartHint,
+          errorType: payload?.errorType
+        });
         setIsAnalyzing(false);
-        setShowResults(true);
-        console.log("Diagnostic complete for", selectedAsset?.label ?? browseAssetTag);
-        window.setTimeout(() => {
-          resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-        }, 80);
-      }, totalMs)
-    );
+        clearAnalysisTimers();
+        toast(String(title), "error");
+        return;
+      }
+
+      clearAnalysisTimers();
+      setIsAnalyzing(false);
+      const payloadPeaks = Array.isArray((payload as any)?.spectrumPeaks)
+        ? ((payload as any).spectrumPeaks as SpectrumChartPeak[])
+        : chartRegionDetection?.peaks;
+      applyAnalysisResult(payload as VibrationAnalysisResult, "api", payloadPeaks);
+      toast("Consensus diagnostic complete.", "success");
+    } catch (err) {
+      clearAnalysisTimers();
+      setIsAnalyzing(false);
+      const message =
+        err instanceof Error ? err.message : "Failed to run consensus vibration analysis.";
+      setAnalysisError({
+        title: "Consensus Diagnostic Error",
+        message,
+        errorType: "GATEWAY_TIMEOUT"
+      });
+      toast(message, "error");
+    }
   };
 
   const handleNewAnalysis = () => {
@@ -1162,6 +2830,14 @@ export default function Diagnose({
     setProgress(0);
     setStepIdx(0);
     setGaugeScore(0);
+    setAnalysisResult(null);
+    setAnalysisError(null);
+    setAnalysisSource(null);
+    thermographyPeaksRef.current = null;
+    thermographyPolyRef.current = null;
+    setThermographyPeaks(null);
+    ultrasoundPeaksRef.current = null;
+    setUltrasoundPeaks(null);
     console.log("Reset to new analysis");
   };
 
@@ -1169,11 +2845,11 @@ export default function Diagnose({
     file: File | null,
     setter: React.Dispatch<React.SetStateAction<UploadedFileMeta | null>>,
     acceptRe: RegExp
-  ) => {
-    if (!file) return;
+  ): string | undefined => {
+    if (!file) return undefined;
     if (!acceptRe.test(file.name)) {
       toast("Unsupported file type for this upload zone.", "warning");
-      return;
+      return undefined;
     }
     const isImage = /\.(png|jpe?g|tiff?|gif|webp)$/i.test(file.name);
     const preview = isImage ? URL.createObjectURL(file) : undefined;
@@ -1182,6 +2858,74 @@ export default function Diagnose({
       return { name: file.name, preview };
     });
     toast(`Loaded ${file.name}`, "success");
+    return preview;
+  };
+
+  const resetChartRegions = () => {
+    chartRegionJobRef.current += 1;
+    setChartRegionStatus("idle");
+    setChartRegionDetection(null);
+    setCroppedCharts({});
+    setChartRegionError(null);
+    setExpandedCrop(null);
+  };
+
+  /** GPT-4o Vision → locate panels → Canvas crop (falls back to synthetic Recharts on failure). */
+  const detectAndCropSpectrumCharts = async (previewUrl: string) => {
+    const jobId = ++chartRegionJobRef.current;
+    setChartRegionStatus("detecting");
+    setChartRegionError(null);
+    setCroppedCharts({});
+    setChartRegionDetection(null);
+
+    try {
+      const imageBase64 = await blobUrlToDataUrl(previewUrl);
+      if (jobId !== chartRegionJobRef.current) return;
+
+      const detection = applyTickDensityRoleCorrection(
+        await requestSpectrumRegionDetection(imageBase64)
+      );
+      if (jobId !== chartRegionJobRef.current) return;
+
+      const crops = await cropAllChartRegions(previewUrl, detection.regions);
+      if (jobId !== chartRegionJobRef.current) return;
+
+      const hasCrop = Boolean(crops.fft || crops.twf || crops.envelope);
+      setChartRegionDetection(detection);
+      setCroppedCharts(crops);
+
+      if (hasCrop) {
+        setChartRegionStatus("ready");
+        toast("Chart panels detected and cropped from spectrum image.", "success");
+      } else {
+        setChartRegionStatus("failed");
+        setChartRegionError(
+          "Vision found no croppable panels — using synthetic charts."
+        );
+      }
+    } catch (err) {
+      if (jobId !== chartRegionJobRef.current) return;
+      console.error("[Diagnose] Chart region detection failed:", err);
+      setChartRegionStatus("failed");
+      setChartRegionError(
+        err instanceof Error
+          ? err.message
+          : "Chart region detection failed — using synthetic charts."
+      );
+      setCroppedCharts({});
+      setChartRegionDetection(null);
+    }
+  };
+
+  const ingestSpectrumUpload = (file: File | null) => {
+    if (!file) return;
+    if (/\.(png|jpe?g|webp|gif)$/i.test(file.name)) {
+      resetChartRegions();
+      const preview = ingestUpload(file, setSpectrumUpload, /\.(png|jpe?g|webp|gif)$/i);
+      if (preview) void detectAndCropSpectrumCharts(preview);
+      return;
+    }
+    ingestUpload(file, setSpectrumUpload, /\.(png|jpe?g|csv)$/i);
   };
 
   const toggleSymptom = (tag: string) => {
@@ -1194,26 +2938,30 @@ export default function Diagnose({
 
   const createWorkOrder = () => {
     const a = selectedAsset ?? EMPTY_DIAGNOSE_ASSET;
+    const faultTitle =
+      analysisResult?.primaryFault?.title ||
+      "Outer Race Bearing Defect (BPFO)";
     onSaveReport?.(
       "Mechanical",
-      `Outer Race Bearing Defect (BPFO) — ${browseComponent || "Motor DE"}`,
+      `${faultTitle} — ${browseComponent || "Motor DE"}`,
       {
         asset: a.label,
         component: browseComponent,
         bearing: bearingType || a.bearing,
         rpm: vibRpm || String(a.rpm),
-        bpfo_hz: "152",
+        bpfo_hz: String(analysisResult?.primaryFault?.frequencyHz ?? 152),
         amplitude_mm_s: "4.2",
-        confidence: "94%",
-        ttf: "14-21 days",
+        confidence: `${analysisResult?.primaryFault?.confidencePercent ?? 94}%`,
+        ttf: analysisResult?.primaryFault?.actionWindow || "14-21 days",
         technology,
         observations: observations || symptomTags.join(", ")
       },
       {
-        health_score: 38,
-        primary_fault: "BPFO",
-        faults: FAULTS,
-        recommendations: IMMEDIATE_ACTIONS
+        health_score: analysisResult?.overallHealthScore ?? 38,
+        primary_fault: faultTitle,
+        faults: displayFaults,
+        recommendations: repairSteps,
+        financialImpact: analysisResult?.financialImpact
       },
       rawUpload?.name || spectrumUpload?.name || "latest-reading.csv",
       technology
@@ -1274,7 +3022,7 @@ export default function Diagnose({
 
   const handleVibUpload = (file: File) => {
     if (/\.(png|jpe?g|webp|gif)$/i.test(file.name)) {
-      ingestUpload(file, setSpectrumUpload, /\.(png|jpe?g|webp|gif)$/i);
+      ingestSpectrumUpload(file);
     } else {
       ingestUpload(file, setRawUpload, /\.(csv|wav|uff|txt)$/i);
     }
@@ -1282,6 +3030,7 @@ export default function Diagnose({
   };
 
   const handleClearVibSpectrum = () => {
+    resetChartRegions();
     setSpectrumUpload((prev) => {
       if (prev?.preview) URL.revokeObjectURL(prev.preview);
       return null;
@@ -1652,22 +3401,93 @@ export default function Diagnose({
               manualPeakVue={manualPeakVue}
               setManualPeakVue={setManualPeakVue}
               matchedComponent={browseComponent || "Motor DE"}
+              motorHp={motorHp}
+              setMotorHp={setMotorHp}
+              voltage={mcaVoltage}
+              setVoltage={setMcaVoltage}
+              measurementPoint={measurementPoint}
+              setMeasurementPoint={setMeasurementPoint}
+              measurementLocation={measurementLocation}
+              setMeasurementLocation={setMeasurementLocation}
+              rmsVelocity={rmsVelocity}
+              setRmsVelocity={setRmsVelocity}
+              peakAcceleration={peakAcceleration}
+              setPeakAcceleration={setPeakAcceleration}
+              operatingTemp={operatingTemp}
+              setOperatingTemp={setOperatingTemp}
             />
           ) : activeTech === "ir" ? (
             <ThermographyInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              onTelemetryChange={setThermoTelemetry}
+              onThermalFileReady={(meta) => {
+                if (!meta?.name) {
+                  setThermalUpload((prev) => {
+                    if (prev?.preview) URL.revokeObjectURL(prev.preview);
+                    return null;
+                  });
+                  return;
+                }
+                setThermalUpload((prev) => {
+                  if (prev?.preview && prev.preview !== meta.preview) {
+                    URL.revokeObjectURL(prev.preview);
+                  }
+                  return { name: meta.name, preview: meta.preview };
+                });
+              }}
+              equipment={{
+                route: browseRoute || undefined,
+                assetTag: selectedAsset?.tag || browseAssetTag || undefined,
+                assetLabel: selectedAsset?.label || undefined,
+                component: browseComponent || undefined,
+                voltage: selectedAsset?.voltage || undefined,
+                location: selectedAsset?.location || undefined,
+                hp: selectedAsset?.hp,
+                rpm: selectedAsset?.rpm
+              }}
             />
           ) : activeTech === "ultrasound" ? (
             <UltrasoundInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              onSnapshotChange={setUltrasoundSnapshot}
+              equipment={{
+                route: browseRoute || undefined,
+                assetTag: selectedAsset?.tag || browseAssetTag || undefined,
+                assetLabel: selectedAsset?.label || undefined,
+                component: browseComponent || undefined,
+                voltage: selectedAsset?.voltage || undefined,
+                location: selectedAsset?.location || undefined,
+                hp: selectedAsset?.hp,
+                rpm: selectedAsset?.rpm
+              }}
             />
           ) : activeTech === "mca" ? (
             <McaInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              equipment={{
+                route: browseRoute || undefined,
+                assetTag: selectedAsset?.tag || browseAssetTag || undefined,
+                assetLabel: selectedAsset?.label || undefined,
+                component: browseComponent || undefined,
+                voltage: selectedAsset?.voltage || undefined,
+                location: selectedAsset?.location || undefined,
+                hp: selectedAsset?.hp,
+                rpm: selectedAsset?.rpm
+              }}
             />
           ) : activeTech === "oil" ? (
             <OilInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              equipment={{
+                route: browseRoute || undefined,
+                assetTag: selectedAsset?.tag || browseAssetTag || undefined,
+                assetLabel: selectedAsset?.label || undefined,
+                component: browseComponent || undefined,
+                voltage: selectedAsset?.voltage || undefined,
+                location: selectedAsset?.location || undefined,
+                hp: selectedAsset?.hp,
+                rpm: selectedAsset?.rpm
+              }}
             />
           ) : (
           <>
@@ -2528,7 +4348,7 @@ export default function Diagnose({
                   hint="Upload spectrum image or CSV"
                   file={spectrumUpload}
                   onClick={() => spectrumRef.current?.click()}
-                  onDropFile={(f) => ingestUpload(f, setSpectrumUpload, /\.(png|jpe?g|csv)$/i)}
+                  onDropFile={(f) => ingestSpectrumUpload(f)}
                 />
                 <UploadZone
                   icon={<Image className="h-6 w-6 text-red-400" />}
@@ -2536,7 +4356,9 @@ export default function Diagnose({
                   hint="Upload thermal image"
                   file={thermalUpload}
                   onClick={() => thermalRef.current?.click()}
-                  onDropFile={(f) => ingestUpload(f, setThermalUpload, /\.(png|jpe?g|tiff?)$/i)}
+                  onDropFile={(f) =>
+                    ingestUpload(f, setThermalUpload, /\.(png|jpe?g|gif|webp|tiff?)$/i)
+                  }
                 />
                 <UploadZone
                   icon={<FileText className="h-6 w-6 text-cyan-400" />}
@@ -2552,14 +4374,20 @@ export default function Diagnose({
                 type="file"
                 accept=".png,.jpg,.jpeg,.csv"
                 className="hidden"
-                onChange={(e) => ingestUpload(e.target.files?.[0] ?? null, setSpectrumUpload, /\.(png|jpe?g|csv)$/i)}
+                onChange={(e) => ingestSpectrumUpload(e.target.files?.[0] ?? null)}
               />
               <input
                 ref={thermalRef}
                 type="file"
-                accept=".png,.jpg,.jpeg,.tif,.tiff"
+                accept=".png,.jpg,.jpeg,.gif,.webp,.tif,.tiff"
                 className="hidden"
-                onChange={(e) => ingestUpload(e.target.files?.[0] ?? null, setThermalUpload, /\.(png|jpe?g|tiff?)$/i)}
+                onChange={(e) =>
+                  ingestUpload(
+                    e.target.files?.[0] ?? null,
+                    setThermalUpload,
+                    /\.(png|jpe?g|gif|webp|tiff?)$/i
+                  )
+                }
               />
               <input
                 ref={rawRef}
@@ -2606,68 +4434,49 @@ export default function Diagnose({
           </>
           )}
 
-          {/* 9 — Analysis Mode */}
-          <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">
-            <div>
-              <h2 className={sectionTitle}>Analysis Mode</h2>
-              <p className={sectionHint}>Choose how thoroughly the system should analyze this dataset</p>
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              {(activeTech === "ir"
-                ? IR_ANALYSIS_DEPTH_OPTIONS
-                : activeTech === "ultrasound"
-                  ? UE_ANALYSIS_DEPTH_OPTIONS
-                  : activeTech === "mca"
-                    ? MCA_ANALYSIS_DEPTH_OPTIONS
-                    : activeTech === "oil"
-                      ? OIL_ANALYSIS_DEPTH_OPTIONS
-                      : ANALYSIS_DEPTH_OPTIONS
-              ).map(({ id, label, description, recommended }) => {
-                const on = analysisDepth === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setAnalysisDepth(id)}
-                    className={`relative text-left p-3 rounded-lg cursor-pointer transition-all border ${
-                      on
-                        ? "bg-yellow-500 text-slate-900 border-yellow-500"
-                        : "bg-slate-900 border-slate-700 text-slate-400 hover:border-yellow-500/50"
-                    }`}
-                  >
-                    {recommended && (
-                      <span
-                        className={`absolute top-1.5 right-1.5 text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border ${
-                          on
-                            ? "bg-slate-900/20 border-slate-900/30 text-slate-900"
-                            : "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
-                        }`}
-                      >
-                        Recommended
-                      </span>
-                    )}
-                    <p className={`text-sm font-bold leading-tight pr-14 ${on ? "text-slate-900" : "text-white"}`}>
-                      {label}
-                    </p>
-                    <p className={`mt-1 text-[10px] leading-snug ${on ? "text-slate-800" : "text-slate-400"}`}>
-                      {description}
-                    </p>
-                  </button>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* 10 — Run Analysis */}
+          {/* Run Analysis */}
           <section className="space-y-3 pt-1">
-            <div className="rounded-lg border border-slate-800/80 bg-slate-950/40 px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
-              <span className="font-bold uppercase tracking-wider text-slate-600 shrink-0">
+            {analysisError && (
+              <div
+                role="alert"
+                className="rounded-xl border border-red-500/50 bg-red-950/50 px-4 py-3 text-red-100 shadow-[0_0_24px_rgba(239,68,68,0.12)]"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="h-5 w-5 shrink-0 text-red-300 mt-0.5" />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <p className="text-sm font-bold text-red-100">
+                      {analysisError.title}
+                    </p>
+                    {analysisError.errorType && (
+                      <p className="text-[10px] font-mono uppercase tracking-wider text-red-300/70">
+                        {analysisError.errorType}
+                      </p>
+                    )}
+                    <p className="text-xs text-red-200/90 leading-relaxed break-words">
+                      {analysisError.message}
+                    </p>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => void handleRunAnalysis()}
+                        disabled={!canRun || isAnalyzing}
+                        className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-400 text-black border border-amber-300 hover:bg-amber-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl px-4 py-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400 hover:border-amber-500/30 transition-all">
+              <span className="font-bold uppercase tracking-wider text-[#FFC700] shrink-0">
                 Hardware ROI
               </span>
               <span className="text-slate-600 hidden sm:inline">|</span>
               <span>
                 Legacy quote{" "}
-                <span className="text-red-400/80 line-through">~$24k</span>
+                <span className="text-red-400/80 line-through">-$24k</span>
               </span>
               <span className="text-slate-600">→</span>
               <span>
@@ -2679,11 +4488,23 @@ export default function Diagnose({
                 +$23,400 CapEx retained
               </span>
             </div>
+            {isAnalyzing && activeTech === "vibration" && (
+              <div
+                className="relative overflow-hidden rounded-xl border border-cyan-400/40 bg-slate-950/90 px-4 py-3 flex items-center gap-3 shadow-[0_0_28px_rgba(34,211,238,0.18)]"
+                style={{ animation: "hudPulse 1.8s ease-in-out infinite" }}
+              >
+                <span className="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-400/10 to-transparent animate-pulse" />
+                <Loader2 className="h-4 w-4 text-cyan-300 animate-spin shrink-0 relative z-10" />
+                <span className="relative z-10 text-xs sm:text-sm font-semibold tracking-wide text-cyan-100">
+                  OpenAI Vision Analyzing Spectrum &amp; Kinematics...
+                </span>
+              </div>
+            )}
             <button
               type="button"
-              onClick={handleRunAnalysis}
+              onClick={() => void handleRunAnalysis()}
               disabled={!canRun || isAnalyzing}
-              className={`w-full py-3 rounded-lg text-sm inline-flex items-center justify-center gap-2 cursor-pointer transition-all hover:scale-[1.01] disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed disabled:hover:scale-100 ${
+              className={`w-full py-3 rounded-xl text-sm inline-flex items-center justify-center gap-2 cursor-pointer transition-all hover:scale-[1.01] disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed disabled:hover:scale-100 ${
                 runButtonReady
                   ? "bg-amber-400 hover:bg-amber-300 text-black font-bold shadow-[0_0_24px_rgba(251,191,36,0.45)]"
                   : ""
@@ -2708,9 +4529,11 @@ export default function Diagnose({
             </button>
             {!canRun && (
               <p className="text-center text-xs text-slate-500">
-                {activeTech === "vibration" && equipmentReady && !hasVibIngestedData
-                  ? "Upload a spectrum image or ingest data in Section 4 to enable analysis"
-                  : "Select Route, Asset, and Component to enable analysis"}
+                {activeTech === "vibration" && equipmentReady && !hasSpectrumImage
+                  ? "Upload a spectrum chart image in Data Ingestion to enable analysis"
+                  : activeTech === "ir" && equipmentReady && !hasThermalImage
+                    ? "Upload a thermal image in Data Ingestion to enable analysis"
+                    : "Select Route, Asset, and Component to enable analysis"}
               </p>
             )}
           </section>
@@ -2728,7 +4551,7 @@ export default function Diagnose({
             <div className="flex justify-between items-center py-4 mb-6 border-b border-slate-800 gap-3 flex-wrap">
               <button
                 type="button"
-                onClick={() => setShowResults(false)}
+                onClick={handleNewAnalysis}
                 className="text-slate-400 hover:text-white text-sm font-medium flex items-center gap-2 cursor-pointer bg-transparent border-0"
               >
                 ← Run New Analysis
@@ -2736,7 +4559,7 @@ export default function Diagnose({
               <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => toast("Exporting vibration PDF report…", "info")}
+                  onClick={() => void handleExportPdf()}
                   className="border border-slate-700 text-slate-300 hover:bg-slate-800 px-3 py-2 rounded-lg text-sm flex items-center gap-2 cursor-pointer transition-colors"
                 >
                   <Download className="h-3.5 w-3.5" />
@@ -2744,18 +4567,27 @@ export default function Diagnose({
                 </button>
                 <button
                   type="button"
-                  onClick={() => toast("Generating manager executive report…", "info")}
+                  onClick={() => setShowManagerReport(true)}
                   className="border border-slate-700 text-slate-300 hover:bg-slate-800 px-3 py-2 rounded-lg text-sm flex items-center gap-2 cursor-pointer transition-colors"
                 >
                   <FileText className="h-3.5 w-3.5" />
                   Manager Report
                 </button>
+                {isSavingAnalysis && (
+                  <span className="text-xs text-cyan-400 inline-flex items-center gap-1.5">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Saving…
+                  </span>
+                )}
+                {savedAnalysisId && !isSavingAnalysis && (
+                  <span className="text-xs text-emerald-400">Saved to DB</span>
+                )}
               </div>
             </div>
 
-            <div className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-6 hover:border-amber-500/30 transition-all">
               <div className="min-w-0">
-                <p className="text-xs font-bold uppercase tracking-[0.18em] text-yellow-400">
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-[#FFC700]">
                   Vibration Analysis Results
                 </p>
                 <h2 className="text-xl sm:text-2xl font-bold text-white mt-1">
@@ -2763,11 +4595,32 @@ export default function Diagnose({
                   {browseComponent ? ` · ${browseComponent}` : ""}
                 </h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  {bearingType || reportAsset.bearing} · {vibRpm || reportAsset.rpm} RPM · {isoZone} · ISO 10816-3
+                  {bearingType || reportAsset.bearing} · {vibRpm || reportAsset.rpm} RPM ·{" "}
+                  {motorHp} HP · {mcaVoltage} · {isoZone}
                 </p>
                 <span className="inline-flex items-center gap-2 px-2 py-1 rounded text-xs bg-slate-800/50 text-cyan-400 border border-cyan-500/20 mt-2">
-                  Data Source: Direct Cloud Stream | Node #TX-9042 | Calibration: 100 mV/g
+                  Data Source: {spectrumUpload?.name || "Spectrum + Kinematics"} | Point{" "}
+                  {measurementPoint} | {fmax} / {lor} LoR
+                  {analysisSource === "local" ? " | Local Preview" : analysisSource === "api" ? " | Consensus Engine" : ""}
                 </span>
+              </div>
+
+              {/* Color-coded severity banner */}
+              <div
+                className={`mt-5 rounded-xl border px-4 py-3.5 flex items-center gap-3 ${banner.wrap}`}
+              >
+                <AlertTriangle className={`h-5 w-5 shrink-0 ${banner.icon}`} />
+                <div className="min-w-0">
+                  <p className="text-sm sm:text-base font-bold tracking-tight">
+                    {banner.title}
+                  </p>
+                  <p className="text-[11px] opacity-80 mt-0.5">
+                    {analysisResult?.summary ||
+                      `Master Vibration AI correlated spectrum imagery with verified kinematics (DE ${
+                        bearingType || reportAsset.bearing
+                      } @ ${vibRpm || reportAsset.rpm} RPM).`}
+                  </p>
+                </div>
               </div>
             </div>
 
@@ -2783,12 +4636,36 @@ export default function Diagnose({
                   <div className="relative h-28 w-28 shrink-0">
                     <svg
                       viewBox="0 0 36 36"
-                      className="h-full w-full -rotate-90 drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
+                      className={`h-full w-full -rotate-90 ${
+                        apiSeverity === "NORMAL"
+                          ? "drop-shadow-[0_0_16px_rgba(16,185,129,0.35)]"
+                          : apiSeverity === "ANOMALY"
+                            ? "drop-shadow-[0_0_16px_rgba(245,158,11,0.35)]"
+                            : "drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
+                      }`}
                     >
                       <defs>
                         <linearGradient id="healthGrad" x1="0" y1="0" x2="1" y2="1">
-                          <stop offset="0%" stopColor="#f97316" />
-                          <stop offset="100%" stopColor="#ef4444" />
+                          <stop
+                            offset="0%"
+                            stopColor={
+                              apiSeverity === "NORMAL"
+                                ? "#34d399"
+                                : apiSeverity === "ANOMALY"
+                                  ? "#fbbf24"
+                                  : "#f97316"
+                            }
+                          />
+                          <stop
+                            offset="100%"
+                            stopColor={
+                              apiSeverity === "NORMAL"
+                                ? "#10b981"
+                                : apiSeverity === "ANOMALY"
+                                  ? "#f59e0b"
+                                  : "#ef4444"
+                            }
+                          />
                         </linearGradient>
                       </defs>
                       <path
@@ -2808,21 +4685,43 @@ export default function Diagnose({
                       />
                     </svg>
                     <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-2xl font-black text-red-500 leading-none">
+                      <span
+                        className={`text-2xl font-black leading-none ${
+                          apiSeverity === "NORMAL"
+                            ? "text-emerald-400"
+                            : apiSeverity === "ANOMALY"
+                              ? "text-amber-400"
+                              : "text-red-500"
+                        }`}
+                      >
                         {gaugeScore}
                       </span>
                     </div>
                   </div>
                   <div className="min-w-0">
-                    <p className="text-xl font-bold text-red-500">
+                    <p
+                      className={`text-xl font-bold ${
+                        apiSeverity === "NORMAL"
+                          ? "text-emerald-400"
+                          : apiSeverity === "ANOMALY"
+                            ? "text-amber-400"
+                            : "text-red-500"
+                      }`}
+                    >
                       {gaugeScore} / 100
                     </p>
                     <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-                      Immediate attention required.{" "}
-                      <span className="inline-flex items-center gap-1 text-red-400 font-semibold">
-                        <TrendingDown className="h-3.5 w-3.5" />
-                        ↓ 15% from last week.
-                      </span>
+                      {apiSeverity === "CRITICAL"
+                        ? "Immediate attention required."
+                        : apiSeverity === "ANOMALY"
+                          ? "Elevated risk — plan corrective action."
+                          : "Within acceptable operating envelope."}{" "}
+                      {apiSeverity === "CRITICAL" && (
+                        <span className="inline-flex items-center gap-1 text-red-400 font-semibold">
+                          <TrendingDown className="h-3.5 w-3.5" />
+                          Priority repair window.
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -2834,22 +4733,47 @@ export default function Diagnose({
                   Primary Fault Identified
                 </p>
                 <div className="mt-4 flex items-start gap-3 flex-1">
-                  <div className="h-12 w-12 rounded-xl bg-red-500/15 border border-red-500/40 flex items-center justify-center shrink-0">
-                    <AlertTriangle className="h-6 w-6 text-red-400" />
+                  <div
+                    className={`h-12 w-12 rounded-xl flex items-center justify-center shrink-0 border ${
+                      hasDetectedFaults
+                        ? "bg-red-500/15 border-red-500/40"
+                        : "bg-emerald-500/15 border-emerald-500/40"
+                    }`}
+                  >
+                    {hasDetectedFaults ? (
+                      <AlertTriangle className="h-6 w-6 text-red-400" />
+                    ) : (
+                      <CheckCircle2 className="h-6 w-6 text-emerald-400" />
+                    )}
                   </div>
                   <div className="min-w-0 space-y-2">
                     <p className="text-lg font-bold text-white leading-snug">
-                      Outer Race Bearing Defect (BPFO)
+                      {primaryTitleDisplay}
                     </p>
                     <p className="text-sm text-slate-300 font-mono">
-                      152 Hz{" "}
+                      {primaryFreqDisplay}{" "}
                       <span className="text-slate-600">|</span>{" "}
-                      <span className="text-emerald-400 font-semibold">94% Confidence</span>{" "}
+                      <span className="text-emerald-400 font-semibold">
+                        {primaryConfidenceDisplay}% Confidence
+                      </span>{" "}
                       <span className="text-slate-600">|</span>{" "}
-                      <span className="text-red-400 font-bold">HIGH Severity</span>
+                      <span
+                        className={`font-bold ${
+                          primaryUiSeverity === "HIGH"
+                            ? "text-red-400"
+                            : primaryUiSeverity === "MEDIUM"
+                              ? "text-amber-400"
+                              : "text-emerald-400"
+                        }`}
+                      >
+                        {primaryUiSeverity} Severity
+                      </span>
                     </p>
                     <p className="text-sm text-yellow-400/90 font-semibold pt-1">
-                      Action required within 7 days.
+                      {primaryFault?.actionWindow ||
+                        (hasDetectedFaults
+                          ? "Action required within 7 days."
+                          : "Continue routine monitoring.")}
                     </p>
                   </div>
                 </div>
@@ -2865,35 +4789,51 @@ export default function Diagnose({
                     <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400/80 mb-1">
                       Preventive Repair
                     </p>
-                    <p className="text-lg font-bold text-emerald-400">$1,650</p>
+                    <p className="text-lg font-bold text-emerald-400">
+                      {formatUsd(preventiveCost)}
+                    </p>
                   </div>
                   <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-red-400/80 mb-1">
                       Failure if Delayed
                     </p>
-                    <p className="text-lg font-bold text-red-400">$45,000</p>
+                    <p className="text-lg font-bold text-red-400">
+                      {formatUsd(failureCost)}
+                    </p>
                   </div>
                 </div>
                 <p className="text-sm text-slate-400 mt-3 leading-relaxed">
-                  <span className="text-yellow-400 font-bold">ROI: 2,600%</span>
+                  <span className="text-yellow-400 font-bold">
+                    ROI: {roiPercent.toLocaleString()}%
+                  </span>
                   {" "}
                   <span className="text-slate-600">|</span>
                   {" "}
                   Production Downtime Loss:{" "}
-                  <span className="text-white font-semibold">$2,500/hr</span>
+                  <span className="text-white font-semibold">
+                    {formatUsd(downtimeLoss)}
+                  </span>
                 </p>
               </div>
             </div>
           </section>
 
           {/* PART 3 — Multi-Fault Diagnostics */}
-          <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+          <section className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-6 hover:border-amber-500/30 transition-all">
             <div className="mb-5">
-              <h3 className="text-lg font-bold text-white">Detailed Fault Breakdown</h3>
-              <p className="text-sm text-slate-500 mt-0.5">Prioritized by severity &amp; confidence</p>
+              <h3 className="text-lg font-bold text-white">Identified Fault List</h3>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Prioritized by severity with confidence scores
+              </p>
             </div>
             <div className="space-y-3">
-              {FAULTS.map((f) => {
+              {!hasDetectedFaults ? (
+                <div className="rounded-xl border border-emerald-500/25 bg-emerald-950/20 px-4 py-5 text-sm text-emerald-200/90">
+                  No actionable fault signatures identified. Machine health is within the
+                  normal operating envelope.
+                </div>
+              ) : (
+              displayFaults.map((f) => {
                 const meta = severityMeta(f.severity);
                 const Icon = meta.Icon;
                 return (
@@ -2913,12 +4853,6 @@ export default function Diagnose({
                           </span>
                         </p>
                         <p className="text-sm text-slate-400 mt-2 leading-relaxed">{f.detail}</p>
-                        {f.id === "f2" && (
-                          <span className="inline-flex items-center px-2 py-1 rounded text-xs bg-slate-800 text-cyan-400 border border-cyan-500/30 mt-2">
-                            📐 Phase Analysis: 180° (±30°) cross-channel phase shift verified across
-                            Triaxial Sensor X/Y axes — Angular Misalignment confirmed.
-                          </span>
-                        )}
                       </div>
                       <span
                         className={`text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md shrink-0 ${meta.sevBadge}`}
@@ -2928,7 +4862,8 @@ export default function Diagnose({
                     </div>
                   </div>
                 );
-              })}
+              })
+              )}
             </div>
           </section>
 
@@ -2937,7 +4872,16 @@ export default function Diagnose({
             <div className="mb-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
               <div>
                 <h3 className="text-lg font-bold text-white">Deep Dive Technical Visualizations</h3>
-                <p className="text-sm text-slate-500 mt-0.5">Spectral proof &amp; waveform analysis</p>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  {chartRegionStatus === "detecting"
+                    ? "Detecting chart panels with OpenAI Vision…"
+                    : useCroppedFft || useCroppedTwf || useCroppedEnvelope
+                      ? "Cropped from uploaded analyzer screenshot · fault markers overlaid"
+                      : "Spectral proof & waveform analysis"}
+                  {chartRegionError ? (
+                    <span className="block text-amber-500/90 mt-0.5">{chartRegionError}</span>
+                  ) : null}
+                </p>
               </div>
               <button
                 type="button"
@@ -3034,7 +4978,30 @@ export default function Diagnose({
                   </div>
                 </div>
 
-                <div className="h-64 w-full">
+                <div className="h-64 w-full relative">
+                  {chartRegionStatus === "detecting" && (
+                    <div className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-slate-950/70 text-xs text-cyan-300 gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Locating FFT panel…
+                    </div>
+                  )}
+                  {useCroppedFft && croppedCharts.fft ? (
+                    <CroppedChartPanel
+                      title="Cropped FFT Spectrum"
+                      imageUrl={croppedCharts.fft}
+                      peaks={chartOverlayPeaks}
+                      regionKind="fft"
+                      axis={chartRegionDetection?.axisRanges?.fft}
+                      className="h-64"
+                      onExpand={() =>
+                        setExpandedCrop({
+                          kind: "fft",
+                          title: "FFT Spectrum (expanded)",
+                          imageUrl: croppedCharts.fft!
+                        })
+                      }
+                    />
+                  ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart
                       data={fmaxView === "highfreq" ? DEEP_FFT_DATA_HF : DEEP_FFT_DATA}
@@ -3118,9 +5085,21 @@ export default function Diagnose({
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-[11px] text-slate-400 pt-1 border-t border-slate-800">
+                  {useCroppedFft ? (
+                    <>
+                      <span className="inline-flex items-center gap-1.5 text-cyan-300">
+                        <span className="h-2 w-2 rounded-sm bg-cyan-400" /> Cropped FFT image
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-red-400">
+                        <span className="h-2 w-2 rounded-full bg-red-500" /> Vision peak markers
+                      </span>
+                    </>
+                  ) : (
+                    <>
                   <span className="inline-flex items-center gap-1.5">
                     <span className="h-0.5 w-4 bg-cyan-400 rounded" /> Measured spectrum
                   </span>
@@ -3130,13 +5109,32 @@ export default function Diagnose({
                   <span className="inline-flex items-center gap-1.5 text-red-400">
                     <span className="h-2 w-2 rounded-full bg-red-500" /> Fault highlight
                   </span>
+                    </>
+                  )}
                 </div>
               </div>
 
               {/* Right: TWF + Envelope */}
               <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 space-y-4 min-w-0">
                 <h4 className="text-sm font-bold text-white">Time Waveform (TWF)</h4>
-                <div className="h-32 w-full">
+                <div className="h-32 w-full relative">
+                  {useCroppedTwf && croppedCharts.twf ? (
+                    <CroppedChartPanel
+                      title="Cropped Time Waveform"
+                      imageUrl={croppedCharts.twf}
+                      peaks={[]}
+                      regionKind="twf"
+                      axis={chartRegionDetection?.axisRanges?.twf}
+                      className="h-32"
+                      onExpand={() =>
+                        setExpandedCrop({
+                          kind: "twf",
+                          title: "Time Waveform (expanded)",
+                          imageUrl: croppedCharts.twf!
+                        })
+                      }
+                    />
+                  ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={TWF_DATA} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
@@ -3163,6 +5161,7 @@ export default function Diagnose({
                       />
                     </LineChart>
                   </ResponsiveContainer>
+                  )}
                 </div>
 
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300 border border-slate-800 rounded-lg bg-slate-900/60 px-3 py-2">
@@ -3181,7 +5180,24 @@ export default function Diagnose({
                 </div>
 
                 <h4 className="text-sm font-bold text-white pt-1">Demodulated / Enveloped Spectrum</h4>
-                <div className="h-40 w-full">
+                <div className="h-40 w-full relative">
+                  {useCroppedEnvelope && croppedCharts.envelope ? (
+                    <CroppedChartPanel
+                      title="Cropped Envelope Spectrum"
+                      imageUrl={croppedCharts.envelope}
+                      peaks={chartOverlayPeaks}
+                      regionKind="envelope"
+                      axis={chartRegionDetection?.axisRanges?.envelope}
+                      className="h-40"
+                      onExpand={() =>
+                        setExpandedCrop({
+                          kind: "envelope",
+                          title: "Demodulated / Enveloped Spectrum (expanded)",
+                          imageUrl: croppedCharts.envelope!
+                        })
+                      }
+                    />
+                  ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={ENVELOPE_DATA} margin={{ top: 8, right: 72, left: 0, bottom: 0 }}>
                       <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
@@ -3235,31 +5251,35 @@ export default function Diagnose({
                       />
                     </AreaChart>
                   </ResponsiveContainer>
+                  )}
                 </div>
               </div>
             </div>
             <p className="text-[11px] text-slate-500 mt-4">
-              Hovering over an impact peak in the TWF automatically highlights the corresponding
-              frequency component in the FFT spectrum.
+              {useCroppedFft || useCroppedTwf || useCroppedEnvelope
+                ? "Chart panels were cropped from the uploaded analyzer screenshot. Peak markers use Vision-extracted frequencies when available."
+                : "Hovering over an impact peak in the TWF automatically highlights the corresponding frequency component in the FFT spectrum."}
             </p>
           </section>
 
           {/* PART 5 — Prescriptive Action Plan & Verification */}
-          <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+          <section className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-6 hover:border-amber-500/30 transition-all">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Left: Repair procedure checklist */}
-              <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-4">
+              <div className="rounded-xl border border-slate-700 bg-slate-950/40 p-5 space-y-4">
                 <div>
-                  <h4 className="text-lg font-bold text-white">Automated Repair Procedure</h4>
+                  <h4 className="text-lg font-bold text-white">
+                    Actionable Repair Recommendations
+                  </h4>
                   <p className="text-sm text-slate-500 mt-0.5">
                     Step-by-step tasks for field technicians
                   </p>
                 </div>
                 <ul className="space-y-3">
-                  {IMMEDIATE_ACTIONS.map((step, idx) => {
+                  {repairSteps.map((step, idx) => {
                     const on = !!checkedActions[step];
                     return (
-                      <li key={step}>
+                      <li key={`${idx}-${step}`}>
                         <label className="flex items-start gap-3 cursor-pointer text-sm text-slate-300 group">
                           <span
                             className={`mt-0.5 h-5 w-5 rounded-md border flex items-center justify-center shrink-0 transition-all ${
@@ -3281,12 +5301,12 @@ export default function Diagnose({
                           <span className={`min-w-0 ${on ? "text-white" : ""}`}>
                             <span className="text-yellow-500/80 font-bold mr-1.5">{idx + 1}.</span>
                             {step}
-                            {idx === 0 && (
+                            {analysisSource !== "api" && idx === 0 && (
                               <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-green-500/10 text-green-400 border border-green-500/30 ml-2">
                                 2x SKF 6320 C3 verified in Tool Crib - Bin 14A
                               </span>
                             )}
-                            {idx === 1 && (
+                            {analysisSource !== "api" && idx === 1 && (
                               <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-red-500/10 text-red-400 border border-red-500/30 ml-2">
                                 Auto-PO generated for Alignment Shims (0 in stock)
                               </span>
@@ -3307,22 +5327,31 @@ export default function Diagnose({
                   <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
                     Preventive Repair Cost
                   </p>
-                  <p className="text-2xl font-bold text-emerald-400 mt-1">$1,650</p>
+                  <p className="text-2xl font-bold text-emerald-400 mt-1">
+                    {formatUsd(preventiveCost)}
+                  </p>
                 </div>
 
                 <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-center">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-red-400">
                     Failure Cost if Delayed
                   </p>
-                  <p className="text-2xl font-bold text-red-400 mt-1">$45,000</p>
+                  <p className="text-2xl font-bold text-red-400 mt-1">
+                    {formatUsd(failureCost)}
+                  </p>
                 </div>
 
                 <p className="text-sm text-slate-400 text-center">
-                  <span className="text-yellow-400 font-bold">ROI: 2,600%</span>
+                  <span className="text-yellow-400 font-bold">
+                    ROI: {roiPercent.toLocaleString()}%
+                  </span>
                   {" "}
                   <span className="text-slate-600">|</span>
                   {" "}
-                  Downtime Loss: <span className="text-white font-semibold">$2,500/hr</span>
+                  Downtime Loss:{" "}
+                  <span className="text-white font-semibold">
+                    {formatUsd(downtimeLoss)}
+                  </span>
                 </p>
 
                 <div className="mt-auto pt-4 border-t border-slate-800 space-y-3">
@@ -3335,12 +5364,7 @@ export default function Diagnose({
                   </div>
                   <button
                     type="button"
-                    onClick={() =>
-                      toast(
-                        "Session saved as baseline. Verification scan scheduled post-repair.",
-                        "success"
-                      )
-                    }
+                    onClick={() => void handleSetBaseline()}
                     className="w-full min-h-[42px] px-4 rounded-lg border border-white/80 hover:border-yellow-500 hover:text-yellow-400 text-white text-sm font-bold cursor-pointer transition-colors bg-transparent"
                   >
                     Set as Baseline &amp; Schedule Verification
@@ -3417,7 +5441,7 @@ export default function Diagnose({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => toast("Exporting vibration PDF report…", "info")}
+                onClick={() => void handleExportPdf()}
                 className="border border-slate-700 text-slate-300 hover:bg-slate-800 px-3 py-2 rounded-lg text-sm flex items-center gap-2 cursor-pointer transition-colors"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -3425,7 +5449,7 @@ export default function Diagnose({
               </button>
               <button
                 type="button"
-                onClick={() => toast("Generating manager executive report…", "info")}
+                onClick={() => setShowManagerReport(true)}
                 className="border border-slate-700 text-slate-300 hover:bg-slate-800 px-3 py-2 rounded-lg text-sm flex items-center gap-2 cursor-pointer transition-colors"
               >
                 <FileText className="h-3.5 w-3.5" />
@@ -3437,26 +5461,43 @@ export default function Diagnose({
       )}
 
       {/* RESULTS — Thermography (IR). Tech id is "ir" (not "thermography"). */}
-      {selectedTech === "ir" && showResults && (
+      {selectedTech === "ir" && showResults && analysisResult && (
         <div ref={resultsRef}>
           <ThermographyResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
-            onNewAnalysis={() => setShowResults(false)}
+            analysis={analysisResult}
+            gaugeScore={gaugeScore}
+            thermalImageUrl={thermalUpload?.preview || null}
+            thermalPeaks={thermographyPeaks}
+            onNewAnalysis={() => {
+              setShowResults(false);
+              setAnalysisResult(null);
+            }}
             onSaveWorkOrder={saveAndCreateWorkOrder}
+            onExportPdf={() => void handleExportPdf()}
+            onManagerReport={() => setShowManagerReport(true)}
             onToast={(msg, type) => toast(msg, type ?? "info")}
           />
         </div>
       )}
 
       {/* RESULTS — Ultrasound (UE) */}
-      {selectedTech === "ultrasound" && showResults && (
+      {selectedTech === "ultrasound" && showResults && analysisResult && (
         <div ref={resultsRef}>
           <UltrasoundResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
-            onNewAnalysis={() => setShowResults(false)}
+            analysis={analysisResult}
+            gaugeScore={gaugeScore}
+            ultrasoundPeaks={ultrasoundPeaks}
+            onNewAnalysis={() => {
+              setShowResults(false);
+              setAnalysisResult(null);
+            }}
             onSaveWorkOrder={saveAndCreateWorkOrder}
+            onExportPdf={() => void handleExportPdf()}
+            onManagerReport={() => setShowManagerReport(true)}
             onToast={(msg, type) => toast(msg, type ?? "info")}
           />
         </div>
@@ -3488,6 +5529,124 @@ export default function Diagnose({
         </div>
       )}
 
+      {/* CROPPED CHART EXPAND MODAL */}
+      {expandedCrop && (
+        <CroppedChartExpandModal
+          title={expandedCrop.title}
+          imageUrl={expandedCrop.imageUrl}
+          peaks={chartOverlayPeaks}
+          regionKind={expandedCrop.kind}
+          axis={chartRegionDetection?.axisRanges?.[expandedCrop.kind]}
+          onClose={() => setExpandedCrop(null)}
+        />
+      )}
+
+      {/* MANAGER EXECUTIVE SUMMARY */}
+      {showManagerReport &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[85] flex items-center justify-center bg-black/75 p-4"
+            onClick={() => setShowManagerReport(false)}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div
+              className="relative w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+                <div>
+                  <h3 className="text-lg font-bold text-white">Manager Executive Summary</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {selectedAsset?.label || browseAssetTag || "Asset"} ·{" "}
+                    {browseComponent || "Component"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowManagerReport(false)}
+                  className="h-9 w-9 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 cursor-pointer"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="space-y-4 px-5 py-5 text-sm text-slate-300">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                    <p className="text-[10px] uppercase tracking-wider text-slate-500">Health</p>
+                    <p className="text-2xl font-black text-white mt-1">
+                      {analysisResult?.overallHealthScore ?? gaugeScore}
+                      <span className="text-sm text-slate-500"> / 100</span>
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
+                    <p className="text-[10px] uppercase tracking-wider text-slate-500">Severity</p>
+                    <p className="text-xl font-bold text-amber-300 mt-1">{apiSeverity}</p>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                    Primary Finding
+                  </p>
+                  <p className="text-white font-semibold">{primaryTitleDisplay}</p>
+                  <p className="text-slate-400 mt-1">
+                    {primaryFreqDisplay} · {primaryConfidenceDisplay}% confidence
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                    Business Impact
+                  </p>
+                  <p>
+                    Preventive: <span className="text-white font-semibold">{formatUsd(preventiveCost)}</span>
+                    {" · "}
+                    Failure risk:{" "}
+                    <span className="text-red-300 font-semibold">{formatUsd(failureCost)}</span>
+                    {" · "}
+                    Downtime:{" "}
+                    <span className="text-white font-semibold">{formatUsd(downtimeLoss)}</span>
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                    Recommended Action
+                  </p>
+                  <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                    {(repairSteps.length ? repairSteps : ["Continue routine monitoring."])
+                      .slice(0, 4)
+                      .map((s) => (
+                        <li key={s}>{s}</li>
+                      ))}
+                  </ul>
+                </div>
+                {analysisResult?.summary && (
+                  <p className="text-slate-400 leading-relaxed border-t border-slate-800 pt-3">
+                    {analysisResult.summary}
+                  </p>
+                )}
+              </div>
+              <div className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
+                <button
+                  type="button"
+                  onClick={() => void handleExportPdf()}
+                  className="px-3 py-2 rounded-lg border border-slate-700 text-slate-200 text-sm hover:bg-slate-800 cursor-pointer"
+                >
+                  Export PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowManagerReport(false)}
+                  className="px-3 py-2 rounded-lg bg-yellow-500 text-slate-900 text-sm font-bold hover:bg-yellow-400 cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
       {/* LOADING OVERLAY */}
       {isAnalyzing &&
         createPortal(
@@ -3495,9 +5654,15 @@ export default function Diagnose({
             <div className="bg-slate-800 border border-slate-700 rounded-xl p-8 max-w-md w-full mx-4 shadow-2xl shadow-yellow-500/10">
               <div className="text-center">
                 <Bot className="w-12 h-12 text-yellow-500 mx-auto mb-4 animate-pulse" />
-                <h3 className="text-xl font-bold text-white mb-2">Analyzing...</h3>
+                <h3 className="text-xl font-bold text-white mb-2">
+                  {activeTech === "vibration"
+                    ? "OpenAI Vision Analyzing..."
+                    : "Analyzing..."}
+                </h3>
                 <p className="text-sm text-slate-400 mb-6">
-                  MotorMedic is reviewing {reportAsset.label}
+                  {activeTech === "vibration"
+                    ? "Consensus engine correlating spectrum peaks with kinematics..."
+                    : `MotorMedic is reviewing ${reportAsset.label}`}
                 </p>
                 <div className="space-y-3 text-left">
                   {ANALYSIS_STEPS.map((s, i) => {

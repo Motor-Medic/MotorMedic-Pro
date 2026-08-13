@@ -140,13 +140,24 @@ function PpmField({
 
 export interface OilInputAccordionsProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
+  /** Selected from top Equipment Selection (Route / Asset / Component). */
+  equipment?: {
+    route?: string;
+    assetTag?: string;
+    assetLabel?: string;
+    component?: string;
+    voltage?: string;
+    location?: string;
+    hp?: number;
+    rpm?: number;
+  };
 }
 
-export default function OilInputAccordions({ onToast }: OilInputAccordionsProps) {
-  const [openSections, setOpenSections] = useState<OilAccordionSection[]>([
-    "identity",
-    "telemetry"
-  ]);
+export default function OilInputAccordions({
+  onToast,
+  equipment
+}: OilInputAccordionsProps) {
+  const [openSections, setOpenSections] = useState<OilAccordionSection[]>([]);
 
   // Section 1
   const [assetType, setAssetType] = useState<OilAssetType>("Hydraulic System");
@@ -182,6 +193,7 @@ export default function OilInputAccordions({ onToast }: OilInputAccordionsProps)
   const [waterPpm, setWaterPpm] = useState("");
   const [iso4406Code, setIso4406Code] = useState("");
   const [pdfName, setPdfName] = useState<string | null>(null);
+  const [pdfPreview, setPdfPreview] = useState<string | null>(null);
   const pdfRef = useRef<HTMLInputElement>(null);
 
   /** Engine → TBN; Gearbox / Hydraulic / Turbine → TAN */
@@ -198,18 +210,144 @@ export default function OilInputAccordions({ onToast }: OilInputAccordionsProps)
     setPpm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handlePdf = (file: File) => {
-    const ok = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
-    if (!ok) {
-      onToast?.("Upload a lab PDF (SGS, Polaris, LubeWatch).", "warning");
+  const handlePdf = (file?: File | null) => {
+    if (!file) return;
+    if (
+      !/\.(jpe?g|png|gif|webp)$/i.test(file.name) &&
+      !file.type.startsWith("image/")
+    ) {
+      onToast?.("Upload an image (.jpg / .png / .webp).", "warning");
       return;
     }
+    const preview = URL.createObjectURL(file);
+    setPdfPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return preview;
+    });
     setPdfName(file.name);
-    onToast?.(`Lab PDF ready for mock extraction: ${file.name}`, "success");
+    onToast?.(`Oil analysis image ready: ${file.name}`, "success");
   };
+
+  const clearPdfPreview = () => {
+    setPdfPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setPdfName(null);
+    if (pdfRef.current) pdfRef.current.value = "";
+  };
+
+  const hasPdfPreview = Boolean(pdfPreview || pdfName);
 
   return (
     <div className="space-y-0">
+      {(equipment?.assetLabel || equipment?.assetTag || equipment?.component) && (
+        <div className="mb-4 rounded-xl border border-white/10 bg-slate-900/50 px-4 py-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            Analyzing equipment
+          </p>
+          <p className="text-sm text-white font-semibold mt-0.5">
+            {[equipment.route, equipment.assetLabel || equipment.assetTag, equipment.component]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
+      )}
+      {/* Data Ingestion — permanently visible (not inside accordion) */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+              Data Ingestion
+            </p>
+            <h3 className="text-sm font-bold text-white mt-1">
+              Lab Report / Image Upload
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Always visible — photo or screenshot for Oil Analysis AI
+            </p>
+          </div>
+          <Upload className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
+        </div>
+
+        <div className="space-y-4">
+          <span className={fieldLabel}>Lab Report / Image Upload (AI Vision)</span>
+          {!hasPdfPreview ? (
+            <button
+              type="button"
+              onClick={() => pdfRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handlePdf(e.dataTransfer.files?.[0] ?? null);
+              }}
+              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+            >
+              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
+              <p className="text-sm font-bold text-white">
+                Drop lab report image here
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                .png, .jpg, .webp — photo or screenshot of oil lab report
+              </p>
+            </button>
+          ) : (
+            <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
+              <div className="flex flex-col sm:flex-row gap-4 items-start">
+                <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner">
+                  {pdfPreview ? (
+                    <img
+                      src={pdfPreview}
+                      alt={pdfName || "Oil lab preview"}
+                      className="w-full h-full object-cover object-left-top"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold">
+                      Preview
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
+                    <span className="truncate max-w-[180px] text-white">
+                      {pdfName || "lab-report.png"}
+                    </span>
+                    <span className="text-slate-500">|</span>
+                    <span className="text-amber-300">AI Vision Ready</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearPdfPreview}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
+                    >
+                      ✕ Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pdfRef.current?.click()}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                    >
+                      Replace image
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          <input
+            ref={pdfRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.gif"
+            className="hidden"
+            onChange={(e) => {
+              handlePdf(e.target.files?.[0] ?? null);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      </div>
+
       {/* SECTION 1 — Fluid Identity */}
       <AccordionShell
         id="identity"
@@ -674,45 +812,6 @@ export default function OilInputAccordions({ onToast }: OilInputAccordionsProps)
             Format: &gt;4μm / &gt;6μm / &gt;14μm
           </p>
         </label>
-
-        <div>
-          <span className={fieldLabel}>Automated Lab PDF Parser</span>
-          <button
-            type="button"
-            onClick={() => pdfRef.current?.click()}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const file = e.dataTransfer.files?.[0];
-              if (file) handlePdf(file);
-            }}
-            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-8 text-center cursor-pointer transition-colors"
-          >
-            <Upload className="h-7 w-7 text-yellow-400 mx-auto mb-2" />
-            <p className="text-sm font-bold text-white">
-              Drop standard lab PDF here
-            </p>
-            <p className="text-xs text-slate-500 mt-1">
-              SGS, Polaris, LubeWatch — mock auto-extraction
-            </p>
-            {pdfName && (
-              <p className="mt-2 text-xs text-yellow-300 inline-flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                {pdfName}
-              </p>
-            )}
-          </button>
-          <input
-            ref={pdfRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handlePdf(f);
-            }}
-          />
-        </div>
       </AccordionShell>
     </div>
   );

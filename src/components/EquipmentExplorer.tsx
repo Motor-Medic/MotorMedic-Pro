@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   AlertTriangle,
   Camera,
   CheckCircle2,
@@ -7,17 +8,25 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
+  ClipboardList,
+  Cog,
   Download,
   FileText,
   ImageIcon,
   Loader2,
+  MapPin,
+  Maximize2,
+  MessageSquare,
   Pencil,
   Plus,
   Printer,
+  Replace,
+  SlidersHorizontal,
   Trash2,
   Upload,
   Wrench,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import {
   ensureSitePlantRoot,
@@ -73,13 +82,6 @@ type DetailTab =
   | "Exceptions"
   | "Feedback";
 
-const DETAIL_TABS: DetailTab[] = [
-  "Location Profile",
-  "Equipment Maintenance Plan",
-  "Exceptions",
-  "Feedback"
-];
-
 /** Core CBM technologies for the Equipment Maintenance Plan matrix. */
 type CbmTechRow = {
   technology: string;
@@ -103,6 +105,62 @@ const CBM_TECH_MATRIX: CbmTechRow[] = [
   { technology: "MCA - Online", monitored: false },
   { technology: "MCA - Offline", monitored: false }
 ];
+
+type ExceptionSeverity = "Critical" | "Warning" | "Normal";
+type DiagnosticTech = "Vibration" | "IR" | "Ultrasound" | "MCA" | "Oil";
+
+type CbmExceptionRow = {
+  id: string;
+  location: string;
+  dateLogged: string;
+  tech: DiagnosticTech;
+  severity: ExceptionSeverity;
+  faultDescription: string;
+  actionRequired: string;
+};
+
+type FeedbackEntry = {
+  id: string;
+  location: string;
+  dateCreated: string;
+  comment: string;
+  acknowledged: boolean;
+  workOrderId: string;
+  hasImage: boolean;
+  conditionUpdate?: string;
+};
+
+const SEVERITY_STYLES: Record<
+  ExceptionSeverity,
+  { badge: string; label: string }
+> = {
+  Critical: {
+    badge:
+      "border-red-500/50 bg-red-500/15 text-red-300",
+    label: "Critical"
+  },
+  Warning: {
+    badge:
+      "border-amber-400/50 bg-amber-400/15 text-amber-300",
+    label: "Warning"
+  },
+  Normal: {
+    badge:
+      "border-emerald-400/40 bg-emerald-500/10 text-emerald-300",
+    label: "Normal"
+  }
+};
+
+function severityBadge(severity: ExceptionSeverity) {
+  const s = SEVERITY_STYLES[severity];
+  return (
+    <span
+      className={`inline-flex items-center rounded-lg border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${s.badge}`}
+    >
+      {s.label}
+    </span>
+  );
+}
 
 const CHILD_OF: Record<ExplorerKind, ExplorerKind | null> = {
   plant: "unit",
@@ -311,6 +369,477 @@ function patchNodePhoto(
   };
 }
 
+/** Nameplate photo persisted alongside equipment photo (extra store field). */
+type WithNameplatePhoto = { nameplatePhotoUrl?: string };
+
+type MasterHubSpecs = {
+  motorHpKw: string;
+  ratedRpm: string;
+  frameSize: string;
+  voltage: string;
+  fla: string;
+  operationalDuty: string;
+  driveType: "Direct" | "Belt" | "Gearbox";
+  bearingDe: string;
+  bearingNde: string;
+  pulleyOrTooth: string;
+  activeTechs: string;
+  fmaxLor: string;
+  sensorMount: string;
+  measurementInterval: string;
+};
+
+/** Extended kinematics keys used by the Location Profile master hub. */
+type MasterKinExtras = CbmKinematics & {
+  frameSize?: string;
+  voltage?: string;
+  fla?: string;
+  operationalDuty?: string;
+  driveType?: "Direct" | "Belt" | "Gearbox";
+  pulleyOrTooth?: string;
+  activeTechs?: string;
+  fmaxLor?: string;
+  sensorMount?: string;
+  measurementInterval?: string;
+};
+
+const DEFAULT_MASTER_SPECS: MasterHubSpecs = {
+  motorHpKw: "100 HP / 75 kW",
+  ratedRpm: "1780 RPM",
+  frameSize: "445T",
+  voltage: "460 V",
+  fla: "124 A FLA",
+  operationalDuty: "Continuous (S1)",
+  driveType: "Direct",
+  bearingDe: "6314-C3",
+  bearingNde: "6212-C3",
+  pulleyOrTooth: "1.0 : 1 Direct",
+  activeTechs: "Vibration · IR · Ultrasound · MCA",
+  fmaxLor: "2000 Hz / 3200 LoR",
+  sensorMount: "Stud Mount",
+  measurementInterval: "Monthly"
+};
+
+type DemoProfilePreset = {
+  match: (hay: string) => boolean;
+  label: string;
+  specs: MasterHubSpecs;
+};
+
+/** Spec presets for known demo / showcase equipment (no stock photos). */
+const DEMO_PROFILE_PRESETS: DemoProfilePreset[] = [
+  {
+    label: "PMP030 — Sulfuric Acid Pump",
+    match: (hay) =>
+      hay.includes("pmp030") ||
+      hay.includes("sulfuric") ||
+      (hay.includes("acid") && hay.includes("pump")),
+    specs: {
+      motorHpKw: "75 HP / 55 kW",
+      ratedRpm: "1785 RPM",
+      frameSize: "365T",
+      voltage: "460 V",
+      fla: "92 A FLA",
+      operationalDuty: "Continuous (S1) — Acid Service",
+      driveType: "Direct",
+      bearingDe: "6314-C3",
+      bearingNde: "6212-C3",
+      pulleyOrTooth: "1.0 : 1 Coupling",
+      activeTechs: "Vibration · IR · Ultrasound",
+      fmaxLor: "2000 Hz / 3200 LoR",
+      sensorMount: "Stud Mount",
+      measurementInterval: "Bi-Weekly"
+    }
+  },
+  {
+    label: "FAN001 — Dryer Scrubber Blower",
+    match: (hay) =>
+      hay.includes("fan001") ||
+      hay.includes("scrubber") ||
+      (hay.includes("dryer") && hay.includes("blower")),
+    specs: {
+      motorHpKw: "40 HP / 30 kW",
+      ratedRpm: "1180 RPM",
+      frameSize: "324T",
+      voltage: "460 V",
+      fla: "52 A FLA",
+      operationalDuty: "Continuous (S1) — Process Air",
+      driveType: "Belt",
+      bearingDe: "6309-C3",
+      bearingNde: "6308-C3",
+      pulleyOrTooth: "2.4 : 1 Sheave",
+      activeTechs: "Vibration · Ultrasound · Temperature",
+      fmaxLor: "1000 Hz / 1600 LoR",
+      sensorMount: "Magnet Mount",
+      measurementInterval: "Monthly"
+    }
+  },
+  {
+    label: "Boiler Feed / Process Pump",
+    match: (hay) =>
+      hay.includes("p-101") ||
+      hay.includes("p-402") ||
+      hay.includes("boiler feed") ||
+      hay.includes("slurry") ||
+      hay.includes("pump"),
+    specs: {
+      motorHpKw: "100 HP / 75 kW",
+      ratedRpm: "1780 RPM",
+      frameSize: "445T",
+      voltage: "460 V",
+      fla: "124 A FLA",
+      operationalDuty: "Continuous (S1)",
+      driveType: "Direct",
+      bearingDe: "6314-C3",
+      bearingNde: "6212-C3",
+      pulleyOrTooth: "1.0 : 1 Direct",
+      activeTechs: "Vibration · IR · Ultrasound · MCA",
+      fmaxLor: "2000 Hz / 3200 LoR",
+      sensorMount: "Stud Mount",
+      measurementInterval: "Monthly"
+    }
+  },
+  {
+    label: "Cooling / Process Fan",
+    match: (hay) =>
+      hay.includes("fn-04") ||
+      hay.includes("fan") ||
+      hay.includes("blower") ||
+      hay.includes("cooling tower"),
+    specs: {
+      motorHpKw: "50 HP / 37 kW",
+      ratedRpm: "1185 RPM",
+      frameSize: "365T",
+      voltage: "460 V",
+      fla: "65 A FLA",
+      operationalDuty: "Continuous (S1)",
+      driveType: "Belt",
+      bearingDe: "6311-C3",
+      bearingNde: "6309-C3",
+      pulleyOrTooth: "2.1 : 1 Sheave",
+      activeTechs: "Vibration · Ultrasound · Temperature",
+      fmaxLor: "1000 Hz / 1600 LoR",
+      sensorMount: "Magnet Mount",
+      measurementInterval: "Monthly"
+    }
+  },
+  {
+    label: "Induction / Drive Motor",
+    match: (hay) =>
+      hay.includes("m-101") ||
+      hay.includes("m-210") ||
+      hay.includes("motor") ||
+      hay.includes("induction"),
+    specs: {
+      motorHpKw: "150 HP / 112 kW",
+      ratedRpm: "1785 RPM",
+      frameSize: "445TS",
+      voltage: "460 V",
+      fla: "180 A FLA",
+      operationalDuty: "Continuous (S1)",
+      driveType: "Direct",
+      bearingDe: "6320-C3",
+      bearingNde: "6318-C3",
+      pulleyOrTooth: "1.0 : 1 Coupling",
+      activeTechs: "Vibration · MCA · IR",
+      fmaxLor: "2000 Hz / 6400 LoR",
+      sensorMount: "Stud Mount",
+      measurementInterval: "Weekly"
+    }
+  },
+  {
+    label: "Gearbox Drive",
+    match: (hay) =>
+      hay.includes("gb-") || hay.includes("gearbox") || hay.includes("gear"),
+    specs: {
+      motorHpKw: "60 HP / 45 kW",
+      ratedRpm: "1750 RPM",
+      frameSize: "364T",
+      voltage: "460 V",
+      fla: "77 A FLA",
+      operationalDuty: "Continuous (S1)",
+      driveType: "Gearbox",
+      bearingDe: "22316-E",
+      bearingNde: "22314-E",
+      pulleyOrTooth: "12.5 : 1 / 87 T",
+      activeTechs: "Vibration · Oil · Ultrasound",
+      fmaxLor: "2000 Hz / 3200 LoR",
+      sensorMount: "Stud Mount",
+      measurementInterval: "Monthly"
+    }
+  }
+];
+
+/** Only user-uploaded images (data URLs). Strips stock/remote demo photos. */
+function userUploadedPhotoUrl(url: string | null | undefined): string {
+  if (!url) return "";
+  if (url.startsWith("data:image")) return url;
+  // Block Unsplash / remote stock placeholders from Location Profile
+  if (/^https?:\/\//i.test(url)) return "";
+  return url;
+}
+
+function nodeDemoHaystack(
+  store: EquipmentStore,
+  node: ExplorerNode
+): string {
+  const entity = lookupEditableEntity(store, node);
+  if (node.kind === "asset" && entity.asset) {
+    return `${entity.asset.tag} ${entity.asset.name} ${entity.asset.machineType || ""} ${node.label}`.toLowerCase();
+  }
+  if (node.kind === "component" && entity.component) {
+    let assetTag = "";
+    for (const route of store.routes) {
+      for (const asset of route.assets) {
+        if (asset.components.some((c) => c.id === entity.component!.id)) {
+          assetTag = `${asset.tag} ${asset.name}`;
+        }
+      }
+    }
+    return `${assetTag} ${entity.component.name} ${entity.component.componentType || ""} ${node.label}`.toLowerCase();
+  }
+  return `${node.label} ${node.path}`.toLowerCase();
+}
+
+function lookupDemoProfile(
+  store: EquipmentStore,
+  node: ExplorerNode
+): DemoProfilePreset | null {
+  if (node.kind !== "asset" && node.kind !== "component") return null;
+  const hay = nodeDemoHaystack(store, node);
+  return DEMO_PROFILE_PRESETS.find((p) => p.match(hay)) || null;
+}
+
+function lookupNameplatePhoto(
+  store: EquipmentStore,
+  nodeId: string,
+  kind: ExplorerKind
+): string | null {
+  if (kind !== "asset" && kind !== "component") return null;
+  for (const route of store.routes) {
+    for (const asset of route.assets) {
+      if (kind === "asset" && asset.id === nodeId) {
+        return (asset as EquipAsset & WithNameplatePhoto).nameplatePhotoUrl || null;
+      }
+      if (kind === "component") {
+        const comp = asset.components.find((c) => c.id === nodeId);
+        if (comp) {
+          return (
+            (comp as EquipComponent & WithNameplatePhoto).nameplatePhotoUrl ||
+            null
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function patchNameplatePhoto(
+  store: EquipmentStore,
+  nodeId: string,
+  kind: "asset" | "component",
+  nameplatePhotoUrl: string | undefined
+): EquipmentStore {
+  return {
+    ...store,
+    routes: store.routes.map((r) => ({
+      ...r,
+      assets: r.assets.map((a) => {
+        if (kind === "asset" && a.id === nodeId) {
+          return { ...a, nameplatePhotoUrl } as EquipAsset & WithNameplatePhoto;
+        }
+        if (kind === "component") {
+          return {
+            ...a,
+            components: a.components.map((c) =>
+              c.id === nodeId
+                ? ({ ...c, nameplatePhotoUrl } as EquipComponent &
+                    WithNameplatePhoto)
+                : c
+            )
+          };
+        }
+        return a;
+      })
+    }))
+  };
+}
+
+function driveArrangementToType(
+  arr?: string
+): MasterHubSpecs["driveType"] {
+  if (!arr) return "Direct";
+  const lower = arr.toLowerCase();
+  if (lower.includes("belt")) return "Belt";
+  if (lower.includes("gear")) return "Gearbox";
+  return "Direct";
+}
+
+function masterSpecsFromKin(
+  kin: MasterKinExtras | undefined,
+  fallbackRpm?: string | number | null,
+  fallbackBearing?: string | null,
+  base: MasterHubSpecs = DEFAULT_MASTER_SPECS
+): MasterHubSpecs {
+  const rpm =
+    kin?.ratedRpm?.trim() ||
+    (fallbackRpm != null && String(fallbackRpm).trim()
+      ? String(fallbackRpm).includes("RPM")
+        ? String(fallbackRpm)
+        : `${fallbackRpm} RPM`
+      : "") ||
+    base.ratedRpm;
+  const pulley =
+    kin?.pulleyOrTooth?.trim() ||
+    kin?.gearboxRatio?.trim() ||
+    (kin?.gearTeethZ1 && kin?.gearTeethZ2
+      ? `${kin.gearTeethZ1} / ${kin.gearTeethZ2} T`
+      : "") ||
+    (kin?.motorSheaveDia && kin?.fanSheaveDia
+      ? `${kin.motorSheaveDia} / ${kin.fanSheaveDia} in`
+      : "") ||
+    base.pulleyOrTooth;
+  return {
+    motorHpKw: kin?.motorHpKw?.trim() || base.motorHpKw,
+    ratedRpm: rpm,
+    frameSize: kin?.frameSize?.trim() || base.frameSize,
+    voltage: kin?.voltage?.trim() || base.voltage,
+    fla: kin?.fla?.trim() || base.fla,
+    operationalDuty: kin?.operationalDuty?.trim() || base.operationalDuty,
+    driveType:
+      kin?.driveType ||
+      (kin?.driveArrangement
+        ? driveArrangementToType(kin.driveArrangement)
+        : base.driveType),
+    bearingDe:
+      kin?.bearingDe?.trim() ||
+      fallbackBearing?.trim() ||
+      base.bearingDe,
+    bearingNde: kin?.bearingNde?.trim() || base.bearingNde,
+    pulleyOrTooth: pulley,
+    activeTechs: kin?.activeTechs?.trim() || base.activeTechs,
+    fmaxLor: kin?.fmaxLor?.trim() || base.fmaxLor,
+    sensorMount: kin?.sensorMount?.trim() || base.sensorMount,
+    measurementInterval:
+      kin?.measurementInterval?.trim() || base.measurementInterval
+  };
+}
+
+function resolveMasterSpecsTarget(
+  store: EquipmentStore,
+  node: ExplorerNode
+): {
+  kind: "asset" | "component";
+  id: string;
+  kin: MasterKinExtras | undefined;
+  speedRpm?: number;
+  bearingType?: string;
+} | null {
+  const entity = lookupEditableEntity(store, node);
+  if (node.kind === "component" && entity.component) {
+    return {
+      kind: "component",
+      id: entity.component.id,
+      kin: entity.component.kinematics as MasterKinExtras | undefined,
+      speedRpm: entity.component.speedRpm,
+      bearingType: entity.component.bearingType
+    };
+  }
+  if (node.kind === "asset" && entity.asset) {
+    const preferred =
+      entity.asset.components.find((c) =>
+        (c.componentType || "").toLowerCase().includes("motor")
+      ) || entity.asset.components[0];
+    if (preferred) {
+      return {
+        kind: "component",
+        id: preferred.id,
+        kin: preferred.kinematics as MasterKinExtras | undefined,
+        speedRpm: preferred.speedRpm ?? entity.asset.speedRpm,
+        bearingType: preferred.bearingType || entity.asset.bearingType
+      };
+    }
+    return {
+      kind: "asset",
+      id: entity.asset.id,
+      kin: (entity.asset as EquipAsset & { masterHubSpecs?: MasterKinExtras })
+        .masterHubSpecs,
+      speedRpm: entity.asset.speedRpm,
+      bearingType: entity.asset.bearingType
+    };
+  }
+  return null;
+}
+
+function patchMasterSpecs(
+  store: EquipmentStore,
+  targetKind: "asset" | "component",
+  targetId: string,
+  specs: MasterHubSpecs
+): EquipmentStore {
+  const driveArrangement: MasterKinExtras["driveArrangement"] =
+    specs.driveType === "Belt"
+      ? "Belt Drive"
+      : specs.driveType === "Direct"
+        ? "Direct Drive"
+        : undefined;
+  const kinPatch: MasterKinExtras = {
+    motorHpKw: specs.motorHpKw,
+    ratedRpm: specs.ratedRpm,
+    frameSize: specs.frameSize,
+    voltage: specs.voltage,
+    fla: specs.fla,
+    operationalDuty: specs.operationalDuty,
+    driveType: specs.driveType,
+    driveArrangement,
+    bearingDe: specs.bearingDe,
+    bearingNde: specs.bearingNde,
+    pulleyOrTooth: specs.pulleyOrTooth,
+    gearboxRatio:
+      specs.driveType === "Gearbox" ? specs.pulleyOrTooth : undefined,
+    activeTechs: specs.activeTechs,
+    fmaxLor: specs.fmaxLor,
+    sensorMount: specs.sensorMount,
+    measurementInterval: specs.measurementInterval
+  };
+  const rpmNum = Number(specs.ratedRpm);
+  return {
+    ...store,
+    routes: store.routes.map((r) => ({
+      ...r,
+      assets: r.assets.map((a) => {
+        if (targetKind === "asset" && a.id === targetId) {
+          return {
+            ...a,
+            speedRpm: Number.isFinite(rpmNum) ? rpmNum : a.speedRpm,
+            bearingType: specs.bearingDe || a.bearingType,
+            masterHubSpecs: kinPatch
+          } as EquipAsset & { masterHubSpecs?: MasterKinExtras };
+        }
+        if (targetKind === "component") {
+          return {
+            ...a,
+            components: a.components.map((c) => {
+              if (c.id !== targetId) return c;
+              return {
+                ...c,
+                speedRpm: Number.isFinite(rpmNum) ? rpmNum : c.speedRpm,
+                bearingType: specs.bearingDe || c.bearingType,
+                kinematics: {
+                  ...(c.kinematics || {}),
+                  ...kinPatch
+                }
+              };
+            })
+          };
+        }
+        return a;
+      })
+    }))
+  };
+}
+
 /**
  * Cascade-delete a hierarchy node from the persisted store.
  * Plant / licensed site root cannot be deleted.
@@ -486,6 +1015,219 @@ function EquipmentPhotoUploader({
         className="hidden"
         onChange={(e) => void ingest(e.target.files?.[0])}
       />
+    </div>
+  );
+}
+
+/** Industrial SaaS dual photo dropzone — Equipment Field / Motor Nameplate. */
+function ProfileImageCard({
+  title,
+  hint,
+  photoUrl,
+  emptyTitle,
+  changeLabel,
+  busy,
+  setBusy,
+  onChange,
+  onError,
+  onPreviewClick
+}: {
+  title: string;
+  hint: string;
+  photoUrl: string;
+  emptyTitle: string;
+  changeLabel: string;
+  busy: boolean;
+  setBusy: (v: boolean) => void;
+  onChange: (url: string) => void;
+  onError: (msg: string) => void;
+  onPreviewClick?: (url: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const ingest = async (file?: File | null) => {
+    if (!file) return;
+    setBusy(true);
+    onError("");
+    try {
+      const dataUrl = await fileToLightweightDataUrl(file);
+      onChange(dataUrl);
+    } catch {
+      onError("Use a .jpg, .png, or .webp image under ~5 MB.");
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  return (
+    <div
+      className={`bg-slate-900/80 border rounded-2xl p-6 hover:border-amber-500/30 transition-all backdrop-blur-md shadow-xl space-y-3 flex flex-col min-h-[260px] ${
+        dragOver
+          ? "border-amber-400/70 shadow-[0_0_28px_rgba(251,191,36,0.18)]"
+          : "border-slate-800"
+      }`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        void ingest(e.dataTransfer.files?.[0]);
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/90">
+            {title}
+          </p>
+          <p className="text-[11px] text-slate-500 mt-0.5 leading-snug">{hint}</p>
+        </div>
+        <span className="h-8 w-8 rounded-xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-center shrink-0">
+          <Camera className="h-4 w-4 text-amber-300" aria-hidden />
+        </span>
+      </div>
+
+      {photoUrl ? (
+        <div className="relative group w-full aspect-[16/10] rounded-xl border border-amber-400/35 bg-slate-950 overflow-hidden shadow-[0_0_18px_rgba(251,191,36,0.1)]">
+          <img
+            src={photoUrl}
+            alt={title}
+            className="w-full h-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+          <div className="absolute inset-x-0 bottom-0 p-2.5 flex flex-wrap items-center justify-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            <button
+              type="button"
+              onClick={() => onPreviewClick?.(photoUrl)}
+              className="min-h-[32px] px-2.5 rounded-lg border border-slate-500/80 bg-slate-950/85 text-white text-[10px] font-bold cursor-pointer hover:border-amber-400/60 inline-flex items-center gap-1"
+              title="Zoom"
+            >
+              <Maximize2 className="h-3 w-3" />
+              Zoom
+            </button>
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={busy}
+              className="min-h-[32px] px-2.5 rounded-lg border border-slate-500/80 bg-slate-950/85 text-white text-[10px] font-bold cursor-pointer hover:border-amber-400/60 inline-flex items-center gap-1 disabled:opacity-50"
+              title="Replace"
+            >
+              <Replace className="h-3 w-3" />
+              Replace
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange("")}
+              disabled={busy}
+              className="min-h-[32px] px-2.5 rounded-lg border border-red-500/50 bg-red-950/80 text-red-100 text-[10px] font-bold cursor-pointer hover:border-red-400 inline-flex items-center gap-1 disabled:opacity-50"
+              title="Delete"
+            >
+              <Trash2 className="h-3 w-3" />
+              Delete
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="flex-1 w-full min-h-[148px] rounded-xl border-2 border-dashed border-slate-600 hover:border-amber-400/55 bg-slate-950/60 hover:bg-slate-950/90 px-4 py-6 text-center cursor-pointer transition-all duration-200 disabled:opacity-50 flex flex-col items-center justify-center gap-2"
+        >
+          {busy ? (
+            <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
+          ) : (
+            <div className="h-12 w-12 rounded-2xl border border-slate-700 bg-slate-900 flex items-center justify-center">
+              <ImageIcon className="h-6 w-6 text-slate-500" />
+            </div>
+          )}
+          <p className="text-sm font-semibold text-slate-100">{emptyTitle}</p>
+          <p className="text-[11px] text-slate-500 max-w-[220px] leading-relaxed">
+            Drag &amp; drop an image here, or click to browse
+          </p>
+          <p className="text-[10px] text-slate-600">JPG · PNG · WEBP · image/*</p>
+        </button>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 mt-auto pt-1">
+        <label className="relative min-h-[38px] px-3 rounded-xl border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-200 text-[11px] font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5">
+          {busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Upload className="h-3.5 w-3.5" />
+          )}
+          {changeLabel}
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+            disabled={busy}
+            onChange={(e) => void ingest(e.target.files?.[0])}
+            aria-label={changeLabel}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="min-h-[38px] px-3 rounded-xl border border-slate-600 bg-slate-950/70 text-slate-200 text-[11px] font-bold cursor-pointer hover:border-slate-400 inline-flex items-center gap-1.5 disabled:opacity-50"
+        >
+          <Camera className="h-3.5 w-3.5" />
+          Browse Files
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SpecPill({ label, value }: { label: string; value: string }) {
+  const empty = !value || value === "—";
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+        {label}
+      </p>
+      <div
+        className={`inline-flex max-w-full items-center rounded-lg border px-2.5 py-1.5 text-sm font-bold tracking-tight ${
+          empty
+            ? "border-slate-700/80 bg-slate-950/50 text-slate-500"
+            : "border-slate-700 bg-slate-950 text-slate-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+        }`}
+        title={value}
+      >
+        <span className="truncate">{empty ? "Not set" : value}</span>
+      </div>
+    </div>
+  );
+}
+
+function SpecGlassCard({
+  title,
+  icon,
+  children
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-amber-500/30 transition-all space-y-4 backdrop-blur-md shadow-xl">
+      <div className="flex items-center gap-2.5">
+        <span className="h-8 w-8 rounded-xl border border-amber-500/35 bg-amber-500/10 flex items-center justify-center text-amber-300 shrink-0">
+          {icon}
+        </span>
+        <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+          {title}
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-3.5">
+        {children}
+      </div>
     </div>
   );
 }
@@ -700,6 +1442,30 @@ function collectAncestorIds(
   return walk(nodes, []) ?? [];
 }
 
+/** Flatten tree into parent-picker options for a creatable level. */
+function collectParentOptions(
+  nodes: ExplorerNode[],
+  allowedKinds: ExplorerKind[],
+  depth = 0
+): { id: string; label: string; kind: ExplorerKind; depth: number }[] {
+  const out: { id: string; label: string; kind: ExplorerKind; depth: number }[] =
+    [];
+  for (const n of nodes) {
+    if (allowedKinds.includes(n.kind)) {
+      out.push({
+        id: n.id,
+        label: n.label,
+        kind: n.kind,
+        depth
+      });
+    }
+    if (n.children.length) {
+      out.push(...collectParentOptions(n.children, allowedKinds, depth + 1));
+    }
+  }
+  return out;
+}
+
 function lookupEditableEntity(
   store: EquipmentStore,
   node: ExplorerNode
@@ -858,13 +1624,67 @@ export default function EquipmentExplorer({
   const [createKind, setCreateKind] = useState<ExplorerKind>("unit");
   const [parentNodeId, setParentNodeId] = useState<string | null>(SITE_PLANT_ID);
   const [error, setError] = useState("");
-  const [pdmReportOpen, setPdmReportOpen] = useState(false);
-  const [pdmReportData, setPdmReportData] = useState<{
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickNodeName, setQuickNodeName] = useState("");
+  const [quickDriveType, setQuickDriveType] = useState<
+    "Direct" | "Belt" | "Gearbox"
+  >("Direct");
+  const [quickBearingDe, setQuickBearingDe] = useState("");
+  const [quickBearingNde, setQuickBearingNde] = useState("");
+  const [quickGearRatio, setQuickGearRatio] = useState("");
+  const [quickToothCount, setQuickToothCount] = useState("");
+  const [selectedAssessmentReport, setSelectedAssessmentReport] = useState<{
     technology: string;
     lastAssessment: string;
+    severity: "normal" | "warning" | "critical";
   } | null>(null);
-  const [pdmActiveTab, setPdmActiveTab] = useState<string>("vibration");
-  const [workOrderExpanded, setWorkOrderExpanded] = useState(false);
+
+  const [exceptions, setExceptions] = useState<CbmExceptionRow[]>(() => [
+    {
+      id: "ex-seed-1",
+      location: "Motor DE — Point 1H",
+      dateLogged: "1/7/2026 2:15 PM",
+      tech: "Vibration",
+      severity: "Critical",
+      faultDescription: "1X amplitude exceeded ISO Zone C — misalignment suspected",
+      actionRequired: "Schedule precision alignment within 48 hrs"
+    },
+    {
+      id: "ex-seed-2",
+      location: "Motor DE — Point 1V",
+      dateLogged: "1/5/2026 9:40 AM",
+      tech: "IR",
+      severity: "Warning",
+      faultDescription: "NDE bearing housing +12 °C above baseline",
+      actionRequired: "Verify lubrication interval and grease type"
+    }
+  ]);
+  const [showAddException, setShowAddException] = useState(false);
+  const [newException, setNewException] = useState({
+    tech: "Vibration" as DiagnosticTech,
+    severity: "Warning" as ExceptionSeverity,
+    faultDescription: "",
+    actionRequired: ""
+  });
+
+  const [feedbackEntries, setFeedbackEntries] = useState<FeedbackEntry[]>(() => [
+    {
+      id: "fb-seed-1",
+      location: "Motor DE",
+      dateCreated: "1/6/2026 4:22 PM",
+      comment:
+        "Audible high-frequency whine at NDE — grease purge performed, noise reduced but not eliminated.",
+      acknowledged: true,
+      workOrderId: "WO-10482",
+      hasImage: true,
+      conditionUpdate: "Minor grease leakage at NDE seal"
+    }
+  ]);
+  const [feedbackDraft, setFeedbackDraft] = useState({
+    comment: "",
+    workOrderId: "",
+    conditionUpdate: ""
+  });
 
   const selectedNode = findNode(tree, selectedNodeId);
   const parentNode = findNode(tree, parentNodeId);
@@ -932,6 +1752,13 @@ export default function EquipmentExplorer({
     setMode("idle");
     setError("");
     setParentNodeId(SITE_PLANT_ID);
+    setQuickAddOpen(false);
+    setQuickNodeName("");
+    setQuickDriveType("Direct");
+    setQuickBearingDe("");
+    setQuickBearingNde("");
+    setQuickGearRatio("");
+    setQuickToothCount("");
   };
 
   const handleLoadDemo = () => {
@@ -1027,6 +1854,10 @@ export default function EquipmentExplorer({
   const [formPhotoUrl, setFormPhotoUrl] = useState("");
   const [photoBusy, setPhotoBusy] = useState(false);
   const [photoLightbox, setPhotoLightbox] = useState<string | null>(null);
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [profileDraft, setProfileDraft] = useState<MasterHubSpecs | null>(
+    null
+  );
 
   const [compName, setCompName] = useState("");
   const [compType, setCompType] = useState<EquipComponentType>(
@@ -1101,7 +1932,261 @@ export default function EquipmentExplorer({
   };
 
   const beginQuickAdd = (kind: Exclude<ExplorerKind, "plant">) => {
-    beginCreate(kind, resolveQuickAddParent(kind));
+    resetFormFields();
+    setQuickNodeName("");
+    setQuickDriveType("Direct");
+    setQuickBearingDe("");
+    setQuickBearingNde("");
+    setQuickGearRatio("");
+    setQuickToothCount("");
+    setAssetRpm("");
+    setCreateKind(kind);
+    const parent = resolveQuickAddParent(kind);
+    setParentNodeId(parent?.id ?? SITE_PLANT_ID);
+    setQuickAddOpen(true);
+    setError("");
+    // Keep right panel idle — Quick Add uses its own modal
+    setMode("idle");
+  };
+
+  const quickAddParentOptions = useMemo(() => {
+    if (!quickAddOpen || createKind === "plant") return [];
+    const ideals = IDEAL_PARENT[createKind as Exclude<ExplorerKind, "plant">];
+    return collectParentOptions(tree, ideals);
+  }, [quickAddOpen, createKind, tree]);
+
+  const expandToRevealNode = (newId: string, parentId: string | null) => {
+    const ancestors = collectAncestorIds(tree, parentId);
+    setExpanded((prev) => {
+      const next = { ...prev, [SITE_PLANT_ID]: true, [newId]: true };
+      for (const id of ancestors) next[id] = true;
+      if (parentId) next[parentId] = true;
+      return next;
+    });
+  };
+
+  const handleQuickAddSave = () => {
+    setError("");
+    const name = quickNodeName.trim();
+    if (!name) {
+      setError("Name / Tag ID is required.");
+      return;
+    }
+    persistQuickAddNode(name);
+  };
+
+  const persistQuickAddNode = (displayName: string) => {
+    setError("");
+    const next = cloneStore(getEquipmentStore());
+    next.plants = [
+      {
+        id: SITE_PLANT_ID,
+        name: facilityName,
+        location:
+          next.plants.find((p) => p.id === SITE_PLANT_ID)?.location ||
+          facilityName,
+        facilityType:
+          next.plants.find((p) => p.id === SITE_PLANT_ID)?.facilityType ||
+          "Power Plant"
+      }
+    ];
+    const parentId = parentNodeId || SITE_PLANT_ID;
+    let newId = "";
+
+    if (createKind === "unit") {
+      const unit: EquipUnit = {
+        id: uid("unit"),
+        name: displayName,
+        plantId: SITE_PLANT_ID
+      };
+      next.units.push(unit);
+      newId = unit.id;
+    } else if (createKind === "route") {
+      const parent = findNode(tree, parentId);
+      const isPlant = !parent || parent.kind === "plant";
+      const unit = next.units.find((u) => u.id === parentId);
+      const route: EquipRoute = {
+        id: uid("route"),
+        name: displayName,
+        location: unit?.name || facilityName,
+        assets: [],
+        plantId: SITE_PLANT_ID,
+        unitId: isPlant ? undefined : parentId,
+        collectionFrequency: routeFreq
+      };
+      next.routes.push(route);
+      newId = route.id;
+    } else if (createKind === "asset") {
+      const parent = findNode(tree, parentId);
+      let routeIdx = next.routes.findIndex((r) => r.id === parentId);
+      if (routeIdx < 0 && parent?.kind === "plant") {
+        ensureFacilityRoute(next, facilityName);
+        routeIdx = next.routes.findIndex((r) => r.id === SITE_FACILITY_ROUTE_ID);
+      }
+      if (routeIdx < 0) {
+        setError("Parent route not found. Choose a valid parent location.");
+        return;
+      }
+      const route = next.routes[routeIdx];
+      const tagGuess =
+        assetTag.trim() ||
+        displayName
+          .split(/[\s—–-]+/)
+          .find((t) => /[A-Za-z0-9]/.test(t))
+          ?.toUpperCase() ||
+        displayName.slice(0, 12).toUpperCase().replace(/\s+/g, "-");
+      const asset: EquipAsset = {
+        id: uid("asset"),
+        tag: tagGuess.toUpperCase(),
+        name: displayName,
+        location: route.location || facilityName,
+        machineType: machineType || undefined,
+        speedRpm: assetRpm ? Number(assetRpm) || undefined : undefined,
+        status: "Normal",
+        overallVibration: 1.0,
+        components: []
+      };
+      next.routes[routeIdx] = {
+        ...route,
+        assets: [...route.assets, asset]
+      };
+      newId = asset.id;
+    } else if (createKind === "component") {
+      const driveMap =
+        quickDriveType === "Belt"
+          ? ("Belt Drive" as const)
+          : ("Direct Drive" as const);
+      const kinematics: CbmKinematics = {
+        ...DEFAULT_KIN,
+        ratedRpm: assetRpm.trim() || DEFAULT_KIN.ratedRpm,
+        driveArrangement: driveMap,
+        bearingDe: quickBearingDe.trim() || undefined,
+        bearingNde: quickBearingNde.trim() || undefined,
+        gearboxRatio:
+          quickDriveType === "Gearbox"
+            ? quickGearRatio.trim() || undefined
+            : undefined,
+        gearTeethZ1:
+          quickDriveType === "Gearbox"
+            ? quickToothCount.trim() || undefined
+            : undefined
+      };
+      const rpmNum = Number(kinematics.ratedRpm || "");
+      const comp: EquipComponent = {
+        id: uid("comp"),
+        name: displayName,
+        componentType: compType,
+        bearingType: kinematics.bearingDe || kinematics.bearingNde,
+        speedRpm: Number.isFinite(rpmNum) && rpmNum > 0 ? rpmNum : undefined,
+        isoClass: kinematics.isoClass,
+        kinematics,
+        collectionPoints: []
+      };
+      const parent = findNode(tree, parentId);
+      let found = false;
+      if (parent?.kind === "plant" || parentId === SITE_PLANT_ID) {
+        ensureFacilityHoldingAsset(next, facilityName);
+        const routeIdx = next.routes.findIndex(
+          (r) => r.id === SITE_FACILITY_ROUTE_ID
+        );
+        next.routes[routeIdx] = {
+          ...next.routes[routeIdx],
+          assets: next.routes[routeIdx].assets.map((a) =>
+            a.id === SITE_FACILITY_HOLDING_ASSET_ID
+              ? { ...a, components: [...a.components, comp] }
+              : a
+          )
+        };
+        found = true;
+      } else {
+        next.routes = next.routes.map((r) => ({
+          ...r,
+          assets: r.assets.map((a) => {
+            if (a.id !== parentId) return a;
+            found = true;
+            return { ...a, components: [...a.components, comp] };
+          })
+        }));
+      }
+      if (!found) {
+        setError("Parent asset not found. Choose a valid parent location.");
+        return;
+      }
+      newId = comp.id;
+    } else if (createKind === "point") {
+      const point: EquipCollectionPoint = {
+        id: uid("pt"),
+        name: displayName,
+        orientation: pointOrient,
+        measurementType: pointMeas
+      };
+      const parent = findNode(tree, parentId);
+      let found = false;
+      if (parent?.kind === "plant" || parentId === SITE_PLANT_ID) {
+        ensureFacilityPointsHost(next, facilityName);
+        const routeIdx = next.routes.findIndex(
+          (r) => r.id === SITE_FACILITY_ROUTE_ID
+        );
+        next.routes[routeIdx] = {
+          ...next.routes[routeIdx],
+          assets: next.routes[routeIdx].assets.map((a) => {
+            if (a.id !== SITE_FACILITY_HOLDING_ASSET_ID) return a;
+            return {
+              ...a,
+              components: a.components.map((c) => {
+                if (c.id !== SITE_FACILITY_POINTS_COMP_ID) return c;
+                return {
+                  ...c,
+                  collectionPoints: [...(c.collectionPoints ?? []), point]
+                };
+              })
+            };
+          })
+        };
+        found = true;
+      } else {
+        next.routes = next.routes.map((r) => ({
+          ...r,
+          assets: r.assets.map((a) => ({
+            ...a,
+            components: a.components.map((c) => {
+              if (c.id !== parentId) return c;
+              found = true;
+              return {
+                ...c,
+                collectionPoints: [...(c.collectionPoints ?? []), point]
+              };
+            })
+          }))
+        }));
+      }
+      if (!found) {
+        setError(
+          "Parent component not found. Choose a valid parent location."
+        );
+        return;
+      }
+      newId = point.id;
+    } else {
+      return;
+    }
+
+    saveEquipmentStore(next);
+    refresh();
+    expandToRevealNode(newId, parentId);
+    setSelectedNodeId(newId);
+    setQuickAddOpen(false);
+    setQuickNodeName("");
+    setQuickDriveType("Direct");
+    setQuickBearingDe("");
+    setQuickBearingNde("");
+    setQuickGearRatio("");
+    setQuickToothCount("");
+    setError("");
+    toast(
+      `${KIND_LABEL[createKind]} "${displayName}" added to plant hierarchy.`,
+      "success"
+    );
   };
 
   const EDITABLE_KINDS: ExplorerKind[] = [
@@ -1764,14 +2849,14 @@ export default function EquipmentExplorer({
         </span>
         <div className="flex flex-wrap items-center gap-1.5">
           {QUICK_ADD_LEVELS.map((lvl) => {
-            const active = mode === "create" && createKind === lvl.kind;
+            const active = quickAddOpen && createKind === lvl.kind;
             return (
               <button
                 key={lvl.kind}
                 type="button"
                 onClick={() => beginQuickAdd(lvl.kind)}
                 className={active ? QUICK_ADD_BTN_ACTIVE : QUICK_ADD_BTN}
-                title={`Add ${lvl.label} under current location`}
+                title={`Add ${lvl.label} via creation modal`}
               >
                 <span>{lvl.icon}</span>
                 <span>{lvl.label}</span>
@@ -1804,6 +2889,192 @@ export default function EquipmentExplorer({
       </div>
     </div>
   );
+
+  const renderQuickAddModal = () => {
+    if (!quickAddOpen) return null;
+    const kindLabel = KIND_LABEL[createKind];
+    const showKinematics =
+      createKind === "asset" || createKind === "component";
+
+    return (
+      <div
+        className="fixed inset-0 z-[120] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quick-add-title"
+        onClick={() => {
+          setQuickAddOpen(false);
+          setError("");
+        }}
+      >
+        <div
+          className="w-full max-w-lg rounded-2xl border border-[#FFC700]/35 bg-[#0A0E1A] shadow-2xl flex flex-col max-h-[90vh]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-slate-800 shrink-0">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                Quick Add Level
+              </p>
+              <h3
+                id="quick-add-title"
+                className="text-base font-bold text-white mt-0.5"
+              >
+                Add New {kindLabel}
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setQuickAddOpen(false);
+                setError("");
+              }}
+              className="p-1.5 rounded-lg border border-slate-700 text-slate-400 hover:text-white cursor-pointer"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {error ? (
+              <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 font-medium">
+                {error}
+              </div>
+            ) : null}
+
+            <Field label="Node Type">
+              <div className="min-h-[40px] rounded-xl border border-[#FFC700]/30 bg-[#FFC700]/10 px-3 flex items-center text-sm font-bold text-[#FFC700]">
+                {KIND_ICON[createKind]} {kindLabel}
+              </div>
+            </Field>
+
+            <Field label="Name / Tag ID" required>
+              <input
+                className={INPUT}
+                value={quickNodeName}
+                onChange={(e) => setQuickNodeName(e.target.value)}
+                placeholder='e.g. "PMP-104 Motor Drive End"'
+                autoFocus
+              />
+            </Field>
+
+            <Field label="Parent Location" required>
+              <select
+                className={INPUT}
+                value={parentNodeId || SITE_PLANT_ID}
+                onChange={(e) => setParentNodeId(e.target.value)}
+              >
+                {quickAddParentOptions.length === 0 ? (
+                  <option value={SITE_PLANT_ID}>
+                    [{facilityName}] (Plant Root)
+                  </option>
+                ) : (
+                  quickAddParentOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {"— ".repeat(Math.max(0, opt.depth))}
+                      {KIND_ICON[opt.kind]} {opt.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </Field>
+
+            {showKinematics && (
+              <div className="rounded-xl border border-[#FFC700]/25 bg-slate-950/50 p-3 space-y-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[#FFC700]/90">
+                  Kinematic &amp; Nameplate Specs
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="Motor / Machine Rated RPM">
+                    <input
+                      className={INPUT}
+                      value={assetRpm}
+                      onChange={(e) => setAssetRpm(e.target.value)}
+                      placeholder="1780"
+                      inputMode="numeric"
+                    />
+                  </Field>
+                  <Field label="Drive Type">
+                    <select
+                      className={INPUT}
+                      value={quickDriveType}
+                      onChange={(e) =>
+                        setQuickDriveType(
+                          e.target.value as "Direct" | "Belt" | "Gearbox"
+                        )
+                      }
+                    >
+                      <option value="Direct">Direct</option>
+                      <option value="Belt">Belt</option>
+                      <option value="Gearbox">Gearbox</option>
+                    </select>
+                  </Field>
+                  <Field label="Drive End Bearing">
+                    <input
+                      className={INPUT}
+                      value={quickBearingDe}
+                      onChange={(e) => setQuickBearingDe(e.target.value)}
+                      placeholder="6314-C3"
+                    />
+                  </Field>
+                  <Field label="Non-Drive End Bearing">
+                    <input
+                      className={INPUT}
+                      value={quickBearingNde}
+                      onChange={(e) => setQuickBearingNde(e.target.value)}
+                      placeholder="6312-C3"
+                    />
+                  </Field>
+                  {quickDriveType === "Gearbox" && (
+                    <>
+                      <Field label="Gear Ratio">
+                        <input
+                          className={INPUT}
+                          value={quickGearRatio}
+                          onChange={(e) => setQuickGearRatio(e.target.value)}
+                          placeholder="14.6:1"
+                        />
+                      </Field>
+                      <Field label="Tooth Count">
+                        <input
+                          className={INPUT}
+                          value={quickToothCount}
+                          onChange={(e) => setQuickToothCount(e.target.value)}
+                          placeholder="23"
+                          inputMode="numeric"
+                        />
+                      </Field>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-wrap justify-end gap-2 px-4 py-3 border-t border-slate-800 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setQuickAddOpen(false);
+                setError("");
+              }}
+              className={BTN_GHOST}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleQuickAddSave}
+              className={BTN_PRIMARY}
+            >
+              Save Node
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   /* ---- Right panel content ---- */
   const renderCreateForm = () => (
@@ -2087,8 +3358,63 @@ export default function EquipmentExplorer({
 
   const selectedPhotoUrl = useMemo(() => {
     if (!selectedNode) return null;
-    return lookupNodePhoto(store, selectedNode.id, selectedNode.kind);
+    return userUploadedPhotoUrl(
+      lookupNodePhoto(store, selectedNode.id, selectedNode.kind)
+    );
   }, [store, selectedNode]);
+
+  const selectedNameplateUrl = useMemo(() => {
+    if (!selectedNode) return null;
+    return userUploadedPhotoUrl(
+      lookupNameplatePhoto(store, selectedNode.id, selectedNode.kind)
+    );
+  }, [store, selectedNode]);
+
+  const demoProfile = useMemo(() => {
+    if (!selectedNode || selectedNode.kind !== "component") return null;
+    return lookupDemoProfile(store, selectedNode);
+  }, [store, selectedNode]);
+
+  const masterSpecsTarget = useMemo(() => {
+    if (!selectedNode || selectedNode.kind !== "component") return null;
+    return resolveMasterSpecsTarget(store, selectedNode);
+  }, [store, selectedNode]);
+
+  const masterSpecs = useMemo(() => {
+    if (!masterSpecsTarget) {
+      return {
+        motorHpKw: "—",
+        ratedRpm: "—",
+        frameSize: "—",
+        voltage: "—",
+        fla: "—",
+        operationalDuty: "—",
+        driveType: "Direct" as const,
+        bearingDe: "—",
+        bearingNde: "—",
+        pulleyOrTooth: "—",
+        activeTechs: "—",
+        fmaxLor: "—",
+        sensorMount: "—",
+        measurementInterval: "—"
+      };
+    }
+    const base = demoProfile?.specs || DEFAULT_MASTER_SPECS;
+    return masterSpecsFromKin(
+      masterSpecsTarget.kin,
+      masterSpecsTarget.speedRpm,
+      masterSpecsTarget.bearingType,
+      base
+    );
+  }, [masterSpecsTarget, demoProfile]);
+
+  const displayMasterSpecs =
+    profileEditing && profileDraft ? profileDraft : masterSpecs;
+
+  useEffect(() => {
+    setProfileEditing(false);
+    setProfileDraft(null);
+  }, [selectedNode?.id]);
 
   const saveSelectedPhoto = (photoUrl: string) => {
     if (!selectedNode) return;
@@ -2101,6 +3427,52 @@ export default function EquipmentExplorer({
     );
     saveEquipmentStore(next);
     refresh();
+  };
+
+  const saveSelectedNameplate = (nameplatePhotoUrl: string) => {
+    if (!selectedNode) return;
+    if (selectedNode.kind !== "asset" && selectedNode.kind !== "component")
+      return;
+    const next = patchNameplatePhoto(
+      cloneStore(getEquipmentStore()),
+      selectedNode.id,
+      selectedNode.kind,
+      nameplatePhotoUrl || undefined
+    );
+    saveEquipmentStore(next);
+    refresh();
+  };
+
+  const beginProfileSpecsEdit = () => {
+    setProfileDraft({ ...masterSpecs });
+    setProfileEditing(true);
+  };
+
+  const cancelProfileSpecsEdit = () => {
+    setProfileEditing(false);
+    setProfileDraft(null);
+  };
+
+  const saveProfileSpecs = () => {
+    if (!masterSpecsTarget || !profileDraft) return;
+    const next = patchMasterSpecs(
+      cloneStore(getEquipmentStore()),
+      masterSpecsTarget.kind,
+      masterSpecsTarget.id,
+      profileDraft
+    );
+    saveEquipmentStore(next);
+    refresh();
+    setProfileEditing(false);
+    setProfileDraft(null);
+    toast("Equipment & nameplate specs saved.", "success");
+  };
+
+  const patchProfileDraft = <K extends keyof MasterHubSpecs>(
+    key: K,
+    value: MasterHubSpecs[K]
+  ) => {
+    setProfileDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
   };
 
   const renderIdleDetail = () => {
@@ -2116,120 +3488,432 @@ export default function EquipmentExplorer({
       );
     }
 
-    const canAttachPhoto =
-      selectedNode.kind === "asset" || selectedNode.kind === "component";
+    const kind = selectedNode.kind;
+    const isComponent = kind === "component";
+    const isAsset = kind === "asset";
+    const isLocationSummary =
+      kind === "plant" ||
+      kind === "route" ||
+      kind === "unit" ||
+      kind === "point";
+    const canEditMasterSpecs = isComponent && Boolean(masterSpecsTarget);
+    const specs = displayMasterSpecs;
 
-    const locationProfile = (
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-              {KIND_LABEL[selectedNode.kind]}
-            </p>
-            <h3 className="text-lg font-bold text-white mt-1">
-              {KIND_ICON[selectedNode.kind]} {selectedNode.label}
-            </h3>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {EDITABLE_KINDS.includes(selectedNode.kind) ? (
-              <button
-                type="button"
-                onClick={() => beginEdit(selectedNode)}
-                className="min-h-[40px] px-3 rounded-xl border border-[#FFC700]/45 bg-[#FFC700]/10 hover:bg-[#FFC700]/20 text-[#FFC700] text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
-              >
-                <Pencil className="h-4 w-4" />
-                Edit {KIND_LABEL[selectedNode.kind]}
-              </button>
-            ) : null}
-            {CHILD_OF[selectedNode.kind] && (
-              <button
-                type="button"
-                onClick={() => beginCreateChild(selectedNode)}
-                className={BTN_CYAN}
-              >
-                <Plus className="h-4 w-4" />
-                Add {KIND_LABEL[CHILD_OF[selectedNode.kind]!]}
-              </button>
-            )}
-            {selectedNode.id !== SITE_PLANT_ID &&
-            selectedNode.kind !== "plant" ? (
-              <button
-                type="button"
-                onClick={() => requestDeleteNode(selectedNode)}
-                className="min-h-[40px] px-3 rounded-xl border border-red-800/80 bg-red-950/40 hover:bg-red-900/60 text-red-300 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
-              >
-                <Trash2 className="h-4 w-4" />
-                Delete Node
-              </button>
-            ) : null}
+    const summaryEntity = lookupEditableEntity(store, selectedNode);
+    let summarySubType = KIND_LABEL[kind];
+    let summaryCriticality = "—";
+    let summaryId = selectedNode.id;
+    if (kind === "plant") {
+      const plant = store.plants.find((p) => p.id === selectedNode.id);
+      summarySubType = plant?.facilityType || "Plant Facility";
+      summaryId = plant?.id || selectedNode.id;
+      summaryCriticality =
+        selectedNode.children.length > 3
+          ? "High"
+          : selectedNode.children.length > 0
+            ? "Medium"
+            : "Low";
+    } else if (kind === "unit" && summaryEntity.unit) {
+      summarySubType = "Process Unit";
+      summaryId = summaryEntity.unit.id;
+      summaryCriticality =
+        selectedNode.children.length > 2 ? "High" : "Medium";
+    } else if (kind === "route" && summaryEntity.route) {
+      summarySubType =
+        summaryEntity.route.collectionFrequency
+          ? `${summaryEntity.route.collectionFrequency} Route`
+          : "Collection Route";
+      summaryId = summaryEntity.route.id;
+      summaryCriticality =
+        selectedNode.children.length > 2 ? "High" : "Medium";
+    } else if (kind === "point" && summaryEntity.point) {
+      summarySubType =
+        summaryEntity.point.measurementType ||
+        summaryEntity.point.orientation ||
+        "Collection Point";
+      summaryId = summaryEntity.point.id;
+      summaryCriticality = "Low";
+    } else if (kind === "asset" && summaryEntity.asset) {
+      summarySubType =
+        summaryEntity.asset.machineType || "Asset Assembly";
+      summaryId = summaryEntity.asset.tag || summaryEntity.asset.id;
+      summaryCriticality = summaryEntity.asset.criticality || "Medium";
+    }
+
+    const locationHeader = (
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+            Location Profile
+          </p>
+          <h3 className="text-lg font-bold text-white mt-1 tracking-tight">
+            {KIND_ICON[kind]} {selectedNode.label}
+          </h3>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-[#FFC700]">
+              {KIND_LABEL[kind]}
+            </span>
+            <span className="text-[11px] text-slate-500">
+              {isComponent
+                ? demoProfile?.label ||
+                  "Component · Equipment & Kinematics Hub"
+                : isAsset
+                  ? "Asset · Field photo only"
+                  : "Hierarchy location summary"}
+            </span>
           </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {canEditMasterSpecs ? (
+            <button
+              type="button"
+              onClick={beginProfileSpecsEdit}
+              className="min-h-[40px] px-3.5 rounded-xl border border-[#FFC700]/45 bg-[#FFC700]/10 hover:bg-[#FFC700]/20 text-[#FFC700] text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5 shadow-[0_0_16px_rgba(255,199,0,0.12)]"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              Edit Specifications
+            </button>
+          ) : null}
+          {CHILD_OF[kind] && (
+            <button
+              type="button"
+              onClick={() => beginCreateChild(selectedNode)}
+              className={BTN_CYAN}
+            >
+              <Plus className="h-4 w-4" />
+              Add {KIND_LABEL[CHILD_OF[kind]!]}
+            </button>
+          )}
+          {selectedNode.id !== SITE_PLANT_ID && kind !== "plant" ? (
+            <button
+              type="button"
+              onClick={() => requestDeleteNode(selectedNode)}
+              className="min-h-[40px] px-3 rounded-xl border border-red-800/80 bg-red-950/40 hover:bg-red-900/60 text-red-300 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
 
-        {canAttachPhoto && (
-          <div className="rounded-xl border border-slate-700 bg-slate-950/40 p-3 space-y-3">
-            {!selectedPhotoUrl ? (
-              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 px-4 py-5 flex flex-col sm:flex-row items-center gap-3 text-center sm:text-left">
-                <div className="h-14 w-14 rounded-lg border border-slate-700 bg-slate-950 flex items-center justify-center shrink-0">
-                  <ImageIcon className="h-6 w-6 text-slate-600" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm text-slate-300 font-medium">
-                    No equipment photo attached
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    Add a machine or nameplate photo for field reference.
-                  </p>
-                </div>
+    const editSpecsModal =
+      profileEditing && profileDraft && isComponent ? (
+        <div
+          className="fixed inset-0 z-[120] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-specs-title"
+          onClick={cancelProfileSpecsEdit}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border border-amber-500/30 bg-[#0A0E1A] shadow-[0_0_50px_rgba(0,0,0,0.55)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-800 bg-[#0A0E1A]/95 backdrop-blur-md px-5 py-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/80">
+                  Nameplate &amp; Kinematics
+                </p>
+                <h3
+                  id="edit-specs-title"
+                  className="text-lg font-bold text-white tracking-tight mt-0.5"
+                >
+                  Edit Specifications
+                </h3>
               </div>
-            ) : null}
-            <EquipmentPhotoUploader
-              photoUrl={selectedPhotoUrl || ""}
-              onChange={saveSelectedPhoto}
-              busy={photoBusy}
-              setBusy={setPhotoBusy}
-              onError={setError}
-              onPreviewClick={setPhotoLightbox}
-            />
+              <button
+                type="button"
+                onClick={cancelProfileSpecsEdit}
+                className="min-h-[36px] min-w-[36px] rounded-xl border border-slate-600 bg-slate-800/80 text-slate-300 cursor-pointer hover:text-white hover:border-slate-400 inline-flex items-center justify-center"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {(
+                  [
+                    ["motorHpKw", "Motor HP / kW", "e.g. 100 HP / 75 kW"],
+                    ["ratedRpm", "Rated RPM", "e.g. 1780 RPM"],
+                    ["frameSize", "Frame Size", "e.g. 445T"],
+                    ["voltage", "Voltage", "e.g. 460 V"],
+                    ["fla", "Full Load Amps (FLA)", "e.g. 124 A FLA"],
+                    [
+                      "operationalDuty",
+                      "Operational Duty",
+                      "e.g. Continuous (S1)"
+                    ],
+                    ["bearingDe", "DE Bearing", "e.g. 6314-C3"],
+                    ["bearingNde", "NDE Bearing", "e.g. 6212-C3"],
+                    [
+                      "pulleyOrTooth",
+                      "Pulley / Sheave / Tooth Count",
+                      "e.g. 2.4 : 1 Sheave"
+                    ],
+                    [
+                      "activeTechs",
+                      "Active Monitoring Technologies",
+                      "Vibration · IR · Ultrasound"
+                    ],
+                    [
+                      "fmaxLor",
+                      "Fmax / Lines of Resolution",
+                      "2000 Hz / 3200 LoR"
+                    ],
+                    ["sensorMount", "Sensor Mounting Type", "Stud Mount"],
+                    [
+                      "measurementInterval",
+                      "Measurement Interval",
+                      "Monthly"
+                    ]
+                  ] as const
+                ).map(([key, label, placeholder]) => (
+                  <label key={key} className="block space-y-1.5 min-w-0">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      {label}
+                    </span>
+                    <input
+                      type="text"
+                      value={profileDraft[key]}
+                      placeholder={placeholder}
+                      onChange={(e) => patchProfileDraft(key, e.target.value)}
+                      className="w-full min-h-[40px] rounded-xl bg-slate-950 border border-slate-700 px-3 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-[#FFC700]"
+                    />
+                  </label>
+                ))}
+                <label className="block space-y-1.5 min-w-0">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    Drive Type
+                  </span>
+                  <select
+                    value={profileDraft.driveType}
+                    onChange={(e) =>
+                      patchProfileDraft(
+                        "driveType",
+                        e.target.value as MasterHubSpecs["driveType"]
+                      )
+                    }
+                    className="w-full min-h-[40px] rounded-xl bg-slate-950 border border-slate-700 px-3 text-sm text-white focus:outline-none focus:border-[#FFC700]"
+                  >
+                    <option value="Direct">Direct</option>
+                    <option value="Belt">Belt</option>
+                    <option value="Gearbox">Gearbox</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={cancelProfileSpecsEdit}
+                  className={BTN_GHOST}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveProfileSpecs}
+                  className={`${BTN_PRIMARY} inline-flex items-center gap-1.5`}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  Save Specifications
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null;
+
+    const locationProfile = (
+      <div className="space-y-5">
+        {locationHeader}
+
+        {/* PLANT / ROUTE / UNIT / POINT — summary only */}
+        {isLocationSummary ? (
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 hover:border-amber-500/30 transition-all backdrop-blur-md shadow-xl space-y-5">
+            <div className="flex items-center gap-2.5">
+              <span className="h-8 w-8 rounded-xl border border-amber-500/35 bg-amber-500/10 flex items-center justify-center text-amber-300 shrink-0">
+                <MapPin className="h-4 w-4" />
+              </span>
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+                Location Summary
+              </p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <SpecPill label="Location Name" value={selectedNode.label} />
+              <SpecPill label="ID" value={summaryId} />
+              <SpecPill label="SubType" value={summarySubType} />
+              <SpecPill
+                label="Criticality Ranking"
+                value={summaryCriticality}
+              />
+            </div>
+            <div className="space-y-2 pt-1 border-t border-slate-800">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Child Nodes ({selectedNode.children.length})
+              </p>
+              {selectedNode.children.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  No child nodes under this location.
+                </p>
+              ) : (
+                <ul className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {selectedNode.children.map((child) => (
+                    <li
+                      key={child.id}
+                      className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2"
+                    >
+                      <span className="text-sm text-slate-200 font-medium truncate">
+                        {KIND_ICON[child.kind]} {child.label}
+                      </span>
+                      <span className="shrink-0 inline-flex items-center rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#FFC700]">
+                        {KIND_LABEL[child.kind]}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Equipment photos and kinematic specs are available on Asset and
+              Component nodes only.
+            </p>
+          </div>
+        ) : null}
+
+        {/* ASSET — field photo only */}
+        {isAsset ? (
+          <div className="space-y-4">
+            <div className="max-w-xl">
+              <ProfileImageCard
+                title="Equipment Field Photo"
+                hint="Overall asset / machine field capture"
+                photoUrl={selectedPhotoUrl || ""}
+                emptyTitle="Upload Equipment Photo"
+                changeLabel="Upload / Change Image"
+                busy={photoBusy}
+                setBusy={setPhotoBusy}
+                onChange={saveSelectedPhoto}
+                onError={setError}
+                onPreviewClick={setPhotoLightbox}
+              />
+            </div>
             {error ? (
               <p className="text-xs text-red-300 font-medium">{error}</p>
             ) : null}
+            <p className="text-[11px] text-slate-500">
+              Nameplate photos and kinematics specs are managed on Component
+              nodes (Motor, Gearbox, Pump, etc.).
+            </p>
           </div>
-        )}
+        ) : null}
 
-        <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-4 text-sm text-slate-300 space-y-2">
-          <p className="text-slate-500 text-xs font-bold uppercase tracking-wider">
-            Path
-          </p>
-          <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
-            {withFacilityPrefix(selectedNode.path)
-              .split(/\s*➔\s*/)
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .map((seg, i, arr) => (
-                <React.Fragment key={`${seg}-${i}`}>
-                  {i > 0 ? (
-                    <ChevronRight
-                      className="h-3.5 w-3.5 text-[#FFC700]/60 shrink-0"
-                      aria-hidden
-                    />
-                  ) : null}
-                  <span
-                    className={
-                      i === arr.length - 1
-                        ? "text-white font-semibold"
-                        : "text-slate-400"
-                    }
-                  >
-                    {seg}
-                  </span>
-                </React.Fragment>
-              ))}
+        {/* COMPONENT — dual photos + specs */}
+        {isComponent ? (
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <ProfileImageCard
+                title="Equipment Field Photo"
+                hint="Overall component / machine field capture"
+                photoUrl={selectedPhotoUrl || ""}
+                emptyTitle="Upload Equipment Photo"
+                changeLabel="Upload / Change Image"
+                busy={photoBusy}
+                setBusy={setPhotoBusy}
+                onChange={saveSelectedPhoto}
+                onError={setError}
+                onPreviewClick={setPhotoLightbox}
+              />
+              <ProfileImageCard
+                title="Motor / Component Nameplate Photo"
+                hint="Close-up of electrical motor or component nameplate"
+                photoUrl={selectedNameplateUrl || ""}
+                emptyTitle="Upload Nameplate Photo"
+                changeLabel="Upload / Change Image"
+                busy={photoBusy}
+                setBusy={setPhotoBusy}
+                onChange={saveSelectedNameplate}
+                onError={setError}
+                onPreviewClick={setPhotoLightbox}
+              />
+            </div>
+            {error ? (
+              <p className="text-xs text-red-300 font-medium">{error}</p>
+            ) : null}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <SpecGlassCard
+                title="General & Drive Specs"
+                icon={<Zap className="h-4 w-4" />}
+              >
+                <SpecPill label="Motor HP / kW" value={specs.motorHpKw} />
+                <SpecPill label="Rated RPM" value={specs.ratedRpm} />
+                <SpecPill label="Frame Size" value={specs.frameSize} />
+                <SpecPill label="Voltage" value={specs.voltage} />
+                <SpecPill label="Full Load Amps (FLA)" value={specs.fla} />
+                <SpecPill
+                  label="Operational Duty"
+                  value={specs.operationalDuty}
+                />
+              </SpecGlassCard>
+
+              <SpecGlassCard
+                title="Kinematics & Bearings"
+                icon={<Cog className="h-4 w-4" />}
+              >
+                <SpecPill label="Drive Type" value={specs.driveType} />
+                <SpecPill
+                  label="Drive End (DE) Bearing"
+                  value={
+                    specs.bearingDe !== "—"
+                      ? `${specs.bearingDe} Bearing`
+                      : "—"
+                  }
+                />
+                <SpecPill
+                  label="Non-Drive End (NDE) Bearing"
+                  value={
+                    specs.bearingNde !== "—"
+                      ? `${specs.bearingNde} Bearing`
+                      : "—"
+                  }
+                />
+                <SpecPill
+                  label="Pulley / Sheave Ratio or Tooth Count"
+                  value={specs.pulleyOrTooth}
+                />
+              </SpecGlassCard>
+
+              <SpecGlassCard
+                title="PdM Diagnostic Configuration"
+                icon={<Activity className="h-4 w-4" />}
+              >
+                <SpecPill
+                  label="Active Monitoring Technologies"
+                  value={specs.activeTechs}
+                />
+                <SpecPill
+                  label="Fmax / Lines of Resolution"
+                  value={specs.fmaxLor}
+                />
+                <SpecPill
+                  label="Sensor Mounting Type"
+                  value={specs.sensorMount}
+                />
+                <SpecPill
+                  label="Measurement Interval"
+                  value={specs.measurementInterval}
+                />
+              </SpecGlassCard>
+            </div>
           </div>
-          <p className="text-xs text-slate-500">
-            {selectedNode.children.length} child node
-            {selectedNode.children.length === 1 ? "" : "s"}
-          </p>
-        </div>
+        ) : null}
+
+        {editSpecsModal}
       </div>
     );
 
@@ -2281,14 +3965,23 @@ export default function EquipmentExplorer({
                       <button
                         type="button"
                         onClick={() => {
-                          setPdmReportData({
-                            technology: row.technology,
-                            lastAssessment: row.lastAssessment!
+                          const tech = row.technology;
+                          const severity: "normal" | "warning" | "critical" =
+                            tech === "Vibration"
+                              ? "critical"
+                              : tech === "Thermography" ||
+                                  tech === "Ultrasound" ||
+                                  tech === "Temperature"
+                                ? "warning"
+                                : "normal";
+                          setSelectedAssessmentReport({
+                            technology: tech,
+                            lastAssessment: row.lastAssessment!,
+                            severity
                           });
-                          setPdmReportOpen(true);
                         }}
                         className="inline-flex items-center rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-2.5 py-1 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-colors cursor-pointer"
-                        title={`Open ${row.technology} PdM Health & Assessment Report`}
+                        title={`Open ${row.technology} Fault Entry Report`}
                       >
                         {row.lastAssessment}
                       </button>
@@ -2357,43 +4050,498 @@ export default function EquipmentExplorer({
       </div>
     );
 
+    const nodeLocationLabel = `${withFacilityPrefix(selectedNode.path).replace(/➔/g, " ➔ ")}`;
+
+    const scopedExceptions = exceptions.filter(
+      (ex) =>
+        ex.location.toLowerCase().includes(selectedNode.label.toLowerCase()) ||
+        selectedNode.kind === "asset" ||
+        selectedNode.kind === "component" ||
+        selectedNode.kind === "point"
+    );
+
+    const scopedFeedback = feedbackEntries.filter(
+      (fb) =>
+        fb.location.toLowerCase().includes(selectedNode.label.toLowerCase()) ||
+        selectedNode.kind !== "plant"
+    );
+
+    const submitException = () => {
+      if (!newException.faultDescription.trim()) {
+        toast("Fault description is required.", "warning");
+        return;
+      }
+      setExceptions((prev) => [
+        {
+          id: uid("ex"),
+          location: `${selectedNode.label} — ${nodeLocationLabel.split("➔").pop()?.trim() || "Point"}`,
+          dateLogged: new Date().toLocaleString(undefined, {
+            month: "numeric",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit"
+          }),
+          tech: newException.tech,
+          severity: newException.severity,
+          faultDescription: newException.faultDescription.trim(),
+          actionRequired: newException.actionRequired.trim() || "—"
+        },
+        ...prev
+      ]);
+      setNewException({
+        tech: "Vibration",
+        severity: "Warning",
+        faultDescription: "",
+        actionRequired: ""
+      });
+      setShowAddException(false);
+      toast("Exception logged.", "success");
+    };
+
+    const submitFeedback = () => {
+      if (!feedbackDraft.comment.trim()) {
+        toast("Comment / finding is required.", "warning");
+        return;
+      }
+      setFeedbackEntries((prev) => [
+        {
+          id: uid("fb"),
+          location: selectedNode.label,
+          dateCreated: new Date().toLocaleString(undefined, {
+            month: "numeric",
+            day: "numeric",
+            year: "numeric",
+            hour: "numeric",
+            minute: "2-digit"
+          }),
+          comment: feedbackDraft.comment.trim(),
+          acknowledged: false,
+          workOrderId: feedbackDraft.workOrderId.trim() || "—",
+          hasImage: false,
+          conditionUpdate: feedbackDraft.conditionUpdate.trim() || undefined
+        },
+        ...prev
+      ]);
+      setFeedbackDraft({ comment: "", workOrderId: "", conditionUpdate: "" });
+      toast("Field feedback submitted.", "success");
+    };
+
+    const toggleFeedbackAck = (id: string) => {
+      setFeedbackEntries((prev) =>
+        prev.map((fb) =>
+          fb.id === id ? { ...fb, acknowledged: !fb.acknowledged } : fb
+        )
+      );
+    };
+
+    const exceptionsTab = (
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+              CBM Exception Log
+            </p>
+            <h3 className="text-sm font-bold text-white mt-1">Active Exceptions</h3>
+            <p className="text-[11px] text-slate-500 mt-0.5 truncate max-w-md">
+              {nodeLocationLabel}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowAddException((v) => !v)}
+            className="min-h-[36px] px-3 rounded-xl border border-[#FFC700]/45 bg-[#FFC700]/10 text-[#FFC700] text-xs font-bold cursor-pointer hover:bg-[#FFC700]/20 transition-colors inline-flex items-center gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add Exception
+          </button>
+        </div>
+
+        {showAddException && (
+          <div className="rounded-xl border border-[#FFC700]/30 bg-slate-950/60 p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="space-y-1 block">
+              <span className={LABEL}>Diagnostic Tech</span>
+              <select
+                className={INPUT}
+                value={newException.tech}
+                onChange={(e) =>
+                  setNewException((p) => ({
+                    ...p,
+                    tech: e.target.value as DiagnosticTech
+                  }))
+                }
+              >
+                {(["Vibration", "IR", "Ultrasound", "MCA", "Oil"] as const).map(
+                  (t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  )
+                )}
+              </select>
+            </label>
+            <label className="space-y-1 block">
+              <span className={LABEL}>Severity</span>
+              <select
+                className={INPUT}
+                value={newException.severity}
+                onChange={(e) =>
+                  setNewException((p) => ({
+                    ...p,
+                    severity: e.target.value as ExceptionSeverity
+                  }))
+                }
+              >
+                {(["Critical", "Warning", "Normal"] as const).map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-1 block sm:col-span-2">
+              <span className={LABEL}>Fault Description</span>
+              <textarea
+                className={`${INPUT} min-h-[64px] py-2`}
+                value={newException.faultDescription}
+                onChange={(e) =>
+                  setNewException((p) => ({
+                    ...p,
+                    faultDescription: e.target.value
+                  }))
+                }
+                placeholder="Describe the out-of-spec condition or alarm…"
+              />
+            </label>
+            <label className="space-y-1 block sm:col-span-2">
+              <span className={LABEL}>Action Required</span>
+              <input
+                className={INPUT}
+                value={newException.actionRequired}
+                onChange={(e) =>
+                  setNewException((p) => ({
+                    ...p,
+                    actionRequired: e.target.value
+                  }))
+                }
+                placeholder="Recommended corrective action…"
+              />
+            </label>
+            <div className="sm:col-span-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAddException(false)}
+                className={BTN_GHOST}
+              >
+                Cancel
+              </button>
+              <button type="button" onClick={submitException} className={BTN_PRIMARY}>
+                Log Exception
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50">
+          <table className="w-full text-left text-xs min-w-[720px]">
+            <thead>
+              <tr className="border-b border-slate-800 bg-slate-900/80">
+                {(
+                  [
+                    "Date Logged",
+                    "Diagnostic Tech",
+                    "Severity",
+                    "Fault Description",
+                    "Action Required"
+                  ] as const
+                ).map((col) => (
+                  <th
+                    key={col}
+                    className="px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-[#FFC700]/90 whitespace-nowrap"
+                  >
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {scopedExceptions.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-3 py-8 text-center text-slate-500 text-sm"
+                  >
+                    No active exceptions for this location.
+                  </td>
+                </tr>
+              ) : (
+                scopedExceptions.map((ex) => (
+                  <tr
+                    key={ex.id}
+                    className="border-b border-slate-800/80 last:border-b-0 hover:bg-slate-900/50"
+                  >
+                    <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">
+                      {ex.dateLogged}
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-200 font-medium">
+                      {ex.tech}
+                    </td>
+                    <td className="px-3 py-2.5">{severityBadge(ex.severity)}</td>
+                    <td className="px-3 py-2.5 text-slate-300 max-w-[220px]">
+                      <p className="font-medium text-slate-200">{ex.location}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {ex.faultDescription}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-400">
+                      {ex.actionRequired}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+
+    const feedbackTab = (
+      <div className="space-y-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+            Technician Field Feedback
+          </p>
+          <h3 className="text-sm font-bold text-white mt-1">
+            Feedback &amp; Findings
+          </h3>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            Post-inspection notes for {selectedNode.label}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-[#FFC700]/25 bg-slate-950/60 p-3 sm:p-4 space-y-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-[#FFC700]/90">
+            Submit New Finding
+          </p>
+          <label className="space-y-1 block">
+            <span className={LABEL}>Comment / Finding</span>
+            <textarea
+              className={`${INPUT} min-h-[72px] py-2`}
+              value={feedbackDraft.comment}
+              onChange={(e) =>
+                setFeedbackDraft((p) => ({ ...p, comment: e.target.value }))
+              }
+              placeholder="Describe observations from the field inspection…"
+            />
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="space-y-1 block">
+              <span className={LABEL}>Work Order Reference</span>
+              <input
+                className={INPUT}
+                value={feedbackDraft.workOrderId}
+                onChange={(e) =>
+                  setFeedbackDraft((p) => ({ ...p, workOrderId: e.target.value }))
+                }
+                placeholder="WO-10482"
+              />
+            </label>
+            <label className="space-y-1 block">
+              <span className={LABEL}>Physical Condition Update</span>
+              <input
+                className={INPUT}
+                value={feedbackDraft.conditionUpdate}
+                onChange={(e) =>
+                  setFeedbackDraft((p) => ({
+                    ...p,
+                    conditionUpdate: e.target.value
+                  }))
+                }
+                placeholder="e.g. Oil leak at coupling guard"
+              />
+            </label>
+          </div>
+          <div className="flex justify-end">
+            <button type="button" onClick={submitFeedback} className={BTN_PRIMARY}>
+              Submit Feedback
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50">
+          <table className="w-full text-left text-xs min-w-[680px]">
+            <thead>
+              <tr className="border-b border-slate-800 bg-slate-900/80">
+                {(
+                  [
+                    "Location",
+                    "Date Created",
+                    "Comment / Finding",
+                    "Acknowledged",
+                    "Work Request ID",
+                    "Image"
+                  ] as const
+                ).map((col) => (
+                  <th
+                    key={col}
+                    className="px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider text-[#FFC700]/90 whitespace-nowrap"
+                  >
+                    {col}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {scopedFeedback.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-3 py-8 text-center text-slate-500 text-sm"
+                  >
+                    No field feedback logged yet for this location.
+                  </td>
+                </tr>
+              ) : (
+                scopedFeedback.map((fb) => (
+                  <tr
+                    key={fb.id}
+                    className="border-b border-slate-800/80 last:border-b-0 hover:bg-slate-900/50 align-top"
+                  >
+                    <td className="px-3 py-2.5 text-slate-200 font-medium whitespace-nowrap">
+                      {fb.location}
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-400 whitespace-nowrap">
+                      {fb.dateCreated}
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-300 max-w-[240px]">
+                      <p>{fb.comment}</p>
+                      {fb.conditionUpdate ? (
+                        <p className="text-[11px] text-slate-500 mt-1">
+                          Condition: {fb.conditionUpdate}
+                        </p>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleFeedbackAck(fb.id)}
+                        className={`min-h-[28px] px-2 rounded-lg text-[10px] font-bold cursor-pointer border transition-colors ${
+                          fb.acknowledged
+                            ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
+                            : "border-slate-700 bg-slate-900 text-slate-400 hover:border-[#FFC700]/40"
+                        }`}
+                      >
+                        {fb.acknowledged ? "Acknowledged" : "Pending"}
+                      </button>
+                    </td>
+                    <td className="px-3 py-2.5 text-slate-400 font-mono text-[11px]">
+                      {fb.workOrderId}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      {fb.hasImage ? (
+                        <button
+                          type="button"
+                          onClick={() => toast("Opening attachment…", "info")}
+                          className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 cursor-pointer hover:border-[#FFC700]/50 inline-flex items-center justify-center"
+                          title="View image attachment"
+                          aria-label="View image attachment"
+                        >
+                          <ImageIcon className="h-4 w-4" />
+                        </button>
+                      ) : (
+                        <span className="text-slate-600">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+
+    const exceptionBadgeCount = scopedExceptions.filter(
+      (ex) => ex.severity === "Critical" || ex.severity === "Warning"
+    ).length;
+    const feedbackBadgeCount = scopedFeedback.filter(
+      (fb) => !fb.acknowledged
+    ).length;
+
+    const DETAIL_TAB_META: {
+      id: DetailTab;
+      icon: React.ReactNode;
+      badge?: number;
+    }[] = [
+      {
+        id: "Location Profile",
+        icon: <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      },
+      {
+        id: "Equipment Maintenance Plan",
+        icon: <ClipboardList className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      },
+      {
+        id: "Exceptions",
+        icon: <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />,
+        badge: exceptionBadgeCount
+      },
+      {
+        id: "Feedback",
+        icon: <MessageSquare className="h-3.5 w-3.5 shrink-0" aria-hidden />,
+        badge: feedbackBadgeCount
+      }
+    ];
+
     return (
       <div className="space-y-4">
-        <nav
-          aria-label="Detail tabs"
-          className="flex flex-wrap gap-1 rounded-xl border border-slate-800 bg-slate-950/60 p-1"
-        >
-          {DETAIL_TABS.map((tab) => {
-            const active = detailTab === tab;
-            return (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setDetailTab(tab)}
-                className={`min-h-[36px] px-3 rounded-lg text-[11px] sm:text-xs font-bold cursor-pointer transition-all whitespace-nowrap ${
-                  active
-                    ? "bg-[#FFC700]/15 text-[#FFC700] border border-[#FFC700]/50 shadow-[0_0_10px_rgba(255,199,0,0.15)]"
-                    : "text-slate-400 border border-transparent hover:text-slate-200 hover:bg-slate-800/70"
-                }`}
-              >
-                {tab}
-              </button>
-            );
-          })}
+        <nav aria-label="Detail tabs" className="w-full overflow-x-auto">
+          <div className="bg-slate-900/90 p-1.5 rounded-xl border border-slate-800/80 inline-flex flex-wrap gap-2 min-w-0">
+            {DETAIL_TAB_META.map((tab) => {
+              const active = detailTab === tab.id;
+              const showBadge =
+                typeof tab.badge === "number" && tab.badge > 0;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setDetailTab(tab.id)}
+                  className={`relative inline-flex items-center gap-2 cursor-pointer whitespace-nowrap ${
+                    active
+                      ? "bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20 px-4 py-2 rounded-lg text-xs uppercase tracking-wider transition-all duration-200"
+                      : "bg-slate-800/50 text-slate-400 hover:text-slate-100 hover:bg-slate-800 border border-slate-700/50 px-4 py-2 rounded-lg text-xs uppercase tracking-wider transition-all duration-200"
+                  }`}
+                >
+                  {tab.icon}
+                  <span>{tab.id}</span>
+                  {showBadge ? (
+                    <span
+                      className={`ml-0.5 min-w-[1.25rem] h-5 px-1.5 rounded-full text-[10px] font-bold inline-flex items-center justify-center ${
+                        active
+                          ? "bg-slate-950/25 text-slate-950"
+                          : tab.id === "Exceptions"
+                            ? "bg-red-500/90 text-white"
+                            : "bg-cyan-500/90 text-slate-950"
+                      }`}
+                    >
+                      {tab.badge}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
         </nav>
 
         {detailTab === "Location Profile" ? (
           locationProfile
         ) : detailTab === "Equipment Maintenance Plan" ? (
           maintenancePlan
-        ) : (
-          <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/40 px-4 py-10 text-center">
-            <p className="text-sm font-semibold text-slate-200">{detailTab}</p>
-            <p className="text-xs text-slate-500 mt-1.5 max-w-sm mx-auto leading-relaxed">
-              Content for this tab will appear here.
-            </p>
-          </div>
-        )}
+        ) : detailTab === "Exceptions" ? (
+          exceptionsTab
+        ) : detailTab === "Feedback" ? (
+          feedbackTab
+        ) : null}
       </div>
     );
   };
@@ -2571,6 +4719,8 @@ export default function EquipmentExplorer({
         </div>
       ) : null}
 
+      {renderQuickAddModal()}
+
       {confirmResetOpen ? (
         <div
           className="fixed inset-0 z-[110] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
@@ -2613,566 +4763,270 @@ export default function EquipmentExplorer({
         </div>
       ) : null}
 
-      {pdmReportOpen && pdmReportData ? (
+      {selectedAssessmentReport ? (
         <div
-          className="fixed inset-0 z-[120] bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4"
+          className="fixed inset-0 z-[110] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
           role="dialog"
           aria-modal="true"
-          aria-labelledby="pdm-report-title"
+          aria-labelledby="fault-entry-report-title"
+          onClick={() => setSelectedAssessmentReport(null)}
         >
-          <div className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl border border-amber-500/30 bg-[#0A0E1A] shadow-[0_0_60px_rgba(255,199,0,0.15)]">
-            {/* Sticky Header */}
-            <div className="sticky top-0 z-10 flex items-start justify-between gap-3 p-5 border-b border-amber-500/30 bg-[#0A0E1A]/95 backdrop-blur-md rounded-t-2xl">
-              <div className="space-y-1 min-w-0">
-                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/80">
-                  PdM Health & Assessment Report
-                </p>
-                <h2
-                  id="pdm-report-title"
-                  className="text-lg font-bold text-white truncate"
-                >
-                  Report #{pdmReportData.technology.substring(0, 4).toUpperCase()}-{Date.now().toString().slice(-6)}
-                </h2>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                  <span className="text-slate-400">
-                    Asset:{" "}
-                    <span className="text-white font-semibold">
-                      {selectedNode?.label || "—"}
-                    </span>
-                  </span>
-                  <span className="text-slate-500">|</span>
-                  <span className="text-slate-400">
-                    Inspection Date:{" "}
-                    <span className="text-white font-semibold">
-                      {pdmReportData.lastAssessment}
-                    </span>
-                  </span>
+          <div
+            className="w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-2xl border border-amber-500/25 bg-[#0A0E1A] shadow-[0_0_60px_rgba(0,0,0,0.55)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="sticky top-0 z-10 border-b border-slate-800 bg-[#0A0E1A]/95 backdrop-blur-md px-5 py-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#FFC700]/80">
+                    SmartCBM · Fault Entry
+                  </p>
+                  <h2
+                    id="fault-entry-report-title"
+                    className="text-lg sm:text-xl font-bold text-white tracking-tight"
+                  >
+                    PdM Health &amp; Fault Entry Report
+                  </h2>
+                  <nav
+                    aria-label="Plant hierarchy"
+                    className="flex flex-wrap items-center gap-x-1 gap-y-1 text-[11px]"
+                  >
+                    {breadcrumbSegments.map((seg, i) => (
+                      <React.Fragment key={`fer-${seg}-${i}`}>
+                        {i > 0 ? (
+                          <ChevronRight
+                            className="h-3 w-3 text-slate-600 shrink-0"
+                            aria-hidden
+                          />
+                        ) : null}
+                        <span
+                          className={
+                            i === breadcrumbSegments.length - 1
+                              ? "text-[#FFC700] font-semibold"
+                              : "text-slate-400"
+                          }
+                        >
+                          {seg}
+                        </span>
+                      </React.Fragment>
+                    ))}
+                  </nav>
                 </div>
-                <span className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/50 bg-red-500/15 px-3 py-1 text-[11px] font-bold text-red-300">
-                  <span className="h-2 w-2 rounded-full bg-red-400 animate-pulse" />
-                  ALARM: DE Bearing Fault
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.print();
+                      toast("Sending report to printer…", "info");
+                    }}
+                    className="min-h-[36px] px-3 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-xs font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-1.5"
+                    title="Print report"
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Print</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      toast("Fault Entry Report PDF download started.", "success")
+                    }
+                    className="min-h-[36px] px-3 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-xs font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-1.5"
+                    title="Download PDF"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">Download PDF</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedAssessmentReport(null)}
+                    className="min-h-[36px] min-w-[36px] rounded-xl border border-slate-600 bg-slate-800/80 text-slate-300 cursor-pointer hover:border-slate-400 hover:bg-slate-700 hover:text-white transition-colors inline-flex items-center justify-center"
+                    aria-label="Close report"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Assessment · {selectedAssessmentReport.lastAssessment} ·{" "}
+                <span className="text-slate-300 font-medium">
+                  {selectedAssessmentReport.technology === "Thermography"
+                    ? "IR"
+                    : selectedAssessmentReport.technology ===
+                        "Motor Circuit Analysis"
+                      ? "MCA"
+                      : selectedAssessmentReport.technology}
                 </span>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="p-1.5 rounded-lg border border-slate-700 bg-slate-900/80 text-slate-400 hover:text-[#FFC700] hover:border-[#FFC700]/50 cursor-pointer transition-colors"
-                  aria-label="Print report"
-                  title="Print / Download PDF"
-                >
-                  <Printer className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPdmReportOpen(false);
-                    setPdmReportData(null);
-                    setWorkOrderExpanded(false);
-                    setPdmActiveTab("vibration");
-                  }}
-                  className="p-1.5 rounded-lg border border-slate-700 bg-slate-900/80 text-slate-400 hover:text-white hover:border-slate-500 cursor-pointer transition-colors"
-                  aria-label="Close report"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
+              </p>
             </div>
 
-            {/* Body */}
             <div className="p-5 space-y-5">
-              {/* Executive Summary */}
-              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 p-4 space-y-3">
-                <h3 className="text-sm font-bold text-[#FFC700] flex items-center gap-2">
-                  <span className="h-5 w-5 rounded-md bg-[#FFC700]/15 border border-[#FFC700]/30 flex items-center justify-center text-[11px]">
-                    📋
-                  </span>
-                  Executive Summary & Diagnostic Findings
-                </h3>
-                <p className="text-sm text-slate-300 leading-relaxed">
-                  {pdmReportData.technology === "Vibration"
-                    ? "Vibration FFT analysis confirms an Outer Race Defect (BPFO) on the drive-end bearing with a peak amplitude of 0.48 in/s at 4× RPM harmonics. Impacting modulation is present across the 2–6 kHz demodulation band, consistent with advanced spalling."
-                    : pdmReportData.technology === "Thermography"
-                      ? "Infrared thermography reveals a +62°F Delta-T anomaly at the drive-end bearing housing relative to ambient and adjacent equipment. The thermal gradient pattern is indicative of inadequate lubrication film and increased frictional heating."
-                      : pdmReportData.technology === "Ultrasound"
-                        ? "Airborne/structure-borne ultrasound heterodyne readings show elevated decibel levels (52 dBµV) at the DE bearing location with characteristic crackling signatures consistent with early-stage subsurface fatigue spalling."
-                        : pdmReportData.technology === "Lubrication"
-                          ? "Oil analysis returns elevated ferrous wear particle counts (ISO 4406: 22/19/14) with moderate viscosity degradation. Spectrometric analysis indicates early-stage bearing alloy wear metals trending upward over the last two sampling intervals."
-                          : pdmReportData.technology === "Temperature"
-                            ? "Continuous temperature monitoring logs show a +18°F sustained deviation above baseline on the NDE bearing housing during steady-state operation, with a gradual upward trend over the preceding 72 run-hours."
-                            : pdmReportData.technology === "MCA - Online"
-                              ? "Online Motor Circuit Analysis detects a 4.7% impedance imbalance across Phase A–B with elevated current draw of 6.2% above nameplate. Rotor bar slot pass frequency sidebands suggest early rotor degradation."
-                              : pdmReportData.technology === "MCA - Offline"
-                                ? "Offline MCA testing identifies a stator winding insulation resistance drop to 85 MΩ (baseline 210 MΩ) with a polarization index of 1.6, indicating moisture ingress and early insulation breakdown."
-                                : "Comprehensive PdM assessment indicates developing failure modes requiring attention. Review attached full diagnostic dataset for detailed waveform and spectral analysis."}
+              {/* Severity banner */}
+              {(() => {
+                const sev = selectedAssessmentReport.severity;
+                const banner =
+                  sev === "critical"
+                    ? {
+                        label: "Critical Fault / Immediate Repair Required",
+                        cls: "border-red-500/50 bg-gradient-to-r from-red-950/80 via-red-900/40 to-red-950/60 text-red-100 shadow-[0_0_28px_rgba(239,68,68,0.18)]"
+                      }
+                    : sev === "warning"
+                      ? {
+                          label: "Anomaly Detected / Action Recommended",
+                          cls: "border-amber-400/50 bg-gradient-to-r from-amber-950/70 via-amber-900/35 to-amber-950/50 text-amber-100 shadow-[0_0_28px_rgba(245,158,11,0.14)]"
+                        }
+                      : {
+                          label: "No Identifiable Defect / Normal Operation",
+                          cls: "border-emerald-500/45 bg-gradient-to-r from-emerald-950/70 via-emerald-900/30 to-emerald-950/50 text-emerald-100 shadow-[0_0_28px_rgba(16,185,129,0.14)]"
+                        };
+                return (
+                  <div
+                    className={`rounded-xl border px-4 py-3.5 flex items-center gap-3 ${banner.cls}`}
+                  >
+                    {sev === "critical" ? (
+                      <AlertTriangle className="h-5 w-5 shrink-0 text-red-300" />
+                    ) : sev === "warning" ? (
+                      <AlertTriangle className="h-5 w-5 shrink-0 text-amber-300" />
+                    ) : (
+                      <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-300" />
+                    )}
+                    <p className="text-sm sm:text-base font-bold tracking-tight">
+                      {banner.label}
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {/* Details grid */}
+              <div className="rounded-xl border border-slate-700/80 bg-slate-900/50 p-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 mb-3">
+                  Report Details
                 </p>
-              </div>
-
-              {/* ===== Multi-Technology Diagnostic Tabs ===== */}
-              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 overflow-hidden">
-                <div className="border-b border-slate-800 bg-slate-950/60 px-2 pt-2">
-                  <div className="flex flex-wrap gap-1">
-                    {([
-                      { id: "vibration", icon: "📈", label: "Vibration Analysis" },
-                      { id: "thermography", icon: "🌡️", label: "IR Thermography" },
-                      { id: "ultrasound", icon: "🔊", label: "Ultrasound" },
-                      { id: "mca", icon: "⚡", label: "Motor Circuit Analysis" },
-                      { id: "oil", icon: "🛢️", label: "Fluid & Oil Diagnostics" }
-                    ] as const).map((tab) => (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => setPdmActiveTab(tab.id)}
-                        className={`min-h-[34px] px-3 rounded-t-lg text-[11px] font-bold cursor-pointer transition-all whitespace-nowrap flex items-center gap-1.5 ${
-                          pdmActiveTab === tab.id
-                            ? "bg-slate-900 text-[#FFC700] border border-b-0 border-amber-500/30 -mb-px relative z-10"
-                            : "text-slate-500 hover:text-slate-300 hover:bg-slate-900/50 border border-transparent"
-                        }`}
-                      >
-                        <span>{tab.icon}</span>
-                        <span className="hidden sm:inline">{tab.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="p-4">
-                  {/* Vibration Analysis Tab */}
-                  {pdmActiveTab === "vibration" && (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
-                          <span>📈</span> Vibration Spectral Analysis
-                        </h4>
-                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
-                          FFT Spectrum — DE Bearing, Horizontal
-                        </span>
-                      </div>
-                      {/* FFT Spectral Breakdown Bar */}
-                      <div className="space-y-2">
-                        {[
-                          { label: "1× RPM", freq: "1780 RPM", amp: 0.12, max: 0.6, color: "bg-emerald-500/70", unit: "in/s pk" },
-                          { label: "4.2× BPFO", freq: "84.2 Hz", amp: 0.48, max: 0.6, color: "bg-red-500/70", unit: "in/s pk" },
-                          { label: "7.1× BSF", freq: "142.7 Hz", amp: 0.31, max: 0.6, color: "bg-amber-500/70", unit: "in/s pk" },
-                          { label: "2× Line Freq", freq: "120 Hz", amp: 0.08, max: 0.6, color: "bg-cyan-500/60", unit: "in/s pk" }
-                        ].map((bar) => (
-                          <div key={bar.label} className="space-y-0.5">
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-slate-300 font-semibold">{bar.label}</span>
-                              <span className="text-slate-500">{bar.freq}</span>
-                              <span className={`font-bold ${bar.amp > 0.35 ? "text-red-300" : bar.amp > 0.2 ? "text-amber-300" : "text-emerald-300"}`}>
-                                {bar.amp.toFixed(2)} {bar.unit}
-                              </span>
-                            </div>
-                            <div className="h-3 rounded-full bg-slate-800 overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${bar.color} transition-all`}
-                                style={{ width: `${Math.min(100, (bar.amp / bar.max) * 100)}%` }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800">
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Peak-to-Peak Accel</p>
-                          <p className="text-lg font-bold text-red-300">12.4 <span className="text-xs font-normal text-slate-400">g</span></p>
-                          <p className="text-[10px] text-red-400/70">Alert: 6.0 g</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Overall Velocity</p>
-                          <p className="text-lg font-bold text-amber-300">0.52 <span className="text-xs font-normal text-slate-400">in/s pk</span></p>
-                          <p className="text-[10px] text-amber-400/70">Alert: 0.35 in/s</p>
-                        </div>
-                      </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3.5">
+                  {(
+                    [
+                      ["Analyst Name", "Jordan Hale, CAT III"],
+                      ["Analyst Email", "jordan.hale@smartcbm.io"],
+                      [
+                        "Technology",
+                        selectedAssessmentReport.technology === "Thermography"
+                          ? "IR"
+                          : selectedAssessmentReport.technology ===
+                              "Motor Circuit Analysis"
+                            ? "MCA"
+                            : selectedAssessmentReport.technology === "Ultrasound"
+                              ? "Ultrasound"
+                              : selectedAssessmentReport.technology === "Vibration"
+                                ? "Vibration"
+                                : selectedAssessmentReport.technology
+                      ],
+                      [
+                        "Failure Mode",
+                        selectedAssessmentReport.severity === "critical"
+                          ? "Bearing Outer Race Defect (BPFO)"
+                          : selectedAssessmentReport.severity === "warning"
+                            ? "Thermal / Acoustic Anomaly"
+                            : "None — Baseline Stable"
+                      ],
+                      [
+                        "Criticality",
+                        selectedAssessmentReport.severity === "critical"
+                          ? "P1 — Critical"
+                          : selectedAssessmentReport.severity === "warning"
+                            ? "P2 — Elevated"
+                            : "P4 — Routine"
+                      ],
+                      [
+                        "Work Request #",
+                        selectedAssessmentReport.severity === "normal"
+                          ? "—"
+                          : "WR-2026-4417"
+                      ],
+                      ["Previous Fault Entry", "12/11/2025 9:12 AM"]
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div key={label} className="min-w-0 space-y-0.5">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        {label}
+                      </p>
+                      <p className="text-sm font-semibold text-slate-100 truncate">
+                        {value}
+                      </p>
                     </div>
-                  )}
-
-                  {/* IR Thermography Tab */}
-                  {pdmActiveTab === "thermography" && (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
-                          <span>🌡️</span> Infrared Thermography
-                        </h4>
-                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
-                          Hot-Spot Comparison Panel
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-red-200">DE Bearing</span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-300">
-                              <AlertTriangle className="h-3 w-3" /> CRITICAL
-                            </span>
-                          </div>
-                          <p className="text-2xl font-bold text-red-300">184<span className="text-sm text-red-400">°F</span></p>
-                          <p className="text-[10px] text-slate-500">Baseline: 144°F</p>
-                        </div>
-                        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-emerald-200">ODE Bearing</span>
-                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
-                              <CheckCircle2 className="h-3 w-3" /> NORMAL
-                            </span>
-                          </div>
-                          <p className="text-2xl font-bold text-emerald-300">122<span className="text-sm text-emerald-400">°F</span></p>
-                          <p className="text-[10px] text-slate-500">Baseline: 118°F</p>
-                        </div>
-                      </div>
-                      <div className="rounded-lg bg-slate-950/70 p-3 flex items-center justify-between">
-                        <span className="text-xs text-slate-300 font-semibold">Delta-T (DE − ODE)</span>
-                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-1 text-sm font-bold text-red-300">
-                          +62°F <span className="text-[10px] text-red-400 font-normal">ALARM</span>
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Ultrasound Tab */}
-                  {pdmActiveTab === "ultrasound" && (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
-                          <span>🔊</span> Airborne / Structure-Borne Ultrasound
-                        </h4>
-                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
-                          Heterodyne — DE Bearing Housing
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">dB µV Level</p>
-                          <p className="text-xl font-bold text-amber-300">52 <span className="text-xs text-slate-400">dBµV</span></p>
-                          <p className="text-[10px] text-amber-400/70">Alert: 35 dBµV</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Crest Factor</p>
-                          <p className="text-xl font-bold text-red-300">7.1</p>
-                          <p className="text-[10px] text-red-400/70">Alert: 5.0</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1 col-span-2 sm:col-span-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Acoustic Friction</p>
-                          <p className="text-xl font-bold text-red-300">HIGH</p>
-                          <p className="text-[10px] text-red-400/70">Mechanical Impact</p>
-                        </div>
-                      </div>
-                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 space-y-1.5">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                          Lubrication State vs. Mechanical Impact
-                        </p>
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden">
-                            <div className="h-full w-[28%] rounded-full bg-emerald-500/60" />
-                          </div>
-                          <span className="text-[10px] text-emerald-300 font-bold">Lubrication: 28%</span>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-2 rounded-full bg-slate-800 overflow-hidden">
-                            <div className="h-full w-[72%] rounded-full bg-red-500/60" />
-                          </div>
-                          <span className="text-[10px] text-red-300 font-bold">Impact: 72%</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* MCA Tab */}
-                  {pdmActiveTab === "mca" && (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
-                          <span>⚡</span> Motor Circuit Analysis (MCA)
-                        </h4>
-                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
-                          Offline Static Test @ 1000V
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Phase Resistance Unbalance</p>
-                          <p className="text-xl font-bold text-amber-300">4.7<span className="text-sm text-amber-400">%</span></p>
-                          <p className="text-[10px] text-amber-400/70">Alert: 5.0%</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Phase Inductance Unbalance</p>
-                          <p className="text-xl font-bold text-red-300">8.2<span className="text-sm text-red-400">%</span></p>
-                          <p className="text-[10px] text-red-400/70">Alert: 6.0%</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Insulation Resistance</p>
-                          <p className="text-xl font-bold text-red-300">85 <span className="text-xs text-slate-400">MΩ</span></p>
-                          <p className="text-[10px] text-red-400/70">Baseline: 210 MΩ</p>
-                        </div>
-                      </div>
-                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">
-                          Polarization Index (PI)
-                        </p>
-                        <div className="flex items-center gap-3">
-                          <div className="flex-1 h-3 rounded-full bg-slate-800 overflow-hidden">
-                            <div className="h-full w-[32%] rounded-full bg-red-500/60" />
-                          </div>
-                          <span className="text-sm font-bold text-red-300">1.6</span>
-                          <span className="text-[10px] text-red-400">(Min: 2.0)</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Oil Diagnostics Tab */}
-                  {pdmActiveTab === "oil" && (
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <h4 className="text-xs font-bold text-[#FFC700] uppercase tracking-wider flex items-center gap-1.5">
-                          <span>🛢️</span> Fluid & Oil Diagnostics
-                        </h4>
-                        <span className="text-[10px] text-slate-500 bg-slate-800 rounded-full px-2 py-0.5">
-                          ISO 4406 — Synthetic PAO Gear Oil
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">ISO Cleanliness</p>
-                          <p className="text-lg font-bold text-red-300">19/16/13</p>
-                          <p className="text-[10px] text-red-400/70">Target: 17/14/11</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Viscosity @ 40°C</p>
-                          <p className="text-lg font-bold text-amber-300">68.2 <span className="text-xs text-slate-400">cSt</span></p>
-                          <p className="text-[10px] text-amber-400/70">Nominal: 68 cSt</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Water Content</p>
-                          <p className="text-lg font-bold text-amber-300">420 <span className="text-xs text-slate-400">ppm</span></p>
-                          <p className="text-[10px] text-amber-400/70">Alert: 300 ppm</p>
-                        </div>
-                        <div className="rounded-lg bg-slate-950/70 p-3 text-center space-y-1">
-                          <p className="text-[10px] text-slate-500 uppercase tracking-wider">TAN</p>
-                          <p className="text-lg font-bold text-emerald-300">0.8 <span className="text-xs text-slate-400">mgKOH/g</span></p>
-                          <p className="text-[10px] text-emerald-400/70">Alert: 2.0</p>
-                        </div>
-                      </div>
-                      <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 space-y-2">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                          Elemental Wear Debris (ppm)
-                        </p>
-                        <div className="grid grid-cols-3 gap-3">
-                          <div className="text-center">
-                            <p className="text-xs text-slate-400">Fe (Iron)</p>
-                            <p className="text-lg font-bold text-red-300">142 <span className="text-[10px] text-red-400">ppm</span></p>
-                            <p className="text-[10px] text-red-400/70">Alert: 80 ppm</p>
-                          </div>
-                          <div className="text-center">
-                            <p className="text-xs text-slate-400">Cu (Copper)</p>
-                            <p className="text-lg font-bold text-amber-300">38 <span className="text-[10px] text-amber-400">ppm</span></p>
-                            <p className="text-[10px] text-amber-400/70">Alert: 25 ppm</p>
-                          </div>
-                          <div className="text-center">
-                            <p className="text-xs text-slate-400">Pb (Lead)</p>
-                            <p className="text-lg font-bold text-emerald-300">6 <span className="text-[10px] text-emerald-400">ppm</span></p>
-                            <p className="text-[10px] text-emerald-400/70">Alert: 15 ppm</p>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  ))}
                 </div>
               </div>
 
-              {/* Corrective Action Plan */}
-              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 p-4 space-y-3">
-                <h3 className="text-sm font-bold text-[#FFC700] flex items-center gap-2">
-                  <span className="h-5 w-5 rounded-md bg-[#FFC700]/15 border border-[#FFC700]/30 flex items-center justify-center text-[11px]">
-                    🔧
+              {/* Comment blocks */}
+              <div className="space-y-3">
+                <div className="rounded-xl border border-slate-700/80 bg-slate-900/40 p-4 space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/90">
+                    Assessment Comment
+                  </p>
+                  <p className="text-sm text-slate-300 leading-relaxed">
+                    {selectedAssessmentReport.severity === "critical"
+                      ? `Route assessment on ${selectedAssessmentReport.lastAssessment} confirms progressing drive-end bearing fault under ${selectedAssessmentReport.technology} monitoring. Asset remains operable short-term with elevated risk.`
+                      : selectedAssessmentReport.severity === "warning"
+                        ? `Mild deviation noted during the ${selectedAssessmentReport.lastAssessment} ${selectedAssessmentReport.technology} survey. Recommend trending and follow-up verification on the next route cycle.`
+                        : `No actionable defect indicators on the ${selectedAssessmentReport.lastAssessment} assessment. Equipment health is within expected operating envelopes.`}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-700/80 bg-slate-900/40 p-4 space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/90">
+                    Analysis Findings
+                  </p>
+                  <p className="text-sm text-slate-300 leading-relaxed">
+                    {selectedAssessmentReport.severity === "critical"
+                      ? "Spectral peaks at BPFO and harmonics with rising overall velocity. Demodulation shows clear outer-race impact energy. Cross-tech correlation supports mechanical degradation rather than process load noise."
+                      : selectedAssessmentReport.severity === "warning"
+                        ? "Localized temperature/ultrasonic signature elevated versus prior baseline. Pattern is consistent with early-stage friction or lubrication variance; no confirmed catastrophic indicators."
+                        : "Trend envelope, overall levels, and fault frequencies remain below alert thresholds with no emergent sidebands or transient events of concern."}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-slate-700/80 bg-slate-900/40 p-4 space-y-1.5">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]/90">
+                    Repair Recommendations
+                  </p>
+                  <p className="text-sm text-slate-300 leading-relaxed">
+                    {selectedAssessmentReport.severity === "critical"
+                      ? "Issue work request for DE bearing replacement within 14 days. Increase monitoring frequency to weekly, stage OEM-equivalent bearing kit, and verify alignment/lubrication after repair."
+                      : selectedAssessmentReport.severity === "warning"
+                        ? "Inspect lubrication condition, verify sensor/target placement, and re-collect on the next scheduled route. Escalate if severity advances or work request criteria are met."
+                        : "Continue standard PdM route interval. No corrective maintenance recommended at this time."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Attachments */}
+              <div className="rounded-xl border border-dashed border-slate-600/80 bg-slate-950/50 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
+                    Equipment Visual Attachment
+                  </p>
+                  <span className="text-[10px] text-slate-600">
+                    Field photos · Spectral graphs
                   </span>
-                  Corrective Action Plan
-                </h3>
-                <ol className="space-y-3">
-                  <li className="flex items-start gap-3 rounded-lg border border-red-500/20 bg-red-500/5 p-3">
-                    <span className="shrink-0 mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-red-500/20 border border-red-500/40 text-[10px] font-bold text-red-300">
-                      P1
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-red-200">
-                        CRITICAL — Schedule DE Bearing Replacement
-                      </p>
-                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                        Schedule drive-end bearing replacement within 14 days.
-                        Order replacement bearing kit (SKF 6320 C3 or equivalent)
-                        and coordinate outage window with operations. Monitor
-                        vibration trending daily until replacement is completed.
-                      </p>
-                    </div>
-                  </li>
-                  <li className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                    <span className="shrink-0 mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-bold text-amber-300">
-                      P2
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-amber-200">
-                        HIGH — Increase Monitoring Frequency
-                      </p>
-                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                        Escalate {pdmReportData.technology} route collection
-                        from monthly to weekly until bearing replacement is
-                        executed. Configure automated alert thresholds at 0.55
-                        in/s for BPFO amplitude.
-                      </p>
-                    </div>
-                  </li>
-                  <li className="flex items-start gap-3 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3">
-                    <span className="shrink-0 mt-0.5 inline-flex items-center justify-center h-5 w-5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-[10px] font-bold text-cyan-300">
-                      P3
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-xs font-bold text-cyan-200">
-                        MEDIUM — Root Cause Analysis
-                      </p>
-                      <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                        Perform precision shaft alignment verification and
-                        review lubrication PM compliance history. Inspect
-                        bearing housing seals for contamination ingress and
-                        evaluate adequacy of current relubrication schedule.
-                      </p>
-                    </div>
-                  </li>
-                </ol>
-              </div>
-
-              {/* ===== CMMS Work Order Generator ===== */}
-              <div className="rounded-xl border border-amber-500/20 bg-slate-900/60 overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => setWorkOrderExpanded((v) => !v)}
-                  className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-slate-800/30 transition-colors cursor-pointer"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="h-6 w-6 rounded-md bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-sm">
-                      <Wrench className="h-3.5 w-3.5 text-amber-400" />
-                    </span>
-                    <div>
-                      <h3 className="text-sm font-bold text-[#FFC700]">
-                        CMMS Work Order Generator
-                      </h3>
-                      <p className="text-[10px] text-slate-500">
-                        Auto-populated from report findings
-                      </p>
-                    </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="aspect-[16/10] rounded-xl border border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 flex flex-col items-center justify-center gap-2 text-center px-4">
+                    <Camera className="h-7 w-7 text-slate-600" />
+                    <p className="text-xs font-semibold text-slate-400">
+                      Field Photo Preview
+                    </p>
+                    <p className="text-[10px] text-slate-600">
+                      No image attached — placeholder
+                    </p>
                   </div>
-                  <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${workOrderExpanded ? "rotate-180" : ""}`} />
-                </button>
-
-                {workOrderExpanded && (
-                  <div className="border-t border-slate-800 p-4 space-y-4">
-                    {/* WO Header */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="rounded-lg bg-slate-950/70 p-3 space-y-1">
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Work Order ID</p>
-                        <p className="text-sm font-bold text-white font-mono">WO-2026-8842</p>
-                      </div>
-                      <div className="rounded-lg bg-slate-950/70 p-3 space-y-1">
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Assigned Trade / Craft</p>
-                        <p className="text-sm font-bold text-white">Mechanical Reliability Specialist</p>
-                      </div>
-                      <div className="rounded-lg bg-slate-950/70 p-3 space-y-1">
-                        <p className="text-[10px] text-slate-500 uppercase tracking-wider">Target Priority</p>
-                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-bold text-red-300">
-                          <AlertTriangle className="h-3 w-3" />
-                          High — Priority 2: Execute within 14 days
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Required Parts */}
-                    <div className="rounded-lg border border-slate-700 bg-slate-950/70 p-3 space-y-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
-                        <ClipboardCheck className="h-3 w-3" /> Required Parts List
-                      </p>
-                      <div className="space-y-1.5">
-                        {[
-                          { part: "6314-C3 Deep Groove Ball Bearing", qty: "1 EA", note: "SKF or equivalent" },
-                          { part: "Synthetic Polyurea Grease", qty: "1 Tube", note: "NLGI #2, high-temp" },
-                          { part: "Bearing Housing Gasket Set", qty: "1 Set", note: "Viton / FKM material" },
-                          { part: "Shaft Locking Collar & Snap Ring", qty: "1 Kit", note: "Per OEM spec" }
-                        ].map((item, i) => (
-                          <div key={i} className="flex items-center justify-between gap-2 text-xs">
-                            <span className="text-slate-200 font-medium">{item.part}</span>
-                            <span className="text-slate-500 shrink-0">{item.qty}</span>
-                            <span className="text-[10px] text-slate-600 hidden sm:inline">{item.note}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Safety & LOTO */}
-                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 space-y-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
-                        <AlertTriangle className="h-3 w-3" /> Safety & LOTO Requirements
-                      </p>
-                      <div className="space-y-1.5">
-                        {[
-                          "Complete LOTO — Lock out main breaker & disconnect switch per NFPA 70E",
-                          "Verify zero energy state with qualified electrician",
-                          "Confined space entry permit (if bearing housing access requires)",
-                          "PPE: Arc flash rated (Cat II), cut-resistant gloves, safety glasses, steel-toe boots",
-                          "Pre-job safety briefing & JSA sign-off by area supervisor"
-                        ].map((item, i) => (
-                          <label key={i} className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer">
-                            <input type="checkbox" className="mt-0.5 shrink-0 accent-amber-500" />
-                            <span>{item}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* WO Actions */}
-                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800">
-                      <button
-                        type="button"
-                        onClick={() => toast("Work Order WO-2026-8842 submitted to CMMS queue.", "success")}
-                        className="min-h-[38px] px-4 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-xs font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
-                      >
-                        <FileText className="h-3.5 w-3.5" />
-                        Submit to CMMS
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => toast("Work Order exported as PDF.", "info")}
-                        className="min-h-[38px] px-4 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-xs font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-1.5"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                        Export WO PDF
-                      </button>
-                    </div>
+                  <div className="aspect-[16/10] rounded-xl border border-slate-700 bg-gradient-to-br from-slate-900 to-slate-950 flex flex-col items-center justify-center gap-2 text-center px-4">
+                    <ImageIcon className="h-7 w-7 text-slate-600" />
+                    <p className="text-xs font-semibold text-slate-400">
+                      Spectral / Trend Graph
+                    </p>
+                    <p className="text-[10px] text-slate-600">
+                      Spectrum capture placeholder
+                    </p>
                   </div>
-                )}
-              </div>
-
-              {/* Sticky Footer Action Bar */}
-              <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-3 pt-3 pb-1 border-t border-amber-500/30 bg-[#0A0E1A]/95 backdrop-blur-md -mx-5 px-5 rounded-b-2xl">
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  className="min-h-[44px] px-5 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-2 shadow-[0_0_16px_rgba(255,199,0,0.25)]"
-                >
-                  <Printer className="h-4 w-4" />
-                  Print / Download PDF Report
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPdmReportOpen(false);
-                    setPdmReportData(null);
-                    setWorkOrderExpanded(false);
-                    setPdmActiveTab("vibration");
-                  }}
-                  className="min-h-[44px] px-5 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-sm font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-2"
-                >
-                  <X className="h-4 w-4" />
-                  Close Report
-                </button>
+                </div>
               </div>
             </div>
           </div>

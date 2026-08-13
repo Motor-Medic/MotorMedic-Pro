@@ -20,11 +20,20 @@ import {
   YAxis
 } from "recharts";
 import CmmsDataBridge from "./CmmsDataBridge";
+import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 
 const PLAYBACK_SPEEDS = [0.5, 1.0, 2.0] as const;
 const EQ_FILTERS = ["Low Pass", "High Pass", "Band Pass"] as const;
 const CMMS_CLIPBOARD_FORMATS = ["IBM Maximo", "SAP PM", "MaintainX"] as const;
 const UE_DEMO_MODES = ["leak", "mechanical", "valve"] as const;
+
+export type UltrasoundPeaksLite = {
+  peak_dbmv: number;
+  rms_dbmv: number;
+  baseline_dbmv?: number;
+  delta_db?: number;
+  mode?: string;
+};
 
 /** Sharp impact spikes — mechanical / bearing signature */
 const TWF_IMPACT_DATA = Array.from({ length: 80 }, (_, i) => {
@@ -107,15 +116,25 @@ function StaticActionBar({
 export interface UltrasoundResultsDashboardProps {
   assetLabel: string;
   componentLabel?: string;
+  analysis?: VibrationAnalysisResult | null;
+  gaugeScore?: number;
+  ultrasoundPeaks?: UltrasoundPeaksLite | null;
   onNewAnalysis: () => void;
   onSaveWorkOrder: () => void;
+  onExportPdf?: () => void;
+  onManagerReport?: () => void;
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
 }
 
 export default function UltrasoundResultsDashboard({
   assetLabel,
   componentLabel,
+  analysis,
+  gaugeScore,
+  ultrasoundPeaks,
   onNewAnalysis,
+  onExportPdf,
+  onManagerReport,
   onToast
 }: UltrasoundResultsDashboardProps) {
   const [playing, setPlaying] = useState(false);
@@ -128,9 +147,19 @@ export default function UltrasoundResultsDashboard({
   const [cmmsClipboardFormat, setCmmsClipboardFormat] =
     useState<(typeof CMMS_CLIPBOARD_FORMATS)[number]>("IBM Maximo");
 
-  const baselineDb = 28;
-  const currentDb = 44;
-  const deltaDb = currentDb - baselineDb;
+  const baselineDb = ultrasoundPeaks?.baseline_dbmv ?? 28;
+  const currentDb = ultrasoundPeaks?.peak_dbmv ?? 44;
+  const deltaDb =
+    ultrasoundPeaks?.delta_db ??
+    Math.round((currentDb - baselineDb) * 10) / 10;
+  const healthDisplay =
+    gaugeScore != null
+      ? gaugeScore
+      : analysis?.overallHealthScore != null
+        ? analysis.overallHealthScore
+        : null;
+  const primaryFault =
+    analysis?.primaryFault?.title || analysis?.summary || null;
 
   const bearingBarPct = useMemo(
     () => Math.min(100, Math.round((currentDb / 60) * 100)),
@@ -142,8 +171,16 @@ export default function UltrasoundResultsDashboard({
       <StaticActionBar
         position="top"
         onNewAnalysis={onNewAnalysis}
-        onExportPdf={() => onToast?.("Exporting ultrasound PDF report…", "info")}
-        onManagerReport={() => onToast?.("Generating manager executive report…", "info")}
+        onExportPdf={() =>
+          onExportPdf
+            ? onExportPdf()
+            : onToast?.("Exporting ultrasound PDF report…", "info")
+        }
+        onManagerReport={() =>
+          onManagerReport
+            ? onManagerReport()
+            : onToast?.("Generating manager executive report…", "info")
+        }
       />
 
       {/* Header */}
@@ -159,6 +196,28 @@ export default function UltrasoundResultsDashboard({
           <p className="text-sm text-slate-500 mt-1">
             Psychoacoustic analytics · Heterodyne UE · ISO 29821
           </p>
+          {(primaryFault || healthDisplay != null) && (
+            <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              {healthDisplay != null && (
+                <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
+                  Health:{" "}
+                  <span className="font-bold text-yellow-400">{healthDisplay}</span>
+                </span>
+              )}
+              {primaryFault && (
+                <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
+                  Primary:{" "}
+                  <span className="font-bold text-sky-400">{primaryFault}</span>
+                </span>
+              )}
+              <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
+                Peak:{" "}
+                <span className="font-mono text-cyan-400">{currentDb}</span> dBµV
+                <span className="text-slate-500 mx-1">·</span>Δ{" "}
+                <span className="font-mono text-amber-400">{deltaDb}</span> dB
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -781,8 +840,16 @@ export default function UltrasoundResultsDashboard({
       <StaticActionBar
         position="bottom"
         onNewAnalysis={onNewAnalysis}
-        onExportPdf={() => onToast?.("Exporting ultrasound PDF report…", "info")}
-        onManagerReport={() => onToast?.("Generating manager executive report…", "info")}
+        onExportPdf={() =>
+          onExportPdf
+            ? onExportPdf()
+            : onToast?.("Exporting ultrasound PDF report…", "info")
+        }
+        onManagerReport={() =>
+          onManagerReport
+            ? onManagerReport()
+            : onToast?.("Generating manager executive report…", "info")
+        }
       />
     </div>
   );

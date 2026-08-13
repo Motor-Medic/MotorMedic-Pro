@@ -11,6 +11,11 @@ import {
 } from "recharts";
 import { getEquipmentData, getFlatEquipment, type EquipComponent } from "../data/equipmentDb";
 import { useToast } from "./Toast";
+import {
+  acknowledgeAlert,
+  fetchAlerts,
+  type SavedAlert
+} from "../lib/analysisPersistence";
 
 /* ========================================================================== */
 /* Props                                                                      */
@@ -1763,7 +1768,7 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
   const { toast } = useToast();
   void userId;
 
-  const [assets, setAssets] = useState<AlertAsset[]>(INITIAL_ASSETS);
+  const [assets, setAssets] = useState<AlertAsset[]>([]);
   const [filter, setFilter] = useState("");
   const [assetSearch, setAssetSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1772,11 +1777,9 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
   const [browseComponent, setBrowseComponent] = useState("");
   const [selectedEquipTag, setSelectedEquipTag] = useState<string | null>(null);
   const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(INITIAL_ASSETS[0].id);
-  const [notifyByAsset, setNotifyByAsset] = useState<Record<string, NotifyConfig>>(() =>
-    Object.fromEntries(INITIAL_ASSETS.map((a) => [a.id, { ...DEFAULT_NOTIFY, recipients: [...DEFAULT_NOTIFY.recipients] }]))
-  );
-  const [history, setHistory] = useState<HistoryAlarm[]>(INITIAL_HISTORY);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [notifyByAsset, setNotifyByAsset] = useState<Record<string, NotifyConfig>>({});
+  const [history, setHistory] = useState<HistoryAlarm[]>([]);
   const [selectedAlarms, setSelectedAlarms] = useState<Set<string>>(new Set());
   const [aiTipId, setAiTipId] = useState<string | null>(null);
   const [dragMode, setDragMode] = useState<"warning" | "critical" | null>(null);
@@ -1787,6 +1790,23 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
   const [fmeaOpenId, setFmeaOpenId] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const searchRef = useRef<HTMLDivElement | null>(null);
+  const [dbAlerts, setDbAlerts] = useState<SavedAlert[]>([]);
+  const [dbAlertsError, setDbAlertsError] = useState<string | null>(null);
+  const [ackingId, setAckingId] = useState<string | null>(null);
+
+  const loadDbAlerts = async () => {
+    try {
+      const rows = await fetchAlerts({ limit: 100 });
+      setDbAlerts(rows);
+      setDbAlertsError(null);
+    } catch (err) {
+      setDbAlertsError(err instanceof Error ? err.message : "Failed to load alerts");
+    }
+  };
+
+  useEffect(() => {
+    void loadDbAlerts();
+  }, []);
 
   const flatEquipment = getFlatEquipment();
   const equipmentRoutes = getEquipmentData();
@@ -2085,6 +2105,99 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
         </div>
       </div>
 
+      {/* Diagnostics-generated alerts from Run Diagnostics */}
+      <section className="rounded-2xl border border-slate-800 bg-[#0A0E1A] p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-white">Diagnostics Alerts</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Auto-created from HIGH-severity faults · {dbAlerts.length} total
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadDbAlerts()}
+            className="text-xs font-semibold text-slate-300 border border-slate-700 rounded-lg px-3 py-1.5 hover:border-amber-400/50 hover:text-amber-300"
+          >
+            Refresh
+          </button>
+        </div>
+        {dbAlertsError && <p className="text-xs text-amber-400">{dbAlertsError}</p>}
+        {dbAlerts.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center py-10 px-4">
+            <BellRing className="h-8 w-8 text-slate-600 mb-3" />
+            <p className="text-sm font-semibold text-slate-300">No data available</p>
+            <p className="text-xs text-slate-500 mt-1 max-w-sm">
+              No diagnostics alerts yet. Run an analysis with HIGH-severity faults to populate this list.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {(["HIGH", "MEDIUM", "LOW"] as const).map((sev) => {
+              const group = dbAlerts.filter((a) => a.severity === sev);
+              if (!group.length) return null;
+              const sevCls =
+                sev === "HIGH"
+                  ? "border-red-500/40 text-red-300"
+                  : sev === "MEDIUM"
+                    ? "border-amber-500/40 text-amber-300"
+                    : "border-slate-600 text-slate-300";
+              return (
+                <div key={sev} className="space-y-2">
+                  <p className={`text-[10px] font-bold uppercase tracking-widest ${sevCls.split(" ").pop()}`}>
+                    {sev} · {group.length}
+                  </p>
+                  {group.map((alert) => (
+                    <div
+                      key={alert.id}
+                      className={`rounded-xl border bg-slate-950/60 px-3 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2 ${sevCls}`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-white truncate">{alert.title}</p>
+                        <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">
+                          {alert.description || "—"}
+                        </p>
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          {alert.asset_id || "unassigned"} ·{" "}
+                          {alert.created_at
+                            ? new Date(alert.created_at).toLocaleString()
+                            : ""}
+                          {alert.acknowledged ? " · acknowledged" : ""}
+                        </p>
+                      </div>
+                      {!alert.acknowledged && (
+                        <button
+                          type="button"
+                          disabled={ackingId === alert.id}
+                          onClick={async () => {
+                            setAckingId(alert.id);
+                            try {
+                              await acknowledgeAlert(alert.id);
+                              toast("Alert acknowledged.", "success");
+                              await loadDbAlerts();
+                            } catch (err) {
+                              toast(
+                                err instanceof Error ? err.message : "Acknowledge failed",
+                                "error"
+                              );
+                            } finally {
+                              setAckingId(null);
+                            }
+                          }}
+                          className="shrink-0 min-h-[36px] px-3 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-white hover:border-amber-400 disabled:opacity-50"
+                        >
+                          {ackingId === alert.id ? "…" : "Acknowledge"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
       {/* Sub-tab navigation */}
       <nav
         className="flex flex-wrap gap-1.5 p-1.5 rounded-2xl border border-slate-800 bg-[#0A0E1A]"
@@ -2126,8 +2239,17 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
         })}
       </nav>
 
-      {/* TAB: Active Alarms & History */}
-      {activeTab === "alarms" && (
+      {/* TAB: Active Alarms & History — real diagnostics alerts only above; no mock history */}
+      {activeTab === "alarms" && history.length === 0 && assets.length === 0 && (
+        <div className="rounded-2xl border border-slate-800 bg-[#0A0E1A] flex flex-col items-center justify-center text-center py-12 px-4">
+          <Bell className="h-8 w-8 text-slate-600 mb-3" />
+          <p className="text-sm font-semibold text-slate-300">No data available</p>
+          <p className="text-xs text-slate-500 mt-1">
+            Alarm history will appear here when diagnostics generate alerts.
+          </p>
+        </div>
+      )}
+      {activeTab === "alarms" && (history.length > 0 || assets.length > 0) && (
         <div className="space-y-5">
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <SummaryCard label="Active Critical Alarms" value={summary.critical} tone="red" icon={AlertTriangle} pulse />
@@ -2526,6 +2648,16 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
               </div>
 
               <div className="overflow-x-auto max-h-[640px] overflow-y-auto">
+                {filteredAssets.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-12 px-4">
+                    <Bell className="h-8 w-8 text-slate-600 mb-3" />
+                    <p className="text-sm font-semibold text-slate-300">No data available</p>
+                    <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                      Select an asset from your equipment database to configure thresholds. No mock
+                      assets are shown.
+                    </p>
+                  </div>
+                ) : (
                 <table className="w-full text-left min-w-[720px]">
                   <thead className="sticky top-0 bg-slate-950/95 backdrop-blur z-10 text-[9px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
                     <tr>
@@ -2678,6 +2810,7 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
                     })}
                   </tbody>
                 </table>
+                )}
               </div>
             </section>
 

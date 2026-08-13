@@ -1,16 +1,23 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
-  CheckCircle2,
   ChevronDown,
   Cog,
   Droplets,
+  FileAudio,
   Upload,
   Wind,
   Zap
 } from "lucide-react";
+import type { UltrasoundMetadata } from "../lib/ultrasoundAnalysis";
 
 type UeAccordionSection = "mode" | "hardware" | "specific" | "ingestion";
 export type UltrasoundMode = "leak" | "mechanical" | "electrical" | "valve";
+
+/** Snapshot emitted to Run Diagnostics for /api/analyze-ultrasound. */
+export type UltrasoundInputSnapshot = UltrasoundMetadata & {
+  wavFileName?: string | null;
+  photoFileName?: string | null;
+};
 
 const MODE_CARDS: {
   id: UltrasoundMode;
@@ -120,15 +127,27 @@ function AccordionShell({
 
 export interface UltrasoundInputAccordionsProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
+  /** Selected from top Equipment Selection (Route / Asset / Component). */
+  equipment?: {
+    route?: string;
+    assetTag?: string;
+    assetLabel?: string;
+    component?: string;
+    voltage?: string;
+    location?: string;
+    hp?: number;
+    rpm?: number;
+  };
+  /** Emits measurement metadata for POST /api/analyze-ultrasound. */
+  onSnapshotChange?: (snapshot: UltrasoundInputSnapshot) => void;
 }
 
 export default function UltrasoundInputAccordions({
-  onToast
+  onToast,
+  equipment,
+  onSnapshotChange
 }: UltrasoundInputAccordionsProps) {
-  const [openSections, setOpenSections] = useState<UeAccordionSection[]>([
-    "mode",
-    "hardware"
-  ]);
+  const [openSections, setOpenSections] = useState<UeAccordionSection[]>([]);
   const [ultrasoundMode, setUltrasoundMode] = useState<UltrasoundMode>("leak");
 
   // Hardware
@@ -176,6 +195,7 @@ export default function UltrasoundInputAccordions({
   // Ingestion
   const [wavName, setWavName] = useState<string | null>(null);
   const [photoName, setPhotoName] = useState<string | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [peakDbuV, setPeakDbuV] = useState("");
   const [rmsDbuV, setRmsDbuV] = useState("");
   const [physicalAssetTag, setPhysicalAssetTag] = useState("");
@@ -197,19 +217,110 @@ export default function UltrasoundInputAccordions({
     onToast?.(`Ultrasound audio loaded: ${file.name}`, "success");
   };
 
-  const handlePhoto = (file: File) => {
-    if (!/\.(jpe?g|png|webp)$/i.test(file.name)) {
-      onToast?.("Visual context must be an image (.jpg / .png).", "warning");
+  const clearWav = () => {
+    setWavName(null);
+    if (wavRef.current) wavRef.current.value = "";
+  };
+
+  const handlePhoto = (file?: File | null) => {
+    if (!file) return;
+    if (
+      !/\.(jpe?g|png|gif|webp)$/i.test(file.name) &&
+      !file.type.startsWith("image/")
+    ) {
+      onToast?.("Visual context must be an image (.jpg / .png / .webp).", "warning");
       return;
     }
+    const preview = URL.createObjectURL(file);
+    setPhotoPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return preview;
+    });
     setPhotoName(file.name);
     onToast?.(`Visual context attached: ${file.name}`, "success");
   };
 
+  const clearPhotoPreview = () => {
+    setPhotoPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setPhotoName(null);
+    if (photoRef.current) photoRef.current.value = "";
+  };
+
+  const hasPhotoPreview = Boolean(photoPreview || photoName);
+
   const modeLabel = MODE_CARDS.find((m) => m.id === ultrasoundMode)?.title ?? ultrasoundMode;
+
+  // Push measurement snapshot to parent (Diagnose → /api/analyze-ultrasound)
+  useEffect(() => {
+    if (!onSnapshotChange) return;
+    onSnapshotChange({
+      asset: equipment?.assetLabel,
+      assetTag: equipment?.assetTag,
+      component: equipment?.component,
+      route: equipment?.route,
+      location: equipment?.location,
+      mode: ultrasoundMode,
+      transducer,
+      hardwareBrand: hardwareBrandProfile,
+      heterodyneKhz,
+      gainDb,
+      distance,
+      distanceUnit,
+      peakDbuV: peakDbuV || undefined,
+      rmsDbuV: rmsDbuV || undefined,
+      wavFileName: wavName || undefined,
+      photoFileName: photoName || undefined,
+      gasType,
+      systemPressure,
+      equipmentRpm: equipmentRpm || equipment?.rpm,
+      voltageClass,
+      valveType,
+      physicalAssetTag: physicalAssetTag || undefined
+    });
+  }, [
+    onSnapshotChange,
+    equipment?.assetLabel,
+    equipment?.assetTag,
+    equipment?.component,
+    equipment?.route,
+    equipment?.location,
+    equipment?.rpm,
+    ultrasoundMode,
+    transducer,
+    hardwareBrandProfile,
+    heterodyneKhz,
+    gainDb,
+    distance,
+    distanceUnit,
+    peakDbuV,
+    rmsDbuV,
+    wavName,
+    photoName,
+    gasType,
+    systemPressure,
+    equipmentRpm,
+    voltageClass,
+    valveType,
+    physicalAssetTag
+  ]);
 
   return (
     <div className="space-y-0">
+      {(equipment?.assetLabel || equipment?.assetTag || equipment?.component) && (
+        <div className="mb-4 rounded-xl border border-white/10 bg-slate-900/50 px-4 py-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            Analyzing equipment
+          </p>
+          <p className="text-sm text-white font-semibold mt-0.5">
+            {[equipment.route, equipment.assetLabel || equipment.assetTag, equipment.component]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 mb-4">
         <label className="flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest shrink-0">
@@ -229,6 +340,202 @@ export default function UltrasoundInputAccordions({
             ))}
           </select>
         </label>
+      </div>
+
+      {/* Audio Upload — permanently visible at top (primary data) */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+              Data Ingestion
+            </p>
+            <h3 className="text-sm font-bold text-white mt-1">
+              Audio Payload (.WAV)
+              {ultrasoundMode === "leak" ? " — Optional" : ""}
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Always visible — primary data for Ultrasound AI analysis
+            </p>
+          </div>
+          <FileAudio className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
+        </div>
+
+        <div className="space-y-4">
+          <span className={fieldLabel}>
+            Audio Payload (.WAV)
+            {ultrasoundMode === "leak" ? " — Optional" : ""}
+          </span>
+          {!wavName ? (
+            <button
+              type="button"
+              onClick={() => wavRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files?.[0];
+                if (file) handleWav(file);
+              }}
+              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+            >
+              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
+              <p className="text-sm font-bold text-white">
+                {ultrasoundMode === "leak"
+                  ? "Drop .WAV audio here — Optional"
+                  : "Drop .WAV audio here"}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Heterodyned audio (2–4 kHz) or raw high-sample rate (96/192 kHz)
+              </p>
+            </button>
+          ) : (
+            <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
+              <div className="flex flex-col sm:flex-row gap-4 items-start">
+                <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner flex items-center justify-center">
+                  <FileAudio className="h-10 w-10 text-amber-400/80" aria-hidden />
+                </div>
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
+                    <span className="truncate max-w-[180px] text-white">{wavName}</span>
+                    <span className="text-slate-500">|</span>
+                    <span className="text-amber-300">Audio Ready</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearWav}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
+                    >
+                      ✕ Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => wavRef.current?.click()}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                    >
+                      Replace audio
+                    </button>
+                  </div>
+                  <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200/90 leading-snug">
+                    Ensure file contains the heterodyned (frequency-shifted) ultrasound signal, not
+                    just ambient noise
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {ultrasoundMode === "leak" && !wavName && (
+            <p className="text-xs text-cyan-400 italic">
+              Optional for Leak Detection. If no audio file is provided, AI can calculate CFM loss
+              using manual Peak/RMS decibel inputs in the accordion below.
+            </p>
+          )}
+          <input
+            ref={wavRef}
+            type="file"
+            accept=".wav,audio/wav"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleWav(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Image Upload — permanently visible */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+              Data Ingestion
+            </p>
+            <h3 className="text-sm font-bold text-white mt-1">
+              Visual Context / Image Upload
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Always visible — photo or screenshot for Ultrasound AI analysis
+            </p>
+          </div>
+          <Upload className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
+        </div>
+
+        <div className="space-y-4">
+          <span className={fieldLabel}>Visual Context Image (AI Vision)</span>
+          {!hasPhotoPreview ? (
+            <button
+              type="button"
+              onClick={() => photoRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handlePhoto(e.dataTransfer.files?.[0] ?? null);
+              }}
+              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+            >
+              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
+              <p className="text-sm font-bold text-white">
+                Drop visual context image here
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                .png, .jpg, .webp — photo or screenshot of valve / leak location
+              </p>
+            </button>
+          ) : (
+            <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
+              <div className="flex flex-col sm:flex-row gap-4 items-start">
+                <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner">
+                  {photoPreview ? (
+                    <img
+                      src={photoPreview}
+                      alt={photoName || "Visual context preview"}
+                      className="w-full h-full object-cover object-left-top"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold">
+                      Preview
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
+                    <span className="truncate max-w-[180px] text-white">
+                      {photoName || "context.png"}
+                    </span>
+                    <span className="text-slate-500">|</span>
+                    <span className="text-amber-300">AI Vision Ready</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearPhotoPreview}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
+                    >
+                      ✕ Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => photoRef.current?.click()}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                    >
+                      Replace image
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          <input
+            ref={photoRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.gif"
+            className="hidden"
+            onChange={(e) => {
+              handlePhoto(e.target.files?.[0] ?? null);
+              e.target.value = "";
+            }}
+          />
+        </div>
       </div>
 
       {/* SECTION 1 — Application Mode */}
@@ -694,10 +1001,10 @@ export default function UltrasoundInputAccordions({
         </div>
       </AccordionShell>
 
-      {/* SECTION 4 — Data Ingestion */}
+      {/* SECTION 4 — Manual Telemetry */}
       <AccordionShell
         id="ingestion"
-        title="4. High-Fidelity Data Ingestion"
+        title="4. Manual Telemetry & Asset Tag"
         open={openSections.includes("ingestion")}
         onToggle={toggleSection}
       >
@@ -729,110 +1036,19 @@ export default function UltrasoundInputAccordions({
           </div>
         </div>
 
-        <div>
-          <span className={fieldLabel}>
-            Audio Payload (.WAV)
-            {ultrasoundMode === "leak" ? " — Optional" : ""}
-          </span>
-          <button
-            type="button"
-            onClick={() => wavRef.current?.click()}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const file = e.dataTransfer.files?.[0];
-              if (file) handleWav(file);
-            }}
-            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-8 text-center cursor-pointer transition-colors"
-          >
-            <Upload className="h-7 w-7 text-yellow-400 mx-auto mb-2" />
-            <p className="text-sm font-bold text-white">
-              {ultrasoundMode === "leak"
-                ? "Upload Audio Payload (.WAV) — Optional"
-                : "Upload Audio Payload (.WAV)"}
-            </p>
-            <p className="text-xs text-slate-500 mt-1">
-              Supports: Heterodyned Audio (2-4 kHz audible range) OR Raw High-Sample Rate (96/192
-              kHz)
-            </p>
-            {wavName && (
-              <p className="mt-2 text-xs text-yellow-300 inline-flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                {wavName}
-              </p>
-            )}
-          </button>
-          {ultrasoundMode === "leak" && (
-            <p className="text-xs text-cyan-400 mt-2 italic">
-              Optional for Leak Detection. If no audio file is provided, AI will automatically
-              calculate CFM loss using your manual Peak/RMS Decibel inputs above.
-            </p>
-          )}
-          <div className="mt-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2.5 text-xs text-yellow-200/90 leading-snug">
-            Ensure file contains the heterodyned (frequency-shifted) ultrasound signal, not just
-            ambient noise
-          </div>
+        <label className="block min-w-0 mt-4">
+          <span className={fieldLabel}>Physical Asset Tag / Component Label</span>
           <input
-            ref={wavRef}
-            type="file"
-            accept=".wav,audio/wav"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleWav(f);
-            }}
+            type="text"
+            value={physicalAssetTag}
+            onChange={(e) => setPhysicalAssetTag(e.target.value)}
+            placeholder="e.g., Line 4 - Lower Union Valve"
+            className={inputCls}
           />
-        </div>
-
-        <div>
-          <span className={fieldLabel}>Visual Context</span>
-          <button
-            type="button"
-            onClick={() => photoRef.current?.click()}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const file = e.dataTransfer.files?.[0];
-              if (file) handlePhoto(file);
-            }}
-            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-8 text-center cursor-pointer transition-colors"
-          >
-            <Upload className="h-7 w-7 text-slate-400 mx-auto mb-2" />
-            <p className="text-sm font-bold text-white">
-              Drop photo of valve / leak location
-            </p>
-            <p className="text-xs text-slate-500 mt-1">.jpg or .png for field context</p>
-            {photoName && (
-              <p className="mt-2 text-xs text-yellow-300 inline-flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                {photoName}
-              </p>
-            )}
-          </button>
-          <input
-            ref={photoRef}
-            type="file"
-            accept=".jpg,.jpeg,.png,.webp"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handlePhoto(f);
-            }}
-          />
-          <label className="block min-w-0 mt-4">
-            <span className={fieldLabel}>Physical Asset Tag / Component Label</span>
-            <input
-              type="text"
-              value={physicalAssetTag}
-              onChange={(e) => setPhysicalAssetTag(e.target.value)}
-              placeholder="e.g., Line 4 - Lower Union Valve"
-              className={inputCls}
-            />
-            <p className={helperCls}>
-              Ensures the exact physical location is included in the CMMS work order payload.
-            </p>
-          </label>
-        </div>
+          <p className={helperCls}>
+            Ensures the exact physical location is included in the CMMS work order payload.
+          </p>
+        </label>
       </AccordionShell>
     </div>
   );

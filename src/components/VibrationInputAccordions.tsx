@@ -116,6 +116,20 @@ export interface VibrationInputAccordionsProps {
   setManualPeakVue: (v: string) => void;
   /** Selected route component (e.g. Motor DE) — shown with Database Matched badge */
   matchedComponent?: string;
+  motorHp: string;
+  setMotorHp: (v: string) => void;
+  voltage: string;
+  setVoltage: (v: string) => void;
+  measurementPoint: string;
+  setMeasurementPoint: (v: string) => void;
+  measurementLocation: string;
+  setMeasurementLocation: (v: string) => void;
+  rmsVelocity: string;
+  setRmsVelocity: (v: string) => void;
+  peakAcceleration: string;
+  setPeakAcceleration: (v: string) => void;
+  operatingTemp: string;
+  setOperatingTemp: (v: string) => void;
 }
 
 const dbMatchedBadge =
@@ -135,11 +149,11 @@ function AccordionShell({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-slate-900/50 border border-white/10 rounded-xl mb-4 overflow-hidden">
+    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl mb-4 overflow-hidden hover:border-amber-500/30 transition-all">
       <button
         type="button"
         onClick={() => onToggle(id)}
-        className="w-full flex justify-between items-center p-4 cursor-pointer hover:bg-slate-800/50 transition-colors bg-slate-900"
+        className="w-full flex justify-between items-center p-4 cursor-pointer hover:bg-slate-800/40 transition-colors bg-slate-900/60"
         aria-expanded={open}
       >
         <span className="text-sm font-bold text-white uppercase tracking-wider text-left">
@@ -147,12 +161,14 @@ function AccordionShell({
         </span>
         <ChevronDown
           className={`h-5 w-5 text-slate-400 shrink-0 transition-transform duration-300 ${
-            open ? "rotate-180 text-yellow-400" : ""
+            open ? "rotate-180 text-amber-400" : ""
           }`}
         />
       </button>
       {open && (
-        <div className="p-6 border-t border-white/5 bg-slate-950/30 space-y-5">{children}</div>
+        <div className="p-6 border-t border-slate-800 bg-slate-950/40 space-y-5">
+          {children}
+        </div>
       )}
     </div>
   );
@@ -238,7 +254,21 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
     setManual2x,
     manualPeakVue,
     setManualPeakVue,
-    matchedComponent
+    matchedComponent,
+    motorHp,
+    setMotorHp,
+    voltage,
+    setVoltage,
+    measurementPoint,
+    setMeasurementPoint,
+    measurementLocation,
+    setMeasurementLocation,
+    rmsVelocity,
+    setRmsVelocity,
+    peakAcceleration,
+    setPeakAcceleration,
+    operatingTemp,
+    setOperatingTemp
   } = props;
 
   const [localFileName, setLocalFileName] = useState<string | null>(null);
@@ -271,532 +301,23 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
 
   return (
     <div className="space-y-0">
-      <AccordionShell
-        id="kinematics"
-        title="1. AUTO-POPULATED KINEMATICS & SPECS (VERIFIED)"
-        open={openSection === "kinematics"}
-        onToggle={onToggleSection}
-      >
-        <div className="rounded-xl border border-white/10 bg-slate-950/50 px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
-          <div className="flex items-center min-w-0 flex-wrap">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mr-2">
-              Motor
-            </span>
-            <span className="text-sm font-bold text-white">
-              {matchedComponent || "Motor DE"}
-            </span>
-            <span className={dbMatchedBadge}>✓ Database Matched</span>
-          </div>
-          <div className="flex items-center min-w-0 flex-wrap">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mr-2">
-              Bearing
-            </span>
-            <span className="text-sm font-bold text-cyan-300 font-mono">
-              {bearingDe || "SKF 6320 C3"}
-            </span>
-            <span className={dbMatchedBadge}>✓ Database Matched</span>
-          </div>
-        </div>
-
-        <label className="block w-full">
-          <span className="text-xs font-bold text-yellow-400 uppercase tracking-wider mb-2 block">
-            Running Speed (RPM)
-          </span>
-          <input
-            type="number"
-            min={1}
-            value={vibRpm}
-            onChange={(e) => setVibRpm(e.target.value)}
-            placeholder="1780"
-            className={`${vibInput} text-lg font-bold py-3.5 border-yellow-500/40 focus:border-yellow-500`}
-          />
-          <p className={vibHelper}>
-            Foundation for 1X, 2X, and Bearing Fault calculations.
-          </p>
-        </label>
-
-        <div>
-          <span className={vibFieldLabel}>Drive Configuration</span>
-          <div className="relative max-w-md">
-            <select
-              value={driveConfig}
-              onChange={(e) => setDriveConfig(e.target.value as DriveConfig)}
-              className={vibSelect}
-            >
-              {DRIVE_CONFIGS.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-          </div>
-        </div>
-
-        {driveConfig === "Belt-Driven" && (
+      {/* Data Ingestion — permanently visible at top */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-bold text-yellow-400/90 uppercase tracking-wider mb-3">
-              Kinematic Specifics — Belt Drive
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+              Data Ingestion
             </p>
-            <div className="grid grid-cols-2 gap-4">
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Drive Pulley Dia</span>
-                <input
-                  value={drivePulleyDia}
-                  onChange={(e) => setDrivePulleyDia(e.target.value)}
-                  placeholder="in"
-                  className={vibInput}
-                />
-              </label>
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Driven Pulley Dia</span>
-                <input
-                  value={drivenPulleyDia}
-                  onChange={(e) => setDrivenPulleyDia(e.target.value)}
-                  placeholder="in"
-                  className={vibInput}
-                />
-              </label>
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Center-to-Center Dist</span>
-                <input
-                  value={centerToCenter}
-                  onChange={(e) => setCenterToCenter(e.target.value)}
-                  placeholder="in"
-                  className={vibInput}
-                />
-              </label>
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Belt Count</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={beltCount}
-                  onChange={(e) => setBeltCount(e.target.value)}
-                  className={vibInput}
-                />
-              </label>
-            </div>
-          </div>
-        )}
-
-        {driveConfig === "Gearbox-Driven" && (
-          <div>
-            <p className="text-xs font-bold text-yellow-400/90 uppercase tracking-wider mb-3">
-              Kinematic Specifics — Gearbox
+            <h3 className="text-sm font-bold text-white mt-1">
+              Spectrum Chart / Image Upload
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Always visible — required for Master Vibration AI analysis
             </p>
-            <div className="grid grid-cols-3 gap-4">
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Number of Stages</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={gearStages}
-                  onChange={(e) => setGearStages(e.target.value)}
-                  className={vibInput}
-                />
-              </label>
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Tooth Count Z1</span>
-                <input
-                  type="number"
-                  value={toothZ1}
-                  onChange={(e) => setToothZ1(e.target.value)}
-                  placeholder="23"
-                  className={vibInput}
-                />
-              </label>
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Tooth Count Z2</span>
-                <input
-                  type="number"
-                  value={toothZ2}
-                  onChange={(e) => setToothZ2(e.target.value)}
-                  placeholder="67"
-                  className={vibInput}
-                />
-              </label>
-            </div>
           </div>
-        )}
-
-        {(isFanOrPump || driveConfig === "Direct-Coupled") && (
-          <div>
-            <p className="text-xs font-bold text-yellow-400/90 uppercase tracking-wider mb-3">
-              Kinematic Specifics — Fan / Pump (BPF)
-            </p>
-            <div className="grid grid-cols-2 gap-4 max-w-md">
-              <label className="block min-w-0">
-                <span className={vibFieldLabel}>Number of Blades / Vanes</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={bladeVaneCount}
-                  onChange={(e) => setBladeVaneCount(e.target.value)}
-                  placeholder="For BPF calculation"
-                  className={vibInput}
-                />
-              </label>
-            </div>
-          </div>
-        )}
-
-        <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
-            Bearing Architecture
-          </p>
-          <div className="grid grid-cols-2 gap-4">
-            <label className="block min-w-0">
-              <span className={`${vibFieldLabel} !flex items-center flex-wrap`}>
-                Drive End Bearing (Catalog #)
-                <span className={dbMatchedBadge}>✓ Database Matched</span>
-              </span>
-              <input
-                value={bearingDe}
-                onChange={(e) => setBearingDe(e.target.value)}
-                placeholder="SKF 6320 C3"
-                className={vibInput}
-              />
-            </label>
-            <label className="block min-w-0">
-              <span className={`${vibFieldLabel} !flex items-center flex-wrap`}>
-                Non-Drive End Bearing (Catalog #)
-                <span className={dbMatchedBadge}>✓ Database Matched</span>
-              </span>
-              <input
-                value={bearingNde}
-                onChange={(e) => setBearingNde(e.target.value)}
-                placeholder="SKF 6320 C3"
-                className={vibInput}
-              />
-            </label>
-          </div>
-          <p className="mt-2 text-[11px] text-slate-500">
-            Auto-calculates BPFO, BPFI, BSF, FTF
-          </p>
+          <Upload className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
         </div>
 
-        <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
-            Motor Electricals
-          </p>
-          <div className="grid grid-cols-3 gap-4">
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Rotor Bars</span>
-              <input
-                type="number"
-                value={rotorBars}
-                onChange={(e) => setRotorBars(e.target.value)}
-                placeholder="40"
-                className={vibInput}
-              />
-            </label>
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Stator Slots</span>
-              <input
-                type="number"
-                value={statorSlots}
-                onChange={(e) => setStatorSlots(e.target.value)}
-                placeholder="48"
-                className={vibInput}
-              />
-            </label>
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Line Frequency</span>
-              <div className="relative">
-                <select
-                  value={lineFrequency}
-                  onChange={(e) => setLineFrequency(e.target.value)}
-                  className={vibSelect}
-                >
-                  {LINE_FREQ_OPTS.map((f) => (
-                    <option key={f} value={f}>
-                      {f}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-            </label>
-          </div>
-        </div>
-      </AccordionShell>
-
-      <AccordionShell
-        id="metadata"
-        title="2. Advanced Measurement Metadata"
-        open={openSection === "metadata"}
-        onToggle={onToggleSection}
-      >
-        <div className="grid grid-cols-2 gap-4">
-          <label className="block min-w-0 sm:col-span-2 max-w-md">
-            <span className={vibFieldLabel}>Sensor Orientation</span>
-            <div className="relative">
-              <select
-                value={sensorOrientation}
-                onChange={(e) => setSensorOrientation(e.target.value)}
-                className={vibSelect}
-              >
-                {SENSOR_ORIENTATIONS.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-            </div>
-          </label>
-        </div>
-
-        <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
-            Sensor Physical Characteristics
-          </p>
-          <div className="grid grid-cols-2 gap-4">
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Sensitivity</span>
-              <div className="relative">
-                <select
-                  value={sensorSensitivity}
-                  onChange={(e) => setSensorSensitivity(e.target.value)}
-                  className={vibSelect}
-                >
-                  {SENSOR_SENSITIVITY_OPTS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-            </label>
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Mounting Method</span>
-              <div className="relative">
-                <select
-                  value={mountingMethod}
-                  onChange={(e) => setMountingMethod(e.target.value)}
-                  className={vibSelect}
-                >
-                  {MOUNTING_METHODS.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-            </label>
-          </div>
-        </div>
-
-        <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
-            Signal Processing Parameters
-          </p>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Max Frequency (Fmax)</span>
-              <div className="relative">
-                <select
-                  value={fmax}
-                  onChange={(e) => setFmax(e.target.value)}
-                  className={vibSelect}
-                  aria-label="Max Frequency Fmax — editable override"
-                >
-                  {!FMAX_OPTS.includes(fmax as (typeof FMAX_OPTS)[number]) && (
-                    <option value={fmax}>{fmax}</option>
-                  )}
-                  {FMAX_OPTS.map((f) => (
-                    <option key={f} value={f}>
-                      {f}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-              <p className={vibHelper}>Analyst override enabled</p>
-            </label>
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Lines of Resolution (LOR)</span>
-              <div className="relative">
-                <select
-                  value={lor}
-                  onChange={(e) => setLor(e.target.value)}
-                  className={vibSelect}
-                  aria-label="Lines of Resolution LOR — editable override"
-                >
-                  {!LOR_OPTS.includes(lor as (typeof LOR_OPTS)[number]) && (
-                    <option value={lor}>{lor}</option>
-                  )}
-                  {LOR_OPTS.map((l) => (
-                    <option key={l} value={l}>
-                      {l}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-              <p className={vibHelper}>
-                Override for Deep Forensic Analysis (e.g. 6400)
-              </p>
-            </label>
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Windowing</span>
-              <div className="relative">
-                <select
-                  value={windowing}
-                  onChange={(e) => setWindowing(e.target.value)}
-                  className={vibSelect}
-                >
-                  {WINDOWING_OPTS.map((w) => (
-                    <option key={w} value={w}>
-                      {w}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-            </label>
-            <label className="block min-w-0">
-              <span className={vibFieldLabel}>Averages</span>
-              <input
-                type="number"
-                min={1}
-                value={averages}
-                onChange={(e) => setAverages(e.target.value)}
-                className={vibInput}
-              />
-            </label>
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-white/10 bg-slate-950/50 p-4 space-y-3">
-          <label className="flex items-start gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={enableEnveloping}
-              onChange={(e) => setEnableEnveloping(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-950 text-yellow-500 focus:ring-yellow-500 focus:ring-offset-0 cursor-pointer accent-yellow-500"
-            />
-            <span className="text-sm font-bold text-white">
-              Enable Deep Forensic Analysis (Enveloping)
-            </span>
-          </label>
-          {enableEnveloping && (
-            <label className="block min-w-0 max-w-md pl-7">
-              <span className={vibFieldLabel}>Enveloping / Demodulation Band</span>
-              <div className="relative">
-                <select
-                  value={envelopingBand}
-                  onChange={(e) => setEnvelopingBand(e.target.value)}
-                  className={vibSelect}
-                >
-                  {ENVELOPING_BANDS.map((b) => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-              </div>
-              <p className={vibHelper}>
-                Isolates high-frequency structural noise for early-stage micro-crack detection.
-              </p>
-            </label>
-          )}
-        </div>
-      </AccordionShell>
-
-      <AccordionShell
-        id="telemetry"
-        title="3. Contextual & Environmental Telemetry"
-        open={openSection === "telemetry"}
-        onToggle={onToggleSection}
-      >
-        <div>
-          <span className={vibFieldLabel}>Load Condition</span>
-          <div className="flex flex-wrap gap-2">
-            {LOAD_OPTIONS.map((opt) => {
-              const on = loadCondition === opt;
-              return (
-                <button
-                  key={opt}
-                  type="button"
-                  onClick={() => setLoadCondition(opt)}
-                  className={`px-4 py-2 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
-                    on
-                      ? "bg-yellow-500 text-slate-900 border-yellow-500"
-                      : "bg-slate-950 border-slate-700 text-slate-400 hover:border-yellow-500"
-                  }`}
-                >
-                  {opt}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 max-w-md">
-          <label className="block min-w-0">
-            <span className={vibFieldLabel}>Current Running Load %</span>
-            <div className="relative">
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={loadPercentage}
-                onChange={(e) => setLoadPercentage(e.target.value)}
-                placeholder="85"
-                className={`${vibInput} pr-8`}
-              />
-              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">
-                %
-              </span>
-            </div>
-          </label>
-        </div>
-
-        <div>
-          <span className={vibFieldLabel}>Historical Maintenance Log</span>
-          <textarea
-            value={recentMaintenance}
-            onChange={(e) => setRecentMaintenance(e.target.value)}
-            placeholder="Laser alignment performed yesterday, Grease added 4 hours ago..."
-            className={`${vibInput} h-24 resize-y`}
-          />
-        </div>
-
-        <div>
-          <span className={vibFieldLabel}>Recent Maintenance Tags</span>
-          <div className="flex flex-wrap gap-1.5">
-            {MAINTENANCE_TAGS.map((tag) => {
-              const on = maintenanceTags.includes(tag);
-              return (
-                <button
-                  key={tag}
-                  type="button"
-                  onClick={() => onToggleMaintenanceTag(tag)}
-                  className={`px-3 py-1.5 rounded-md text-xs font-bold border cursor-pointer transition-all ${
-                    on
-                      ? "bg-yellow-500/15 border-yellow-500 text-yellow-300"
-                      : "bg-slate-950/60 border-slate-600 text-slate-400 hover:border-yellow-500/50 hover:text-slate-200"
-                  }`}
-                >
-                  {tag}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </AccordionShell>
-
-      <AccordionShell
-        id="ingestion"
-        title="4. Data Ingestion"
-        open={openSection === "ingestion"}
-        onToggle={onToggleSection}
-      >
         <div>
           <span className={vibFieldLabel}>Ingestion Method</span>
           <div className="flex flex-wrap gap-2">
@@ -1042,7 +563,580 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
             </label>
           </div>
         )}
+      </div>
 
+      <AccordionShell
+        id="kinematics"
+        title="1. Auto-Populated Kinematics & Specs"
+        open={openSection === "kinematics"}
+        onToggle={onToggleSection}
+      >
+        <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 px-4 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
+          <div className="flex items-center min-w-0 flex-wrap">
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mr-2">
+              Component
+            </span>
+            <span className="text-sm font-bold text-white">
+              {matchedComponent || "Motor DE"}
+            </span>
+            <span className={dbMatchedBadge}>✓ Database Matched</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Motor HP / kW</span>
+            <input
+              value={motorHp}
+              onChange={(e) => setMotorHp(e.target.value)}
+              placeholder="100"
+              className={vibInput}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Rated RPM</span>
+            <input
+              type="number"
+              min={1}
+              value={vibRpm}
+              onChange={(e) => setVibRpm(e.target.value)}
+              placeholder="1780"
+              className={`${vibInput} border-amber-500/40`}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Voltage</span>
+            <input
+              value={voltage}
+              onChange={(e) => setVoltage(e.target.value)}
+              placeholder="460V"
+              className={vibInput}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Line Frequency</span>
+            <div className="relative">
+              <select
+                value={lineFrequency}
+                onChange={(e) => setLineFrequency(e.target.value)}
+                className={vibSelect}
+              >
+                {LINE_FREQ_OPTS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+            </div>
+          </label>
+        </div>
+
+        <div>
+          <span className={vibFieldLabel}>Drive Configuration</span>
+          <div className="relative max-w-md">
+            <select
+              value={driveConfig}
+              onChange={(e) => setDriveConfig(e.target.value as DriveConfig)}
+              className={vibSelect}
+            >
+              {DRIVE_CONFIGS.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+          </div>
+        </div>
+
+        {driveConfig === "Belt-Driven" && (
+          <div>
+            <p className="text-xs font-bold text-amber-400/90 uppercase tracking-wider mb-3">
+              Kinematic Specifics — Belt Drive
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Drive Pulley Dia</span>
+                <input
+                  value={drivePulleyDia}
+                  onChange={(e) => setDrivePulleyDia(e.target.value)}
+                  placeholder="in"
+                  className={vibInput}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Driven Pulley Dia</span>
+                <input
+                  value={drivenPulleyDia}
+                  onChange={(e) => setDrivenPulleyDia(e.target.value)}
+                  placeholder="in"
+                  className={vibInput}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Center-to-Center Dist</span>
+                <input
+                  value={centerToCenter}
+                  onChange={(e) => setCenterToCenter(e.target.value)}
+                  placeholder="in"
+                  className={vibInput}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Belt Count</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={beltCount}
+                  onChange={(e) => setBeltCount(e.target.value)}
+                  className={vibInput}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {driveConfig === "Gearbox-Driven" && (
+          <div>
+            <p className="text-xs font-bold text-amber-400/90 uppercase tracking-wider mb-3">
+              Kinematic Specifics — Gearbox
+            </p>
+            <div className="grid grid-cols-3 gap-4">
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Number of Stages</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={gearStages}
+                  onChange={(e) => setGearStages(e.target.value)}
+                  className={vibInput}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Tooth Count Z1</span>
+                <input
+                  type="number"
+                  value={toothZ1}
+                  onChange={(e) => setToothZ1(e.target.value)}
+                  placeholder="23"
+                  className={vibInput}
+                />
+              </label>
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Tooth Count Z2</span>
+                <input
+                  type="number"
+                  value={toothZ2}
+                  onChange={(e) => setToothZ2(e.target.value)}
+                  placeholder="67"
+                  className={vibInput}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {(isFanOrPump || driveConfig === "Direct-Coupled") && (
+          <div>
+            <p className="text-xs font-bold text-amber-400/90 uppercase tracking-wider mb-3">
+              Kinematic Specifics — Fan / Pump (BPF)
+            </p>
+            <div className="grid grid-cols-2 gap-4 max-w-md">
+              <label className="block min-w-0">
+                <span className={vibFieldLabel}>Number of Blades / Vanes</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={bladeVaneCount}
+                  onChange={(e) => setBladeVaneCount(e.target.value)}
+                  placeholder="For BPF calculation"
+                  className={vibInput}
+                />
+              </label>
+            </div>
+          </div>
+        )}
+
+        <div>
+          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
+            Bearing Architecture
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <label className="block min-w-0">
+              <span className={`${vibFieldLabel} !flex items-center flex-wrap`}>
+                Drive End (DE) Bearing
+                <span className={dbMatchedBadge}>✓ Database Matched</span>
+              </span>
+              <input
+                value={bearingDe}
+                onChange={(e) => setBearingDe(e.target.value)}
+                placeholder="6314-C3"
+                className={vibInput}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={`${vibFieldLabel} !flex items-center flex-wrap`}>
+                Non-Drive End (NDE) Bearing
+                <span className={dbMatchedBadge}>✓ Database Matched</span>
+              </span>
+              <input
+                value={bearingNde}
+                onChange={(e) => setBearingNde(e.target.value)}
+                placeholder="6212-C3"
+                className={vibInput}
+              />
+            </label>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Auto-calculates BPFO, BPFI, BSF, FTF from catalog geometry
+          </p>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
+            Motor Electricals
+          </p>
+          <div className="grid grid-cols-2 gap-4 max-w-lg">
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Rotor Bars</span>
+              <input
+                type="number"
+                value={rotorBars}
+                onChange={(e) => setRotorBars(e.target.value)}
+                placeholder="40"
+                className={vibInput}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Stator Slots</span>
+              <input
+                type="number"
+                value={statorSlots}
+                onChange={(e) => setStatorSlots(e.target.value)}
+                placeholder="48"
+                className={vibInput}
+              />
+            </label>
+          </div>
+        </div>
+      </AccordionShell>
+
+      <AccordionShell
+        id="metadata"
+        title="2. Measurement Metadata"
+        open={openSection === "metadata"}
+        onToggle={onToggleSection}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Measurement Location</span>
+            <input
+              value={measurementLocation}
+              onChange={(e) => setMeasurementLocation(e.target.value)}
+              placeholder="Motor DE"
+              className={vibInput}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Measurement Point</span>
+            <input
+              value={measurementPoint}
+              onChange={(e) => setMeasurementPoint(e.target.value)}
+              placeholder="1H, 2A, 3V…"
+              className={vibInput}
+            />
+            <p className={vibHelper}>e.g. 1H, 2A, 3V</p>
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Sensor Orientation</span>
+            <div className="relative">
+              <select
+                value={sensorOrientation}
+                onChange={(e) => setSensorOrientation(e.target.value)}
+                className={vibSelect}
+              >
+                {SENSOR_ORIENTATIONS.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+            </div>
+          </label>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
+            Sensor Physical Characteristics
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Sensitivity</span>
+              <div className="relative">
+                <select
+                  value={sensorSensitivity}
+                  onChange={(e) => setSensorSensitivity(e.target.value)}
+                  className={vibSelect}
+                >
+                  {SENSOR_SENSITIVITY_OPTS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Mounting Method</span>
+              <div className="relative">
+                <select
+                  value={mountingMethod}
+                  onChange={(e) => setMountingMethod(e.target.value)}
+                  className={vibSelect}
+                >
+                  {MOUNTING_METHODS.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold text-white uppercase tracking-wider mb-3">
+            Signal Processing Parameters
+          </p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Max Frequency (Fmax)</span>
+              <div className="relative">
+                <select
+                  value={fmax}
+                  onChange={(e) => setFmax(e.target.value)}
+                  className={vibSelect}
+                  aria-label="Max Frequency Fmax"
+                >
+                  {!FMAX_OPTS.includes(fmax as (typeof FMAX_OPTS)[number]) && (
+                    <option value={fmax}>{fmax}</option>
+                  )}
+                  {FMAX_OPTS.map((f) => (
+                    <option key={f} value={f}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Lines of Resolution (LOR)</span>
+              <div className="relative">
+                <select
+                  value={lor}
+                  onChange={(e) => setLor(e.target.value)}
+                  className={vibSelect}
+                  aria-label="Lines of Resolution LOR"
+                >
+                  {!LOR_OPTS.includes(lor as (typeof LOR_OPTS)[number]) && (
+                    <option value={lor}>{lor}</option>
+                  )}
+                  {LOR_OPTS.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Windowing</span>
+              <div className="relative">
+                <select
+                  value={windowing}
+                  onChange={(e) => setWindowing(e.target.value)}
+                  className={vibSelect}
+                >
+                  {WINDOWING_OPTS.map((w) => (
+                    <option key={w} value={w}>
+                      {w}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={vibFieldLabel}>Averages</span>
+              <input
+                type="number"
+                min={1}
+                value={averages}
+                onChange={(e) => setAverages(e.target.value)}
+                className={vibInput}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4 space-y-3">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={enableEnveloping}
+              onChange={(e) => setEnableEnveloping(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-950 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 cursor-pointer accent-amber-500"
+            />
+            <span className="text-sm font-bold text-white">
+              Enable Enveloping / Demodulation
+            </span>
+          </label>
+          {enableEnveloping && (
+            <label className="block min-w-0 max-w-md pl-7">
+              <span className={vibFieldLabel}>Enveloping Band</span>
+              <div className="relative">
+                <select
+                  value={envelopingBand}
+                  onChange={(e) => setEnvelopingBand(e.target.value)}
+                  className={vibSelect}
+                >
+                  {ENVELOPING_BANDS.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+          )}
+        </div>
+      </AccordionShell>
+
+      <AccordionShell
+        id="telemetry"
+        title="3. Telemetry & Operating Context"
+        open={openSection === "telemetry"}
+        onToggle={onToggleSection}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>RMS Velocity (in/s)</span>
+            <input
+              value={rmsVelocity}
+              onChange={(e) => {
+                setRmsVelocity(e.target.value);
+                setManualOverall(e.target.value);
+              }}
+              placeholder="0.28"
+              className={vibInput}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Peak Acceleration (g)</span>
+            <input
+              value={peakAcceleration}
+              onChange={(e) => {
+                setPeakAcceleration(e.target.value);
+                setManualPeakVue(e.target.value);
+              }}
+              placeholder="2.4"
+              className={vibInput}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Operating Temperature (°F)</span>
+            <input
+              value={operatingTemp}
+              onChange={(e) => setOperatingTemp(e.target.value)}
+              placeholder="165"
+              className={vibInput}
+            />
+          </label>
+        </div>
+
+        <div>
+          <span className={vibFieldLabel}>Load Condition</span>
+          <div className="flex flex-wrap gap-2">
+            {LOAD_OPTIONS.map((opt) => {
+              const on = loadCondition === opt;
+              return (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => setLoadCondition(opt)}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
+                    on
+                      ? "bg-amber-400 text-slate-900 border-amber-400"
+                      : "bg-slate-950 border-slate-700 text-slate-400 hover:border-amber-500"
+                  }`}
+                >
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 max-w-md">
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>Current Running Load %</span>
+            <div className="relative">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={loadPercentage}
+                onChange={(e) => setLoadPercentage(e.target.value)}
+                placeholder="85"
+                className={`${vibInput} pr-8`}
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 pointer-events-none">
+                %
+              </span>
+            </div>
+          </label>
+        </div>
+
+        <div>
+          <span className={vibFieldLabel}>Historical Maintenance Log</span>
+          <textarea
+            value={recentMaintenance}
+            onChange={(e) => setRecentMaintenance(e.target.value)}
+            placeholder="Laser alignment performed yesterday, Grease added 4 hours ago..."
+            className={`${vibInput} h-24 resize-y`}
+          />
+        </div>
+
+        <div>
+          <span className={vibFieldLabel}>Recent Maintenance Tags</span>
+          <div className="flex flex-wrap gap-1.5">
+            {MAINTENANCE_TAGS.map((tag) => {
+              const on = maintenanceTags.includes(tag);
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => onToggleMaintenanceTag(tag)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold border cursor-pointer transition-all ${
+                    on
+                      ? "bg-amber-500/15 border-amber-500 text-amber-300"
+                      : "bg-slate-950/60 border-slate-600 text-slate-400 hover:border-amber-500/50 hover:text-slate-200"
+                  }`}
+                >
+                  {tag}
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </AccordionShell>
     </div>
   );

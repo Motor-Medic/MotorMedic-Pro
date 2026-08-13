@@ -11,6 +11,10 @@ import { getEquipmentData, getFlatEquipment, type EquipComponent, type FlatEquip
 import { SavedReport } from "../types";
 import { useToast } from "./Toast";
 import OnboardingEmptyState from "./OnboardingEmptyState";
+import {
+  fetchDiagnosisLogs,
+  type SavedDiagnosisLog
+} from "../lib/analysisPersistence";
 
 /* ========================================================================== */
 /* Props (kept for History.tsx wrapper)                                       */
@@ -725,6 +729,28 @@ export default function DiagnosisLogs({
   const [hoverId, setHoverId] = useState<string | null>(null);
   const searchRef = useRef<HTMLDivElement | null>(null);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [dbLogs, setDbLogs] = useState<SavedDiagnosisLog[]>([]);
+  const [dbLogsError, setDbLogsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await fetchDiagnosisLogs({ limit: 100 });
+        if (!cancelled) {
+          setDbLogs(rows);
+          setDbLogsError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setDbLogsError(err instanceof Error ? err.message : "Failed to load logs");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const flatEquipment = useMemo(() => {
     void equipTick;
@@ -916,21 +942,102 @@ export default function DiagnosisLogs({
         </div>
       </div>
 
-      {flatEquipment.length === 0 || events.length === 0 ? (
-        <OnboardingEmptyState
-          variant="logs"
-          onDataChange={() => {
-            setEquipTick((n) => n + 1);
-            if (getFlatEquipment().length > 0 && events.length === 0) {
-              setEvents(MOCK_EVENTS);
-            } else if (getFlatEquipment().length === 0) {
-              setEvents([]);
-            }
-          }}
-        />
+      <section className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-white">Run Diagnostics History</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Saved when analyses complete · {dbLogs.length} entr
+              {dbLogs.length === 1 ? "y" : "ies"}
+            </p>
+          </div>
+        </div>
+        {dbLogsError && <p className="text-xs text-amber-400">{dbLogsError}</p>}
+        {dbLogs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center py-10 px-4">
+            <Activity className="h-8 w-8 text-slate-600 mb-3" />
+            <p className="text-sm font-semibold text-slate-300">No data available</p>
+            <p className="text-xs text-slate-500 mt-1">
+              No diagnosis runs saved yet. Complete a Run Diagnostics analysis to populate this list.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-widest text-slate-500 border-b border-slate-800">
+                  <th className="py-2 pr-3 font-bold">Status</th>
+                  <th className="py-2 pr-3 font-bold">Asset</th>
+                  <th className="py-2 pr-3 font-bold">Type</th>
+                  <th className="py-2 pr-3 font-bold">Completed</th>
+                  <th className="py-2 font-bold">Summary</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dbLogs.map((log) => {
+                  const summary = log.result_summary || {};
+                  const primary =
+                    typeof summary.primary_fault === "string"
+                      ? summary.primary_fault
+                      : typeof summary.summary === "string"
+                        ? summary.summary
+                        : "—";
+                  const health =
+                    summary.health_score != null ? ` · H${summary.health_score}` : "";
+                  return (
+                    <tr
+                      key={log.id}
+                      className="border-b border-slate-800/80 hover:bg-slate-950/50"
+                    >
+                      <td className="py-2.5 pr-3">
+                        <span
+                          className={`inline-flex px-2 py-0.5 rounded-md font-bold ${
+                            log.status === "success"
+                              ? "bg-emerald-500/15 text-emerald-300"
+                              : "bg-red-500/15 text-red-300"
+                          }`}
+                        >
+                          {log.status}
+                        </span>
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-300 whitespace-nowrap">
+                        {log.asset_id || "—"}
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-400 whitespace-nowrap">
+                        {log.analysis_type || "vibration"}
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-400 whitespace-nowrap">
+                        {log.completed_at
+                          ? new Date(log.completed_at).toLocaleString()
+                          : log.started_at
+                            ? new Date(log.started_at).toLocaleString()
+                            : "—"}
+                      </td>
+                      <td className="py-2.5 text-slate-300 max-w-[280px] truncate">
+                        {primary}
+                        {health}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {flatEquipment.length === 0 && dbLogs.length === 0 ? (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 flex flex-col items-center justify-center text-center py-12 px-4">
+          <Activity className="h-8 w-8 text-slate-600 mb-3" />
+          <p className="text-sm font-semibold text-slate-300">No data available</p>
+          <p className="text-xs text-slate-500 mt-1">
+            Complete a Run Diagnostics analysis to populate diagnosis history.
+          </p>
+        </div>
       ) : null}
 
-      {flatEquipment.length > 0 && events.length > 0 ? (
+      {/* Mock incident timeline disabled — only DB diagnosis_logs are shown above */}
+      {false && flatEquipment.length > 0 && events.length > 0 ? (
       <>
       {/* Equipment selection — Trend Analyzer pattern */}
       <section className="bg-slate-900 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3 overflow-visible">

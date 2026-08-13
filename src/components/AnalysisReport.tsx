@@ -25,6 +25,10 @@ import { getEquipmentData, getFlatEquipment, type EquipComponent } from "../data
 import { navigateToTab } from "../navigation";
 import { useToast } from "./Toast";
 import OnboardingEmptyState from "./OnboardingEmptyState";
+import {
+  fetchAnalysisResults,
+  type SavedAnalysisResult
+} from "../lib/analysisPersistence";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -3176,11 +3180,13 @@ function SpectrumLibraryPanel({
 function AnalysisResultsPanel({
   assetName,
   tagId,
-  component
+  component,
+  analysis
 }: {
   assetName: string;
   tagId: string;
   component?: string | null;
+  analysis?: SavedAnalysisResult | null;
 }) {
   const [analyst, setAnalyst] = useState(ACQUISITION.analyst);
   const [velocityUnit, setVelocityUnit] = useState<"mms" | "ins">("mms");
@@ -3221,6 +3227,14 @@ function AnalysisResultsPanel({
   const linePath = TREND_DATA.map((d, i) => `${i === 0 ? "M" : "L"} ${pointX(i)} ${pointY(trendToDisplay(d.value))}`).join(" ");
   const areaPath = `${linePath} L ${pointX(TREND_DATA.length - 1)} ${chart.bottom} L ${chart.left} ${chart.bottom} Z`;
 
+  const inspectionDate = analysis?.timestamp
+    ? new Date(analysis.timestamp).toLocaleDateString()
+    : REPORT_SUMMARY.inspectionDate;
+  const topFault =
+    analysis?.primary_fault ||
+    analysis?.fault_list?.[0]?.title ||
+    REPORT_SUMMARY.topFaultCode;
+
   return (
     <div className="space-y-5">
 
@@ -3240,11 +3254,16 @@ function AnalysisResultsPanel({
           </div>
           <div className="space-y-1">
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Inspection Date</span>
-            <span className="text-sm font-semibold text-slate-200 block truncate">{REPORT_SUMMARY.inspectionDate}</span>
+            <span className="text-sm font-semibold text-slate-200 block truncate">{inspectionDate}</span>
           </div>
           <div className="space-y-1">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">Top Fault Code</span>
-            <span className="text-sm font-bold text-yellow-400 font-mono block truncate">{REPORT_SUMMARY.topFaultCode}</span>
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
+              {analysis ? "Health / Primary Fault" : "Top Fault Code"}
+            </span>
+            <span className="text-sm font-bold text-yellow-400 font-mono block truncate">
+              {analysis?.health_score != null ? `H${analysis.health_score} · ` : ""}
+              {topFault}
+            </span>
           </div>
         </div>
 
@@ -8046,6 +8065,34 @@ export default function AnalysisReport({
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
   const [equipTick, setEquipTick] = useState(0);
+  const [loadedAnalyses, setLoadedAnalyses] = useState<SavedAnalysisResult[]>([]);
+  const [selectedAnalysis, setSelectedAnalysis] = useState<SavedAnalysisResult | null>(null);
+  const [hasLoadedReport, setHasLoadedReport] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Fetch saved analyses from PostgreSQL on page load
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await fetchAnalysisResults({ limit: 50 });
+        if (cancelled) return;
+        setLoadedAnalyses(rows);
+        setSelectedAnalysis(rows[0] ?? null);
+        setHasLoadedReport(true);
+        setLoadError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setLoadError(
+          err instanceof Error ? err.message : "Failed to load analysis results"
+        );
+        setHasLoadedReport(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const flatEquipment = useMemo(() => {
     void equipTick;
@@ -8144,8 +8191,8 @@ export default function AnalysisReport({
     setSearchOpen(false);
   };
 
-  /** Explicit load — commits draft → local report state (no cross-page URL coupling) */
-  const handleLoadReport = () => {
+  /** Explicit load — commits draft selection and fetches saved analyses from PostgreSQL */
+  const handleLoadReport = async () => {
     if (!selectedRoute || !selectedAsset) {
       toast("Select Route and Asset before loading a report.", "warning");
       return;
@@ -8169,17 +8216,79 @@ export default function AnalysisReport({
     }
 
     setIsLoading(true);
+    setLoadError(null);
     if (matched) setLoadedAssetId(matched.id);
     setLoadedAssetLabel(label);
     setLoadedComponent(selectedComponent || null);
 
-    // Mock fetch — replace with real API later
-    if (loadTimerRef.current != null) window.clearTimeout(loadTimerRef.current);
-    loadTimerRef.current = window.setTimeout(() => {
-      setIsLoading(false);
-      toast(`Report loaded for ${label}.`, "success");
+    if (loadTimerRef.current != null) {
+      window.clearTimeout(loadTimerRef.current);
       loadTimerRef.current = null;
-    }, 1000);
+    }
+
+    try {
+      const matchKeys = [
+        flat?.id,
+        flat?.tag,
+        selectedAsset,
+        label,
+        matched?.id,
+        matched?.tag,
+        matched ? `${matched.name} - ${matched.tag}` : null
+      ]
+        .filter(Boolean)
+        .map((k) => String(k).toLowerCase());
+
+      // Prefer exact asset_id query using equipment id/tag, then broaden if empty
+      let rows: SavedAnalysisResult[] = [];
+      for (const key of [flat?.id, flat?.tag, matched?.id, matched?.tag, selectedAsset]) {
+        if (!key) continue;
+        rows = await fetchAnalysisResults({ asset_id: String(key), limit: 50 });
+        if (rows.length) break;
+      }
+      if (!rows.length) {
+        const all = await fetchAnalysisResults({ limit: 100 });
+        rows = all.filter((r) => {
+          const id = (r.asset_id || "").toLowerCase();
+          if (!id) return false;
+          return matchKeys.some(
+            (k) => id === k || id.includes(k) || k.includes(id)
+          );
+        });
+      }
+
+      if (selectedComponent) {
+        const byComponent = rows.filter(
+          (r) =>
+            !r.component ||
+            r.component.toLowerCase() === selectedComponent.toLowerCase()
+        );
+        if (byComponent.length) rows = byComponent;
+      }
+
+      setLoadedAnalyses(rows);
+      setSelectedAnalysis(rows[0] ?? null);
+      setHasLoadedReport(true);
+
+      if (rows.length === 0) {
+        toast(
+          `No saved analyses found for ${label}. Run Diagnostics to create one.`,
+          "warning"
+        );
+      } else {
+        toast(`Loaded ${rows.length} analysis result${rows.length === 1 ? "" : "s"} for ${label}.`, "success");
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to load analysis results";
+      setLoadError(message);
+      setLoadedAnalyses([]);
+      setSelectedAnalysis(null);
+      setHasLoadedReport(true);
+      toast(message, "error");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const addPartToReport = (part: InventoryPart) => {
@@ -8602,16 +8711,139 @@ export default function AnalysisReport({
         {/* Tab Panels — Vibration */}
         <div className="p-6 min-h-[360px]">
           {selectedTech === "vibration" && activeTab === 1 && (
-            <AnalysisResultsPanel
-              assetName={displayAssetLabel}
-              tagId={reportAsset.tag}
-              component={loadedComponent}
-            />
+            <div className="space-y-5">
+              <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Saved Analyses</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        From PostgreSQL · {loadedAnalyses.length} result
+                        {loadedAnalyses.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    {loadError && (
+                      <p className="text-xs text-amber-400">{loadError}</p>
+                    )}
+                  </div>
+                  {loadedAnalyses.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center text-center py-10 px-4">
+                      <FileText className="h-8 w-8 text-slate-600 mb-3" />
+                      <p className="text-sm font-semibold text-slate-300">No data available</p>
+                      <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                        No saved analyses yet. Complete a Run Diagnostics analysis to populate this list.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid gap-2">
+                      {loadedAnalyses.map((row) => {
+                        const on = selectedAnalysis?.id === row.id;
+                        return (
+                          <button
+                            key={row.id}
+                            type="button"
+                            onClick={() => setSelectedAnalysis(row)}
+                            className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors cursor-pointer ${
+                              on
+                                ? "border-amber-400/50 bg-amber-400/10"
+                                : "border-slate-800 bg-slate-900/70 hover:border-slate-600"
+                            }`}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-semibold text-white truncate">
+                                {row.primary_fault || "Analysis"}
+                              </p>
+                              <span className="text-[10px] font-bold text-amber-300">
+                                Health {row.health_score ?? "—"}
+                                {row.is_baseline ? " · BASELINE" : ""}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1">
+                              {row.component || "—"} · {row.asset_id || "—"} ·{" "}
+                              {row.timestamp
+                                ? new Date(row.timestamp).toLocaleString()
+                                : ""}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {selectedAnalysis && (
+                    <div className="rounded-xl border border-slate-700 bg-slate-950 p-3 space-y-2">
+                      <p className="text-xs text-slate-300">
+                        {selectedAnalysis.summary ||
+                          selectedAnalysis.primary_fault ||
+                          "—"}
+                      </p>
+                      <ul className="text-xs text-slate-400 space-y-1 max-h-36 overflow-y-auto">
+                        {(Array.isArray(selectedAnalysis.fault_list)
+                          ? selectedAnalysis.fault_list
+                          : []
+                        ).map((f, i) => (
+                          <li key={i}>
+                            {f.title}
+                            {f.severity ? ` · ${f.severity}` : ""}
+                            {f.confidence != null ? ` · ${f.confidence}%` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                      {Array.isArray(selectedAnalysis.recommendations) &&
+                        selectedAnalysis.recommendations.length > 0 && (
+                          <ul className="text-xs text-slate-300 space-y-1 pt-1 border-t border-slate-800">
+                            {selectedAnalysis.recommendations.map((r, i) => (
+                              <li key={i}>• {r}</li>
+                            ))}
+                          </ul>
+                        )}
+                    </div>
+                  )}
+                </section>
+            </div>
+          )}
+          {false && selectedTech !== "vibration" && activeTab === 1 && (
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                No {selectedTech} data available for this asset. Run a diagnostic to populate
+                reports.
+              </p>
+            </div>
+          )}
+          {false && selectedTech === "vibration" && activeTab === 1 && (
+            <div className="space-y-5">
+              <AnalysisResultsPanel
+                assetName={displayAssetLabel}
+                tagId={reportAsset.tag}
+                component={loadedComponent}
+                analysis={selectedAnalysis}
+              />
+            </div>
           )}
           {selectedTech === "vibration" && activeTab === 2 && (
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                Spectrum library will populate from saved diagnostic spectra. No spectrum data
+                available yet.
+              </p>
+            </div>
+          )}
+          {false && selectedTech === "vibration" && activeTab === 2 && (
             <SpectrumLibraryPanel assetName={displayAssetLabel} tagId={reportAsset.tag} />
           )}
           {selectedTech === "vibration" && activeTab === 3 && (
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                Repair actions will appear when a saved analysis includes recommended parts
+                and work.
+              </p>
+            </div>
+          )}
+          {false && selectedTech === "vibration" && activeTab === 3 && (
             <RepairActionsPanel
               inventory={inventory}
               reportParts={reportParts}
@@ -8671,6 +8903,20 @@ export default function AnalysisReport({
           </div>
 
           <div className="p-6 min-h-[360px]">
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                No Thermography data available for this asset. Run a diagnostic to populate
+                reports.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {false && selectedTech === "thermography" && (
+        <div className="hidden">
+          <div className="p-6 min-h-[360px]">
             {selectedTech === "thermography" && activeTab === 1 && <ThermographyAnalysisResults />}
             {selectedTech === "thermography" && activeTab === 2 && (
               <ThermographyDataLibrary
@@ -8715,6 +8961,20 @@ export default function AnalysisReport({
             })}
           </div>
 
+          <div className="p-6 min-h-[360px]">
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                No Ultrasound data available for this asset. Run a diagnostic to populate
+                reports.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {false && selectedTech === "ultrasound" && (
+        <div className="hidden">
           <div className="p-6 min-h-[360px]">
             {selectedTech === "ultrasound" && activeTab === 1 && <UltrasoundAnalysisResults />}
             {selectedTech === "ultrasound" && activeTab === 2 && (
@@ -8765,6 +9025,19 @@ export default function AnalysisReport({
           </div>
 
           <div className="p-6 min-h-[360px]">
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                No MCA data available for this asset. Run a diagnostic to populate reports.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {false && selectedTech === "mca" && (
+        <div className="hidden">
+          <div className="p-6 min-h-[360px]">
             {selectedTech === "mca" && activeTab === 1 && (
               <McaAnalysisResults assetLabel={displayAssetLabel} />
             )}
@@ -8814,6 +9087,20 @@ export default function AnalysisReport({
           </div>
 
           <div className="p-6 min-h-[360px]">
+            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+              <FileText className="h-8 w-8 text-slate-600 mb-3" />
+              <p className="text-sm font-semibold text-slate-300">No data available</p>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                No Oil Analysis data available for this asset. Run a diagnostic to populate
+                reports.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {false && selectedTech === "oil" && (
+        <div className="hidden">
+          <div className="p-6 min-h-[360px]">
             {selectedTech === "oil" && activeTab === 1 && <OilAnalysisResults />}
             {selectedTech === "oil" && activeTab === 2 && (
               <OilDataLibrary
@@ -8856,11 +9143,29 @@ export default function AnalysisReport({
         <WorkOrderGenerator
           assetName={reportAsset.name}
           tagId={reportAsset.tag}
-          faultCode={REPORT_SUMMARY.topFaultCode}
-          faultSeverity={FAULT_MATRIX[0].severity}
-          recommendations={AI_RECOMMENDATIONS.map(r => ({ text: r.text, priority: r.priority }))}
+          faultCode={
+            selectedAnalysis?.primary_fault ||
+            (Array.isArray(selectedAnalysis?.fault_list) &&
+            selectedAnalysis.fault_list[0]?.title
+              ? String(selectedAnalysis.fault_list[0].title)
+              : "—")
+          }
+          faultSeverity={(() => {
+            const raw = String(
+              (Array.isArray(selectedAnalysis?.fault_list) &&
+                selectedAnalysis.fault_list[0]?.severity) ||
+                ""
+            ).toLowerCase();
+            if (raw.includes("high") || raw.includes("crit")) return "High";
+            if (raw.includes("low")) return "Low";
+            return "Medium";
+          })()}
+          recommendations={(Array.isArray(selectedAnalysis?.recommendations)
+            ? selectedAnalysis.recommendations
+            : []
+          ).map((r) => ({ text: String(r), priority: "Medium" as const }))}
           parts={workOrderParts}
-          estimatedHours={ESTIMATED_LABOR_HOURS}
+          estimatedHours={0}
           onClose={() => setShowWorkOrder(false)}
         />
       )}

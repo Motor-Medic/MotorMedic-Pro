@@ -1,23 +1,410 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Check,
   DollarSign,
-  RefreshCw,
   Thermometer,
-  Upload,
   Zap
 } from "lucide-react";
 import CmmsDataBridge from "./CmmsDataBridge";
-
-const REPAIR_STEPS = [
-  "De-energize and follow LOTO procedures.",
-  "Torque Phase B lug to original manufacturer (OEM) technical specifications. Reference Switchgear tightening spec card inside enclosure door.",
-  "Inspect busbar for pitting/discoloration.",
-  "Re-scan within 24 hours of load restoration."
-];
+import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 
 const PALETTES = ["Ironbow", "Grayscale", "Rainbow"] as const;
+
+export type ThermalPeaksLite = {
+  hotspot_temp: number;
+  reference_temp: number;
+  delta_t: number;
+};
+
+function formatUsd(n: number | undefined): string {
+  const value = Number.isFinite(n as number) ? Number(n) : 0;
+  return value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0
+  });
+}
+
+function mapSeverityToUi(sev: string | undefined): "HIGH" | "MEDIUM" | "LOW" {
+  const s = String(sev || "").toUpperCase();
+  if (s === "CRITICAL" || s === "HIGH") return "HIGH";
+  if (s === "ANOMALY" || s === "MEDIUM" || s === "WARNING") return "MEDIUM";
+  return "LOW";
+}
+
+/** Heat index 0–1 for common thermal false-color palettes. */
+function rgbToHeatIndex(r: number, g: number, b: number): number {
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  const warm = Math.max(0, (r - b) / 255) * 0.55 + Math.max(0, (r - g) / 255) * 0.2;
+  const magenta = Math.min(r, b) / 255 - g / 255;
+  const purpleBias = magenta > 0.05 ? magenta * 0.35 : 0;
+  const coldPenalty = Math.max(0, (b - r) / 255) * 0.45;
+  return Math.max(0, Math.min(1, lum * 0.45 + warm + purpleBias - coldPenalty));
+}
+
+function parsePeaksFromAnalysis(
+  analysis: VibrationAnalysisResult,
+  fallback: ThermalPeaksLite | null | undefined
+): ThermalPeaksLite {
+  if (
+    fallback &&
+    Number.isFinite(fallback.hotspot_temp) &&
+    Number.isFinite(fallback.reference_temp)
+  ) {
+    return fallback;
+  }
+  try {
+    const raw = analysis.consensusDetails?.refereeDebateSummary;
+    if (raw && typeof raw === "string" && raw.trim().startsWith("{")) {
+      const parsed = JSON.parse(raw) as {
+        extracted_data?: {
+          hotspot_temperature?: number;
+          reference_temperature?: number;
+        };
+        analysis?: { delta_t?: { value?: number } };
+      };
+      const hotspot = Number(parsed?.extracted_data?.hotspot_temperature);
+      const reference = Number(parsed?.extracted_data?.reference_temperature);
+      const delta =
+        Number(parsed?.analysis?.delta_t?.value) ||
+        (Number.isFinite(hotspot) && Number.isFinite(reference)
+          ? Math.abs(hotspot - reference)
+          : NaN);
+      if (Number.isFinite(hotspot) && Number.isFinite(reference)) {
+        return {
+          hotspot_temp: hotspot,
+          reference_temp: reference,
+          delta_t: Number.isFinite(delta) ? delta : Math.abs(hotspot - reference)
+        };
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  const summary = String(analysis.summary || "");
+  const m = /hotspot\s+(-?\d+(?:\.\d+)?)\s+vs\s+reference\s+(-?\d+(?:\.\d+)?)/i.exec(
+    summary
+  );
+  if (m) {
+    const hotspot = Number(m[1]);
+    const reference = Number(m[2]);
+    return {
+      hotspot_temp: hotspot,
+      reference_temp: reference,
+      delta_t: Math.abs(hotspot - reference)
+    };
+  }
+  return { hotspot_temp: 0, reference_temp: 0, delta_t: 0 };
+}
+
+function paletteFilter(palette: (typeof PALETTES)[number]): string {
+  if (palette === "Grayscale") return "grayscale(1) contrast(1.05)";
+  if (palette === "Rainbow") return "hue-rotate(40deg) saturate(1.35) contrast(1.05)";
+  return "none";
+}
+
+type MarkerPos = { xPct: number; yPct: number };
+
+function ThermalSmartView({
+  imageUrl,
+  peaks,
+  isotherm,
+  onIsothermChange,
+  palette,
+  onPaletteChange
+}: {
+  imageUrl?: string | null;
+  peaks: ThermalPeaksLite;
+  isotherm: number;
+  onIsothermChange: (v: number) => void;
+  palette: (typeof PALETTES)[number];
+  onPaletteChange: (p: (typeof PALETTES)[number]) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [hotPos, setHotPos] = useState<MarkerPos>({ xPct: 50, yPct: 48 });
+  const [refPos, setRefPos] = useState<MarkerPos>({ xPct: 28, yPct: 28 });
+  const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
+  const [frame, setFrame] = useState<{
+    left: number;
+    top: number;
+    w: number;
+    h: number;
+  } | null>(null);
+
+  const tempUnit =
+    peaks.hotspot_temp > 0 && peaks.hotspot_temp < 80 ? "°C" : "°F";
+  const sliderMin = Math.max(
+    0,
+    Math.floor(Math.min(peaks.reference_temp || 20, peaks.hotspot_temp || 40) - 10)
+  );
+  const sliderMax = Math.max(
+    sliderMin + 20,
+    Math.ceil(Math.max(peaks.hotspot_temp || 100, peaks.reference_temp || 60) + 20)
+  );
+
+  useEffect(() => {
+    if (isotherm < sliderMin || isotherm > sliderMax) {
+      const mid = Math.round(
+        peaks.reference_temp + (peaks.delta_t || 0) * 0.55 || (sliderMin + sliderMax) / 2
+      );
+      onIsothermChange(Math.min(sliderMax, Math.max(sliderMin, mid)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when peak bounds change
+  }, [sliderMin, sliderMax, peaks.hotspot_temp, peaks.reference_temp]);
+
+  // Keep marker frame aligned with object-contain letterboxing
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !imgNatural) {
+      setFrame(null);
+      return;
+    }
+    const update = () => {
+      const cw = el.clientWidth;
+      const ch = el.clientHeight;
+      const scale = Math.min(cw / imgNatural.w, ch / imgNatural.h);
+      const w = imgNatural.w * scale;
+      const h = imgNatural.h * scale;
+      setFrame({
+        left: (cw - w) / 2,
+        top: (ch - h) / 2,
+        w,
+        h
+      });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [imgNatural, imageUrl]);
+
+  useEffect(() => {
+    if (!imageUrl || !canvasRef.current) return;
+    let cancelled = false;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      if (cancelled) return;
+      const maxSide = 720;
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight, 1));
+      const w = Math.max(8, Math.round(img.naturalWidth * scale));
+      const h = Math.max(8, Math.round(img.naturalHeight * scale));
+      canvas.width = w;
+      canvas.height = h;
+      setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const { data } = imageData;
+
+      const tMin = peaks.reference_temp || sliderMin;
+      const tMax =
+        peaks.hotspot_temp > tMin ? peaks.hotspot_temp : tMin + Math.max(peaks.delta_t, 10);
+      const span = Math.max(1, tMax - tMin);
+
+      let maxHeat = -1;
+      let maxIdx = 0;
+      const heats = new Float32Array(w * h);
+
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        const heat = rgbToHeatIndex(data[i], data[i + 1], data[i + 2]);
+        heats[p] = heat;
+        if (heat > maxHeat) {
+          maxHeat = heat;
+          maxIdx = p;
+        }
+      }
+
+      const hotX = maxIdx % w;
+      const hotY = Math.floor(maxIdx / w);
+      let bestRef = 0;
+      let bestScore = -1;
+      for (let p = 0; p < heats.length; p += 11) {
+        const x = p % w;
+        const y = Math.floor(p / w);
+        const dist = Math.hypot(x - hotX, y - hotY) / Math.hypot(w, h);
+        const cool = 1 - heats[p];
+        const score = cool * 0.65 + dist * 0.35;
+        if (score > bestScore) {
+          bestScore = score;
+          bestRef = p;
+        }
+      }
+
+      setHotPos({
+        xPct: ((maxIdx % w) / w) * 100,
+        yPct: (Math.floor(maxIdx / w) / h) * 100
+      });
+      setRefPos({
+        xPct: ((bestRef % w) / w) * 100,
+        yPct: (Math.floor(bestRef / w) / h) * 100
+      });
+
+      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+        const estTemp = tMin + heats[p] * span;
+        if (estTemp >= isotherm) {
+          data[i] = Math.min(255, Math.round(data[i] * 0.45 + 255 * 0.55));
+          data[i + 1] = Math.min(255, Math.round(data[i + 1] * 0.35 + 220 * 0.35));
+          data[i + 2] = Math.round(data[i + 2] * 0.25);
+          data[i + 3] = 230;
+        } else {
+          data[i] = Math.round(data[i] * 0.35);
+          data[i + 1] = Math.round(data[i + 1] * 0.35);
+          data[i + 2] = Math.round(data[i + 2] * 0.4);
+          data[i + 3] = 160;
+        }
+      }
+      ctx.putImageData(imageData, 0, 0);
+    };
+    img.onerror = () => {
+      if (!cancelled) setImgNatural(null);
+    };
+    img.src = imageUrl;
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imageUrl, isotherm, peaks.hotspot_temp, peaks.reference_temp, peaks.delta_t, sliderMin]);
+
+  const hasImage = Boolean(imageUrl);
+  const hotspotLabel = Number.isFinite(peaks.hotspot_temp)
+    ? `${peaks.hotspot_temp}${tempUnit}`
+    : "—";
+  const refLabel = Number.isFinite(peaks.reference_temp)
+    ? `${peaks.reference_temp}${tempUnit}`
+    : "—";
+
+  const markerStyle = (pos: MarkerPos): React.CSSProperties => {
+    if (frame) {
+      return {
+        left: frame.left + (pos.xPct / 100) * frame.w,
+        top: frame.top + (pos.yPct / 100) * frame.h
+      };
+    }
+    return { left: `${pos.xPct}%`, top: `${pos.yPct}%` };
+  };
+
+  const overlayStyle: React.CSSProperties = frame
+    ? {
+        left: frame.left,
+        top: frame.top,
+        width: frame.w,
+        height: frame.h,
+        objectFit: "fill"
+      }
+    : { inset: 0, width: "100%", height: "100%", objectFit: "contain" };
+
+  return (
+    <div
+      ref={containerRef}
+      className="h-96 rounded-lg relative overflow-hidden border border-white/10 shadow-inner bg-slate-950"
+    >
+      {hasImage ? (
+        <>
+          <img
+            src={imageUrl!}
+            alt="Uploaded thermal image"
+            className="absolute inset-0 w-full h-full object-contain"
+            style={{ filter: paletteFilter(palette) }}
+            draggable={false}
+          />
+          <canvas
+            ref={canvasRef}
+            className="absolute pointer-events-none mix-blend-screen opacity-85"
+            style={overlayStyle}
+            aria-hidden
+          />
+
+          <div
+            className="absolute z-10 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+            style={markerStyle(hotPos)}
+          >
+            <div className="border-2 border-white/80 bg-black/55 backdrop-blur-sm px-2 py-1 rounded-sm shadow-lg">
+              <p className="text-[11px] font-bold text-white font-mono tracking-wide whitespace-nowrap">
+                Max / Hotspot: {hotspotLabel}
+              </p>
+            </div>
+            <div className="mx-auto mt-1 w-3 h-3 rounded-full border-2 border-white bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.8)]" />
+          </div>
+
+          <div
+            className="absolute z-10 flex items-center gap-2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+            style={markerStyle(refPos)}
+          >
+            <span className="w-3 h-3 rounded-full bg-green-500 border-2 border-white shrink-0 shadow-[0_0_10px_rgba(34,197,94,0.6)]" />
+            <span className="bg-slate-900/85 text-green-300 text-[11px] px-2 py-1 rounded border border-green-500/40 font-mono whitespace-nowrap">
+              Ref: {refLabel}
+            </span>
+          </div>
+
+          {imgNatural ? (
+            <div className="absolute top-2 right-2 z-10 rounded-md bg-black/55 border border-white/15 px-2 py-1 text-[10px] text-slate-300 font-mono">
+              {imgNatural.w}×{imgNatural.h}
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-slate-900 text-slate-400">
+          <Thermometer className="h-10 w-10 text-slate-600" />
+          <p className="text-sm font-semibold text-slate-300">No thermal image uploaded</p>
+          <p className="text-xs text-slate-500">
+            Run analysis with an image to populate SmartView
+          </p>
+        </div>
+      )}
+
+      <div className="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/90 via-black/60 to-transparent px-4 pt-10 pb-4 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+          <label className="flex-1 min-w-0 text-xs text-slate-200 font-semibold">
+            Isotherm Slider — highlight temps &gt;{" "}
+            <span className="text-yellow-400 font-mono">
+              [ {isotherm}
+              {tempUnit} ]
+            </span>
+            <input
+              type="range"
+              min={sliderMin}
+              max={sliderMax}
+              value={Math.min(sliderMax, Math.max(sliderMin, isotherm))}
+              onChange={(e) => onIsothermChange(Number(e.target.value))}
+              className="mt-1.5 w-full accent-yellow-500 cursor-pointer"
+              disabled={!hasImage}
+            />
+          </label>
+          <div className="flex flex-wrap gap-1.5 shrink-0">
+            {PALETTES.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => onPaletteChange(p)}
+                className={`px-2.5 py-1.5 rounded-md text-[10px] font-bold border cursor-pointer transition-colors ${
+                  palette === p
+                    ? "bg-yellow-500 text-slate-900 border-yellow-500"
+                    : "bg-black/50 text-slate-200 border-white/30 hover:border-yellow-500/60"
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+        {hasImage ? (
+          <p className="text-[10px] text-slate-400">
+            ΔT {peaks.delta_t}
+            {tempUnit} · isotherm dims areas below threshold and highlights warmer pixels
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function StaticActionBar({
   onNewAnalysis,
@@ -66,40 +453,105 @@ function StaticActionBar({
 export interface ThermographyResultsDashboardProps {
   assetLabel: string;
   componentLabel?: string;
+  analysis: VibrationAnalysisResult;
+  gaugeScore?: number;
+  /** Blob/object URL of the uploaded thermal image */
+  thermalImageUrl?: string | null;
+  /** Hotspot / reference / ΔT from thermography analysis */
+  thermalPeaks?: ThermalPeaksLite | null;
   onNewAnalysis: () => void;
   onSaveWorkOrder: () => void;
+  onExportPdf?: () => void;
+  onManagerReport?: () => void;
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
 }
 
 export default function ThermographyResultsDashboard({
   assetLabel,
   componentLabel,
+  analysis,
+  gaugeScore,
+  thermalImageUrl,
+  thermalPeaks,
   onNewAnalysis,
   onSaveWorkOrder,
+  onExportPdf,
+  onManagerReport,
   onToast
 }: ThermographyResultsDashboardProps) {
-  const [isothermC, setIsothermC] = useState(60);
+  const peaks = useMemo(
+    () => parsePeaksFromAnalysis(analysis, thermalPeaks),
+    [analysis, thermalPeaks]
+  );
+
+  const tempUnit =
+    peaks.hotspot_temp > 0 && peaks.hotspot_temp < 80 ? "°C" : "°F";
+  const defaultIsotherm = Math.round(
+    peaks.reference_temp + Math.max(peaks.delta_t * 0.45, 2)
+  );
+
   const [palette, setPalette] = useState<(typeof PALETTES)[number]>("Ironbow");
+  const [isotherm, setIsotherm] = useState(defaultIsotherm);
   const [checkedSteps, setCheckedSteps] = useState<Record<string, boolean>>({});
 
-  const gradientByPalette =
-    palette === "Grayscale"
-      ? "bg-gradient-to-br from-slate-900 via-slate-500 to-white"
-      : palette === "Rainbow"
-        ? "bg-gradient-to-br from-indigo-700 via-emerald-400 to-rose-500"
-        : "bg-gradient-to-br from-blue-900 via-purple-800 to-red-600";
+  useEffect(() => {
+    setIsotherm(defaultIsotherm);
+  }, [defaultIsotherm]);
+
+  const healthScore = gaugeScore ?? analysis.overallHealthScore;
+  const severity = String(analysis.severity || "CRITICAL").toUpperCase();
+  const primary = analysis.primaryFault;
+  const faults = analysis.identifiedFaults || [];
+  const hasDetectedFaults = faults.length > 0;
+  const primaryUiSeverity = mapSeverityToUi(primary?.severity ?? severity);
+
+  const preventiveCost = Number(analysis.financialImpact?.preventiveRepairCost) || 0;
+  const failureCost = Number(analysis.financialImpact?.failureCostIfDelayed) || 0;
+  const downtimeLoss = Number(analysis.financialImpact?.downtimeLossPerHour) || 0;
+  const roiPercent =
+    preventiveCost > 0
+      ? Math.round(((failureCost - preventiveCost) / preventiveCost) * 100)
+      : 0;
+
+  const repairSteps = useMemo(
+    () =>
+      analysis.repairRecommendations?.length
+        ? analysis.repairRecommendations
+        : [
+            "De-energize and follow LOTO procedures.",
+            "Inspect and retorque the hot connection to OEM specifications.",
+            "Re-scan within 24 hours of load restoration."
+          ],
+    [analysis.repairRecommendations]
+  );
+
+  const nfpaLevel =
+    severity === "CRITICAL" ? 4 : severity === "ANOMALY" ? 3 : 1;
+
+  const deltaDisplay = peaks.delta_t > 0 ? `${peaks.delta_t}${tempUnit}` : "—";
+  const riseOverAmbient =
+    peaks.hotspot_temp && peaks.reference_temp
+      ? `${Math.round((peaks.hotspot_temp - peaks.reference_temp) * 10) / 10}${tempUnit}`
+      : deltaDisplay;
 
   return (
-    <div className="relative space-y-6" style={{ animation: "techParamFade 0.35s ease-out" }}>
+    <div className="space-y-0">
       <StaticActionBar
         position="top"
         onNewAnalysis={onNewAnalysis}
-        onExportPdf={() => onToast?.("Exporting thermography PDF report…", "info")}
-        onManagerReport={() => onToast?.("Generating manager executive report…", "info")}
+        onExportPdf={() =>
+          onExportPdf
+            ? onExportPdf()
+            : onToast?.("Exporting thermography PDF report…", "info")
+        }
+        onManagerReport={() =>
+          onManagerReport
+            ? onManagerReport()
+            : onToast?.("Generating manager executive report…", "info")
+        }
       />
 
-      {/* Header */}
-      <div className="bg-slate-900/50 border border-white/10 rounded-xl p-6">
+      <div className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-red-400">
             Thermography Analysis Results
@@ -111,88 +563,249 @@ export default function ThermographyResultsDashboard({
           <p className="text-sm text-slate-500 mt-1">
             NFPA 70B 2026 · Radiometric assessment · ISO 18434-1
           </p>
+          {analysis.summary ? (
+            <p className="text-sm text-slate-400 mt-3 leading-relaxed">{analysis.summary}</p>
+          ) : null}
         </div>
       </div>
 
-      {/* SECTION 1 — SmartView */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-        <div className="mb-4 flex items-center gap-2">
-          <Thermometer className="h-5 w-5 text-red-400" />
-          <div>
-            <h3 className="text-lg font-bold text-white">Interactive Thermal Analysis (SmartView)</h3>
-            <p className="text-sm text-slate-500">Web-based radiometric inspection canvas</p>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 flex flex-col">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Overall Health Score
+            </p>
+            <div className="mt-4 flex items-center gap-4 flex-1">
+              <div className="relative h-28 w-28 shrink-0">
+                <svg
+                  viewBox="0 0 36 36"
+                  className={`h-full w-full -rotate-90 ${
+                    severity === "NORMAL"
+                      ? "drop-shadow-[0_0_16px_rgba(16,185,129,0.35)]"
+                      : severity === "ANOMALY"
+                        ? "drop-shadow-[0_0_16px_rgba(245,158,11,0.35)]"
+                        : "drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
+                  }`}
+                >
+                  <defs>
+                    <linearGradient id="irHealthGrad" x1="0" y1="0" x2="1" y2="1">
+                      <stop
+                        offset="0%"
+                        stopColor={
+                          severity === "NORMAL"
+                            ? "#34d399"
+                            : severity === "ANOMALY"
+                              ? "#fbbf24"
+                              : "#f87171"
+                        }
+                      />
+                      <stop
+                        offset="100%"
+                        stopColor={
+                          severity === "NORMAL"
+                            ? "#059669"
+                            : severity === "ANOMALY"
+                              ? "#d97706"
+                              : "#dc2626"
+                        }
+                      />
+                    </linearGradient>
+                  </defs>
+                  <circle
+                    cx="18"
+                    cy="18"
+                    r="15.5"
+                    fill="none"
+                    stroke="rgba(255,255,255,0.08)"
+                    strokeWidth="3"
+                  />
+                  <circle
+                    cx="18"
+                    cy="18"
+                    r="15.5"
+                    fill="none"
+                    stroke="url(#irHealthGrad)"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeDasharray={`${(Math.max(0, Math.min(100, healthScore)) / 100) * 97.4} 97.4`}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-2xl font-black text-white tabular-nums leading-none">
+                    {Math.round(healthScore)}
+                  </span>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mt-0.5">
+                    / 100
+                  </span>
+                </div>
+              </div>
+              <div className="min-w-0">
+                <p
+                  className={`text-sm font-bold ${
+                    severity === "NORMAL"
+                      ? "text-emerald-400"
+                      : severity === "ANOMALY"
+                        ? "text-amber-400"
+                        : "text-red-400"
+                  }`}
+                >
+                  {severity === "NORMAL"
+                    ? "Healthy"
+                    : severity === "ANOMALY"
+                      ? "Anomaly"
+                      : "Critical"}
+                </p>
+                <p className="text-xs text-slate-500 mt-1 leading-snug">
+                  Based on ΔT class and thermal pattern confidence.
+                </p>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <div
-          className={`h-96 ${gradientByPalette} rounded-lg relative overflow-hidden border border-white/10 shadow-inner`}
-        >
-          <div
-            className="absolute inset-0 opacity-20 pointer-events-none"
-            style={{
-              backgroundImage:
-                "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px)"
-            }}
-          />
-
-          {/* Area / max box */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 border-2 border-white/50 bg-black/30 backdrop-blur-sm p-2 rounded-sm">
-            <p className="text-xs font-bold text-white font-mono tracking-wide">Max: 142.5°F</p>
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Primary Fault
+            </p>
+            <p className="mt-3 text-lg font-bold text-white leading-snug">
+              {primary?.title || "None Detected"}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span
+                className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold border ${
+                  primaryUiSeverity === "HIGH"
+                    ? "bg-red-500/15 text-red-300 border-red-500/40"
+                    : primaryUiSeverity === "MEDIUM"
+                      ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
+                      : "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+                }`}
+              >
+                {primaryUiSeverity}
+              </span>
+              <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-bold border bg-slate-800 text-slate-300 border-slate-600">
+                {primary?.confidencePercent ?? 0}% conf
+              </span>
+            </div>
+            {primary?.actionWindow ? (
+              <p className="text-xs text-slate-500 mt-3 leading-relaxed">{primary.actionWindow}</p>
+            ) : null}
           </div>
 
-          {/* Reference component marker */}
-          <div className="absolute top-1/4 left-1/4 flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-green-500 border-2 border-white shrink-0" />
-            <span className="bg-slate-900/80 text-green-400 text-xs px-2 py-1 rounded border border-green-500/30">
-              Ref (Phase C Lug): 92.5°F
-            </span>
-          </div>
-
-          {/* Spot meter */}
-          <div className="absolute top-1/3 left-[55%] flex items-center gap-2">
-            <div className="w-4 h-4 rounded-full border-2 border-white bg-white/20 shadow-[0_0_12px_rgba(255,255,255,0.5)]" />
-            <span className="text-xs font-bold text-white font-mono bg-black/40 px-1.5 py-0.5 rounded">
-              92.1°F
-            </span>
-          </div>
-
-          {/* Canvas controls (overlay inside image — not a page action bar) */}
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/50 to-transparent px-4 pt-10 pb-4 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-              <label className="flex-1 min-w-0 text-xs text-slate-200 font-semibold">
-                Isotherm Slider — Show temps &gt;{" "}
-                <span className="text-yellow-400 font-mono">[ {isothermC}°C ]</span>
-                <input
-                  type="range"
-                  min={20}
-                  max={120}
-                  value={isothermC}
-                  onChange={(e) => setIsothermC(Number(e.target.value))}
-                  className="mt-1.5 w-full accent-yellow-500 cursor-pointer"
-                />
-              </label>
-              <div className="flex flex-wrap gap-1.5 shrink-0">
-                {PALETTES.map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => setPalette(p)}
-                    className={`px-2.5 py-1.5 rounded-md text-[10px] font-bold border cursor-pointer transition-colors ${
-                      palette === p
-                        ? "bg-yellow-500 text-slate-900 border-yellow-500"
-                        : "bg-black/50 text-slate-200 border-white/30 hover:border-yellow-500/60"
-                    }`}
-                  >
-                    {p}
-                  </button>
-                ))}
+          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Thermal Peaks
+            </p>
+            <div className="mt-3 space-y-2 text-sm">
+              <div className="flex justify-between gap-2">
+                <span className="text-slate-500">Hotspot</span>
+                <span className="font-mono font-bold text-red-300">
+                  {peaks.hotspot_temp}
+                  {tempUnit}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-slate-500">Reference</span>
+                <span className="font-mono font-bold text-green-300">
+                  {peaks.reference_temp}
+                  {tempUnit}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2 border-t border-slate-800 pt-2">
+                <span className="text-slate-500">ΔT</span>
+                <span className="font-mono font-bold text-yellow-300">
+                  {peaks.delta_t}
+                  {tempUnit}
+                </span>
               </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* SECTION 2 — NFPA Severity Engine */}
+      {hasDetectedFaults ? (
+        <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+          <h3 className="text-lg font-bold text-white mb-4">Identified Thermal Faults</h3>
+          <ul className="space-y-3">
+            {faults.map((f, idx) => (
+              <li
+                key={`${f.title}-${idx}`}
+                className="rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-white">{f.title}</p>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    {mapSeverityToUi(f.severity)} · {f.confidencePercent}%
+                  </span>
+                </div>
+                {f.description ? (
+                  <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{f.description}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+        <h3 className="text-lg font-bold text-white mb-4">Recommended Corrective Actions</h3>
+        <ul className="space-y-2">
+          {repairSteps.map((step, idx) => {
+            const id = `step-${idx}`;
+            const on = Boolean(checkedSteps[id]);
+            return (
+              <li key={id}>
+                <label className="flex items-start gap-3 cursor-pointer rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2.5 hover:border-yellow-500/30 transition-colors">
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={on}
+                    onClick={() =>
+                      setCheckedSteps((prev) => ({ ...prev, [id]: !prev[id] }))
+                    }
+                    className={`mt-0.5 h-5 w-5 rounded border flex items-center justify-center shrink-0 cursor-pointer ${
+                      on
+                        ? "bg-yellow-500 border-yellow-500 text-slate-950"
+                        : "border-slate-600 bg-slate-900"
+                    }`}
+                  >
+                    {on && <Check className="h-3.5 w-3.5" strokeWidth={3} />}
+                  </button>
+                  <span
+                    className={`text-sm leading-snug ${
+                      on ? "text-slate-500 line-through" : "text-slate-200"
+                    }`}
+                  >
+                    {step}
+                  </span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+        <div className="mb-4 flex items-center gap-2">
+          <Thermometer className="h-5 w-5 text-red-400" />
+          <div>
+            <h3 className="text-lg font-bold text-white">
+              Interactive Thermal Analysis (SmartView)
+            </h3>
+            <p className="text-sm text-slate-500">
+              Uploaded thermal image with isotherm threshold and auto-located markers
+            </p>
+          </div>
+        </div>
+
+        <ThermalSmartView
+          imageUrl={thermalImageUrl}
+          peaks={peaks}
+          isotherm={isotherm}
+          onIsothermChange={setIsotherm}
+          palette={palette}
+          onPaletteChange={setPalette}
+        />
+      </section>
+
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-5">
           Automated Severity Engine (NFPA 70B)
@@ -203,24 +816,31 @@ export default function ThermographyResultsDashboard({
               The Physics Math
             </p>
             <p className="text-sm text-slate-300">
-              Measured Rise (ΔT<sub>1</sub> over Ambient):{" "}
-              <span className="text-white font-bold">15°C</span>
+              Measured Rise (ΔT<sub>1</sub> over Reference):{" "}
+              <span className="text-white font-bold">{riseOverAmbient}</span>
             </p>
             <p className="text-sm text-slate-300">
-              Phase-to-Phase Rise (ΔT<sub>2</sub>):{" "}
-              <span className="text-white font-bold">50°C</span>
+              Hotspot / Reference:{" "}
+              <span className="text-white font-bold">
+                {peaks.hotspot_temp}
+                {tempUnit} / {peaks.reference_temp}
+                {tempUnit}
+              </span>
             </p>
             <p className="text-sm text-slate-300">
-              Current Load:{" "}
-              <span className="text-yellow-400 font-bold">46%</span>{" "}
-              <span className="text-slate-500">(185A / 400A)</span>
+              Primary finding:{" "}
+              <span className="text-yellow-400 font-bold">{primary?.title || "—"}</span>
             </p>
             <div className="pt-3 mt-2 border-t border-slate-800">
               <p className="text-[10px] font-bold uppercase tracking-wider text-red-400/80 mb-1">
                 Critical Calculation
               </p>
               <p className="text-xl sm:text-2xl font-black text-red-500 leading-snug">
-                Projected Rise at 100% Load: 71°C (CRITICAL)
+                {severity === "CRITICAL"
+                  ? `Elevated ΔT ${deltaDisplay} — Class 4 priority`
+                  : severity === "ANOMALY"
+                    ? `Developing ΔT ${deltaDisplay} — schedule repair`
+                    : `Stable thermal profile · ΔT ${deltaDisplay}`}
               </p>
             </div>
           </div>
@@ -228,19 +848,22 @@ export default function ThermographyResultsDashboard({
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-5 flex flex-col justify-center items-start gap-3">
             <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-red-500/20 border border-red-500/50 text-red-400 text-xs font-bold uppercase tracking-wider">
               <AlertTriangle className="h-4 w-4" />
-              Severity Level 4
+              Severity Level {nfpaLevel}
             </span>
             <p className="text-xl sm:text-2xl font-black text-red-400 leading-tight">
-              Immediate Action Required
+              {severity === "CRITICAL"
+                ? "Immediate Action Required"
+                : severity === "ANOMALY"
+                  ? "Schedule Inspection"
+                  : "Continue Monitoring"}
             </p>
             <p className="text-sm text-slate-300 leading-relaxed">
-              Based on ΔT &gt; 15°C and High Criticality Asset.
+              Based on ΔT criteria and asset criticality for {primary?.title || "thermal finding"}.
             </p>
           </div>
         </div>
       </section>
 
-      {/* SECTION 3 — Financial Fire Drill */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-5">
           Risk &amp; Financial Impact Assessment
@@ -251,10 +874,12 @@ export default function ThermographyResultsDashboard({
               <AlertTriangle className="h-5 w-5 text-red-400" />
             </div>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Arc Flash Probability
+              Failure if Delayed
             </p>
-            <p className="text-2xl font-black text-red-500">HIGH</p>
-            <p className="text-sm text-slate-400">Links to OSHA General Duty Clause.</p>
+            <p className="text-2xl font-black text-red-500">{formatUsd(failureCost)}</p>
+            <p className="text-sm text-slate-400">
+              5× preventive cost if the {primary?.title || "fault"} progresses to failure.
+            </p>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3">
@@ -262,10 +887,12 @@ export default function ThermographyResultsDashboard({
               <DollarSign className="h-5 w-5 text-yellow-400" />
             </div>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Downtime Cost
+              Preventive Repair
             </p>
-            <p className="text-2xl font-black text-yellow-400">$22,000 / hr</p>
-            <p className="text-sm text-slate-400">Asset feeds Main Production Line.</p>
+            <p className="text-2xl font-black text-yellow-400">{formatUsd(preventiveCost)}</p>
+            <p className="text-sm text-slate-400">
+              Planned correction for {primary?.title || "thermal fault"}.
+            </p>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3">
@@ -273,187 +900,24 @@ export default function ThermographyResultsDashboard({
               <Zap className="h-5 w-5 text-cyan-400" />
             </div>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Excess Heat Loss
+              Downtime Loss
             </p>
-            <p className="text-2xl font-black text-cyan-400">450 kWh / year</p>
-            <p className="text-sm text-slate-400">Equivalent to $540 annual waste.</p>
-          </div>
-        </div>
-      </section>
-
-      {/* SECTION 4 — Remediation & Verification */}
-      <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-4">
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <div className="min-w-0">
-                <h4 className="text-lg font-bold text-white">Field Repair Procedure</h4>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  Auto-generated for Phase B lug anomaly
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => alert("Job plan copied to clipboard in Maximo format!")}
-                className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-xs text-cyan-400 flex items-center gap-1 border border-cyan-500/30 cursor-pointer transition-colors shrink-0"
-              >
-                📋 Copy Job Plan to CMMS
-              </button>
-            </div>
-            <ul className="space-y-3">
-              {REPAIR_STEPS.map((step, idx) => {
-                const on = !!checkedSteps[step];
-                return (
-                  <li key={step}>
-                    <label className="flex items-start gap-3 cursor-pointer text-sm text-slate-300 group">
-                      <span
-                        className={`mt-0.5 h-5 w-5 rounded-md border flex items-center justify-center shrink-0 transition-all ${
-                          on
-                            ? "bg-yellow-500 border-yellow-400 text-slate-950"
-                            : "border-slate-600 bg-slate-900 group-hover:border-yellow-500/50"
-                        }`}
-                      >
-                        {on ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : null}
-                      </span>
-                      <input
-                        type="checkbox"
-                        className="sr-only"
-                        checked={on}
-                        onChange={() =>
-                          setCheckedSteps((p) => ({ ...p, [step]: !p[step] }))
-                        }
-                      />
-                      <span className={`min-w-0 block ${on ? "text-white" : ""}`}>
-                        <span>
-                          <span className="text-yellow-500/80 font-bold mr-1.5">{idx + 1}.</span>
-                          {step}
-                        </span>
-                        {idx === 0 && (
-                          <span className="mt-2 inline-flex items-center gap-2 px-2 py-1 rounded text-xs bg-red-500/10 text-red-400 border border-red-500/30">
-                            ⚠️ Incident Energy Threshold Alert: Ensure Class 2 or higher Arc Flash
-                            PPE is worn during initial enclosure opening and dead-bus voltmeter
-                            verification testing.
-                          </span>
-                        )}
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-4 flex flex-col">
-            <div>
-              <h4 className="text-lg font-bold text-white">Post-Repair Verification</h4>
-              <p className="text-sm text-slate-500 mt-0.5">Close the NFPA work-order loop</p>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="min-w-0 space-y-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  As-Found (Hotspot: 142.5°F)
-                </p>
-                <div className="h-32 bg-gradient-to-br from-blue-900 to-red-600 rounded-lg relative">
-                  <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.9)]" />
-                </div>
-              </div>
-              <div className="min-w-0 space-y-2">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  As-Left (Verified Base: 91.2°F)
-                </p>
-                <div className="h-32 bg-gradient-to-br from-blue-900 to-blue-700 rounded-lg relative flex items-center justify-center">
-                  <Check
-                    className="h-8 w-8 text-emerald-400 drop-shadow-[0_0_8px_rgba(52,211,153,0.6)]"
-                    strokeWidth={3}
-                  />
-                </div>
-                <p className="mt-2 text-xs text-green-400 font-medium">
-                  ✅ Verification Scan Approved: Phase B temperature stabilized at 91.2°F
-                  (Normal).
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() =>
-                onToast?.(
-                  "Verification scan upload opened (demo). Re-scan after load restoration.",
-                  "info"
-                )
-              }
-              className="min-h-[40px] px-5 rounded-lg border border-white/80 hover:border-yellow-500 hover:text-yellow-400 text-white text-sm font-bold cursor-pointer transition-colors bg-transparent inline-flex items-center justify-center gap-2"
-            >
-              <Upload className="h-4 w-4" />
-              Upload Verification Scan
-            </button>
-
-            <span className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
-              <RefreshCw className="h-3.5 w-3.5 shrink-0" />
-              System Action: Reset Thermal Baseline Timeline for Breaker 2B upon approval.
-            </span>
-          </div>
-        </div>
-      </section>
-
-      {/* AI Procurement & BOM — between Field Repair / Verification and CMMS Bridge */}
-      <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-        <h3 className="text-lg font-bold text-white">AI Procurement &amp; Bill of Materials (BOM)</h3>
-        <p className="text-sm text-slate-500 mt-0.5 mb-5">
-          Auto-matched to 400A / 480V Switchgear Casing Specs
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-3">
-            <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Required Parts
+            <p className="text-2xl font-black text-cyan-400">{formatUsd(downtimeLoss)}</p>
+            <p className="text-sm text-slate-400">
+              $5,000/hr × estimated repair hours (ROI {roiPercent}%).
             </p>
-            <div className="text-sm text-slate-300 leading-snug">
-              <span>PART Heavy-Duty Compression Lug (Dual-Hole, Copper) (Qty: 3)</span>
-              <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-green-500/10 text-green-400 border border-green-500/30 ml-2">
-                📦 In Stock - Allocated
-              </span>
-            </div>
-            <div className="text-sm text-slate-300 leading-snug">
-              <span>PART Electrical Joint Anti-Oxidant Compound (No-Ox-Id) (Qty: 1 Tube)</span>
-              <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-green-500/10 text-green-400 border border-green-500/30 ml-2">
-                📦 In Stock
-              </span>
-            </div>
-          </div>
-          <div className="flex flex-col justify-center">
-            <button
-              type="button"
-              onClick={() =>
-                onToast?.("Electrical overhaul kit queued for purchase…", "success")
-              }
-              className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-2 rounded-lg text-sm mb-2 cursor-pointer transition-colors"
-            >
-              🛒 Purchase Electrical Overhaul Kit - $45
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                onToast?.("Lug kit pull request sent to electrical crib…", "info")
-              }
-              className="w-full border border-slate-700 text-white hover:bg-slate-800 py-2 rounded-lg text-sm cursor-pointer transition-colors"
-            >
-              📦 Pull Lug Kit from On-Site Electrical Crib
-            </button>
           </div>
         </div>
       </section>
 
-      {/* Universal CMMS Data Bridge — last content section above bottom action bar */}
-      <CmmsDataBridge
-        domain="thermography"
-        assetLabel={assetLabel}
-        componentLabel={componentLabel || "Phase B Lug"}
-        sectionId="ir-cmms-data-bridge"
-        onToast={onToast}
-      />
-
-      <div className="mb-2">
+      <section className="mb-6 space-y-4">
+        <CmmsDataBridge
+          domain="thermography"
+          assetLabel={assetLabel}
+          componentLabel={componentLabel || "Component"}
+          sectionId="ir-cmms-data-bridge"
+          onToast={onToast}
+        />
         <button
           type="button"
           onClick={onSaveWorkOrder}
@@ -461,13 +925,21 @@ export default function ThermographyResultsDashboard({
         >
           ✍️ Save Work Order &amp; Commit to CMMS
         </button>
-      </div>
+      </section>
 
       <StaticActionBar
         position="bottom"
         onNewAnalysis={onNewAnalysis}
-        onExportPdf={() => onToast?.("Exporting thermography PDF report…", "info")}
-        onManagerReport={() => onToast?.("Generating manager executive report…", "info")}
+        onExportPdf={() =>
+          onExportPdf
+            ? onExportPdf()
+            : onToast?.("Exporting thermography PDF report…", "info")
+        }
+        onManagerReport={() =>
+          onManagerReport
+            ? onManagerReport()
+            : onToast?.("Generating manager executive report…", "info")
+        }
       />
     </div>
   );

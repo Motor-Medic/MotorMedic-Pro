@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -133,13 +133,24 @@ function AccordionShell({
 
 export interface McaInputAccordionsProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
+  /** Selected from top Equipment Selection (Route / Asset / Component). */
+  equipment?: {
+    route?: string;
+    assetTag?: string;
+    assetLabel?: string;
+    component?: string;
+    voltage?: string;
+    location?: string;
+    hp?: number;
+    rpm?: number;
+  };
 }
 
-export default function McaInputAccordions({ onToast }: McaInputAccordionsProps) {
-  const [openSections, setOpenSections] = useState<McaAccordionSection[]>([
-    "fingerprint",
-    "config"
-  ]);
+export default function McaInputAccordions({
+  onToast,
+  equipment
+}: McaInputAccordionsProps) {
+  const [openSections, setOpenSections] = useState<McaAccordionSection[]>([]);
   const [mcaMode, setMcaMode] = useState<McaMode>("static");
 
   // Section 1 — Fingerprint
@@ -155,6 +166,17 @@ export default function McaInputAccordions({ onToast }: McaInputAccordionsProps)
   const [serviceFactor, setServiceFactor] = useState("1.15");
   const [statorSlots, setStatorSlots] = useState("");
   const [rotorBars, setRotorBars] = useState("");
+
+  // Prefill nameplate fields from top Equipment Selection when available
+  useEffect(() => {
+    if (equipment?.voltage) {
+      const v = String(equipment.voltage).trim();
+      if (v) setRatedVoltage(v.includes("V") ? v : `${v}V`);
+    }
+    if (equipment?.hp != null && Number.isFinite(equipment.hp) && equipment.hp > 0) {
+      setHpKw(String(equipment.hp));
+    }
+  }, [equipment?.voltage, equipment?.hp, equipment?.assetTag]);
 
   // Section 2 — Config
   const [tvsBaseline, setTvsBaseline] = useState("");
@@ -187,6 +209,7 @@ export default function McaInputAccordions({ onToast }: McaInputAccordionsProps)
   const [reading30s, setReading30s] = useState("");
   const [reading60s, setReading60s] = useState("");
   const [uploadName, setUploadName] = useState<string | null>(null);
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const isOnline = mcaMode === "online";
@@ -240,21 +263,144 @@ export default function McaInputAccordions({ onToast }: McaInputAccordionsProps)
     }));
   };
 
-  const handleFile = (file: File) => {
-    const ok =
-      /\.(mca|csv|xlsx?)$/i.test(file.name) ||
-      file.type.includes("csv") ||
-      file.type.includes("sheet");
-    if (!ok) {
-      onToast?.("Upload .mca, .csv, or Excel analyzer export files.", "warning");
+  const handleFile = (file?: File | null) => {
+    if (!file) return;
+    if (
+      !/\.(jpe?g|png|gif|webp)$/i.test(file.name) &&
+      !file.type.startsWith("image/")
+    ) {
+      onToast?.("Upload an image (.jpg / .png / .webp).", "warning");
       return;
     }
+    const preview = URL.createObjectURL(file);
+    setUploadPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return preview;
+    });
     setUploadName(file.name);
-    onToast?.(`MCA file ready: ${file.name}`, "success");
+    onToast?.(`MCA image ready: ${file.name}`, "success");
   };
+
+  const clearUploadPreview = () => {
+    setUploadPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setUploadName(null);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const hasUploadPreview = Boolean(uploadPreview || uploadName);
 
   return (
     <div className="space-y-0">
+      {(equipment?.assetLabel || equipment?.assetTag || equipment?.component) && (
+        <div className="mb-4 rounded-xl border border-white/10 bg-slate-900/50 px-4 py-3">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            Analyzing equipment
+          </p>
+          <p className="text-sm text-white font-semibold mt-0.5">
+            {[equipment.route, equipment.assetLabel || equipment.assetTag, equipment.component]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
+      )}
+      {/* Data Ingestion — permanently visible (not inside accordion) */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
+              Data Ingestion
+            </p>
+            <h3 className="text-sm font-bold text-white mt-1">
+              Analyzer Chart / Image Upload
+            </h3>
+            <p className="text-[11px] text-slate-500 mt-1">
+              Always visible — photo or screenshot for MCA AI analysis
+            </p>
+          </div>
+          <Upload className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
+        </div>
+
+        <div className="space-y-4">
+          <span className={fieldLabel}>Analyzer Chart / Image Upload (AI Vision)</span>
+          {!hasUploadPreview ? (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleFile(e.dataTransfer.files?.[0] ?? null);
+              }}
+              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+            >
+              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
+              <p className="text-sm font-bold text-white">
+                Drop analyzer chart image here
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                .png, .jpg, .webp — photo or screenshot of MCA / analyzer screen
+              </p>
+            </button>
+          ) : (
+            <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
+              <div className="flex flex-col sm:flex-row gap-4 items-start">
+                <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner">
+                  {uploadPreview ? (
+                    <img
+                      src={uploadPreview}
+                      alt={uploadName || "MCA preview"}
+                      className="w-full h-full object-cover object-left-top"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold">
+                      Preview
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
+                    <span className="truncate max-w-[180px] text-white">
+                      {uploadName || "mca.png"}
+                    </span>
+                    <span className="text-slate-500">|</span>
+                    <span className="text-amber-300">AI Vision Ready</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={clearUploadPreview}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
+                    >
+                      ✕ Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => fileRef.current?.click()}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                    >
+                      Replace image
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.gif"
+            className="hidden"
+            onChange={(e) => {
+              handleFile(e.target.files?.[0] ?? null);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      </div>
+
       {/* SECTION 1 — Motor Electromagnetic Fingerprint */}
       <AccordionShell
         id="fingerprint"
@@ -768,10 +914,10 @@ export default function McaInputAccordions({ onToast }: McaInputAccordionsProps)
         </div>
       </AccordionShell>
 
-      {/* SECTION 4 — Insulation & Upload */}
+      {/* SECTION 4 — Insulation */}
       <AccordionShell
         id="insulation"
-        title="4. Insulation to Ground & File Upload"
+        title="4. Insulation to Ground"
         open={openSections.includes("insulation")}
         onToggle={toggleSection}
       >
@@ -948,54 +1094,6 @@ export default function McaInputAccordions({ onToast }: McaInputAccordionsProps)
               {insulationTestType === "PI" ? "10-min ÷ 1-min" : "60s ÷ 30s"}
             </span>
           </div>
-        </div>
-
-        <div>
-          <span className={fieldLabel}>Analyzer File Upload</span>
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const file = e.dataTransfer.files?.[0];
-              if (file) handleFile(file);
-            }}
-            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-8 text-center cursor-pointer transition-colors"
-          >
-            <Upload className="h-7 w-7 text-yellow-400 mx-auto mb-2" />
-            <p className="text-sm font-bold text-white">
-              Drop .mca, .csv, or analyzer export here
-            </p>
-            <p className="text-xs text-slate-500 mt-1">
-              Supports: .mca, .csv (Auto-extracts data from ALL-TEST Pro, PdMA, Baker/SKF
-              exports)
-            </p>
-            <p className="text-xs text-cyan-400/90 mt-2 animate-pulse">
-              📄 AI will auto-parse and fill all fields from legacy formats
-            </p>
-            {uploadName && (
-              <p className="mt-2 text-xs text-yellow-300 inline-flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                {uploadName}
-              </p>
-            )}
-          </button>
-          <p className={`${helperCls} mt-2`}>
-            To upload from legacy systems (ALL-TEST, PdMA), export your data ledger via the
-            &lsquo;Single Asset CSV/Excel Export&rsquo; wizard inside your instrument software
-            first.
-          </p>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".mca,.csv,text/csv,.xlsx,.xls"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFile(f);
-            }}
-          />
         </div>
       </AccordionShell>
     </div>

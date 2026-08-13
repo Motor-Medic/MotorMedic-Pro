@@ -9,6 +9,26 @@ import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { generateMcMasterQuery } from "./src/lib/mcmaster";
 import { analyzeVibration } from "./src/lib/diagnosisEngine";
+import {
+  ANALYZE_VIBRATION_API_ALIAS,
+  ANALYZE_VIBRATION_API_PATH,
+  runConsensusVibrationAnalysis
+} from "./src/lib/consensusEngine";
+import { DETECT_SPECTRUM_REGIONS_API_PATH } from "./src/lib/spectrumChartRegions";
+import { detectSpectrumChartRegionsWithOpenAI } from "./src/lib/detectSpectrumRegions";
+import { ANALYZE_THERMOGRAPHY_API_PATH } from "./src/lib/thermographyAnalysis";
+import { runThermographyAnalysis } from "./src/lib/thermographyAnalysisEngine";
+import { ANALYZE_ULTRASOUND_API_PATH } from "./src/lib/ultrasoundAnalysis";
+import { runUltrasoundAnalysis } from "./src/lib/ultrasoundAnalysisEngine";
+import {
+  fetchLiveTelemetry,
+  isScadaEnabled,
+  liveTelemetryToContextFields
+} from "./src/lib/scadaService";
+import {
+  EXTRACT_THERMAL_METADATA_API_PATH,
+  extractThermalMetadata
+} from "./src/lib/extractThermalMetadata";
 
 dotenv.config();
 
@@ -20,10 +40,10 @@ let pool: pg.Pool | null = null;
 if (dbUrl) {
   pool = new Pool({
     connectionString: dbUrl,
-    connectionTimeoutMillis: 5000,
-    ssl: dbUrl.includes("sslmode=require") || dbUrl.includes("amazonaws.com") || dbUrl.includes("elephantsql") || dbUrl.includes("supabase") || dbUrl.includes("aistudio")
-      ? { rejectUnauthorized: false }
-      : undefined
+    connectionTimeoutMillis: 15000,
+    ssl: {
+      rejectUnauthorized: false
+    }
   });
   console.log("🔋 PostgreSQL connection pool initialized.");
   
@@ -47,6 +67,1253 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+/**
+ * Multi-model consensus vibration analysis — mounted early so it always registers
+ * before the unmatched /api 404 interceptor (restart server after edits).
+ *
+ * Pipeline: Gemini vision → DeepSeek/OpenRouter + Groq/OpenAI analysts → referee.
+ * Domain failures return HTTP 422/503 with structured error payloads (never mocks).
+ */
+async function handleAnalyzeVibrationExpress(
+  req: express.Request,
+  res: express.Response
+) {
+  try {
+    const body = req.body || {};
+    console.log("[analyze-vibration] Payload keys:", Object.keys(body));
+
+    const outcome = await runConsensusVibrationAnalysis(body);
+
+    if (!outcome || outcome.success !== true) {
+      const errPayload = outcome?.success === false
+        ? outcome
+        : {
+            success: false as const,
+            errorType: "GATEWAY_TIMEOUT" as const,
+            title: "Consensus Diagnostic Error",
+            message: "An AI provider timed out during multi-agent synthesis. Please retry analysis.",
+            httpStatus: 503 as const,
+            detail: "Consensus engine returned an unexpected result."
+          };
+
+      const status = errPayload.httpStatus || 503;
+      console.error("[analyze-vibration] Domain error:", {
+        status,
+        errorType: errPayload.errorType,
+        title: errPayload.title,
+        detail: errPayload.detail
+      });
+
+      return res.status(status).json({
+        success: false,
+        errorType: errPayload.errorType,
+        title: errPayload.title,
+        message: errPayload.message,
+        error: errPayload.message,
+        ...(errPayload.detail ? { detail: errPayload.detail } : {})
+      });
+    }
+
+    console.log("[analyze-vibration] Analysis complete:", {
+      severity: outcome.data?.severity,
+      health: outcome.data?.overallHealthScore,
+      primary: outcome.data?.primaryFault?.title,
+      confidence: outcome.data?.primaryFault?.confidencePercent
+    });
+
+    return res.json({
+      success: true,
+      ...outcome.data,
+      analysisSource: "consensus"
+    });
+  } catch (error: any) {
+    console.error("[analyze-vibration] Unhandled Express error:", error);
+    return res.status(503).json({
+      success: false,
+      errorType: "GATEWAY_TIMEOUT",
+      title: "Consensus Diagnostic Error",
+      message:
+        "An AI provider timed out during multi-agent synthesis. Please retry analysis.",
+      error:
+        "An AI provider timed out during multi-agent synthesis. Please retry analysis.",
+      detail: error?.message || "Unhandled consensus engine exception."
+    });
+  }
+}
+
+app.post(ANALYZE_VIBRATION_API_PATH, handleAnalyzeVibrationExpress);
+app.post(ANALYZE_VIBRATION_API_ALIAS, handleAnalyzeVibrationExpress);
+app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
+  res.json({
+    ok: true,
+    method: "POST",
+    path: ANALYZE_VIBRATION_API_PATH,
+    alias: ANALYZE_VIBRATION_API_ALIAS,
+    service: "3-Stage Multi-Model Consensus Engine (Gemini + DeepSeek/OpenRouter + Groq/OpenAI)",
+    errors: ["SIGNAL_UNREADABLE", "CONSENSUS_DIVERGENCE", "GATEWAY_TIMEOUT"]
+  });
+});
+
+/**
+ * GPT-4o Vision chart-panel localization for hybrid FFT/TWF/Envelope display.
+ * Mounted early so it is not swallowed by the unmatched /api 404 interceptor.
+ */
+async function handleDetectSpectrumRegionsExpress(
+  req: express.Request,
+  res: express.Response
+) {
+  try {
+    const body = req.body || {};
+    const imageBase64 = body.imageBase64 || body.fileData;
+    if (!imageBase64 || typeof imageBase64 !== "string") {
+      return res.status(400).json({
+        error: "imageBase64 is required.",
+        regions: {},
+        peaks: [],
+        detectionConfidence: 0
+      });
+    }
+
+    const detection = await detectSpectrumChartRegionsWithOpenAI(imageBase64);
+    return res.json(detection);
+  } catch (error: any) {
+    console.error("[detect-spectrum-regions] Error:", error);
+    return res.status(503).json({
+      error: error?.message || "Failed to detect spectrum chart regions.",
+      regions: {},
+      peaks: [],
+      detectionConfidence: 0
+    });
+  }
+}
+
+app.post(DETECT_SPECTRUM_REGIONS_API_PATH, handleDetectSpectrumRegionsExpress);
+app.get(DETECT_SPECTRUM_REGIONS_API_PATH, (_req, res) => {
+  res.json({
+    ok: true,
+    method: "POST",
+    path: DETECT_SPECTRUM_REGIONS_API_PATH,
+    service: "OpenAI GPT-4o Vision — chart region detection + peak extraction",
+    regions: ["twf", "fft", "envelope"]
+  });
+});
+
+/**
+ * Thermography AI analysis — TEMPLATE for Ultrasound / MCA / Oil pipelines.
+ * Mounted early so it is not swallowed by the unmatched /api 404 interceptor.
+ */
+function optionalNumeric(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** I²R-normalized ΔT: (I_meas / I_rated)² × ΔT when amps + delta_t are present. */
+function calcI2rNormalizedDeltaT(
+  measuredAmps: number | null,
+  ratedAmps: number | null,
+  deltaT: number | null
+): number | null {
+  if (
+    measuredAmps == null ||
+    ratedAmps == null ||
+    deltaT == null ||
+    !Number.isFinite(measuredAmps) ||
+    !Number.isFinite(ratedAmps) ||
+    !Number.isFinite(deltaT) ||
+    ratedAmps === 0
+  ) {
+    return null;
+  }
+  return Math.pow(measuredAmps / ratedAmps, 2) * deltaT;
+}
+
+function extractPolymorphicTelemetry(metadata: Record<string, unknown> | undefined) {
+  const m = metadata || {};
+  return {
+    asset_type:
+      m.asset_type != null && String(m.asset_type).trim()
+        ? String(m.asset_type).trim().toLowerCase()
+        : null,
+    phase_a_temp: optionalNumeric(m.phase_a_temp),
+    phase_b_temp: optionalNumeric(m.phase_b_temp),
+    phase_c_temp: optionalNumeric(m.phase_c_temp),
+    measured_amps: optionalNumeric(m.measured_amps),
+    rated_amps: optionalNumeric(m.rated_amps),
+    de_bearing_temp: optionalNumeric(m.de_bearing_temp),
+    ode_bearing_temp: optionalNumeric(m.ode_bearing_temp),
+    refractory_skin_temp: optionalNumeric(m.refractory_skin_temp),
+    max_allowable_limit: optionalNumeric(m.max_allowable_limit)
+  };
+}
+
+async function handleAnalyzeThermographyExpress(
+  req: express.Request,
+  res: express.Response
+) {
+  try {
+    const body = req.body || {};
+    console.log("[analyze-thermography] Payload keys:", Object.keys(body));
+
+    const outcome = await runThermographyAnalysis(body);
+
+    if (outcome.success === false) {
+      console.error("[analyze-thermography] Domain error:", {
+        status: outcome.httpStatus,
+        errorType: outcome.errorType,
+        title: outcome.title,
+        detail: outcome.detail
+      });
+      return res.status(outcome.httpStatus).json({
+        success: false,
+        errorType: outcome.errorType,
+        title: outcome.title,
+        message: outcome.message,
+        error: outcome.message,
+        ...(outcome.detail ? { detail: outcome.detail } : {})
+      });
+    }
+
+    const meta =
+      body.metadata && typeof body.metadata === "object"
+        ? (body.metadata as Record<string, unknown>)
+        : {};
+    const poly = extractPolymorphicTelemetry(meta);
+    const deltaT = optionalNumeric(
+      (outcome.data as { peaks?: { delta_t?: unknown } })?.peaks?.delta_t
+    );
+    const i2r = calcI2rNormalizedDeltaT(
+      poly.measured_amps,
+      poly.rated_amps,
+      deltaT
+    );
+    const polymorphic_fields = {
+      ...poly,
+      i2r_normalized_delta_t: i2r
+    };
+
+    console.log("[analyze-thermography] Polymorphic telemetry:", {
+      asset_type: poly.asset_type,
+      measured_amps: poly.measured_amps,
+      rated_amps: poly.rated_amps,
+      delta_t: deltaT,
+      i2r_normalized_delta_t: i2r
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        ...outcome.data,
+        polymorphic_fields
+      },
+      ...outcome.data,
+      polymorphic_fields,
+      analysisSource: "thermography-ai"
+    });
+  } catch (error: any) {
+    console.error("[analyze-thermography] Unhandled Express error:", error);
+    return res.status(503).json({
+      success: false,
+      errorType: "VISION_ERROR",
+      title: "Thermography Vision Error",
+      message: "Unable to analyze thermal image.",
+      error: "Unable to analyze thermal image.",
+      detail: error?.message || "Unhandled thermography engine exception."
+    });
+  }
+}
+
+app.post(ANALYZE_THERMOGRAPHY_API_PATH, handleAnalyzeThermographyExpress);
+app.get(ANALYZE_THERMOGRAPHY_API_PATH, (_req, res) => {
+  res.json({
+    ok: true,
+    method: "POST",
+    path: ANALYZE_THERMOGRAPHY_API_PATH,
+    service: "OpenAI GPT-4o Vision — Thermography Analysis Engine"
+  });
+});
+
+/**
+ * POST /api/extract-thermal-metadata
+ * Reads radiometric EXIF/XMP from an uploaded thermal image (base64).
+ * Returns empty found=false for standard JPEGs with no thermal tags.
+ */
+app.post(EXTRACT_THERMAL_METADATA_API_PATH, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const imageBase64 =
+      typeof body.imageBase64 === "string"
+        ? body.imageBase64
+        : typeof body.image === "string"
+          ? body.image
+          : null;
+
+    if (!imageBase64) {
+      return res.status(400).json({
+        success: false,
+        error: "imageBase64 is required."
+      });
+    }
+
+    const stripped = String(imageBase64).replace(/^data:image\/[\w+.-]+;base64,/i, "");
+    const buffer = Buffer.from(stripped, "base64");
+    if (!buffer.length) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid image payload."
+      });
+    }
+
+    const metadata = await extractThermalMetadata(buffer);
+    console.log("[extract-thermal-metadata]", {
+      found: metadata.found,
+      sourceTags: metadata.sourceTags,
+      emissivity: metadata.emissivity,
+      ambientTemp: metadata.ambientTemp,
+      reflectedTemp: metadata.reflectedTemp,
+      distance: metadata.distance,
+      humidity: metadata.humidity
+    });
+
+    return res.json({
+      success: true,
+      found: metadata.found,
+      metadata
+    });
+  } catch (error: any) {
+    console.error("[extract-thermal-metadata] Error:", error);
+    return res.status(500).json({
+      success: false,
+      found: false,
+      error: error?.message || "Failed to extract thermal metadata."
+    });
+  }
+});
+
+app.get(EXTRACT_THERMAL_METADATA_API_PATH, (_req, res) => {
+  res.json({
+    ok: true,
+    method: "POST",
+    path: EXTRACT_THERMAL_METADATA_API_PATH,
+    service: "Thermal image EXIF / XMP radiometric metadata extractor (exifr)"
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Ultrasound Analysis — placeholder AI (mirrors thermography route shape)    */
+/* Persistence: client calls /api/save-analysis-result after success (same as IR) */
+/* -------------------------------------------------------------------------- */
+async function handleAnalyzeUltrasoundExpress(
+  req: express.Request,
+  res: express.Response
+) {
+  try {
+    const body = req.body || {};
+    console.log("[analyze-ultrasound] Payload keys:", Object.keys(body));
+
+    const outcome = await runUltrasoundAnalysis(body);
+
+    if (outcome.success === false) {
+      console.error("[analyze-ultrasound] Domain error:", {
+        status: outcome.httpStatus,
+        errorType: outcome.errorType,
+        title: outcome.title,
+        detail: outcome.detail
+      });
+      return res.status(outcome.httpStatus).json({
+        success: false,
+        errorType: outcome.errorType,
+        title: outcome.title,
+        message: outcome.message,
+        error: outcome.message,
+        ...(outcome.detail ? { detail: outcome.detail } : {})
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: outcome.data,
+      ...outcome.data,
+      analysisSource: "ultrasound-ai-placeholder"
+    });
+  } catch (error: any) {
+    console.error("[analyze-ultrasound] Unhandled Express error:", error);
+    return res.status(503).json({
+      success: false,
+      errorType: "ANALYSIS_ERROR",
+      title: "Ultrasound Analysis Error",
+      message: "Unable to analyze ultrasound data.",
+      error: "Unable to analyze ultrasound data.",
+      detail: error?.message || "Unhandled ultrasound engine exception."
+    });
+  }
+}
+
+app.post(ANALYZE_ULTRASOUND_API_PATH, handleAnalyzeUltrasoundExpress);
+app.get(ANALYZE_ULTRASOUND_API_PATH, (_req, res) => {
+  res.json({
+    ok: true,
+    method: "POST",
+    path: ANALYZE_ULTRASOUND_API_PATH,
+    service: "Ultrasound Analysis Engine (placeholder — Master AI prompt pending)"
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Run Diagnostics persistence — analysis_results / alerts / diagnosis_logs   */
+/* Mounted early so routes are not swallowed by the unmatched /api 404.       */
+/* -------------------------------------------------------------------------- */
+
+function mapUiSeverityToAlert(sev: unknown): "HIGH" | "MEDIUM" | "LOW" {
+  const s = String(sev || "").toUpperCase();
+  if (s === "HIGH" || s === "CRITICAL") return "HIGH";
+  if (s === "MEDIUM" || s === "ANOMALY" || s === "WARNING") return "MEDIUM";
+  return "LOW";
+}
+
+function asJsonb(value: unknown, fallback: unknown) {
+  if (value == null) return JSON.stringify(fallback);
+  if (typeof value === "string") {
+    try {
+      JSON.parse(value);
+      return value;
+    } catch {
+      return JSON.stringify(fallback);
+    }
+  }
+  return JSON.stringify(value);
+}
+
+app.post("/api/save-analysis-result", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const body = req.body || {};
+    const assetId = body.asset_id != null ? String(body.asset_id) : null;
+    const component = body.component != null ? String(body.component) : null;
+    const healthScore =
+      body.health_score != null && Number.isFinite(Number(body.health_score))
+        ? Math.round(Number(body.health_score))
+        : null;
+    const primaryFault =
+      body.primary_fault != null ? String(body.primary_fault) : null;
+    const severity = body.severity != null ? String(body.severity) : null;
+    const summary = body.summary != null ? String(body.summary) : null;
+    const spectrumUrl =
+      body.spectrum_image_url != null ? String(body.spectrum_image_url) : null;
+    const analysisType = String(body.analysis_type || "vibration");
+    const startedAt = body.started_at ? new Date(body.started_at) : null;
+    const createAlerts =
+      body.create_alerts_for_high !== false; // default true
+
+    const faultList = Array.isArray(body.fault_list) ? body.fault_list : [];
+    const peaks = Array.isArray(body.peaks) ? body.peaks : [];
+    const recommendations = Array.isArray(body.recommendations)
+      ? body.recommendations
+      : [];
+    const financialImpact =
+      body.financial_impact && typeof body.financial_impact === "object"
+        ? body.financial_impact
+        : {};
+
+    // Polymorphic thermography columns (all optional / nullable)
+    const assetType =
+      body.asset_type != null && String(body.asset_type).trim()
+        ? String(body.asset_type).trim().toLowerCase()
+        : null;
+    const phaseATemp = optionalNumeric(body.phase_a_temp);
+    const phaseBTemp = optionalNumeric(body.phase_b_temp);
+    const phaseCTemp = optionalNumeric(body.phase_c_temp);
+    const measuredAmps = optionalNumeric(body.measured_amps);
+    let ratedAmps = optionalNumeric(body.rated_amps);
+    const deBearingTemp = optionalNumeric(body.de_bearing_temp);
+    const odeBearingTemp = optionalNumeric(body.ode_bearing_temp);
+    const refractorySkinTemp = optionalNumeric(body.refractory_skin_temp);
+    let maxAllowableLimit = optionalNumeric(body.max_allowable_limit);
+
+    // Auto-enrich missing static specs from Equipment DB (`assets`) by asset_id
+    // (tag_number preferred; also matches numeric id or name for compatibility)
+    if (assetId && (ratedAmps == null || maxAllowableLimit == null)) {
+      try {
+        const assetSpecRes = await pool.query(
+          `SELECT rated_amps, max_allowable_temp
+           FROM assets
+           WHERE (
+             ($1 ~ '^[0-9]+$' AND id = $1::integer)
+             OR LOWER(TRIM(COALESCE(tag_number, ''))) = LOWER(TRIM($1))
+             OR LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
+           )
+           LIMIT 1`,
+          [String(assetId)]
+        );
+        const assetRow = assetSpecRes.rows[0];
+        if (assetRow) {
+          if (ratedAmps == null) {
+            ratedAmps = optionalNumeric(assetRow.rated_amps);
+          }
+          if (maxAllowableLimit == null) {
+            maxAllowableLimit = optionalNumeric(assetRow.max_allowable_temp);
+          }
+          if (ratedAmps != null || maxAllowableLimit != null) {
+            console.log("[save-analysis-result] Enriched from assets:", {
+              assetId,
+              rated_amps: ratedAmps,
+              max_allowable_limit: maxAllowableLimit
+            });
+          }
+        }
+      } catch (enrichErr: any) {
+        // Non-fatal: save continues without asset defaults (e.g. columns not migrated yet)
+        console.warn(
+          "[save-analysis-result] Asset spec enrichment skipped:",
+          enrichErr?.message || enrichErr
+        );
+      }
+    }
+
+    // Prefer client/server-provided i2r; else compute from amps × ΔT in peaks
+    // (uses enriched ratedAmps when frontend omitted it)
+    let i2rNormalized = optionalNumeric(body.i2r_normalized_delta_t);
+    if (i2rNormalized == null) {
+      const peak0 =
+        peaks[0] && typeof peaks[0] === "object"
+          ? (peaks[0] as Record<string, unknown>)
+          : {};
+      const deltaT = optionalNumeric(peak0.delta_t);
+      i2rNormalized = calcI2rNormalizedDeltaT(measuredAmps, ratedAmps, deltaT);
+    }
+
+    const insert = await pool.query(
+      `INSERT INTO analysis_results (
+         asset_id, component, health_score, primary_fault, fault_list, peaks,
+         spectrum_image_url, recommendations, financial_impact, severity, summary,
+         consensus_details, analysis_type,
+         asset_type, phase_a_temp, phase_b_temp, phase_c_temp,
+         measured_amps, rated_amps, de_bearing_temp, ode_bearing_temp,
+         refractory_skin_temp, max_allowable_limit, i2r_normalized_delta_t
+       ) VALUES (
+         $1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9::jsonb,$10,$11,$12::jsonb,$13,
+         $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+       )
+       RETURNING *`,
+      [
+        assetId,
+        component,
+        healthScore,
+        primaryFault,
+        asJsonb(faultList, []),
+        asJsonb(peaks, []),
+        spectrumUrl,
+        asJsonb(recommendations, []),
+        asJsonb(financialImpact, {}),
+        severity,
+        summary,
+        asJsonb(body.consensus_details ?? null, null),
+        analysisType,
+        assetType,
+        phaseATemp,
+        phaseBTemp,
+        phaseCTemp,
+        measuredAmps,
+        ratedAmps,
+        deBearingTemp,
+        odeBearingTemp,
+        refractorySkinTemp,
+        maxAllowableLimit,
+        i2rNormalized
+      ]
+    );
+
+    const analysis = insert.rows[0];
+    let alertsCreated = 0;
+
+    if (createAlerts && faultList.length > 0) {
+      for (const fault of faultList) {
+        const alertSev = mapUiSeverityToAlert(
+          fault?.severity ?? severity ?? "MEDIUM"
+        );
+        // Auto-create alerts for HIGH (and CRITICAL-mapped) faults
+        if (alertSev !== "HIGH") continue;
+        await pool.query(
+          `INSERT INTO alerts (
+             analysis_result_id, asset_id, severity, title, description
+           ) VALUES ($1,$2,$3,$4,$5)`,
+          [
+            analysis.id,
+            assetId,
+            alertSev,
+            String(fault?.title || primaryFault || "Critical fault detected"),
+            String(
+              fault?.detail ||
+                fault?.description ||
+                summary ||
+                `High-severity finding on ${component || assetId || "asset"}`
+            )
+          ]
+        );
+        alertsCreated += 1;
+      }
+
+      // If no HIGH faults but overall severity is CRITICAL, still raise one alert
+      if (
+        alertsCreated === 0 &&
+        mapUiSeverityToAlert(severity) === "HIGH" &&
+        primaryFault
+      ) {
+        await pool.query(
+          `INSERT INTO alerts (
+             analysis_result_id, asset_id, severity, title, description
+           ) VALUES ($1,$2,'HIGH',$3,$4)`,
+          [
+            analysis.id,
+            assetId,
+            primaryFault,
+            summary || `Critical diagnosis for ${component || assetId || "asset"}`
+          ]
+        );
+        alertsCreated = 1;
+      }
+    }
+
+    const logInsert = await pool.query(
+      `INSERT INTO diagnosis_logs (
+         asset_id, analysis_type, started_at, completed_at, status,
+         result_summary, analysis_result_id
+       ) VALUES ($1,$2,$3,NOW(),'success',$4::jsonb,$5)
+       RETURNING id`,
+      [
+        assetId,
+        analysisType,
+        startedAt && !Number.isNaN(startedAt.getTime()) ? startedAt : null,
+        asJsonb(
+          {
+            health_score: healthScore,
+            primary_fault: primaryFault,
+            severity,
+            fault_count: faultList.length,
+            alerts_created: alertsCreated,
+            summary
+          },
+          {}
+        ),
+        analysis.id
+      ]
+    );
+
+    console.log("[save-analysis-result] Saved:", {
+      id: analysis.id,
+      assetId,
+      alertsCreated,
+      faults: faultList.length
+    });
+
+    return res.json({
+      success: true,
+      analysis,
+      alerts_created: alertsCreated,
+      log_id: logInsert.rows[0]?.id
+    });
+  } catch (error: any) {
+    console.error("[save-analysis-result] Error:", error);
+    // Best-effort failure log
+    try {
+      if (pool) {
+        await pool.query(
+          `INSERT INTO diagnosis_logs (
+             asset_id, analysis_type, started_at, completed_at, status, result_summary
+           ) VALUES ($1,$2,$3,NOW(),'failed',$4::jsonb)`,
+          [
+            req.body?.asset_id != null ? String(req.body.asset_id) : null,
+            String(req.body?.analysis_type || "vibration"),
+            req.body?.started_at ? new Date(req.body.started_at) : null,
+            asJsonb({ error: error?.message || "save failed" }, {})
+          ]
+        );
+      }
+    } catch {
+      /* ignore secondary failure */
+    }
+    return res.status(500).json({
+      error: error?.message || "Failed to save analysis result."
+    });
+  }
+});
+
+/**
+ * GET /api/asset/:id/telemetry-context
+ * Merged auto-fill context for Thermography Section 3 (Data Review form).
+ * Hierarchy per field: live SCADA (Task 3) → last analysis → asset profile defaults.
+ * `:id` may be numeric assets.id, tag_number, or asset name.
+ */
+app.get(
+  ["/api/asset/:id/telemetry-context", "/api/assets/:id/telemetry-context"],
+  async (req, res) => {
+    if (!pool) {
+      return res.status(503).json({
+        success: false,
+        error: "Database is not configured (DATABASE_URL)."
+      });
+    }
+    try {
+      const key = String(req.params.id || "").trim();
+      if (!key) {
+        return res.status(400).json({ success: false, error: "Asset id is required." });
+      }
+
+      const pickNum = (v: unknown): number | null => {
+        if (v == null || v === "") return null;
+        const n = typeof v === "number" ? v : Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const pickField = (
+        liveVal: unknown,
+        lastVal: unknown,
+        defaultVal: unknown
+      ): { value: number | string | null; source: "live" | "last_scan" | "default" | null } => {
+        const liveN =
+          typeof liveVal === "string" && liveVal.trim() && !Number.isFinite(Number(liveVal))
+            ? String(liveVal).trim()
+            : pickNum(liveVal);
+        if (liveN != null && liveN !== "") {
+          return { value: liveN, source: "live" };
+        }
+        const lastN =
+          typeof lastVal === "string" && lastVal.trim() && !Number.isFinite(Number(lastVal))
+            ? String(lastVal).trim()
+            : pickNum(lastVal) ??
+              (typeof lastVal === "string" && lastVal.trim() ? String(lastVal).trim() : null);
+        if (lastN != null && lastN !== "") {
+          return { value: lastN, source: "last_scan" };
+        }
+        const defN =
+          typeof defaultVal === "string" &&
+          defaultVal.trim() &&
+          !Number.isFinite(Number(defaultVal))
+            ? String(defaultVal).trim()
+            : pickNum(defaultVal) ??
+              (typeof defaultVal === "string" && defaultVal.trim()
+                ? String(defaultVal).trim()
+                : null);
+        if (defN != null && defN !== "") {
+          return { value: defN, source: "default" };
+        }
+        return { value: null, source: null };
+      };
+
+      // A) Static specs from Equipment DB
+      const assetRes = await pool.query(
+        `SELECT id, route_id, name, tag_number, type,
+                rated_amps, max_allowable_temp, bearing_specs,
+                voltage_rating, horsepower
+         FROM assets
+         WHERE (
+           ($1 ~ '^[0-9]+$' AND id = $1::integer)
+           OR LOWER(TRIM(COALESCE(tag_number, ''))) = LOWER(TRIM($1))
+           OR LOWER(TRIM(COALESCE(name, ''))) = LOWER(TRIM($1))
+         )
+         LIMIT 1`,
+        [key]
+      );
+      const asset = assetRes.rows[0] || null;
+
+      const matchKeys = Array.from(
+        new Set(
+          [key, asset?.tag_number, asset?.name, asset?.id != null ? String(asset.id) : null]
+            .filter((v) => v != null && String(v).trim())
+            .map((v) => String(v).trim())
+        )
+      );
+
+      // B) Most recent analysis_results row for this asset
+      let lastAnalysis: Record<string, unknown> | null = null;
+      if (matchKeys.length > 0) {
+        const lastRes = await pool.query(
+          `SELECT id, asset_id, component, timestamp, created_at, analysis_type,
+                  asset_type, phase_a_temp, phase_b_temp, phase_c_temp,
+                  measured_amps, rated_amps, de_bearing_temp, ode_bearing_temp,
+                  refractory_skin_temp, max_allowable_limit, i2r_normalized_delta_t,
+                  peaks
+           FROM analysis_results
+           WHERE LOWER(TRIM(COALESCE(asset_id, ''))) = ANY(
+             SELECT LOWER(TRIM(x)) FROM UNNEST($1::text[]) AS x
+           )
+           ORDER BY COALESCE(timestamp, created_at) DESC NULLS LAST
+           LIMIT 1`,
+          [matchKeys]
+        );
+        lastAnalysis = lastRes.rows[0] || null;
+      }
+
+      const peaks0 =
+        lastAnalysis?.peaks &&
+        Array.isArray(lastAnalysis.peaks) &&
+        lastAnalysis.peaks[0] &&
+        typeof lastAnalysis.peaks[0] === "object"
+          ? (lastAnalysis.peaks[0] as Record<string, unknown>)
+          : {};
+
+      const lastOrPeak = (col: string, ...peakKeys: string[]) => {
+        const fromCol = lastAnalysis ? pickNum(lastAnalysis[col]) : null;
+        if (fromCol != null) return fromCol;
+        for (const k of peakKeys) {
+          const n = pickNum(peaks0[k]);
+          if (n != null) return n;
+        }
+        return null;
+      };
+
+      // C) Live SCADA (highest priority) — mocked until real connector is wired
+      // Priority: Live SCADA > Last Scan > Asset Profile
+      let liveRaw: Awaited<ReturnType<typeof fetchLiveTelemetry>> = null;
+      try {
+        if (isScadaEnabled()) {
+          liveRaw = await fetchLiveTelemetry(key);
+        }
+      } catch (scadaErr: any) {
+        console.warn(
+          "[telemetry-context] SCADA fetch failed (continuing with history/profile):",
+          scadaErr?.message || scadaErr
+        );
+        liveRaw = null;
+      }
+      const liveFields = liveTelemetryToContextFields(liveRaw);
+      const live: Record<string, unknown> | null = liveFields
+        ? { ...liveFields }
+        : null;
+
+      const normalizeAssetType = (raw: unknown): string | null => {
+        if (raw == null || !String(raw).trim()) return null;
+        const s = String(raw).trim().toLowerCase();
+        const aliases: Record<string, string> = {
+          motor: "motor",
+          switchgear: "switchgear",
+          transformer: "transformer",
+          gearbox: "gearbox",
+          pump: "pump",
+          bearing: "bearing",
+          fan: "fan",
+          boiler: "boiler",
+          other: "other"
+        };
+        if (aliases[s]) return aliases[s];
+        for (const k of Object.keys(aliases)) {
+          if (s.includes(k)) return aliases[k];
+        }
+        return "other";
+      };
+
+      const lastAssetType =
+        normalizeAssetType(lastAnalysis?.asset_type) ||
+        normalizeAssetType(peaks0.asset_type);
+      const profileAssetType = normalizeAssetType(asset?.type);
+
+      const fields = {
+        asset_type: pickField(
+          live?.asset_type,
+          lastAssetType,
+          profileAssetType
+        ),
+        phase_a_temp: pickField(
+          live?.phase_a_temp,
+          lastOrPeak("phase_a_temp", "phase_a_temp", "phase_a"),
+          null
+        ),
+        phase_b_temp: pickField(
+          live?.phase_b_temp,
+          lastOrPeak("phase_b_temp", "phase_b_temp", "phase_b"),
+          null
+        ),
+        phase_c_temp: pickField(
+          live?.phase_c_temp,
+          lastOrPeak("phase_c_temp", "phase_c_temp", "phase_c"),
+          null
+        ),
+        measured_amps: pickField(
+          live?.measured_amps,
+          lastOrPeak("measured_amps", "measured_amps", "current_amps", "amps"),
+          null
+        ),
+        rated_amps: pickField(
+          live?.rated_amps,
+          lastOrPeak("rated_amps", "rated_amps", "fla"),
+          asset?.rated_amps
+        ),
+        de_bearing_temp: pickField(
+          live?.de_bearing_temp,
+          lastOrPeak("de_bearing_temp", "de_bearing_temp", "bearing_de"),
+          null
+        ),
+        ode_bearing_temp: pickField(
+          live?.ode_bearing_temp,
+          lastOrPeak("ode_bearing_temp", "ode_bearing_temp", "bearing_nde"),
+          null
+        ),
+        refractory_skin_temp: pickField(
+          live?.refractory_skin_temp,
+          lastOrPeak("refractory_skin_temp", "refractory_skin_temp", "skin_temp"),
+          null
+        ),
+        max_allowable_limit: pickField(
+          live?.max_allowable_limit,
+          lastOrPeak("max_allowable_limit", "max_allowable_limit"),
+          asset?.max_allowable_temp
+        ),
+        voltage_rating: pickField(
+          live?.voltage_rating,
+          null,
+          asset?.voltage_rating
+        ),
+        horsepower: pickField(live?.horsepower, null, asset?.horsepower),
+        load_percentage: pickField(live?.load_percentage, null, null)
+      };
+
+      const scadaEnabled = isScadaEnabled();
+
+      return res.json({
+        success: true,
+        asset_key: key,
+        scada_enabled: scadaEnabled,
+        asset: asset
+          ? {
+              id: asset.id,
+              name: asset.name,
+              tag_number: asset.tag_number,
+              type: asset.type,
+              rated_amps: pickNum(asset.rated_amps),
+              max_allowable_temp: pickNum(asset.max_allowable_temp),
+              voltage_rating: pickNum(asset.voltage_rating),
+              horsepower: pickNum(asset.horsepower),
+              bearing_specs: asset.bearing_specs ?? null
+            }
+          : null,
+        last_analysis: lastAnalysis
+          ? {
+              id: lastAnalysis.id,
+              asset_id: lastAnalysis.asset_id,
+              timestamp: lastAnalysis.timestamp || lastAnalysis.created_at,
+              analysis_type: lastAnalysis.analysis_type,
+              asset_type: lastAnalysis.asset_type
+            }
+          : null,
+        live: liveRaw
+          ? {
+              phaseA: liveRaw.phaseA,
+              phaseB: liveRaw.phaseB,
+              phaseC: liveRaw.phaseC,
+              measuredAmps: liveRaw.measuredAmps,
+              loadPercentage: liveRaw.loadPercentage,
+              timestamp: liveRaw.timestamp,
+              source: "live" as const
+            }
+          : null,
+        fields,
+        poll_recommended_ms: scadaEnabled ? 10000 : null
+      });
+    } catch (error: any) {
+      console.error("[telemetry-context] Error:", error);
+      return res.status(500).json({
+        success: false,
+        error: error?.message || "Failed to load telemetry context.",
+        scada_enabled: isScadaEnabled()
+      });
+    }
+  }
+);
+
+app.get("/api/analysis-results", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const assetIdRaw = req.query.asset_id != null ? String(req.query.asset_id) : null;
+    const assetIds = assetIdRaw
+      ? assetIdRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const componentRaw =
+      req.query.component != null ? String(req.query.component).trim() : "";
+    const component = componentRaw || null;
+    const limit = Math.min(
+      200,
+      Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50)
+    );
+
+    let result;
+    if (assetIds.length > 1) {
+      if (component) {
+        result = await pool.query(
+          `SELECT * FROM analysis_results
+           WHERE asset_id = ANY($1::text[])
+             AND LOWER(TRIM(COALESCE(component, ''))) = LOWER(TRIM($2))
+           ORDER BY timestamp DESC
+           LIMIT $3`,
+          [assetIds, component, limit]
+        );
+      } else {
+        result = await pool.query(
+          `SELECT * FROM analysis_results
+           WHERE asset_id = ANY($1::text[])
+           ORDER BY timestamp DESC
+           LIMIT $2`,
+          [assetIds, limit]
+        );
+      }
+    } else if (assetIds.length === 1) {
+      const key = assetIds[0];
+      if (component) {
+        result = await pool.query(
+          `SELECT * FROM analysis_results
+           WHERE (asset_id = $1
+              OR asset_id ILIKE '%' || $1 || '%'
+              OR CAST(asset_id AS TEXT) = $1)
+             AND LOWER(TRIM(COALESCE(component, ''))) = LOWER(TRIM($2))
+           ORDER BY timestamp DESC
+           LIMIT $3`,
+          [key, component, limit]
+        );
+      } else {
+        result = await pool.query(
+          `SELECT * FROM analysis_results
+           WHERE asset_id = $1
+              OR asset_id ILIKE '%' || $1 || '%'
+              OR CAST(asset_id AS TEXT) = $1
+           ORDER BY timestamp DESC
+           LIMIT $2`,
+          [key, limit]
+        );
+      }
+    } else if (component) {
+      result = await pool.query(
+        `SELECT * FROM analysis_results
+         WHERE LOWER(TRIM(COALESCE(component, ''))) = LOWER(TRIM($1))
+         ORDER BY timestamp DESC
+         LIMIT $2`,
+        [component, limit]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT * FROM analysis_results
+         ORDER BY timestamp DESC
+         LIMIT $1`,
+        [limit]
+      );
+    }
+    return res.json({ success: true, results: result.rows });
+  } catch (error: any) {
+    console.error("[analysis-results] GET error:", error);
+    return res.status(500).json({ error: error?.message || "Failed to fetch analysis results." });
+  }
+});
+
+app.get("/api/analysis-results/:id", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const result = await pool.query(
+      `SELECT * FROM analysis_results WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Analysis result not found." });
+    }
+    return res.json({ success: true, analysis: result.rows[0] });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || "Failed to fetch analysis result." });
+  }
+});
+
+app.post("/api/analysis-results/:id/baseline", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const existing = await pool.query(
+      `SELECT * FROM analysis_results WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!existing.rows.length) {
+      return res.status(404).json({ error: "Analysis result not found." });
+    }
+    const row = existing.rows[0];
+    if (row.asset_id) {
+      await pool.query(
+        `UPDATE analysis_results SET is_baseline = FALSE WHERE asset_id = $1`,
+        [row.asset_id]
+      );
+    } else {
+      await pool.query(`UPDATE analysis_results SET is_baseline = FALSE`);
+    }
+    const updated = await pool.query(
+      `UPDATE analysis_results SET is_baseline = TRUE WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    return res.json({ success: true, analysis: updated.rows[0] });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || "Failed to set baseline." });
+  }
+});
+
+app.get("/api/alerts", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    const push = (sql: string, val: unknown) => {
+      params.push(val);
+      clauses.push(`${sql} $${params.length}`);
+    };
+
+    if (req.query.asset_id != null && String(req.query.asset_id)) {
+      push("asset_id =", String(req.query.asset_id));
+    }
+    if (req.query.acknowledged != null && String(req.query.acknowledged) !== "") {
+      push("acknowledged =", String(req.query.acknowledged) === "true");
+    }
+    if (req.query.severity != null && String(req.query.severity)) {
+      push("severity =", String(req.query.severity).toUpperCase());
+    }
+
+    const limit = Math.min(
+      200,
+      Math.max(1, parseInt(String(req.query.limit || "100"), 10) || 100)
+    );
+    params.push(limit);
+
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const result = await pool.query(
+      `SELECT * FROM alerts ${where} ORDER BY created_at DESC LIMIT $${params.length}`,
+      params
+    );
+    return res.json({ success: true, alerts: result.rows });
+  } catch (error: any) {
+    console.error("[alerts] GET error:", error);
+    return res.status(500).json({ error: error?.message || "Failed to fetch alerts." });
+  }
+});
+
+app.post("/api/acknowledge-alert/:id", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE alerts SET acknowledged = TRUE WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Alert not found." });
+    }
+    return res.json({ success: true, alert: result.rows[0] });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || "Failed to acknowledge alert." });
+  }
+});
+
+// Alias matching client helper path
+app.post("/api/alerts/:id/acknowledge", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE alerts SET acknowledged = TRUE WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Alert not found." });
+    }
+    return res.json({ success: true, alert: result.rows[0] });
+  } catch (error: any) {
+    return res.status(500).json({ error: error?.message || "Failed to acknowledge alert." });
+  }
+});
+
+app.get("/api/diagnosis-logs", async (req, res) => {
+  // Legacy plant-scoped diagnosis_history (older clients pass plant_id / location_id)
+  const plantRaw = req.query.plant_id ?? req.query.location_id;
+  if (plantRaw != null && String(plantRaw) !== "") {
+    try {
+      const pid = parseInt(String(plantRaw), 10);
+      if (isNaN(pid)) {
+        return res.status(400).json({ error: "Invalid location/plant ID" });
+      }
+      if (!pool) {
+        return res.json([]);
+      }
+      let rows: unknown[] = [];
+      try {
+        const result = await pool.query(
+          `SELECT dh.*, a.name as asset_name 
+           FROM diagnosis_history dh 
+           JOIN assets a ON dh.asset_id = a.id 
+           JOIN routes r ON a.route_id = r.id 
+           WHERE r.plant_id = $1 
+           ORDER BY dh.timestamp DESC`,
+          [pid]
+        );
+        rows = result.rows;
+      } catch (err: any) {
+        console.warn(
+          "Could not query via routes, attempting direct plant_id on assets:",
+          err.message
+        );
+        const result = await pool.query(
+          `SELECT dh.*, a.name as asset_name 
+           FROM diagnosis_history dh 
+           JOIN assets a ON dh.asset_id = a.id 
+           WHERE a.plant_id = $1 
+           ORDER BY dh.timestamp DESC`,
+          [pid]
+        );
+        rows = result.rows;
+      }
+      return res.json(rows);
+    } catch (error: any) {
+      console.error("Failed to fetch diagnosis-logs (plant):", error);
+      return res
+        .status(500)
+        .json({ error: error?.message || "Failed to fetch diagnosis logs" });
+    }
+  }
+
+  // Run Diagnostics persistence table (diagnosis_logs)
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const assetId = req.query.asset_id != null ? String(req.query.asset_id) : null;
+    const limit = Math.min(
+      200,
+      Math.max(1, parseInt(String(req.query.limit || "100"), 10) || 100)
+    );
+    const result = assetId
+      ? await pool.query(
+          `SELECT * FROM diagnosis_logs
+           WHERE asset_id = $1
+           ORDER BY COALESCE(completed_at, created_at) DESC
+           LIMIT $2`,
+          [assetId, limit]
+        )
+      : await pool.query(
+          `SELECT * FROM diagnosis_logs
+           ORDER BY COALESCE(completed_at, created_at) DESC
+           LIMIT $1`,
+          [limit]
+        );
+    return res.json({ success: true, logs: result.rows });
+  } catch (error: any) {
+    console.error("[diagnosis-logs] GET error:", error);
+    return res.status(500).json({ error: error?.message || "Failed to fetch diagnosis logs." });
+  }
+});
 
 // Lazy init GoogleGenAI
 let aiClient: GoogleGenAI | null = null;
@@ -2588,6 +3855,8 @@ app.post('/api/analyze-spectrum-image', async (req, res) => {
   }
 });
 
+// POST /api/analyze-vibration is mounted early (see handleAnalyzeVibrationExpress above).
+
 // GET & POST /api/recommend-parts - Smart parts recommendation engine
 app.post('/api/recommend-parts', async (req, res) => {
   try {
@@ -3483,60 +4752,6 @@ app.post('/api/analyze-component', async (req, res) => {
   } catch (error: any) {
     console.error("❌ Component wide analysis failure:", error);
     res.status(500).json({ error: "Component analysis failed: " + (error.message || error) });
-  }
-});
-
-// GET endpoint to retrieve all diagnosis logs for a specific location (plant)
-app.get('/api/diagnosis-logs', async (req, res) => {
-  try {
-    const { plant_id, location_id } = req.query;
-    const targetPlantId = plant_id || location_id;
-    if (!targetPlantId) {
-      return res.status(400).json({ error: "Missing location/plant ID parameter" });
-    }
-    const pid = parseInt(targetPlantId as string, 10);
-    if (isNaN(pid)) {
-      return res.status(400).json({ error: "Invalid location/plant ID" });
-    }
-
-    if (pool) {
-      let rows = [];
-      try {
-        const result = await pool.query(
-          `SELECT dh.*, a.name as asset_name 
-           FROM diagnosis_history dh 
-           JOIN assets a ON dh.asset_id = a.id 
-           JOIN routes r ON a.route_id = r.id 
-           WHERE r.plant_id = $1 
-           ORDER BY dh.timestamp DESC`,
-          [pid]
-        );
-        rows = result.rows;
-      } catch (err: any) {
-        console.warn("Could not query via routes, attempting direct plant_id on assets:", err.message);
-        try {
-          const result = await pool.query(
-            `SELECT dh.*, a.name as asset_name 
-             FROM diagnosis_history dh 
-             JOIN assets a ON dh.asset_id = a.id 
-             WHERE a.plant_id = $1 
-             ORDER BY dh.timestamp DESC`,
-            [pid]
-          );
-          rows = result.rows;
-        } catch (fallbackErr: any) {
-          console.error("Failed both diagnosis_history queries:", fallbackErr);
-          throw fallbackErr;
-        }
-      }
-      return res.json(rows);
-    } else {
-      // In-memory mode fallback
-      return res.json([]);
-    }
-  } catch (error: any) {
-    console.error("Failed to fetch diagnosis-logs:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch diagnosis logs" });
   }
 });
 
@@ -4885,107 +6100,390 @@ async function getAssetsWithStatus(companyId?: number) {
 // EXECUTIVE ANALYTICS DASHBOARD ENDPOINTS
 // --------------------------------------------------------
 
-// GET /api/dashboard
-app.get('/api/dashboard', async (req, res) => {
+// GET /api/dashboard — Health Dashboard metrics from PostgreSQL (no mock values)
+app.get("/api/dashboard", async (req, res) => {
+  const emptyPayload = {
+    plantName: null as string | null,
+    assetCount: 0,
+    fleetHealthScore: null as number | null,
+    highAlerts: 0,
+    warningAlerts: 0,
+    unacknowledgedAlerts: 0,
+    scheduledWorkOrders: 0,
+    unassignedWorkOrders: 0,
+    financialRisk: null as null | {
+      failureExposure: number;
+      costToFix: number;
+      roiPercent: number | null;
+    },
+    techCoverage: [] as Array<{ name: string; pct: number; detail: string }>,
+    aiBriefing: null as string | null,
+    badActors: [] as Array<{
+      id: string;
+      name: string;
+      detail: string;
+      healthScore: number;
+      severity: string;
+      classTier: "A" | "BC";
+    }>,
+    liveAlarms: [] as Array<{
+      id: string;
+      name: string;
+      zone: string;
+      detail: string;
+      severity: "critical" | "warning";
+      acknowledged: boolean;
+      assetId: string | null;
+    }>,
+    healthZones: { A: 0, B: 0, C: 0, D: 0 },
+    recentAnalyses: [] as Array<Record<string, unknown>>,
+    correlationData: [] as unknown[]
+  };
+
   try {
     if (!pool) {
-      console.warn("⚠️ [Dashboard API] No pool available, returning mock dashboard metrics");
-      return res.json({ critical: 0, warning: 1, healthy: 4, total: 5 });
+      return res.status(503).json({
+        error: "Database is not configured (DATABASE_URL).",
+        ...emptyPayload
+      });
     }
 
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
-
-    // Get total assets (filter by company_id if provided, through routes/plants joining)
-    let assetsQuery = "SELECT id FROM assets";
-    let assetsParams: any[] = [];
-    if (companyId && !isNaN(companyId)) {
-      assetsQuery = `
-        SELECT a.id FROM assets a
-        JOIN routes r ON a.route_id = r.id
-        JOIN plants p ON r.plant_id = p.id
-        WHERE p.company_id = $1
-      `;
-      assetsParams.push(companyId);
-    }
-    const assetsRes = await pool.query(assetsQuery, assetsParams);
-    const totalCount = assetsRes.rows.length;
-
-    // For each asset, find its latest diagnosis_history entry
-    let latestDiagnosesQuery = `
-      WITH latest_diag AS (
-        SELECT DISTINCT ON (asset_id) asset_id, ai_response
-        FROM diagnosis_history
-        WHERE asset_id IS NOT NULL
-        ORDER BY asset_id, timestamp DESC
-      )
-      SELECT ld.ai_response 
-      FROM latest_diag ld
-    `;
-    let queryParams: any[] = [];
-    if (companyId && !isNaN(companyId)) {
-      latestDiagnosesQuery = `
-        WITH latest_diag AS (
-          SELECT DISTINCT ON (dh.asset_id) dh.asset_id, dh.ai_response
-          FROM diagnosis_history dh
-          JOIN assets a ON dh.asset_id = a.id
-          JOIN routes r ON a.route_id = r.id
-          JOIN plants p ON r.plant_id = p.id
-          WHERE p.company_id = $1 AND dh.asset_id IS NOT NULL
-          ORDER BY dh.asset_id, dh.timestamp DESC
-        )
-        SELECT ld.ai_response 
-        FROM latest_diag ld
-      `;
-      queryParams.push(companyId);
+    // 3) Plant name
+    let plantName: string | null = null;
+    try {
+      const plantRes = await pool.query(`SELECT name FROM plants LIMIT 1`);
+      plantName = plantRes.rows[0]?.name ? String(plantRes.rows[0].name) : null;
+    } catch (err) {
+      console.error("[dashboard] plants query failed:", err);
     }
 
-    const latestResult = await pool.query(latestDiagnosesQuery, queryParams);
-    
-    let criticalCount = 0;
-    let warningCount = 0;
-    let healthyCount = 0;
+    // Asset count
+    let assetCount = 0;
+    try {
+      const assetsRes = await pool.query(`SELECT COUNT(*)::int AS n FROM assets`);
+      assetCount = Number(assetsRes.rows[0]?.n) || 0;
+    } catch (err) {
+      console.error("[dashboard] assets count failed:", err);
+    }
 
-    for (const row of latestResult.rows) {
-      const aiResStr = row.ai_response;
-      if (aiResStr) {
+    // 4) Fleet Health Score — AVG(health_score) from analysis_results
+    let fleetHealthScore: number | null = null;
+    try {
+      const avgRes = await pool.query(
+        `SELECT AVG(health_score)::float AS avg FROM analysis_results WHERE health_score IS NOT NULL`
+      );
+      const avg = Number(avgRes.rows[0]?.avg);
+      fleetHealthScore = Number.isFinite(avg) ? Math.round(avg) : null;
+    } catch (err) {
+      console.error("[dashboard] fleet health avg failed:", err);
+    }
+
+    // Latest analysis per asset (zones, financial, bad actors, briefing)
+    let latestAnalyses: any[] = [];
+    try {
+      const latestAnalysesRes = await pool.query(
+        `SELECT DISTINCT ON (LOWER(TRIM(asset_id)))
+           id, asset_id, component, health_score, primary_fault, severity,
+           summary, financial_impact, recommendations, timestamp
+         FROM analysis_results
+         WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> ''
+         ORDER BY LOWER(TRIM(asset_id)), timestamp DESC NULLS LAST, created_at DESC`
+      );
+      latestAnalyses = latestAnalysesRes.rows;
+    } catch (err) {
+      console.error("[dashboard] latest analyses failed:", err);
+    }
+
+    // 9) Asset Health Distribution by latest health score per asset
+    const healthZones = { A: 0, B: 0, C: 0, D: 0 };
+    for (const row of latestAnalyses) {
+      const score = Number(row.health_score);
+      if (!Number.isFinite(score)) continue;
+      if (score >= 85) healthZones.A += 1;
+      else if (score >= 70) healthZones.B += 1;
+      else if (score >= 50) healthZones.C += 1;
+      else healthZones.D += 1;
+    }
+
+    // 5) Critical alarms — COUNT(*) FROM alerts WHERE severity = 'HIGH'
+    let highAlerts = 0;
+    let warningAlerts = 0;
+    let unacknowledgedAlerts = 0;
+    let liveAlarms: typeof emptyPayload.liveAlarms = [];
+    try {
+      const highRes = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM alerts WHERE severity = 'HIGH'`
+      );
+      highAlerts = Number(highRes.rows[0]?.n) || 0;
+
+      const warnRes = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM alerts WHERE severity = 'MEDIUM'`
+      );
+      warningAlerts = Number(warnRes.rows[0]?.n) || 0;
+
+      const unackedRes = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM alerts WHERE acknowledged IS NOT TRUE`
+      );
+      unacknowledgedAlerts = Number(unackedRes.rows[0]?.n) || 0;
+
+      const alarmRes = await pool.query(
+        `SELECT id, asset_id, severity, title, description, acknowledged, created_at
+         FROM alerts
+         ORDER BY created_at DESC
+         LIMIT 20`
+      );
+      liveAlarms = alarmRes.rows.map((row) => {
+        const sev = String(row.severity || "").toUpperCase();
+        const isHigh = sev === "HIGH";
+        const health = latestAnalyses.find(
+          (a) =>
+            String(a.asset_id || "").toLowerCase() ===
+            String(row.asset_id || "").toLowerCase()
+        )?.health_score;
+        const hs = Number(health);
+        let zone = "—";
+        if (Number.isFinite(hs)) {
+          if (hs >= 85) zone = "Zone A";
+          else if (hs >= 70) zone = "Zone B";
+          else if (hs >= 50) zone = "Zone C";
+          else zone = "Zone D";
+        }
+        return {
+          id: String(row.id),
+          name: String(row.title || row.asset_id || "Alert"),
+          zone,
+          detail: String(row.description || ""),
+          severity: isHigh ? ("critical" as const) : ("warning" as const),
+          acknowledged: Boolean(row.acknowledged),
+          assetId: row.asset_id != null ? String(row.asset_id) : null
+        };
+      });
+    } catch (err) {
+      console.error("[dashboard] alerts query failed:", err);
+    }
+
+    // 6) Scheduled work orders — COUNT(*) FROM work_orders WHERE status = 'scheduled'
+    let scheduledWorkOrders = 0;
+    let unassignedWorkOrders = 0;
+    try {
+      const woExists = await pool.query(
+        `SELECT EXISTS (
+           SELECT FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_name = 'work_orders'
+         ) AS ok`
+      );
+      if (woExists.rows[0]?.ok) {
+        const scheduledRes = await pool.query(
+          `SELECT COUNT(*)::int AS n FROM work_orders WHERE status = 'scheduled'`
+        );
+        scheduledWorkOrders = Number(scheduledRes.rows[0]?.n) || 0;
+
+        const unassignedRes = await pool.query(
+          `SELECT COUNT(*)::int AS n FROM work_orders
+           WHERE LOWER(COALESCE(status, '')) IN ('unassigned', 'new')
+              OR (
+                assignee IS NULL
+                AND LOWER(COALESCE(status, '')) NOT IN ('closed', 'complete', 'completed', 'cancelled', 'scheduled')
+              )`
+        );
+        unassignedWorkOrders = Number(unassignedRes.rows[0]?.n) || 0;
+      }
+    } catch (err) {
+      console.error("[dashboard] work_orders query failed:", err);
+    }
+
+    // Financial risk from latest analyses with financial_impact
+    let failureExposure = 0;
+    let costToFix = 0;
+    let financialCount = 0;
+    for (const row of latestAnalyses) {
+      let fi: Record<string, unknown> = {};
+      if (row.financial_impact && typeof row.financial_impact === "object") {
+        fi = row.financial_impact as Record<string, unknown>;
+      } else if (typeof row.financial_impact === "string") {
         try {
-          const aiRes = typeof aiResStr === 'string' ? JSON.parse(aiResStr) : aiResStr;
-          const sev = String(aiRes.overall_severity || aiRes.severity || aiRes.overallSeverity || "").toLowerCase();
-          if (sev === 'critical' || sev === 'danger') {
-            criticalCount++;
-          } else if (sev === 'warning' || sev === 'high' || sev === 'medium') {
-            warningCount++;
-          } else {
-            healthyCount++;
-          }
-        } catch (e) {
-          const lowerStr = String(aiResStr).toLowerCase();
-          if (lowerStr.includes('"overall_severity":"critical"') || lowerStr.includes('"overall_severity":"danger"') || lowerStr.includes('"overallseverity":"critical"')) {
-            criticalCount++;
-          } else if (lowerStr.includes('"overall_severity":"warning"') || lowerStr.includes('"overall_severity":"high"') || lowerStr.includes('"overallseverity":"warning"')) {
-            warningCount++;
-          } else {
-            healthyCount++;
-          }
+          fi = JSON.parse(row.financial_impact);
+        } catch {
+          fi = {};
         }
       }
+      const fail = Number(fi.failureCostIfDelayed ?? fi.failure_cost_if_delayed);
+      const prev = Number(fi.preventiveRepairCost ?? fi.preventive_repair_cost);
+      if (Number.isFinite(fail) && fail > 0) {
+        failureExposure += fail;
+        financialCount += 1;
+      }
+      if (Number.isFinite(prev) && prev > 0) costToFix += prev;
+    }
+    const financialRisk =
+      financialCount > 0 || costToFix > 0
+        ? {
+            failureExposure: Math.round(failureExposure),
+            costToFix: Math.round(costToFix),
+            roiPercent:
+              costToFix > 0
+                ? Math.round(((failureExposure - costToFix) / costToFix) * 100)
+                : null
+          }
+        : null;
+
+    // 7) Multi-Tech Coverage from real diagnosis_logs / analysis_results (no hardcoded %)
+    const techDefs = [
+      { key: "vibration", name: "Vibration Analysis", detail: "Route Coverage" },
+      { key: "oil", name: "Oil / Lubrication Analysis", detail: "Sample Coverage" },
+      {
+        key: "thermography",
+        name: "Infrared Thermography",
+        detail: "Inspection Coverage"
+      },
+      { key: "mca", name: "Motor Current (MCSA)", detail: "Monitoring Coverage" },
+      { key: "ultrasound", name: "Ultrasound", detail: "Inspection Coverage" }
+    ];
+    const techAssetSets: Record<string, Set<string>> = {
+      vibration: new Set(),
+      oil: new Set(),
+      thermography: new Set(),
+      mca: new Set(),
+      ultrasound: new Set()
+    };
+    // analysis_results are vibration diagnostics
+    for (const row of latestAnalyses) {
+      const a = String(row.asset_id || "").toLowerCase().trim();
+      if (a) techAssetSets.vibration.add(a);
+    }
+    try {
+      const techRes = await pool.query(
+        `SELECT DISTINCT LOWER(TRIM(asset_id)) AS asset_id,
+                LOWER(TRIM(COALESCE(analysis_type, 'vibration'))) AS analysis_type
+         FROM diagnosis_logs
+         WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> ''`
+      );
+      for (const row of techRes.rows) {
+        const a = String(row.asset_id || "");
+        const t = String(row.analysis_type || "vibration");
+        if (!a) continue;
+        if (t.includes("oil")) techAssetSets.oil.add(a);
+        else if (t.includes("thermo") || t === "ir") techAssetSets.thermography.add(a);
+        else if (t.includes("mca") || t.includes("mcsa") || t.includes("current")) {
+          techAssetSets.mca.add(a);
+        } else if (t.includes("ultra")) techAssetSets.ultrasound.add(a);
+        else techAssetSets.vibration.add(a);
+      }
+    } catch (err) {
+      console.error("[dashboard] tech coverage query failed:", err);
     }
 
-    const diagnosedCount = latestResult.rows.length;
-    const undiagnosedCount = Math.max(0, totalCount - diagnosedCount);
-    healthyCount += undiagnosedCount;
+    const denom = Math.max(assetCount, 1);
+    const techCoverage: Array<{ name: string; pct: number; detail: string }> = [];
+    let hasAnyTechCoverage = false;
+    for (const def of techDefs) {
+      const set = techAssetSets[def.key] || new Set();
+      if (set.size > 0) hasAnyTechCoverage = true;
+      const pct = assetCount > 0 ? Math.round((set.size / denom) * 100) : set.size > 0 ? 100 : 0;
+      techCoverage.push({ name: def.name, pct, detail: def.detail });
+    }
 
-    console.log(`📊 [Dashboard API] Real database stats - Critical: ${criticalCount}, Warning: ${warningCount}, Healthy: ${healthyCount}, Total: ${totalCount}`);
+    // Bad actors = lowest latest health scores
+    const badActors = [...latestAnalyses]
+      .filter((r) => Number.isFinite(Number(r.health_score)))
+      .sort((a, b) => Number(a.health_score) - Number(b.health_score))
+      .slice(0, 5)
+      .map((r) => ({
+        id: String(r.id),
+        name: [r.asset_id, r.component].filter(Boolean).join(" · "),
+        detail:
+          r.primary_fault ||
+          r.summary ||
+          `Health score ${r.health_score}`,
+        healthScore: Number(r.health_score),
+        severity: String(r.severity || ""),
+        classTier: Number(r.health_score) < 50 ? ("A" as const) : ("BC" as const)
+      }));
 
-    res.json({
-      critical: criticalCount,
-      warning: warningCount,
-      healthy: healthyCount,
-      total: totalCount
+    // 8) AI Shift Briefing from recent analyses
+    let recentAnalyses: typeof emptyPayload.recentAnalyses = [];
+    let aiBriefing: string | null = null;
+    try {
+      const recentRes = await pool.query(
+        `SELECT asset_id, component, health_score, primary_fault, severity, summary, timestamp
+         FROM analysis_results
+         ORDER BY timestamp DESC NULLS LAST
+         LIMIT 8`
+      );
+      recentAnalyses = recentRes.rows.map((r) => ({
+        assetId: r.asset_id != null ? String(r.asset_id) : null,
+        component: r.component != null ? String(r.component) : null,
+        healthScore: r.health_score != null ? Number(r.health_score) : null,
+        primaryFault: r.primary_fault != null ? String(r.primary_fault) : null,
+        severity: r.severity != null ? String(r.severity) : null,
+        summary: r.summary != null ? String(r.summary) : null,
+        timestamp: r.timestamp
+      }));
+
+      if (recentAnalyses.length > 0) {
+        const criticalish = recentAnalyses.filter((a) => {
+          const s = String(a.severity || "").toUpperCase();
+          const hs = Number(a.healthScore);
+          return (
+            s === "CRITICAL" ||
+            s === "HIGH" ||
+            (Number.isFinite(hs) && hs < 50)
+          );
+        });
+        const lines: string[] = [];
+        if (criticalish.length > 0) {
+          lines.push(`${criticalish.length} recent analysis(es) need attention.`);
+          criticalish.slice(0, 3).forEach((a, i) => {
+            lines.push(
+              `Priority ${i + 1}: ${a.assetId || "Asset"}${
+                a.component ? ` (${a.component})` : ""
+              } — ${a.primaryFault || a.summary || "Review findings"}${
+                a.healthScore != null ? ` (health ${a.healthScore})` : ""
+              }.`
+            );
+          });
+        } else {
+          const top = recentAnalyses[0];
+          lines.push(
+            `Latest analysis: ${top.assetId || "Asset"}${
+              top.component ? ` / ${top.component}` : ""
+            } — ${top.primaryFault || top.summary || "No primary fault"}${
+              top.healthScore != null ? ` (health ${top.healthScore})` : ""
+            }. Fleet average health is ${
+              fleetHealthScore != null ? `${fleetHealthScore}%` : "unavailable"
+            }.`
+          );
+        }
+        aiBriefing = lines.join(" ");
+      }
+    } catch (err) {
+      console.error("[dashboard] recent analyses failed:", err);
+    }
+
+    return res.json({
+      plantName,
+      assetCount,
+      fleetHealthScore,
+      highAlerts,
+      warningAlerts,
+      unacknowledgedAlerts,
+      scheduledWorkOrders,
+      unassignedWorkOrders,
+      financialRisk,
+      techCoverage: hasAnyTechCoverage ? techCoverage : [],
+      aiBriefing,
+      badActors,
+      liveAlarms,
+      healthZones,
+      recentAnalyses,
+      correlationData: []
     });
   } catch (error: any) {
     console.error("❌ GET /api/dashboard failed:", error);
-    res.status(500).json({ error: "Failed to fetch dashboard metrics", details: error.message });
+    res.status(500).json({
+      error: "Failed to fetch dashboard metrics",
+      details: error.message
+    });
   }
 });
 
@@ -9018,6 +10516,12 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS gearbox_config JSONB;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS electrical_config JSONB;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS technology_type VARCHAR(50) DEFAULT 'Vibration';");
+    // Static equipment specs (Equipment DB) — nullable for legacy assets
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS rated_amps DOUBLE PRECISION NULL;");
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS max_allowable_temp DOUBLE PRECISION NULL;");
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS bearing_specs JSONB NULL;");
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS voltage_rating DOUBLE PRECISION NULL;");
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS horsepower DOUBLE PRECISION NULL;");
 
     // Check components table
     const componentsExistsQuery = await pool.query(`
@@ -9326,6 +10830,217 @@ async function initializeDatabase() {
       );
     `);
 
+    // -------------------------------------------------------------------------
+    // Run Diagnostics → app-wide persistence (Trend / Alerts / Reports / Logs)
+    // -------------------------------------------------------------------------
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`).catch(() => {
+      /* gen_random_uuid may already be available without the extension */
+    });
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS analysis_results (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        asset_id TEXT,
+        component TEXT,
+        timestamp TIMESTAMPTZ DEFAULT NOW(),
+        health_score INTEGER,
+        primary_fault TEXT,
+        fault_list JSONB DEFAULT '[]'::jsonb,
+        peaks JSONB DEFAULT '[]'::jsonb,
+        spectrum_image_url TEXT,
+        recommendations JSONB DEFAULT '[]'::jsonb,
+        financial_impact JSONB DEFAULT '{}'::jsonb,
+        severity TEXT,
+        summary TEXT,
+        is_baseline BOOLEAN DEFAULT FALSE,
+        consensus_details JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS severity TEXT;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS summary TEXT;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS is_baseline BOOLEAN DEFAULT FALSE;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS consensus_details JSONB;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS analysis_type TEXT DEFAULT 'vibration';
+    `);
+    // Polymorphic thermography columns (nullable for legacy rows)
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS asset_type VARCHAR(64) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS phase_a_temp DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS phase_b_temp DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS phase_c_temp DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS measured_amps DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS rated_amps DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS de_bearing_temp DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS ode_bearing_temp DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS refractory_skin_temp DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS max_allowable_limit DOUBLE PRECISION NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS i2r_normalized_delta_t DOUBLE PRECISION NULL;
+    `);
+    // Backfill thermography rows previously saved without analysis_type
+    await pool.query(`
+      UPDATE analysis_results
+      SET analysis_type = 'thermography'
+      WHERE COALESCE(analysis_type, 'vibration') = 'vibration'
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(COALESCE(peaks, '[]'::jsonb)) AS e
+          WHERE e->>'type' = 'thermography'
+        );
+    `).catch(() => {
+      /* ignore if peaks shape unexpected */
+    });
+    // Backfill via diagnosis_logs link (older IR saves with empty peaks)
+    await pool.query(`
+      UPDATE analysis_results ar
+      SET analysis_type = 'thermography'
+      FROM diagnosis_logs dl
+      WHERE dl.analysis_result_id = ar.id
+        AND LOWER(TRIM(COALESCE(dl.analysis_type, ''))) = 'thermography'
+        AND COALESCE(ar.analysis_type, 'vibration') = 'vibration';
+    `).catch(() => {
+      /* ignore if diagnosis_logs not ready yet */
+    });
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_analysis_results_asset_id
+        ON analysis_results (asset_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_analysis_results_timestamp
+        ON analysis_results (timestamp DESC);
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS alerts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        analysis_result_id UUID REFERENCES analysis_results(id) ON DELETE CASCADE,
+        asset_id TEXT,
+        severity VARCHAR(20) NOT NULL CHECK (severity IN ('HIGH', 'MEDIUM', 'LOW')),
+        title TEXT NOT NULL,
+        description TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        acknowledged BOOLEAN DEFAULT FALSE
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_alerts_asset_id ON alerts (asset_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_alerts_acknowledged ON alerts (acknowledged);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts (created_at DESC);
+    `);
+
+    // Legacy `diagnosis_logs` (integer PK, fault_diagnosis, …) conflicts with the
+    // Run Diagnostics persistence schema. Rename once, then create the UUID table.
+    const diagLogsShape = await pool.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'diagnosis_logs'
+    `);
+    const diagCols = new Set(diagLogsShape.rows.map((r: { column_name: string }) => r.column_name));
+    if (diagCols.size > 0 && diagCols.has("fault_diagnosis") && !diagCols.has("analysis_type")) {
+      await pool.query(`
+        ALTER TABLE diagnosis_logs RENAME TO diagnosis_logs_legacy
+      `);
+      console.log(
+        "ℹ️ Renamed legacy diagnosis_logs → diagnosis_logs_legacy for Run Diagnostics schema."
+      );
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS diagnosis_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        asset_id TEXT,
+        analysis_type TEXT,
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        status VARCHAR(20) NOT NULL CHECK (status IN ('success', 'failed')),
+        result_summary JSONB DEFAULT '{}'::jsonb,
+        analysis_result_id UUID REFERENCES analysis_results(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS analysis_type TEXT;
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS status VARCHAR(20);
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS result_summary JSONB DEFAULT '{}'::jsonb;
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS analysis_result_id UUID;
+    `);
+    await pool.query(`
+      ALTER TABLE diagnosis_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_diagnosis_logs_asset_id ON diagnosis_logs (asset_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_diagnosis_logs_completed_at
+        ON diagnosis_logs (completed_at DESC);
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS work_orders (
+        id SERIAL PRIMARY KEY,
+        asset_id TEXT,
+        title TEXT,
+        status VARCHAR(50) DEFAULT 'scheduled',
+        assignee TEXT,
+        scheduled_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS assignee TEXT;
+    `);
+    await pool.query(`
+      ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+    `);
+
+    console.log(
+      "✅ Run-Diagnostics persistence tables verified: analysis_results, alerts, diagnosis_logs, work_orders."
+    );
+
     // Seed some maintenance logs if none exist
     const logsCountQuery = await pool.query("SELECT COUNT(*) FROM maintenance_logs");
     if (parseInt(logsCountQuery.rows[0].count) === 0) {
@@ -9356,7 +11071,7 @@ async function initializeDatabase() {
       }
     }
 
-    console.log("✅ Database initialized: All plants, routes, assets, components, collection points, measurement points, maintenance logs, and analysis history tables verified/created.");
+    console.log("✅ Database initialized: All plants, routes, assets, components, collection points, measurement points, maintenance logs, analysis history, analysis_results, alerts, and diagnosis_logs tables verified/created.");
   } catch (error) {
     console.error("❌ Failed to initialize database tables:", error);
   }
@@ -9371,11 +11086,17 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
-// Intercept all unmatched /api/* requests and return a JSON 404 rather than letting Vite/SPA fallback serve index.html
-app.all("/api/*", (req, res) => {
+// Intercept unmatched /api requests and return JSON 404 (not SPA index.html)
+app.use("/api", (req, res) => {
+  console.warn(
+    `[API 404] ${req.method} ${req.originalUrl} — no Express route matched. ` +
+      `If you recently added this endpoint (e.g. ${ANALYZE_VIBRATION_API_PATH}), ` +
+      `restart the MotorMedic Pro server with: npm run dev`
+  );
   res.status(404).json({
     error: "API endpoint not found on the MotorMedic Pro backend.",
-    details: `No route matches ${req.method} ${req.path}`
+    details: `No route matches ${req.method} ${req.path}`,
+    hint: "Restart the server (npm run dev) after adding or changing API routes in server.ts."
   });
 });
 
@@ -9402,11 +11123,28 @@ async function setupServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`MotorMedic Pro server running on http://localhost:${PORT}`);
+    console.log(
+      `Mounted: POST ${ANALYZE_VIBRATION_API_PATH} (alias ${ANALYZE_VIBRATION_API_ALIAS}) → consensus engine`
+    );
+    console.log(
+      `Mounted: POST ${ANALYZE_THERMOGRAPHY_API_PATH} → thermography analysis engine`
+    );
+    console.log(
+      `Mounted: POST ${ANALYZE_ULTRASOUND_API_PATH} → ultrasound analysis engine (placeholder)`
+    );
+    console.log(
+      `Mounted: POST ${DETECT_SPECTRUM_REGIONS_API_PATH} → GPT-4o chart region detection`
+    );
     const hasGemini = !!(process.env.GEMINI_API_KEY);
     const hasOpenAI = !!(process.env.OPENAI_API_KEY);
     const hasAnthropic = !!(process.env.ANTHROPIC_API_KEY);
-    console.log(`AI Team Status: Gemini [${hasGemini ? "OK" : "MISSING"}], OpenAI [${hasOpenAI ? "OK" : "MISSING"}], Anthropic [${hasAnthropic ? "OK" : "MISSING"}]`);
-    console.log("AI Team Status: Gemini [OK], OpenAI [OK], Anthropic [OK]");
+    const hasDeepSeek = !!(
+      process.env.DEEPSEEK_API_KEY || process.env.OPENROUTER_API_KEY
+    );
+    const hasGroq = !!(process.env.GROQ_API_KEY);
+    console.log(
+      `AI Team Status: Gemini [${hasGemini ? "OK" : "MISSING"}], OpenAI [${hasOpenAI ? "OK" : "MISSING"}], Anthropic [${hasAnthropic ? "OK" : "MISSING"}], DeepSeek/OpenRouter [${hasDeepSeek ? "OK" : "MISSING"}], Groq [${hasGroq ? "OK" : "MISSING"}]`
+    );
   });
 }
 
