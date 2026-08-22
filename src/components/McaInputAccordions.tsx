@@ -131,8 +131,35 @@ function AccordionShell({
   );
 }
 
+export interface McaOperatorSnapshot {
+  mode: string;
+  windingConfig: string;
+  ratedHp: number | null;
+  ratedVoltage: string | null;
+  windingTempC: number | null;
+  ambientTempC: number | null;
+  insulationClass: string | null;
+  testVoltageV: number | null;
+  phases: {
+    uv: PhaseMetrics;
+    vw: PhaseMetrics;
+    wu: PhaseMetrics;
+  };
+  ir15sMOmega: number | null;
+  ir30sMOmega: number | null;
+  ir1mMOmega: number | null;
+  ir10mMOmega: number | null;
+  reading30s: number | null;
+  reading60s: number | null;
+  reading1Min: number | null;
+  reading10Min: number | null;
+  megohms: number | null;
+}
+
 export interface McaInputAccordionsProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
+  /** Emits live operator inputs for Diagnose → save-analysis-result. */
+  onSnapshotChange?: (snapshot: McaOperatorSnapshot) => void;
   /** Selected from top Equipment Selection (Route / Asset / Component). */
   equipment?: {
     route?: string;
@@ -146,8 +173,15 @@ export interface McaInputAccordionsProps {
   };
 }
 
+function optionalNum(raw: string): number | null {
+  if (raw == null || String(raw).trim() === "") return null;
+  const n = Number(String(raw).replace(/[^\d.eE+-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
 export default function McaInputAccordions({
   onToast,
+  onSnapshotChange,
   equipment
 }: McaInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<McaAccordionSection[]>([]);
@@ -214,6 +248,52 @@ export default function McaInputAccordions({
 
   const isOnline = mcaMode === "online";
   const isDynamic = mcaMode === "dynamic";
+
+  // Keep Diagnose / save path in sync with accordion inputs
+  useEffect(() => {
+    if (!onSnapshotChange) return;
+    const testV = optionalNum(String(testVoltage).replace(/[^\d.]/g, ""));
+    onSnapshotChange({
+      mode: mcaMode,
+      windingConfig,
+      ratedHp: optionalNum(hpKw),
+      ratedVoltage: ratedVoltage || null,
+      windingTempC: optionalNum(windingTemp),
+      ambientTempC: optionalNum(ambientTemp),
+      insulationClass: insulationClass || null,
+      testVoltageV: testV,
+      phases: {
+        uv: { ...phases.uv },
+        vw: { ...phases.vw },
+        wu: { ...phases.wu }
+      },
+      ir15sMOmega: null,
+      ir30sMOmega: optionalNum(reading30s),
+      ir1mMOmega: optionalNum(reading1Min) ?? optionalNum(reading60s) ?? optionalNum(megohms),
+      ir10mMOmega: optionalNum(reading10Min),
+      reading30s: optionalNum(reading30s),
+      reading60s: optionalNum(reading60s),
+      reading1Min: optionalNum(reading1Min),
+      reading10Min: optionalNum(reading10Min),
+      megohms: optionalNum(megohms)
+    });
+  }, [
+    onSnapshotChange,
+    mcaMode,
+    windingConfig,
+    hpKw,
+    ratedVoltage,
+    windingTemp,
+    ambientTemp,
+    insulationClass,
+    testVoltage,
+    phases,
+    reading30s,
+    reading60s,
+    reading1Min,
+    reading10Min,
+    megohms
+  ]);
 
   const ratedVoltageVolts = useMemo(() => {
     const raw = ratedVoltage.trim().toLowerCase();

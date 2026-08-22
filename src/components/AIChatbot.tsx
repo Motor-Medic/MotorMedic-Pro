@@ -34,7 +34,7 @@ export default function AIChatbot() {
       const welcomeMessage: Message = {
         id: "welcome-msg",
         role: "assistant",
-        content: "Welcome to MotorMedic Pro Support! I am your reliability support assistant, specializing in vibration analysis, condition monitoring, and machine reliability. How can I help you today?",
+        content: "Welcome to Spectra CM Support! I am your reliability support assistant, specializing in vibration analysis, condition monitoring, and machine reliability. How can I help you today?",
         timestamp: Date.now()
       };
       setMessages([welcomeMessage]);
@@ -114,7 +114,7 @@ export default function AIChatbot() {
     const welcomeMessage: Message = {
       id: "welcome-msg",
       role: "assistant",
-      content: "Welcome to MotorMedic Pro Support! I am your reliability support assistant, specializing in vibration analysis, condition monitoring, and machine reliability. How can I help you today?",
+      content: "Welcome to Spectra CM Support! I am your reliability support assistant, specializing in vibration analysis, condition monitoring, and machine reliability. How can I help you today?",
       timestamp: Date.now()
     };
     setMessages([welcomeMessage]);
@@ -144,7 +144,7 @@ export default function AIChatbot() {
             
             {/* Tooltip */}
             <span className="absolute right-16 bg-[#0b1329] text-amber-400 text-xs px-3 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap shadow-xl border border-slate-800">
-              Chat with MotorMedic Support
+              Chat with Spectra Support
             </span>
           </motion.button>
         )}
@@ -167,7 +167,7 @@ export default function AIChatbot() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
-                    MotorMedic Assistant
+                    Spectra Assistant
                   </h3>
                   <div className="flex items-center gap-1">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>

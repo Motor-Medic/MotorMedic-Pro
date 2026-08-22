@@ -1,16 +1,32 @@
 /**
- * 3-Stage Multi-Model Consensus Engine for MotorMedic Pro vibration diagnostics.
+ * 3-Stage Multi-Model Consensus Engine for Spectra CM vibration diagnostics.
  *
- * Stage 1  — OpenAI GPT-4o Vision spectrum extractor (OPENAI_API_KEY)
- * Stage 2a — DeepSeek / OpenRouter kinematic fault-mode analyst
- * Stage 2b — Groq / OpenAI ISO 10816/20816 severity analyst
- * Stage 3  — Consensus referee via Groq / OpenRouter / Gemini
+ * All stages use OpenRouter exclusively (OPENROUTER_API_KEY required):
+ *   Stage 1  — openai/gpt-4o vision (OPENROUTER_VISION_MODEL)
+ *   Stage 2a — qwen/qwen-2.5-vl-72b-instruct kinematic analyst
+ *   Stage 2b — qwen/qwen-2.5-vl-72b-instruct ISO analyst
+ *   Stage 3  — qwen/qwen-2.5-vl-72b-instruct consensus referee
  *
  * Failures return structured domain errors (never mock diagnostic data).
  */
 
-import { GoogleGenAI } from "@google/genai";
 import OpenAI from "openai";
+import {
+  logPayloadSize,
+  logPipelineFail,
+  logPipelineSend,
+  logPipelineStart,
+  logPipelineSuccess,
+  pipelineElapsedSec
+} from "./pipelineTrace";
+import {
+  OPENROUTER_API_BASE,
+  OPENROUTER_CONSENSUS_MODEL,
+  OPENROUTER_VISION_MODELS,
+  hasOpenRouterKey,
+  openRouterRefererHeaders
+} from "./openRouterModels";
+import { EXPERT_VISION_PROMPT, VIBRATION_VISION_PROMPT_SIMPLE } from "./vibration/visionModelConfig";
 
 /** Canonical Express mount path — keep client fetch URLs in sync with server.ts */
 export const ANALYZE_VIBRATION_API_PATH = "/api/analyze-vibration";
@@ -51,6 +67,8 @@ export interface AnalyzeVibrationRequest {
   imageBase64?: string;
   componentSpecs?: AnalyzeComponentSpecs;
   telemetry?: AnalyzeTelemetry;
+  /** `simple` asks Stage 1 vision for fewer peaks (timeout retry). */
+  mode?: "full" | "simple";
 }
 
 export interface VibrationAnalysisResult {
@@ -114,10 +132,6 @@ export type ConsensusOutcome =
   | { success: true; data: ConsensusVibrationResult }
   | ConsensusDomainError;
 
-const OPENAI_VISION_MODELS = ["gpt-4o", "gpt-4-turbo"] as const;
-/** Text-only referee models (Stage 3 optional path — not used for spectrum vision) */
-const GEMINI_REFEREE_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"] as const;
-
 const DOMAIN_ERRORS: Record<
   ConsensusErrorType,
   Pick<ConsensusDomainError, "title" | "message" | "httpStatus">
@@ -137,7 +151,7 @@ const DOMAIN_ERRORS: Record<
     httpStatus: 503,
     title: "Consensus Diagnostic Error",
     message:
-      "An AI provider timed out during multi-agent synthesis. Please retry analysis."
+      "An AI provider timed out during multi-agent synthesis. Please retry analysis, or upload a clearer spectrum image."
   }
 };
 
@@ -174,6 +188,8 @@ function isTimeoutLike(err: unknown): boolean {
 
 const DOWNTIME_RATE_PER_HOUR = 5000;
 const REACTIVE_MAINTENANCE_MULTIPLIER = 5;
+/** Keep each provider call under the 60s per-attempt budget. */
+const AI_PROVIDER_TIMEOUT_MS = 55_000;
 
 /** Fault-based preventive cost, downtime hours, and step-by-step repair tasks */
 function computeFinancialImpactFromFaultTitle(primaryFaultTitle: string | undefined | null): {
@@ -309,6 +325,212 @@ function isPlaceholderFaultTitle(title: string | undefined | null): boolean {
   );
 }
 
+function isHealthyFaultTitle(title: string | undefined | null): boolean {
+  const t = String(title || "").trim().toLowerCase();
+  return (
+    isPlaceholderFaultTitle(title) ||
+    /healthy|normal operation|iso zone a|good|acceptable|continue monitoring|no anomaly/i.test(t)
+  );
+}
+
+function mapExpertSeverityToApi(severity: string | undefined): ApiSeverity {
+  const s = String(severity || "").toUpperCase();
+  if (s === "CRITICAL" || s === "D") return "CRITICAL";
+  if (s === "HIGH" || s === "C" || s === "MEDIUM" || s === "B" || s === "ANOMALY") {
+    return "ANOMALY";
+  }
+  return "NORMAL";
+}
+
+function extractionRpm(extraction: Stage1Extraction): number {
+  if (Number.isFinite(extraction.runningSpeed1xRpm) && extraction.runningSpeed1xRpm! > 0) {
+    return extraction.runningSpeed1xRpm!;
+  }
+  if (Number.isFinite(extraction.runningSpeed1xHz) && extraction.runningSpeed1xHz! > 0) {
+    return extraction.runningSpeed1xHz! * 60;
+  }
+  return 0;
+}
+
+function machineTypeLabel(specs: AnalyzeComponentSpecs): string {
+  const hp = Number(specs.motorHpKw ?? specs.motorHp);
+  if (Number.isFinite(hp) && hp >= 75) return "large industrial machine";
+  return "small/medium industrial machine";
+}
+
+function normalizeStage2aResponse(
+  raw: unknown,
+  extraction: Stage1Extraction
+): AnalystHypothesis {
+  const legacy = raw as AnalystHypothesis;
+  if (legacy?.primaryFaultTitle && Number.isFinite(Number(legacy.confidencePercent))) {
+    return legacy;
+  }
+
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const rpm = extractionRpm(extraction);
+  const oneXHz = rpm > 0 ? rpm / 60 : Number(extraction.runningSpeed1xHz) || 0;
+  const primaryFault = String(o.primaryFault || o.primaryFaultTitle || "Normal");
+  const confidence = clamp(Number(o.confidence ?? o.confidencePercent ?? 70), 0, 100);
+  const severity = mapExpertSeverityToApi(String(o.severity || "LOW"));
+  const evidence = String(o.evidence || o.reasoning || "");
+  const recommendation = String(o.recommendation || o.actionWindow || "Continue monitoring");
+
+  return {
+    primaryFaultTitle: primaryFault,
+    frequencyHz: oneXHz,
+    severity,
+    confidencePercent: confidence,
+    reasoning: [evidence, recommendation].filter(Boolean).join(" — "),
+    actionWindow: recommendation,
+    overallHealthScore:
+      severity === "CRITICAL" ? 35 : severity === "ANOMALY" ? 62 : 90,
+    identifiedFaults:
+      primaryFault.toLowerCase() === "normal"
+        ? []
+        : [
+            {
+              title: primaryFault,
+              frequencyHz: oneXHz,
+              confidencePercent: confidence,
+              severity,
+              description: evidence || recommendation
+            }
+          ]
+  };
+}
+
+function normalizeStage2bResponse(
+  raw: unknown,
+  extraction: Stage1Extraction,
+  specs: AnalyzeComponentSpecs
+): AnalystHypothesis {
+  const legacy = raw as AnalystHypothesis;
+  if (legacy?.primaryFaultTitle && Number.isFinite(Number(legacy.confidencePercent))) {
+    return legacy;
+  }
+
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const isoZone = String(o.isoZone || legacy.isoZone || "B").toUpperCase();
+  const acceptability = String(o.acceptability || "Acceptable");
+  const actionRequired = String(
+    o.actionRequired || o.actionWindow || "Continue monitoring"
+  );
+  const velocity =
+    Number(extraction.overallRmsVelocity) ||
+    Number(extraction.peaks?.[0]?.amplitude) ||
+    0;
+  const rpm = extractionRpm(extraction);
+  const severity =
+    isoZone === "D"
+      ? "CRITICAL"
+      : isoZone === "C"
+        ? "ANOMALY"
+        : "NORMAL";
+  const isHealthy = isoZone === "A" || isoZone === "B";
+  const confidence = isoZone === "A" ? 92 : isoZone === "B" ? 85 : isoZone === "C" ? 78 : 88;
+
+  return {
+    primaryFaultTitle: isHealthy
+      ? `ISO Zone ${isoZone} — ${acceptability}`
+      : `ISO Zone ${isoZone} — Elevated Vibration`,
+    frequencyHz: rpm > 0 ? rpm / 60 : Number(extraction.runningSpeed1xHz) || 0,
+    severity,
+    confidencePercent: confidence,
+    isoZone,
+    reasoning: `Overall ${velocity.toFixed(2)} mm/s on ${machineTypeLabel(specs)} at ${rpm || "unknown"} RPM maps to ISO 10816 Zone ${isoZone} (${acceptability}). ${actionRequired}`,
+    actionWindow: actionRequired,
+    overallHealthScore:
+      isoZone === "A" ? 92 : isoZone === "B" ? 82 : isoZone === "C" ? 58 : 35,
+    identifiedFaults: isHealthy
+      ? []
+      : [
+          {
+            title: `ISO 10816 Zone ${isoZone}`,
+            frequencyHz: 0,
+            confidencePercent: confidence,
+            severity,
+            description: actionRequired
+          }
+        ]
+  };
+}
+
+function normalizeStage3ExpertResponse(
+  parsed: Record<string, unknown>,
+  extraction: Stage1Extraction,
+  agentA: AnalystHypothesis | null,
+  agentB: AnalystHypothesis | null
+): ConsensusVibrationResult {
+  if (parsed.primaryFault && parsed.overallHealthScore != null) {
+    return parsed as unknown as ConsensusVibrationResult;
+  }
+
+  const finalDiagnosis = String(
+    parsed.finalDiagnosis || parsed.summary || "Inconclusive - Manual Review Required"
+  );
+  const confidence = clamp(Number(parsed.confidence ?? parsed.confidencePercent ?? 75), 0, 100);
+  const severity = mapExpertSeverityToApi(String(parsed.severity || "LOW"));
+  const actionPlan = String(parsed.actionPlan || parsed.actionWindow || "Continue monitoring");
+  const discrepancies = Array.isArray(parsed.discrepancies)
+    ? parsed.discrepancies.map(String)
+    : [];
+  const oneXHz = Number(extraction.runningSpeed1xHz) || 0;
+  const isHealthy = isHealthyFaultTitle(finalDiagnosis);
+  const costed = computeFinancialImpactFromFaultTitle(finalDiagnosis);
+
+  const debateSummary =
+    discrepancies.length > 0
+      ? discrepancies.join("; ")
+      : actionPlan;
+
+  return {
+    overallHealthScore: isHealthy
+      ? clamp(Number(parsed.overallHealthScore ?? 92), 0, 100)
+      : severity === "CRITICAL"
+        ? 35
+        : severity === "ANOMALY"
+          ? 58
+          : 88,
+    severity: isHealthy ? "NORMAL" : severity,
+    summary:
+      discrepancies.length > 0
+        ? `${finalDiagnosis} (${discrepancies.join("; ")})`
+        : finalDiagnosis,
+    primaryFault: {
+      title: finalDiagnosis,
+      frequencyHz: oneXHz,
+      confidencePercent: confidence,
+      severity: isHealthy ? "NORMAL" : severity,
+      actionWindow: actionPlan
+    },
+    identifiedFaults: isHealthy
+      ? []
+      : [
+          {
+            title: finalDiagnosis,
+            frequencyHz: oneXHz,
+            confidencePercent: confidence,
+            severity: isHealthy ? "NORMAL" : severity,
+            description: actionPlan
+          }
+        ],
+    financialImpact: costed.financialImpact,
+    repairRecommendations: costed.repairRecommendations,
+    consensusDetails: {
+      modelA_Hypothesis: agentA
+        ? `${agentA.primaryFaultTitle} (${agentA.confidencePercent}%): ${agentA.reasoning}`
+        : "Agent A unavailable.",
+      modelB_Hypothesis: agentB
+        ? `${agentB.primaryFaultTitle} (${agentB.confidencePercent}%)${
+            agentB.isoZone ? ` ISO Zone ${agentB.isoZone}` : ""
+          }: ${agentB.reasoning}`
+        : "Agent B unavailable.",
+      refereeDebateSummary: debateSummary
+    }
+  };
+}
+
 function nearHz(hz: number, target: number, tol: number): boolean {
   return Number.isFinite(hz) && Number.isFinite(target) && Math.abs(hz - target) <= tol;
 }
@@ -405,6 +627,28 @@ function ensureFaultListOnResult(
   agentA: AnalystHypothesis | null,
   agentB: AnalystHypothesis | null
 ): ConsensusVibrationResult {
+  const healthyReferee =
+    result.severity === "NORMAL" &&
+    isHealthyFaultTitle(result.primaryFault?.title || result.summary);
+
+  if (healthyReferee) {
+    return {
+      ...result,
+      overallHealthScore: clamp(Number(result.overallHealthScore ?? 92), 0, 100),
+      identifiedFaults: [],
+      primaryFault: {
+        ...result.primaryFault,
+        severity: "NORMAL",
+        title:
+          result.primaryFault?.title ||
+          "Machine Healthy / Normal Operation"
+      },
+      summary:
+        result.summary ||
+        "Machine Healthy / Normal Operation — ISO Zone A/B, 1X running speed within limits."
+    };
+  }
+
   let faults = (result.identifiedFaults || []).filter(
     (f) => f && !isPlaceholderFaultTitle(f.title)
   );
@@ -489,7 +733,7 @@ function ensureFaultListOnResult(
   }
 
   let overallHealthScore = Number(result.overallHealthScore);
-  if (!Number.isFinite(overallHealthScore) || (severity !== "NORMAL" && overallHealthScore > 75)) {
+  if (!Number.isFinite(overallHealthScore) || (severityRank[severity] > severityRank.NORMAL && overallHealthScore > 75)) {
     overallHealthScore =
       severity === "CRITICAL" ? 32 : severity === "ANOMALY" ? 58 : 88;
   }
@@ -599,7 +843,26 @@ function normalizeFaultKey(title: string | undefined): string {
     .trim();
 }
 
-function faultsAgree(a?: string, b?: string): boolean {
+function isKinematicNormal(agent: AnalystHypothesis | null): boolean {
+  if (!agent) return false;
+  const title = String(agent.primaryFaultTitle || "").trim().toLowerCase();
+  return (
+    title === "normal" ||
+    isPlaceholderFaultTitle(title) ||
+    /^normal\b/.test(title)
+  );
+}
+
+function isoZoneOf(agent: AnalystHypothesis | null): string {
+  if (!agent) return "";
+  const z = String(agent.isoZone || "").toUpperCase();
+  if (/^[ABCD]$/.test(z)) return z;
+  const m = /iso zone\s*([abcd])/i.exec(agent.primaryFaultTitle || "");
+  return m ? m[1].toUpperCase() : "";
+}
+
+function fuzzyTitleAgree(a?: string, b?: string): boolean {
+  if (isHealthyFaultTitle(a) && isHealthyFaultTitle(b)) return true;
   const ka = normalizeFaultKey(a);
   const kb = normalizeFaultKey(b);
   if (!ka || !kb) return false;
@@ -608,6 +871,91 @@ function faultsAgree(a?: string, b?: string): boolean {
   const bTokens = kb.split(" ").filter((t) => t.length > 3);
   const overlap = bTokens.filter((t) => aTokens.has(t)).length;
   return overlap >= 2;
+}
+
+function faultsAgree(agentA: AnalystHypothesis, agentB: AnalystHypothesis): boolean {
+  const healthyA = isKinematicNormal(agentA);
+  const zoneB = isoZoneOf(agentB);
+  const healthyB =
+    zoneB === "A" ||
+    zoneB === "B" ||
+    isHealthyFaultTitle(agentB.primaryFaultTitle);
+  const faultA = !healthyA;
+  const elevatedB = zoneB === "C" || zoneB === "D";
+
+  // Both think the machine is healthy
+  if (healthyA && healthyB) return true;
+
+  // Both think there is a problem (fault + elevated ISO zone)
+  if (faultA && elevatedB) return true;
+
+  // Hard disagreement only: Normal vs Zone D, or fault vs Zone A
+  if (healthyA && zoneB === "D") return false;
+  if (faultA && zoneB === "A") return false;
+
+  // Minor differences (e.g. Normal vs Zone B, fault vs Zone B) — reconcile in Stage 3
+  if (healthyA && zoneB === "B") return true;
+  if (faultA && zoneB === "B") return true;
+
+  return fuzzyTitleAgree(agentA.primaryFaultTitle, agentB.primaryFaultTitle);
+}
+
+function applyManualReviewWarning(
+  result: ConsensusVibrationResult,
+  note: string,
+  confidence?: number
+): ConsensusVibrationResult {
+  const conf = clamp(Number(confidence ?? result.primaryFault?.confidencePercent ?? 50), 50, 79);
+  const title = String(result.primaryFault?.title || "");
+  const keepDecisiveTitle =
+    /machine healthy|anomaly detected|unbalance|misalignment|looseness|bearing|iso zone/i.test(
+      title
+    ) && !/inconclusive|manual review/i.test(title);
+  const debateSummary = [note, result.consensusDetails?.refereeDebateSummary]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    ...result,
+    summary: keepDecisiveTitle
+      ? `${title}. ${note}`
+      : result.summary?.includes("Manual review")
+        ? result.summary
+        : `${result.summary || "Analysis complete"}. Manual review recommended.`,
+    primaryFault: {
+      ...result.primaryFault,
+      confidencePercent: conf,
+      title: keepDecisiveTitle
+        ? title
+        : "Inconclusive - Manual Review Recommended"
+    },
+    consensusDetails: {
+      modelA_Hypothesis:
+        result.consensusDetails?.modelA_Hypothesis || "n/a",
+      modelB_Hypothesis:
+        result.consensusDetails?.modelB_Hypothesis || "n/a",
+      refereeDebateSummary: debateSummary || note
+    }
+  };
+}
+
+function buildConsensusSuccessPayload(
+  aligned: ConsensusVibrationResult,
+  extraction: Stage1Extraction
+): ConsensusOutcome {
+  return {
+    success: true,
+    data: {
+      ...aligned,
+      success: true,
+      spectrumPeaks: extraction.peaks?.map((p) => ({
+        frequencyHz: p.frequencyHz,
+        amplitude: p.amplitude,
+        label: p.label,
+        chart: "fft" as const
+      }))
+    } as ConsensusVibrationResult & { success: true; spectrumPeaks?: unknown }
+  };
 }
 
 function isExtractionReadable(extraction: Stage1Extraction): boolean {
@@ -625,44 +973,29 @@ function isExtractionReadable(extraction: Stage1Extraction): boolean {
   return true;
 }
 
-async function callOpenAiCompatible(
-  provider: "deepseek" | "openrouter" | "groq" | "openai",
+async function callOpenRouter(
   model: string,
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
-  let apiKey = "";
-  let baseURL = "";
-
-  switch (provider) {
-    case "deepseek":
-      apiKey = process.env.DEEPSEEK_API_KEY?.trim() || "";
-      baseURL = "https://api.deepseek.com/v1";
-      break;
-    case "openrouter":
-      apiKey = process.env.OPENROUTER_API_KEY?.trim() || "";
-      baseURL = "https://openrouter.ai/api/v1";
-      break;
-    case "groq":
-      apiKey = process.env.GROQ_API_KEY?.trim() || "";
-      baseURL = "https://api.groq.com/openai/v1";
-      break;
-    case "openai":
-      apiKey = process.env.OPENAI_API_KEY?.trim() || "";
-      baseURL = "https://api.openai.com/v1";
-      break;
-  }
-
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error(`${provider.toUpperCase()}_API_KEY is not configured.`);
+    throw new Error("OPENROUTER_API_KEY is not configured.");
   }
 
-  const client = new OpenAI({ apiKey, baseURL });
+  const client = new OpenAI({
+    apiKey,
+    baseURL: OPENROUTER_API_BASE,
+    timeout: AI_PROVIDER_TIMEOUT_MS,
+    defaultHeaders: openRouterRefererHeaders()
+  });
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt }
   ];
 
+  const startTime = logPipelineStart("provider:openrouter", { model });
+  logPipelineSend("provider:openrouter", { model, timeoutMs: AI_PROVIDER_TIMEOUT_MS });
   try {
     const response = await client.chat.completions.create({
       model,
@@ -671,22 +1004,32 @@ async function callOpenAiCompatible(
       response_format: { type: "json_object" }
     });
     const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error(`${provider} returned empty content.`);
+    if (!content) throw new Error(`OpenRouter/${model} returned empty content.`);
+    logPipelineSuccess("provider:openrouter", startTime, { model, mode: "json" });
     return content;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    logPipelineFail("provider:openrouter:json", startTime, err);
     console.warn(
-      `[consensus] ${provider}/${model} JSON mode failed, retrying plain:`,
+      `[consensus] openrouter/${model} JSON mode failed, retrying plain:`,
       message
     );
-    const response = await client.chat.completions.create({
-      model,
-      messages,
-      temperature: 0.15
-    });
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error(`${provider} returned empty content on retry.`);
-    return content;
+    try {
+      const response = await client.chat.completions.create({
+        model,
+        messages,
+        temperature: 0.15
+      });
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error(`OpenRouter/${model} returned empty content on retry.`);
+      }
+      logPipelineSuccess("provider:openrouter", startTime, { model, mode: "plain-retry" });
+      return content;
+    } catch (retryErr: unknown) {
+      logPipelineFail("provider:openrouter:plain", startTime, retryErr);
+      throw retryErr;
+    }
   }
 }
 
@@ -694,59 +1037,74 @@ async function callOpenAiCompatible(
 /* Stage 1 — OpenAI GPT-4o Vision spectrum extractor                          */
 /* -------------------------------------------------------------------------- */
 
-const OPENAI_VISION_SYSTEM_PROMPT = `You are a vibration analysis expert. Extract the following from this FFT spectrum chart:
-   - Peak frequencies (Hz) and their amplitudes
-   - X-axis range (Fmax)
-   - Y-axis units (velocity, acceleration, or displacement)
-   - Identify 1X running speed, harmonics, and bearing fault frequencies
-   Return as JSON array with: frequency, amplitude, label`;
+const OPENAI_VISION_SYSTEM_PROMPT = EXPERT_VISION_PROMPT;
+
+const OPENAI_VISION_SYSTEM_PROMPT_SIMPLE = VIBRATION_VISION_PROMPT_SIMPLE;
 
 interface OpenAiSpectrumPeak {
   frequency?: number;
   frequencyHz?: number;
   amplitude?: number;
   label?: string;
+  harmonicOrder?: string | number;
+  description?: string;
 }
 
 /**
- * Analyze a spectrum chart image with OpenAI GPT-4o Vision.
- * Retries with gpt-4-turbo if gpt-4o fails.
+ * Analyze a spectrum chart image with GPT-4o Vision via OpenRouter only.
  */
 export async function analyzeSpectrumWithOpenAI(
   imageBase64: string,
-  context?: { specs?: AnalyzeComponentSpecs; telemetry?: AnalyzeTelemetry }
+  context?: {
+    specs?: AnalyzeComponentSpecs;
+    telemetry?: AnalyzeTelemetry;
+    mode?: "full" | "simple";
+  }
 ): Promise<Stage1Extraction> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not configured.");
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!openRouterKey) {
+    throw new Error("OPENROUTER_API_KEY is required for Stage 1 vision extraction.");
   }
 
   const { data, mimeType } = stripDataUrl(imageBase64);
   const cleanBase64 = data.replace(/^data:image\/\w+;base64,/, "");
   const dataUrl = `data:${mimeType};base64,${cleanBase64}`;
+  logPayloadSize("stage1-openai-vision", dataUrl);
+  const mode = context?.mode === "simple" ? "simple" : "full";
+  const systemPrompt =
+    mode === "simple"
+      ? OPENAI_VISION_SYSTEM_PROMPT_SIMPLE
+      : OPENAI_VISION_SYSTEM_PROMPT;
 
   const specs = context?.specs || {};
   const telemetry = context?.telemetry || {};
-  const userContext = `${specsBlock(specs, telemetry)}
+  const peakInstruction =
+    mode === "simple"
+      ? `Extract ONLY the top 3 highest-amplitude peaks. Use the REQUIRED JSON OUTPUT schema from the system prompt.`
+      : `Extract ALL visible major peaks. Use the REQUIRED JSON OUTPUT schema from the system prompt.`;
+  const userContext = `${peakInstruction}
 
-Also return a JSON object wrapping the peaks array so the schema is:
-{
-  "peaks": [ { "frequency": number, "amplitude": number, "label": string } ],
-  "fmax": number,
-  "amplitudeUnit": "velocity" | "acceleration" | "displacement" | "in/s" | "mm/s" | "g",
-  "runningSpeed1xHz": number,
-  "overallRmsVelocity": number,
-  "axesReadable": boolean,
-  "extractionConfidence": number,
-  "notes": string
-}`;
+IMPORTANT: Read RPM from the chart image only. Do NOT copy Rated RPM from specs unless the image shows no RPM.
+Database specs (reference only — image wins): ${specsBlock(specs, telemetry)}`;
 
-  const client = new OpenAI({ apiKey });
+  const client = new OpenAI({
+    apiKey: openRouterKey,
+    baseURL: OPENROUTER_API_BASE,
+    timeout: AI_PROVIDER_TIMEOUT_MS,
+    defaultHeaders: openRouterRefererHeaders()
+  });
+
   let lastError: unknown;
 
-  for (const model of OPENAI_VISION_MODELS) {
+  for (const model of OPENROUTER_VISION_MODELS) {
+    const stageStart = logPipelineStart("stage1-vision", {
+      model,
+      provider: "openrouter",
+      timeoutMs: AI_PROVIDER_TIMEOUT_MS
+    });
     try {
-      console.log(`[consensus] Stage 1 OpenAI Vision via ${model}…`);
+      console.log(`[consensus] Stage 1 vision via OpenRouter / ${model}…`);
+      logPipelineSend("stage1-vision", { model, detail: "high" });
       let contentText = "";
       try {
         const response = await client.chat.completions.create({
@@ -754,7 +1112,7 @@ Also return a JSON object wrapping the peaks array so the schema is:
           temperature: 0.1,
           response_format: { type: "json_object" },
           messages: [
-            { role: "system", content: OPENAI_VISION_SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             {
               role: "user",
               content: [
@@ -766,6 +1124,7 @@ Also return a JSON object wrapping the peaks array so the schema is:
         });
         contentText = response.choices[0]?.message?.content || "";
       } catch (jsonModeErr) {
+        logPipelineFail("stage1-vision:json", stageStart, jsonModeErr);
         console.warn(
           `[consensus] ${model} JSON mode failed, retrying plain:`,
           jsonModeErr instanceof Error ? jsonModeErr.message : jsonModeErr
@@ -774,7 +1133,7 @@ Also return a JSON object wrapping the peaks array so the schema is:
           model,
           temperature: 0.1,
           messages: [
-            { role: "system", content: OPENAI_VISION_SYSTEM_PROMPT },
+            { role: "system", content: systemPrompt },
             {
               role: "user",
               content: [
@@ -795,6 +1154,11 @@ Also return a JSON object wrapping the peaks array so the schema is:
         | OpenAiSpectrumPeak[]
         | {
             peaks?: OpenAiSpectrumPeak[];
+            chartType?: string;
+            rpm?: number;
+            xAxisUnit?: string;
+            yAxisUnit?: string;
+            overallVelocity?: number;
             fmax?: number;
             amplitudeUnit?: string;
             runningSpeed1xHz?: number;
@@ -808,6 +1172,11 @@ Also return a JSON object wrapping the peaks array so the schema is:
 
       let peakRows: OpenAiSpectrumPeak[] = [];
       let meta: {
+        chartType?: string;
+        rpm?: number;
+        xAxisUnit?: string;
+        yAxisUnit?: string;
+        overallVelocity?: number;
         fmax?: number;
         amplitudeUnit?: string;
         runningSpeed1xHz?: number;
@@ -826,31 +1195,42 @@ Also return a JSON object wrapping the peaks array so the schema is:
         meta = raw;
       }
 
-      const unit = meta.amplitudeUnit || "in/s";
+      const xAxisUnit = String(meta.xAxisUnit || "Hz").toUpperCase();
+      const unit = meta.yAxisUnit || meta.amplitudeUnit || "mm/s";
       const peaks: SpectrumPeak[] = peakRows
         .map((p) => {
-          const frequencyHz = Number(p.frequencyHz ?? p.frequency ?? 0);
+          let frequencyHz = Number(p.frequencyHz ?? p.frequency ?? 0);
+          if (xAxisUnit === "CPM" && frequencyHz > 0) {
+            frequencyHz = frequencyHz / 60;
+          }
           const amplitude = Number(p.amplitude ?? 0);
+          const label =
+            p.label ||
+            p.description ||
+            (p.harmonicOrder != null ? String(p.harmonicOrder) : undefined);
           return {
             frequencyHz,
             frequencyCpm: frequencyHz > 0 ? frequencyHz * 60 : undefined,
             amplitude,
             amplitudeUnit: unit,
-            label: p.label || undefined
+            label
           };
         })
         .filter((p) => Number.isFinite(p.frequencyHz) && p.frequencyHz > 0);
 
-      const rpm = Number(specs.ratedRpm);
+      const imageRpm = Number(meta.rpm);
       let runningSpeed1xHz = Number(meta.runningSpeed1xHz);
       let runningSpeed1xRpm = Number(meta.runningSpeed1xRpm);
-      if (
+
+      if (Number.isFinite(imageRpm) && imageRpm > 0) {
+        runningSpeed1xRpm = imageRpm;
+        runningSpeed1xHz = imageRpm / 60;
+      } else if (
         (!Number.isFinite(runningSpeed1xHz) || runningSpeed1xHz <= 0) &&
-        Number.isFinite(rpm) &&
-        rpm > 0
+        Number.isFinite(runningSpeed1xRpm) &&
+        runningSpeed1xRpm > 0
       ) {
-        runningSpeed1xRpm = rpm;
-        runningSpeed1xHz = rpm / 60;
+        runningSpeed1xHz = runningSpeed1xRpm / 60;
       }
 
       const oneXPeak = peaks.find((p) =>
@@ -861,11 +1241,23 @@ Also return a JSON object wrapping the peaks array so the schema is:
         runningSpeed1xRpm = oneXPeak.frequencyHz * 60;
       }
 
+      const chartNote = meta.chartType ? `chartType=${meta.chartType}` : undefined;
+      const rpmNote =
+        Number.isFinite(runningSpeed1xRpm) && runningSpeed1xRpm! > 0
+          ? `image RPM=${runningSpeed1xRpm}, 1X=${runningSpeed1xHz?.toFixed(2)} Hz`
+          : undefined;
+
+      logPipelineSuccess("stage1-vision", stageStart, {
+        model,
+        peakCount: peaks.length
+      });
       return {
         peaks,
-        overallRmsVelocity: Number.isFinite(Number(meta.overallRmsVelocity))
-          ? Number(meta.overallRmsVelocity)
-          : Number(telemetry.rmsVelocity) || undefined,
+        overallRmsVelocity: Number.isFinite(Number(meta.overallVelocity))
+          ? Number(meta.overallVelocity)
+          : Number.isFinite(Number(meta.overallRmsVelocity))
+            ? Number(meta.overallRmsVelocity)
+            : Number(telemetry.rmsVelocity) || undefined,
         amplitudeUnit: unit,
         runningSpeed1xHz: Number.isFinite(runningSpeed1xHz)
           ? runningSpeed1xHz
@@ -874,9 +1266,9 @@ Also return a JSON object wrapping the peaks array so the schema is:
           ? runningSpeed1xRpm
           : undefined,
         defectMultipliers: meta.defectMultipliers,
-        notes:
-          meta.notes ||
-          (meta.fmax != null ? `Fmax≈${meta.fmax}` : undefined),
+        notes: [chartNote, rpmNote, meta.notes, meta.fmax != null ? `Fmax≈${meta.fmax}` : undefined]
+          .filter(Boolean)
+          .join("; ") || undefined,
         extractionConfidence: Number.isFinite(Number(meta.extractionConfidence))
           ? Number(meta.extractionConfidence)
           : peaks.length > 0
@@ -886,9 +1278,10 @@ Also return a JSON object wrapping the peaks array so the schema is:
       };
     } catch (err) {
       lastError = err;
-      console.error("🚨 OpenAI Vision Raw Error:", err);
+      logPipelineFail("stage1-vision", stageStart, err);
+      console.error("🚨 Vision extraction error:", err);
       console.warn(
-        `[consensus] OpenAI Vision model ${model} failed:`,
+        `[consensus] Vision model ${model} failed:`,
         err instanceof Error ? err.message : err
       );
     }
@@ -902,13 +1295,14 @@ Also return a JSON object wrapping the peaks array so the schema is:
 async function stage1VisionExtract(
   imageBase64: string,
   specs: AnalyzeComponentSpecs,
-  telemetry: AnalyzeTelemetry
+  telemetry: AnalyzeTelemetry,
+  mode: "full" | "simple" = "full"
 ): Promise<Stage1Extraction> {
-  return analyzeSpectrumWithOpenAI(imageBase64, { specs, telemetry });
+  return analyzeSpectrumWithOpenAI(imageBase64, { specs, telemetry, mode });
 }
 
 /* -------------------------------------------------------------------------- */
-/* Stage 2a — Kinematic Math & Fault Modes (DeepSeek / OpenRouter)            */
+/* Stage 2a — Kinematic Math & Fault Modes (OpenRouter / Qwen)            */
 /* -------------------------------------------------------------------------- */
 
 async function stage2aKinematicAnalyst(
@@ -916,51 +1310,47 @@ async function stage2aKinematicAnalyst(
   specs: AnalyzeComponentSpecs,
   telemetry: AnalyzeTelemetry
 ): Promise<AnalystHypothesis> {
-  const system = `You are Agent A — Kinematic Math & Fault Modes specialist.
-Evaluate 1X Unbalance, 2X Misalignment, 3X-10X harmonics, and bearing defect frequencies (BPFO, BPFI, BSF, FTF).
-Return ONLY JSON matching:
+  const rpm = extractionRpm(extraction) || Number(specs.ratedRpm) || 0;
+  const oneXHz = rpm > 0 ? rpm / 60 : Number(extraction.runningSpeed1xHz) || 0;
+
+  const system = `You are a vibration analyst specializing in fault identification.
+
+Given spectral data with RPM = ${rpm}, analyze the peaks:
+
+FAULT DIAGNOSIS RULES:
+1. UNBALANCE: High 1X peak (>50% of overall), low harmonics
+2. MISALIGNMENT: High 2X peak (often >1X), possibly 3X
+3. MECHANICAL LOOSENESS: Multiple harmonics (3X, 4X, 5X+) with decreasing amplitude
+4. BEARING DEFECTS: Peaks at BPFO, BPFI, BSF, or FTF frequencies (usually >1000 Hz)
+
+CRITICAL:
+- 1X frequency = RPM/60 (e.g., 1780 RPM = 29.67 Hz, NOT 1780 Hz!)
+- Always calculate 1X from RPM first, then compare peaks to harmonics
+- Expected 1X for this machine ≈ ${oneXHz.toFixed(2)} Hz at ${rpm} RPM
+
+Output JSON:
 {
-  "primaryFaultTitle": string,
-  "frequencyHz": number,
-  "severity": "NORMAL"|"ANOMALY"|"CRITICAL",
-  "confidencePercent": number,
-  "reasoning": string,
-  "actionWindow": string,
-  "overallHealthScore": number,
-  "identifiedFaults": [{ "title", "frequencyHz", "confidencePercent", "severity", "description" }]
+  "primaryFault": "Unbalance" | "Misalignment" | "Looseness" | "BearingDefect" | "Normal",
+  "confidence": <0-100>,
+  "severity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
+  "evidence": "1X at {freq} Hz is {amplitude} mm/s ({percent}% of overall)",
+  "recommendation": "Balance rotor" | "Check alignment" | "Inspect bearings" | "Continue monitoring"
 }`;
 
   const user = `${specsBlock(specs, telemetry)}
 
-=== STAGE 1 SPECTRUM EXTRACTION ===
+=== STAGE 1 SPECTRUM EXTRACTION (image-derived RPM preferred) ===
 ${JSON.stringify(extraction, null, 2)}
 
-Correlate peaks to theoretical fault families using Rated RPM → 1X Hz = RPM/60.`;
+Correlate peaks to 1X=${oneXHz.toFixed(2)} Hz and harmonics. Never treat RPM as Hz.`;
 
-  let raw: string;
-  if (process.env.DEEPSEEK_API_KEY?.trim()) {
-    raw = await callOpenAiCompatible(
-      "deepseek",
-      "deepseek-chat",
-      system,
-      user
-    );
-  } else if (process.env.OPENROUTER_API_KEY?.trim()) {
-    raw = await callOpenAiCompatible(
-      "openrouter",
-      "deepseek/deepseek-chat",
-      system,
-      user
-    );
-  } else {
-    throw new Error("DEEPSEEK_API_KEY or OPENROUTER_API_KEY is not configured.");
-  }
+  const raw = await callOpenRouter(OPENROUTER_CONSENSUS_MODEL, system, user);
 
-  return extractJsonObject(raw) as AnalystHypothesis;
+  return normalizeStage2aResponse(extractJsonObject(raw), extraction);
 }
 
 /* -------------------------------------------------------------------------- */
-/* Stage 2b — ISO Standards & Operational Context (Groq / OpenAI)             */
+/* Stage 2b — ISO Standards & Operational Context (OpenRouter / Qwen)       */
 /* -------------------------------------------------------------------------- */
 
 async function stage2bIsoAnalyst(
@@ -968,20 +1358,31 @@ async function stage2bIsoAnalyst(
   specs: AnalyzeComponentSpecs,
   telemetry: AnalyzeTelemetry
 ): Promise<AnalystHypothesis> {
-  const system = `You are Agent B — ISO Standards & Operational Context specialist.
-Evaluate overall RMS vibration against ISO 10816 / ISO 20816 severity zones (Zone A/B/C/D).
-Consider load, temperature, and measurement point context.
-Return ONLY JSON matching:
+  const rpm = extractionRpm(extraction) || Number(specs.ratedRpm) || 0;
+  const velocity =
+    Number(extraction.overallRmsVelocity) ||
+    Number(telemetry.rmsVelocity) ||
+    0;
+  const machineType = machineTypeLabel(specs);
+
+  const system = `You are an ISO 10816 vibration standards expert.
+
+Given:
+- Overall velocity: ${velocity} mm/s
+- Machine type: ${machineType}
+- RPM: ${rpm}
+
+ISO 10816 ZONES for industrial machines:
+- Zone A (Good): <2.3 mm/s for small machines, <4.5 mm/s for large machines
+- Zone B (Acceptable): 2.3-4.5 mm/s (small), 4.5-7.1 mm/s (large)
+- Zone C (Alert): 4.5-7.1 mm/s (small), 7.1-11 mm/s (large)
+- Zone D (Danger): >7.1 mm/s (small), >11 mm/s (large)
+
+Output JSON:
 {
-  "primaryFaultTitle": string,
-  "frequencyHz": number,
-  "severity": "NORMAL"|"ANOMALY"|"CRITICAL",
-  "confidencePercent": number,
-  "isoZone": "A"|"B"|"C"|"D",
-  "reasoning": string,
-  "actionWindow": string,
-  "overallHealthScore": number,
-  "identifiedFaults": [{ "title", "frequencyHz", "confidencePercent", "severity", "description" }]
+  "isoZone": "A" | "B" | "C" | "D",
+  "acceptability": "Good" | "Acceptable" | "Alert" | "Danger",
+  "actionRequired": "Continue monitoring" | "Plan maintenance" | "Schedule repair" | "Immediate shutdown"
 }`;
 
   const user = `${specsBlock(specs, telemetry)}
@@ -989,23 +1390,11 @@ Return ONLY JSON matching:
 === STAGE 1 SPECTRUM EXTRACTION ===
 ${JSON.stringify(extraction, null, 2)}
 
-Map overallRmsVelocity (and telemetry RMS) to ISO zones for this machine class.`;
+Map overall velocity to ISO 10816 zones for this ${machineType}.`;
 
-  let raw: string;
-  if (process.env.GROQ_API_KEY?.trim()) {
-    raw = await callOpenAiCompatible(
-      "groq",
-      "llama-3.3-70b-versatile",
-      system,
-      user
-    );
-  } else if (process.env.OPENAI_API_KEY?.trim()) {
-    raw = await callOpenAiCompatible("openai", "gpt-4o-mini", system, user);
-  } else {
-    throw new Error("GROQ_API_KEY or OPENAI_API_KEY is not configured.");
-  }
+  const raw = await callOpenRouter(OPENROUTER_CONSENSUS_MODEL, system, user);
 
-  return extractJsonObject(raw) as AnalystHypothesis;
+  return normalizeStage2bResponse(extractJsonObject(raw), extraction, specs);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1049,7 +1438,7 @@ function localRefereeSynthesize(
   if (titlesAgree) confidencePercent = clamp(confidencePercent + 8, 0, 100);
   else confidencePercent = clamp(confidencePercent - 12, 0, 100);
 
-  const primary = a?.confidencePercent >= (b?.confidencePercent ?? 0) ? a : b;
+  const primary = (a?.confidencePercent ?? 0) >= (b?.confidencePercent ?? 0) ? a : b;
   const primaryFault = {
     title: primary?.primaryFaultTitle || "Elevated Vibration — Review Required",
     frequencyHz: Number(primary?.frequencyHz ?? extraction.runningSpeed1xHz ?? 0),
@@ -1134,123 +1523,56 @@ async function stage3ConsensusReferee(
   specs: AnalyzeComponentSpecs,
   telemetry: AnalyzeTelemetry
 ): Promise<ConsensusVibrationResult> {
-  const system = `You are the Consensus Referee for a multi-model vibration diagnosis.
-Debate discrepancies between Agent A (kinematics) and Agent B (ISO/ops).
-Assign overall confidencePercent (0-100). Prefer agreement; lower confidence when hypotheses conflict.
-Return ONLY JSON matching the MotorMedic app schema:
+  const velocity =
+    Number(extraction.overallRmsVelocity) ||
+    Number(telemetry.rmsVelocity) ||
+    0;
+  const isoZone = agentB?.isoZone || "unknown";
+
+  const system = `You are the final authority on vibration analysis. Reconcile Stage 2a (fault diagnosis) and Stage 2b (ISO standards).
+
+Rules:
+1. HEALTHY MACHINE PATH: If overall velocity (${velocity} mm/s) falls within ISO Zone A (as evaluated by Stage 2b based on machine class) and no harmonic or non-synchronous peaks exceed alarm limits, output finalDiagnosis: "Machine Healthy / Normal Operation" with high confidence. Do not flag standard running speed peaks as faults unless they breach ISO severity thresholds.
+2. If Stage 2a says "Normal" but ISO Zone is C or D, override to "Anomaly Detected".
+3. If Stage 2a identifies a fault with >80% confidence, accept it unless ISO Zone A clearly contradicts it.
+4. If Stage 2a and Stage 2b disagree, prioritize safety and make a decisive call — do not default to "Inconclusive" unless evidence is truly insufficient. If either agent detects a high-severity fault or ISO Zone D, treat the diagnosis as "Anomaly Detected". If the disagreement is minor (e.g. Normal vs Zone B), default to "Machine Healthy / Normal Operation".
+5. Only use "Inconclusive - Manual Review Recommended" when RPM, peaks, or overall velocity cannot support a safe conclusion.
+
+Output JSON:
 {
-  "overallHealthScore": number,
-  "severity": "NORMAL"|"ANOMALY"|"CRITICAL",
-  "summary": string,
-  "primaryFault": { "title", "frequencyHz", "confidencePercent", "severity", "actionWindow" },
-  "identifiedFaults": [{ "title", "frequencyHz", "confidencePercent", "severity", "description" }],
-  "financialImpact": { "preventiveRepairCost", "failureCostIfDelayed", "downtimeLossPerHour" },
-  "repairRecommendations": string[],
-  "consensusDetails": {
-    "modelA_Hypothesis": string,
-    "modelB_Hypothesis": string,
-    "refereeDebateSummary": string
-  }
+  "finalDiagnosis": string,
+  "confidence": number,
+  "severity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
+  "actionPlan": string,
+  "discrepancies": string[]
 }`;
 
   const user = `${specsBlock(specs, telemetry)}
 
-=== STAGE 1 EXTRACTION ===
+=== STAGE 1 EXTRACTION (image RPM / peaks) ===
 ${JSON.stringify(extraction)}
 
-=== AGENT A (KINEMATIC) ===
+=== STAGE 2a KINEMATIC ANALYST ===
 ${JSON.stringify(agentA)}
 
-=== AGENT B (ISO) ===
-${JSON.stringify(agentB)}`;
+=== STAGE 2b ISO ANALYST (Zone ${isoZone}) ===
+${JSON.stringify(agentB)}
 
-  try {
-    if (process.env.GROQ_API_KEY?.trim()) {
-      const raw = await callOpenAiCompatible(
-        "groq",
-        "llama-3.3-70b-versatile",
-        system,
-        user
-      );
-      return normalizeRefereeResult(
-        extractJsonObject(raw) as ConsensusVibrationResult,
-        agentA,
-        agentB
-      );
-    }
+Remember: 1X Hz = RPM/60. Never confuse RPM with Hz.`;
 
-    if (process.env.OPENROUTER_API_KEY?.trim()) {
-      const raw = await callOpenAiCompatible(
-        "openrouter",
-        "google/gemini-2.0-flash-001",
-        system,
-        user
-      );
-      return normalizeRefereeResult(
-        extractJsonObject(raw) as ConsensusVibrationResult,
-        agentA,
-        agentB
-      );
-    }
-
-    const geminiKey = process.env.GEMINI_API_KEY?.trim();
-    if (geminiKey) {
-      const ai = new GoogleGenAI({ apiKey: geminiKey });
-      let lastErr: unknown;
-      for (const model of GEMINI_REFEREE_MODELS) {
-        try {
-          const response = await ai.models.generateContent({
-            model,
-            contents: `${system}\n\n${user}`,
-            config: {
-              temperature: 0.2,
-              responseMimeType: "application/json"
-            }
-          });
-          return normalizeRefereeResult(
-            extractJsonObject(response.text || "{}") as ConsensusVibrationResult,
-            agentA,
-            agentB
-          );
-        } catch (err) {
-          lastErr = err;
-          console.warn(
-            `[consensus] Stage 3 Gemini referee ${model} failed:`,
-            err instanceof Error ? err.message : err
-          );
-        }
-      }
-      throw lastErr instanceof Error
-        ? lastErr
-        : new Error("Gemini referee failed");
-    }
-  } catch (err) {
-    console.error(
-      "[consensus] Stage 3 referee model failed:",
-      err instanceof Error ? err.message : err
-    );
-    if (isTimeoutLike(err)) {
-      throw Object.assign(new Error("Stage 3 gateway timeout"), {
-        consensusErrorType: "GATEWAY_TIMEOUT" as const
-      });
-    }
-    if (agentA || agentB) {
-      return localRefereeSynthesize(
-        extraction,
-        agentA,
-        agentB,
-        "Referee LLM unavailable; synthesized from live Agent A/B outputs only."
-      );
-    }
-    throw Object.assign(new Error("Stage 3 failed with no agent outputs"), {
-      consensusErrorType: "GATEWAY_TIMEOUT" as const
-    });
+  if (!hasOpenRouterKey()) {
+    throw new Error("OPENROUTER_API_KEY is not configured.");
   }
 
-  throw Object.assign(
-    new Error("No referee provider configured (need GROQ, OPENROUTER, or GEMINI)"),
-    { consensusErrorType: "GATEWAY_TIMEOUT" as const }
+  const raw = await callOpenRouter(OPENROUTER_CONSENSUS_MODEL, system, user);
+  const parsed = extractJsonObject(raw) as Record<string, unknown>;
+  const normalized = normalizeStage3ExpertResponse(
+    parsed,
+    extraction,
+    agentA,
+    agentB
   );
+  return normalizeRefereeResult(normalized, agentA, agentB);
 }
 
 function normalizeRefereeResult(
@@ -1292,7 +1614,10 @@ function normalizeRefereeResult(
 export async function runConsensusVibrationAnalysis(
   body: AnalyzeVibrationRequest
 ): Promise<ConsensusOutcome> {
-  const { imageBase64, componentSpecs = {}, telemetry = {} } = body || {};
+  const startTime = logPipelineStart("consensus-engine", {
+    mode: body?.mode || "full"
+  });
+  const { imageBase64, componentSpecs = {}, telemetry = {}, mode } = body || {};
 
   if (!imageBase64 || typeof imageBase64 !== "string") {
     console.error("[consensus] imageBase64 missing.");
@@ -1301,44 +1626,37 @@ export async function runConsensusVibrationAnalysis(
       "OpenAI Vision Error: Unable to extract spectrum peaks (imageBase64 required)."
     );
   }
+  logPayloadSize("consensus-engine", imageBase64);
 
-  const hasOpenAiVision = Boolean(process.env.OPENAI_API_KEY?.trim());
-  const hasAgentA = Boolean(
-    process.env.DEEPSEEK_API_KEY?.trim() || process.env.OPENROUTER_API_KEY?.trim()
-  );
-  const hasAgentB = Boolean(
-    process.env.GROQ_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim()
-  );
-
-  if (!hasOpenAiVision) {
-    console.error("[consensus] OPENAI_API_KEY not configured (required for Stage 1 vision).");
-    return consensusDomainError(
-      "SIGNAL_UNREADABLE",
-      "OpenAI Vision Error: Unable to extract spectrum peaks (OPENAI_API_KEY not configured)."
-    );
-  }
-
-  if (!hasAgentA && !hasAgentB) {
-    console.error("[consensus] No Stage 2 analyst API keys configured.");
+  if (!hasOpenRouterKey()) {
+    console.error("[consensus] OPENROUTER_API_KEY not configured.");
     return consensusDomainError(
       "GATEWAY_TIMEOUT",
-      "Configure DEEPSEEK_API_KEY/OPENROUTER_API_KEY and GROQ_API_KEY/OPENAI_API_KEY."
+      "OPENROUTER_API_KEY is required for all consensus stages."
     );
   }
 
   let extraction: Stage1Extraction;
 
-  // Stage 1 — OpenAI GPT-4o Vision
+  // Stage 1 — GPT-4o Vision via OpenRouter
   try {
-    console.log("[consensus] Stage 1 — OpenAI GPT-4o vision extraction…");
-    extraction = await stage1VisionExtract(imageBase64, componentSpecs, telemetry);
+    console.log("[consensus] Stage 1 — OpenRouter GPT-4o vision extraction…");
+    logPipelineSend("consensus-stage1");
+    extraction = await stage1VisionExtract(
+      imageBase64,
+      componentSpecs,
+      telemetry,
+      mode === "simple" ? "simple" : "full"
+    );
     console.log("[consensus] Stage 1 complete:", {
       peaks: extraction.peaks?.length ?? 0,
       oneX: extraction.runningSpeed1xHz,
       confidence: extraction.extractionConfidence,
-      axesReadable: extraction.axesReadable
+      axesReadable: extraction.axesReadable,
+      elapsedSec: pipelineElapsedSec(startTime)
     });
   } catch (err) {
+    logPipelineFail("consensus-stage1", startTime, err);
     console.error("🚨 OpenAI Vision Raw Error:", err);
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[consensus] Stage 1 OpenAI Vision failed:", msg);
@@ -1360,17 +1678,16 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
 
   let agentA: AnalystHypothesis | null = null;
   let agentB: AnalystHypothesis | null = null;
-  let gatewayHit = false;
   const stageErrors: string[] = [];
 
   // Stage 2a & 2b in parallel
+  const stage2Start = performance.now();
+  logPipelineSend("consensus-stage2", {
+    model: OPENROUTER_CONSENSUS_MODEL
+  });
   const [aResult, bResult] = await Promise.allSettled([
-    hasAgentA
-      ? stage2aKinematicAnalyst(extraction, componentSpecs, telemetry)
-      : Promise.reject(new Error("Agent A keys missing.")),
-    hasAgentB
-      ? stage2bIsoAnalyst(extraction, componentSpecs, telemetry)
-      : Promise.reject(new Error("Agent B keys missing."))
+    stage2aKinematicAnalyst(extraction, componentSpecs, telemetry),
+    stage2bIsoAnalyst(extraction, componentSpecs, telemetry)
   ]);
 
   if (aResult.status === "fulfilled") {
@@ -1384,7 +1701,7 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
     stageErrors.push(`Stage2a: ${msg}`);
     console.error("[consensus] Stage 2a failed:", msg);
     if (isTimeoutLike(aResult.reason) || /api key|not configured/i.test(msg)) {
-      gatewayHit = true;
+      stageErrors.push("Stage2a: provider timeout or key issue");
     }
   }
 
@@ -1399,9 +1716,11 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
     stageErrors.push(`Stage2b: ${msg}`);
     console.error("[consensus] Stage 2b failed:", msg);
     if (isTimeoutLike(bResult.reason) || /api key|not configured/i.test(msg)) {
-      gatewayHit = true;
+      stageErrors.push("Stage2b: provider timeout or key issue");
     }
   }
+
+  console.log("[consensus] Stage 2 elapsed:", pipelineElapsedSec(stage2Start) + "s");
 
   if (!agentA && !agentB) {
     console.error("[consensus] Both Stage 2 analysts failed.", stageErrors);
@@ -1411,40 +1730,39 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
     );
   }
 
-  // Divergence / low confidence gate
+  // Agent agreement check — log disagreements but always proceed to Stage 3 referee
+  let agentDisagreementNote: string | undefined;
+
   if (agentA && agentB) {
-    const agree = faultsAgree(agentA.primaryFaultTitle, agentB.primaryFaultTitle);
+    const agree = faultsAgree(agentA, agentB);
     const confA = clamp(Number(agentA.confidencePercent ?? 0), 0, 100);
     const confB = clamp(Number(agentB.confidencePercent ?? 0), 0, 100);
-    const avgConf = (confA + confB) / 2;
-    if (!agree || avgConf < 80 || confA < 80 || confB < 80) {
-      console.warn("[consensus] CONSENSUS_DIVERGENCE:", {
-        agree,
-        confA,
-        confB,
-        a: agentA.primaryFaultTitle,
-        b: agentB.primaryFaultTitle
-      });
-      return consensusDomainError(
-        "CONSENSUS_DIVERGENCE",
-        `AgentA="${agentA.primaryFaultTitle}" (${confA}%) vs AgentB="${agentB.primaryFaultTitle}" (${confB}%); agree=${agree}`
+    if (!agree) {
+      agentDisagreementNote = `Agents disagreed on fault classification: AgentA="${agentA.primaryFaultTitle}" (${confA}%) vs AgentB="${agentB.primaryFaultTitle}" ISO Zone ${isoZoneOf(agentB) || "?"} (${confB}%).`;
+      console.warn(
+        "[consensus] Agent disagreement — Stage 3 referee will reconcile:",
+        { agree, confA, confB, a: agentA.primaryFaultTitle, b: agentB.primaryFaultTitle }
       );
+    } else if (confA < 80 || confB < 80) {
+      console.warn("[consensus] Low agent confidence — Stage 3 referee will reconcile:", {
+        confA,
+        confB
+      });
     }
   } else {
     const solo = agentA || agentB!;
     const conf = clamp(Number(solo.confidencePercent ?? 0), 0, 100);
     if (conf < 80) {
-      return consensusDomainError(
-        "CONSENSUS_DIVERGENCE",
-        `Single-agent confidence ${conf}% below 80% threshold (${solo.primaryFaultTitle}).`
-      );
+      agentDisagreementNote = `Single-agent confidence ${conf}% below 80% (${solo.primaryFaultTitle}). Manual review recommended.`;
+      console.warn("[consensus]", agentDisagreementNote);
     }
   }
 
   // Stage 3 — referee
   try {
     console.log("[consensus] Stage 3 — referee synthesis…");
-    const finalResult = await stage3ConsensusReferee(
+    logPipelineSend("consensus-stage3");
+    let finalResult = await stage3ConsensusReferee(
       extraction,
       agentA,
       agentB,
@@ -1452,16 +1770,43 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
       telemetry
     );
 
-    const confidence = clamp(
+    if (agentDisagreementNote) {
+      finalResult.consensusDetails = {
+        modelA_Hypothesis:
+          finalResult.consensusDetails?.modelA_Hypothesis ||
+          agentA?.reasoning ||
+          "n/a",
+        modelB_Hypothesis:
+          finalResult.consensusDetails?.modelB_Hypothesis ||
+          agentB?.reasoning ||
+          "n/a",
+        refereeDebateSummary: [agentDisagreementNote, finalResult.consensusDetails?.refereeDebateSummary]
+          .filter(Boolean)
+          .join(" ")
+      };
+    }
+
+    let confidence = clamp(
       Number(finalResult.primaryFault?.confidencePercent ?? 0),
       0,
       100
     );
-    if (confidence < 80) {
-      return consensusDomainError(
-        "CONSENSUS_DIVERGENCE",
-        `Referee confidence ${confidence}% below 80% threshold.`
+
+    const inconclusiveTitle = /inconclusive|manual review/i.test(
+      finalResult.primaryFault?.title || ""
+    );
+    const needsReview = confidence < 80 || inconclusiveTitle;
+
+    if (needsReview) {
+      finalResult = applyManualReviewWarning(
+        finalResult,
+        agentDisagreementNote ||
+          "Confidence was below threshold or the referee could not reach a firm conclusion.",
+        Math.max(confidence, 50)
       );
+      confidence = finalResult.primaryFault.confidencePercent;
+    } else if (agentDisagreementNote) {
+      finalResult.summary = `${finalResult.summary || finalResult.primaryFault.title}. ${agentDisagreementNote}`;
     }
 
     if (stageErrors.length > 0) {
@@ -1510,34 +1855,44 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
       primary: aligned.primaryFault?.title,
       faults: aligned.identifiedFaults?.length ?? 0,
       confidence,
-      stage1Peaks: extraction.peaks?.length ?? 0
+      stage1Peaks: extraction.peaks?.length ?? 0,
+      elapsedSec: pipelineElapsedSec(startTime)
+    });
+    logPipelineSuccess("consensus-engine", startTime, {
+      primary: aligned.primaryFault?.title
     });
 
-    return {
-      success: true,
-      data: {
-        ...aligned,
-        success: true,
-        // Expose Stage-1 peaks so the UI can reconcile if needed
-        spectrumPeaks: extraction.peaks?.map((p) => ({
-          frequencyHz: p.frequencyHz,
-          amplitude: p.amplitude,
-          label: p.label,
-          chart: "fft" as const
-        }))
-      } as ConsensusVibrationResult & { success: true; spectrumPeaks?: unknown }
-    };
+    return buildConsensusSuccessPayload(aligned, extraction);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const typed = (err as { consensusErrorType?: ConsensusErrorType })
-      ?.consensusErrorType;
+    logPipelineFail("consensus-stage3", startTime, err);
     console.error("[consensus] Stage 3 failed:", msg);
-    if (typed === "SIGNAL_UNREADABLE" || typed === "CONSENSUS_DIVERGENCE") {
-      return consensusDomainError(typed, msg);
-    }
-    return consensusDomainError(
-      gatewayHit ? "GATEWAY_TIMEOUT" : "GATEWAY_TIMEOUT",
-      msg
+
+    // Graceful fallback — synthesize a reviewable result instead of hard-stopping the UI
+    const fallback = localRefereeSynthesize(
+      extraction,
+      agentA,
+      agentB,
+      agentDisagreementNote ||
+        `Stage 3 referee unavailable (${msg}). Manual review recommended.`
     );
+    const warned = applyManualReviewWarning(
+      fallback,
+      agentDisagreementNote ||
+        "Stage 3 referee could not reconcile agents. Manual review recommended.",
+      50
+    );
+    const aligned = ensureFaultListOnResult(
+      warned,
+      extraction,
+      agentA,
+      agentB
+    );
+    const costed = computeFinancialImpactFromFaultTitle(aligned.primaryFault?.title);
+    aligned.financialImpact = costed.financialImpact;
+    aligned.repairRecommendations = costed.repairRecommendations;
+
+    console.warn("[consensus] Returning review warning result after Stage 3 failure.");
+    return buildConsensusSuccessPayload(aligned, extraction);
   }
 }

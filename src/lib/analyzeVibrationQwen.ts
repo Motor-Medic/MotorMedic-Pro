@@ -139,7 +139,7 @@ Lines of Resolution: ${asText(telemetry.lor)}
 6. Provide actionable repair recommendations and rough financial impact.
 
 === OUTPUT FORMAT (STRICT) ===
-Return ONLY valid JSON matching the MotorMedic VibrationAnalysisResult schema.`;
+Return ONLY valid JSON matching the Spectra VibrationAnalysisResult schema.`;
 }
 
 function extractJsonObject(text: string): unknown {
@@ -175,7 +175,7 @@ export async function runOpenAiVibrationAnalysis(
 
   if (!apiKey) {
     console.error(
-      "[analyze-vibration] OPENAI_API_KEY missing. Add the key to .env and restart the MotorMedic Pro server (npm run dev)."
+      "[analyze-vibration] OPENAI_API_KEY missing. Add the key to .env and restart the Spectra CM server (npm run dev)."
     );
     return {
       ok: false,

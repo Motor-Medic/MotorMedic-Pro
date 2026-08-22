@@ -139,7 +139,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
             transition={{ delay: 0.1, duration: 0.5 }}
             className="text-3xl font-sans font-bold tracking-tight text-white"
           >
-            MotorMedic <span className="text-emerald-400">Pro</span>
+            Spectra <span className="text-emerald-400">CM</span>
           </motion.h1>
           <motion.p 
             initial={{ y: -5, opacity: 0 }}
@@ -336,7 +336,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
         {/* Footer info block */}
         <div className="text-center mt-6 flex flex-col items-center gap-2" id="login-footer">
           <p className="text-xs text-slate-600 font-mono">
-            MotorMedic Pro v2.4.0 • Local System Encryption Active
+            Spectra CM v2.4.0 • Local System Encryption Active
           </p>
           <div className="flex items-center gap-3 text-xs text-slate-500 font-sans">
             <button

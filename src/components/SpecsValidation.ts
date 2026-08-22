@@ -1,4 +1,4 @@
-// SpecsValidation.ts - Validation logic, Tooltips, Manufacturer Database & Unit Converters for MotorMedic Pro
+// SpecsValidation.ts - Validation logic, Tooltips, Manufacturer Database & Unit Converters for Spectra CM
 
 export interface ManufacturerModelPreset {
   id: string;

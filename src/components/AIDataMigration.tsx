@@ -54,7 +54,7 @@ const INITIAL_MAPPING: ColumnMapping[] = [
   { legacyColumn: "Comp_ID", sampleValue: "Motor Shaft", targetField: "component_name", confidence: 89, isMapped: true, aiSuggestedReason: "Matched subsystem component" },
   { legacyColumn: "Inst_Date", sampleValue: "2021-05-12", targetField: "install_date", confidence: 91, isMapped: true, aiSuggestedReason: "Matched ISO date format" },
   { legacyColumn: "RPM_Val", sampleValue: "1780", targetField: "operating_speed", confidence: 88, isMapped: true, aiSuggestedReason: "Matched rotational speed metric" },
-  { legacyColumn: "Legacy_Vendor_Code", sampleValue: "VND-9902-X", targetField: "unmapped", confidence: 0, isMapped: false, aiSuggestedReason: "No direct match in MotorMedic Pro schema" },
+  { legacyColumn: "Legacy_Vendor_Code", sampleValue: "VND-9902-X", targetField: "unmapped", confidence: 0, isMapped: false, aiSuggestedReason: "No direct match in Spectra CM schema" },
 ];
 
 const INITIAL_PREVIEW_ROWS: PreviewRow[] = [
@@ -220,7 +220,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
             </h1>
           </div>
           <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
-            Import legacy equipment spreadsheets (CSV/Excel) and leverage automated fuzzy schema matching to map old columns directly into MotorMedic Pro structure with real-time validation.
+            Import legacy equipment spreadsheets (CSV/Excel) and leverage automated fuzzy schema matching to map old columns directly into Spectra CM structure with real-time validation.
           </p>
         </div>
 
@@ -407,7 +407,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Review how the system mapped legacy columns to MotorMedic Pro system fields. Adjust mappings using the dropdowns below.
+                Review how the system mapped legacy columns to Spectra CM system fields. Adjust mappings using the dropdowns below.
               </p>
             </div>
 
@@ -424,7 +424,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
             <div className="hidden md:grid grid-cols-12 gap-4 text-[11px] font-bold uppercase tracking-wider text-slate-400 px-4">
               <div className="col-span-4">Legacy Column Header</div>
               <div className="col-span-1 text-center">Auto Match</div>
-              <div className="col-span-5">MotorMedic Pro Field</div>
+              <div className="col-span-5">Spectra CM Field</div>
               <div className="col-span-2 text-right">Status</div>
             </div>
 
@@ -665,7 +665,7 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
               </div>
 
               <div className="space-y-2">
-                <h2 className="text-xl font-bold text-white font-display">Migrating Equipment Data to MotorMedic Pro</h2>
+                <h2 className="text-xl font-bold text-white font-display">Migrating Equipment Data to Spectra CM</h2>
                 <p className="text-xs text-slate-400 font-mono">{migrationStageText}</p>
               </div>
 

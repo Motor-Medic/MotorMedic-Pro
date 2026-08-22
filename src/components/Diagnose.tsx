@@ -66,7 +66,34 @@ import {
   setAnalysisBaseline
 } from "../lib/analysisPersistence";
 import {
+  extractVibrationDataFromImage,
+  type ExtractedVibrationData
+} from "../lib/vibration/vibrationImageExtractor";
+import {
+  SPECTRAL_EXTRACTION_FAILED_MSG,
+  SPECTRAL_EXTRACTION_TIMEOUT_MSG,
+  VISION_MODEL_CONFIG
+} from "../lib/vibration/visionModelConfig";
+import {
+  classifyPipelineFailure,
+  logPayloadSize,
+  logPipelineFail,
+  logPipelineSend,
+  logPipelineStart,
+  logPipelineSuccess,
+  pipelineElapsedSec,
+  pipelineErrorFields
+} from "../lib/pipelineTrace";
+import {
+  buildVibrationDiagnosticRecord,
+  cacheVibrationRecordLocally,
+  VIBRATION_TREND_RECORD_TYPE,
+  type VibrationDiagnosticRecord
+} from "../lib/vibration/vibrationDiagnosticRecord";
+import { normalizeWaveformMetrics } from "../lib/waveformMetrics";
+import {
   ANALYZE_THERMOGRAPHY_API_PATH,
+  extractRadiometricMetrics,
   mapThermographyToUiResult,
   normalizeThermographyResult,
   thermographyPeaksForSave,
@@ -92,7 +119,16 @@ import UltrasoundInputAccordions, {
   type UltrasoundInputSnapshot
 } from "./UltrasoundInputAccordions";
 import UltrasoundResultsDashboard from "./UltrasoundResultsDashboard";
-import McaInputAccordions from "./McaInputAccordions";
+import McaInputAccordions, {
+  type McaOperatorSnapshot
+} from "./McaInputAccordions";
+import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
+import { calculateGroundwallInsulation } from "../lib/mca/groundwallCalculator";
+import {
+  mcaPayloadForSave,
+  mcaTripletHasData,
+  normalizeMcaOperatorSnapshot
+} from "../lib/mca/mcaPersistence";
 import McaResultsDashboard from "./McaResultsDashboard";
 import OilInputAccordions from "./OilInputAccordions";
 import OilResultsDashboard from "./OilResultsDashboard";
@@ -1225,6 +1261,46 @@ const ANALYSIS_STEPS = [
   "Generating diagnostic report..."
 ];
 
+const AI_LOADING_MESSAGES = [
+  "Uploading diagnostic image...",
+  "Calibrating X/Y axes scales...",
+  "Deep scanning spectral peaks...",
+  "Extracting frequency coordinates...",
+  "Synthesizing consensus analysis...",
+  "Finalizing diagnostic report..."
+];
+
+const AI_FETCH_TIMEOUT_MS = 60_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = AI_FETCH_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.error(
+      `❌ [PIPELINE] Client AbortController firing after ${timeoutMs}ms for ${url}`
+    );
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    const aborted =
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError");
+    if (aborted) {
+      const timeoutErr = new Error(SPECTRAL_EXTRACTION_TIMEOUT_MSG);
+      timeoutErr.name = "AbortError";
+      throw timeoutErr;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 const HEALTH_SCORE_TARGET = 38;
 /** Flip on when building fault list / recommendations in a later pass */
 const SHOW_EXTENDED_RESULTS = false;
@@ -1564,10 +1640,16 @@ export default function Diagnose({
     rms_dbmv: number;
     baseline_dbmv?: number;
     delta_db?: number;
+    crest_factor?: number;
     mode?: string;
   } | null>(null);
   const [ultrasoundSnapshot, setUltrasoundSnapshot] =
     useState<UltrasoundInputSnapshot | null>(null);
+  const [mcaSnapshot, setMcaSnapshot] = useState<McaOperatorSnapshot | null>(
+    null
+  );
+  const mcaPeaksRef = useRef<unknown[] | null>(null);
+  const mcaTelemetryRef = useRef<Record<string, unknown> | null>(null);
   const [thermoTelemetry, setThermoTelemetry] =
     useState<ThermographyTelemetrySnapshot | null>(null);
   const [rawUpload, setRawUpload] = useState<UploadedFileMeta | null>(null);
@@ -1599,8 +1681,24 @@ export default function Diagnose({
     refractory_skin_temp?: number | null;
     max_allowable_limit?: number | null;
     i2r_normalized_delta_t?: number | null;
+    telemetry_data?: Record<string, unknown> | null;
   } | null>(null);
   const ultrasoundPeaksRef = useRef<unknown[] | null>(null);
+  const vibrationExtractedRef = useRef<ExtractedVibrationData | null>(null);
+  const vibrationTrendRecordRef = useRef<VibrationDiagnosticRecord | null>(null);
+  const [vibrationExtractStatus, setVibrationExtractStatus] = useState<
+    "idle" | "extracting" | "ready" | "failed"
+  >("idle");
+  const [vibrationExtractError, setVibrationExtractError] = useState<
+    string | null
+  >(null);
+  const [vibrationExtractSummary, setVibrationExtractSummary] = useState<{
+    peakCount: number;
+    confidence: number;
+  } | null>(null);
+  const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
+  const isLoading =
+    isAnalyzing || vibrationExtractStatus === "extracting";
 
   const [measurementLocation, setMeasurementLocation] = useState<string>("Motor DE");
   const [measurementPoint, setMeasurementPoint] = useState("1H");
@@ -1809,12 +1907,24 @@ export default function Diagnose({
   const equipmentReady = Boolean(
     browseRoute && browseAssetTag && browseComponent && selectedAsset
   );
+  const ultrasoundTelemetryValid = useMemo(() => {
+    if (activeTech !== "ultrasound") return true;
+    const peakRaw = ultrasoundSnapshot?.peakDbuV;
+    const rmsRaw = ultrasoundSnapshot?.rmsDbuV;
+    if (peakRaw == null || peakRaw === "" || rmsRaw == null || rmsRaw === "") {
+      return true;
+    }
+    const peak = Number(peakRaw);
+    const rms = Number(rmsRaw);
+    if (!Number.isFinite(peak) || !Number.isFinite(rms)) return true;
+    return peak >= rms;
+  }, [activeTech, ultrasoundSnapshot?.peakDbuV, ultrasoundSnapshot?.rmsDbuV]);
   const canRun =
-    activeTech === "vibration"
+    (activeTech === "vibration"
       ? equipmentReady && hasSpectrumImage
       : activeTech === "ir"
         ? equipmentReady && hasThermalImage
-        : equipmentReady;
+        : equipmentReady) && ultrasoundTelemetryValid;
   const runButtonReady = canRun && !isAnalyzing;
 
   const displayFaults: FaultFinding[] = useMemo(() => {
@@ -1968,6 +2078,17 @@ export default function Diagnose({
     setSavedAnalysisId(null);
   }, [activeTech]);
 
+  useEffect(() => {
+    if (!isLoading) {
+      setCurrentMessageIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setCurrentMessageIndex((prev) => (prev + 1) % AI_LOADING_MESSAGES.length);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [isLoading]);
+
   const applyComponentKinematics = useCallback(
     (asset: DiagnoseAsset, componentName: string) => {
       const comp = lookupStoreComponent(asset, componentName);
@@ -2112,8 +2233,12 @@ export default function Diagnose({
     setShowResults(true);
     setProgress(100);
     setStepIdx(ANALYSIS_STEPS.length);
+    // Allow results UI to paint, then return viewport to top
     window.setTimeout(() => {
-      resultsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.scrollTo({
+        top: 0,
+        behavior: "smooth"
+      });
     }, 80);
 
     // Persist to PostgreSQL so Trend / Alerts / Reports / Logs stay in sync.
@@ -2168,11 +2293,188 @@ export default function Diagnose({
           ? thermographyPeaksRef.current || []
           : analysisType === "ultrasound"
             ? ultrasoundPeaksRef.current || []
-            : peaks?.length
-              ? peaks
-              : chartRegionDetection?.peaks?.length
-                ? chartRegionDetection.peaks
-                : [];
+            : analysisType === "mca"
+              ? mcaPeaksRef.current || []
+              : peaks?.length
+                ? peaks
+                : chartRegionDetection?.peaks?.length
+                  ? chartRegionDetection.peaks
+                  : [];
+
+      // Stamp unified Trend Analyzer vibration record onto peaks + telemetry
+      let vibrationTrendRecord = vibrationTrendRecordRef.current;
+      if (analysisType === "vibration" && vibrationExtractedRef.current) {
+        const existingFallback =
+          vibrationTrendRecordRef.current?.metadata?.extractionMethod ===
+          "fallback";
+        if (
+          existingFallback &&
+          !vibrationExtractedRef.current.spectralPeaks.length
+        ) {
+          vibrationTrendRecord = {
+            ...vibrationTrendRecordRef.current!,
+            broadband: {
+              ...vibrationTrendRecordRef.current!.broadband,
+              healthScore: reconciled.overallHealthScore,
+              primaryFault:
+                reconciled.primaryFault?.title ||
+                vibrationTrendRecordRef.current!.broadband.primaryFault
+            }
+          };
+        } else {
+          vibrationTrendRecord = buildVibrationDiagnosticRecord({
+            assetId: assetKey,
+            extracted: vibrationExtractedRef.current,
+            component: browseComponent || null,
+            healthScore: reconciled.overallHealthScore,
+            primaryFault: reconciled.primaryFault?.title || null,
+            timestamp: new Date().toISOString()
+          });
+        }
+        vibrationTrendRecordRef.current = vibrationTrendRecord;
+        cacheVibrationRecordLocally(vibrationTrendRecord);
+      }
+      if (
+        analysisType === "vibration" &&
+        vibrationTrendRecord &&
+        !vibrationTrendRecord.spectral.length &&
+        vibrationTrendRecord.metadata?.extractionMethod !== "fallback"
+      ) {
+        vibrationTrendRecord = null;
+      }
+
+      let envelopeEnergyForSave: number | null = null;
+
+      if (analysisType === "vibration" && vibrationTrendRecord) {
+        const apiAny = reconciled as VibrationAnalysisResult & {
+          waveform?: Record<string, unknown>;
+          waveformPeakToPeak?: number;
+          waveformCrestFactor?: number;
+          waveformImpactCount?: number;
+          waveformSymmetry?: string;
+          waveformModulation?: string;
+          waveformMetrics?: {
+            peakAmplitude?: number;
+            crestFactor?: number;
+            rmsValue?: number;
+          };
+          envelope?: {
+            peakAmplitude?: number;
+            dominantFrequency?: number;
+            energy?: number;
+          } | null;
+          envelopePeakAmplitude?: number;
+          envelopeDominantFrequency?: number;
+          envelopeEnergy?: number;
+        };
+        const wfFromApi = normalizeWaveformMetrics(
+          apiAny.waveform || {
+            peakToPeak: apiAny.waveformPeakToPeak,
+            crestFactor:
+              apiAny.waveformCrestFactor ??
+              apiAny.waveformMetrics?.crestFactor,
+            impactCount: apiAny.waveformImpactCount,
+            symmetry: apiAny.waveformSymmetry,
+            modulation: apiAny.waveformModulation,
+            peakAmplitude: apiAny.waveformMetrics?.peakAmplitude,
+            rmsValue: apiAny.waveformMetrics?.rmsValue
+          },
+          Number(vibRpm) || vibrationTrendRecord.rpm || undefined
+        );
+        const envPeak = Number(
+          apiAny.envelope?.peakAmplitude ?? apiAny.envelopePeakAmplitude
+        );
+        const envFreq = Number(
+          apiAny.envelope?.dominantFrequency ??
+            apiAny.envelopeDominantFrequency
+        );
+        const envEnergy = Number(
+          apiAny.envelope?.energy ?? apiAny.envelopeEnergy
+        );
+        const hasEnvelope =
+          (Number.isFinite(envPeak) && envPeak > 0) ||
+          (Number.isFinite(envFreq) && envFreq > 0) ||
+          (Number.isFinite(envEnergy) && envEnergy > 0);
+
+        envelopeEnergyForSave =
+          Number.isFinite(envEnergy) && envEnergy > 0 ? envEnergy : null;
+
+        if (wfFromApi || hasEnvelope) {
+          const enveloping =
+            hasEnvelope && Number.isFinite(envFreq) && envFreq > 0
+              ? [
+                  ...vibrationTrendRecord.enveloping.filter(
+                    (p) =>
+                      !/peak|envelope|ge/i.test(String(p.label || ""))
+                  ),
+                  {
+                    frequency: envFreq,
+                    amplitude:
+                      Number.isFinite(envPeak) && envPeak > 0 ? envPeak : 0,
+                    label: "Peak gE"
+                  }
+                ]
+              : vibrationTrendRecord.enveloping;
+
+          vibrationTrendRecord = {
+            ...vibrationTrendRecord,
+            ...(wfFromApi
+              ? {
+                  waveformAnalysis: {
+                    peakToPeak: wfFromApi.peakToPeak,
+                    crestFactor: wfFromApi.crestFactor,
+                    impactCount: wfFromApi.impactCount,
+                    symmetry: wfFromApi.symmetry,
+                    timePerRevolutionMs: wfFromApi.timePerRevolutionMs,
+                    modulation: wfFromApi.modulation
+                  },
+                  waveformMetrics: vibrationTrendRecord.waveformMetrics || {
+                    peakAmplitude:
+                      wfFromApi.peakAmplitude ?? wfFromApi.peakToPeak / 2,
+                    crestFactor: wfFromApi.crestFactor,
+                    rmsValue:
+                      wfFromApi.rmsValue ??
+                      (wfFromApi.crestFactor > 0
+                        ? wfFromApi.peakToPeak / 2 / wfFromApi.crestFactor
+                        : 0)
+                  }
+                }
+              : {}),
+            enveloping,
+            broadband: {
+              ...vibrationTrendRecord.broadband,
+              ...(wfFromApi && wfFromApi.crestFactor > 0
+                ? { kurtosis: wfFromApi.crestFactor }
+                : {}),
+              ...(hasEnvelope && Number.isFinite(envPeak) && envPeak > 0
+                ? { peakGe: envPeak }
+                : {})
+            }
+          };
+          vibrationTrendRecordRef.current = vibrationTrendRecord;
+          cacheVibrationRecordLocally(vibrationTrendRecord);
+        }
+        console.log("💾 [VIBRATION] Saving diagnostic record:", {
+          assetId: assetKey,
+          timestamp: new Date().toISOString(),
+          hasSpectral: !!vibrationTrendRecord.spectral?.length,
+          spectralLength: vibrationTrendRecord.spectral?.length,
+          firstFewPeaks: vibrationTrendRecord.spectral?.slice(0, 3),
+          hasWaveformAnalysis: Boolean(vibrationTrendRecord.waveformAnalysis),
+          hasEnvelope: Boolean(vibrationTrendRecord.broadband.peakGe)
+        });
+      }
+
+      const peaksForSave =
+        analysisType === "vibration" && vibrationTrendRecord
+          ? [
+              ...(Array.isArray(peakPayload) ? peakPayload : []),
+              {
+                type: VIBRATION_TREND_RECORD_TYPE,
+                record: vibrationTrendRecord
+              }
+            ]
+          : peakPayload;
 
       const imageUrl =
         analysisType === "thermography"
@@ -2185,7 +2487,7 @@ export default function Diagnose({
         health_score: reconciled.overallHealthScore,
         primary_fault: reconciled.primaryFault?.title || null,
         fault_list: faultListForSave,
-        peaks: peakPayload,
+        peaks: peaksForSave,
         spectrum_image_url: imageUrl,
         recommendations: reconciled.repairRecommendations || [],
         financial_impact: {
@@ -2218,10 +2520,78 @@ export default function Diagnose({
         create_alerts_for_high: true,
         ...(analysisType === "thermography" && thermographyPolyRef.current
           ? thermographyPolyRef.current
+          : {}),
+        ...(analysisType === "mca" && mcaTelemetryRef.current
+          ? { telemetry_data: mcaTelemetryRef.current }
+          : {}),
+        ...(analysisType === "vibration" && vibrationTrendRecord
+          ? {
+              telemetry_data: {
+                schema_version: 1,
+                captured_at: new Date().toISOString(),
+                analysis_type: "vibration",
+                vibration_trend_record: vibrationTrendRecord,
+                spectral: vibrationTrendRecord.spectral || [],
+                extraction_confidence:
+                  vibrationTrendRecord.extractionConfidence ?? null,
+                source_image: vibrationTrendRecord.sourceImage || null,
+                waveform: vibrationTrendRecord.waveformAnalysis || null,
+                envelope:
+                  vibrationTrendRecord.broadband.peakGe != null ||
+                  vibrationTrendRecord.enveloping.length > 0
+                    ? {
+                        peakAmplitude:
+                          vibrationTrendRecord.broadband.peakGe ?? null,
+                        dominantFrequency:
+                          vibrationTrendRecord.enveloping.find((p) =>
+                            /peak|ge/i.test(String(p.label || ""))
+                          )?.frequency ??
+                          vibrationTrendRecord.enveloping[0]?.frequency ??
+                          null,
+                        energy: envelopeEnergyForSave
+                      }
+                    : null
+              },
+              ...(vibrationTrendRecord.waveformAnalysis
+                ? {
+                    waveform_peak_to_peak:
+                      vibrationTrendRecord.waveformAnalysis.peakToPeak,
+                    waveform_crest_factor:
+                      vibrationTrendRecord.waveformAnalysis.crestFactor,
+                    waveform_impact_count:
+                      vibrationTrendRecord.waveformAnalysis.impactCount,
+                    waveform_symmetry:
+                      vibrationTrendRecord.waveformAnalysis.symmetry,
+                    waveform_modulation:
+                      vibrationTrendRecord.waveformAnalysis.modulation || null
+                  }
+                : {}),
+              ...(vibrationTrendRecord.broadband.peakGe != null &&
+              vibrationTrendRecord.broadband.peakGe > 0
+                ? {
+                    envelope_peak_amplitude:
+                      vibrationTrendRecord.broadband.peakGe,
+                    envelope_dominant_frequency:
+                      vibrationTrendRecord.enveloping.find((p) =>
+                        /peak|ge/i.test(String(p.label || ""))
+                      )?.frequency ??
+                      vibrationTrendRecord.enveloping[0]?.frequency ??
+                      null,
+                    envelope_energy: envelopeEnergyForSave
+                  }
+                : {})
+            }
           : {})
       });
 
       setSavedAnalysisId(saved.analysis?.id || null);
+      if (analysisType === "vibration" && vibrationTrendRecord) {
+        console.log("✅ [VIBRATION] Record saved successfully", {
+          analysisId: saved.analysis?.id,
+          assetId: assetKey,
+          spectralLength: vibrationTrendRecord.spectral.length
+        });
+      }
       toast(
         saved.alerts_created > 0
           ? `Analysis saved · ${saved.alerts_created} alert(s) created`
@@ -2250,8 +2620,8 @@ export default function Diagnose({
       doc.setFontSize(16);
       doc.text(
         selectedTech === "ir"
-          ? "MotorMedic Pro — Thermography Analysis Report"
-          : "MotorMedic Pro — Vibration Analysis Report",
+          ? "Spectra CM — Thermography Analysis Report"
+          : "Spectra CM — Vibration Analysis Report",
         14,
         y0
       );
@@ -2336,7 +2706,7 @@ export default function Diagnose({
       }
 
       const fileSafe = asset.replace(/[^\w.-]+/g, "_").slice(0, 40);
-      doc.save(`MotorMedic_${fileSafe}_Vibration.pdf`);
+      doc.save(`Spectra_${fileSafe}_Vibration.pdf`);
       toast("PDF report downloaded.", "success");
     } catch (err) {
       console.error("[Diagnose] PDF export failed:", err);
@@ -2456,7 +2826,7 @@ export default function Diagnose({
             `Thermography analysis failed (${res.status})`;
           const restartHint =
             res.status === 404
-              ? " Restart the MotorMedic Pro server (npm run dev) so POST /api/analyze-thermography is registered."
+              ? " Restart the Spectra CM server (npm run dev) so POST /api/analyze-thermography is registered."
               : "";
           setAnalysisError({
             title: String(title),
@@ -2474,6 +2844,12 @@ export default function Diagnose({
             ? payload.data
             : payload;
         const thermo: ThermographyResult = normalizeThermographyResult(thermoRaw);
+        const radiometric =
+          thermo.detailed?.radiometric ??
+          extractRadiometricMetrics({
+            extracted_data: thermo.detailed?.extracted_data,
+            analysis: thermo.detailed?.analysis
+          });
         const basePeaks = thermographyPeaksForSave(thermo);
         const poly =
           thermoRaw &&
@@ -2534,7 +2910,7 @@ export default function Diagnose({
             (typeof poly.measured_amps === "number" ? poly.measured_amps : null)
         };
         thermographyPeaksRef.current = [enrichedPeak, ...basePeaks.slice(1)];
-        // Stash polymorphic columns for save-analysis-result INSERT
+        // Stash polymorphic columns + hybrid telemetry_data for save-analysis-result
         thermographyPolyRef.current = {
           asset_type: tel.asset_type || null,
           phase_a_temp: tel.phase_a_temp ?? null,
@@ -2549,7 +2925,75 @@ export default function Diagnose({
           i2r_normalized_delta_t:
             typeof poly.i2r_normalized_delta_t === "number"
               ? poly.i2r_normalized_delta_t
-              : null
+              : null,
+          telemetry_data: {
+            schema_version: 1,
+            captured_at: new Date().toISOString(),
+            analysis_type: "thermography",
+            environmental: {
+              emissivity: tel.emissivity ?? radiometric.emissivitySetting ?? null,
+              ambient_temp: tel.ambientTemp ?? null,
+              reflected_temp: tel.reflectedTemp ?? null,
+              distance: tel.distance ?? null,
+              distance_unit: tel.distanceUnit ?? null,
+              humidity: tel.humidity ?? null,
+              wind_speed: tel.windSpeed ?? null,
+              solar_condition: tel.solarCondition ?? null,
+              temp_unit: tel.tempUnit ?? "°F",
+              load_percent: loadPercentage || metadata.loadPercent || null
+            },
+            ai_vision: {
+              hotspot_temp: thermo.peaks?.hotspot_temp ?? null,
+              reference_temp: thermo.peaks?.reference_temp ?? null,
+              delta_t: thermo.peaks?.delta_t ?? null,
+              neta_class: thermo.detailed?.severity_class ?? null,
+              severity_class: thermo.detailed?.severity_class ?? null,
+              equipment_category: thermo.detailed?.equipment_category ?? null,
+              primary_fault: thermo.primary_fault ?? null,
+              emissivity: radiometric.emissivitySetting,
+              emissivity_setting: radiometric.emissivitySetting,
+              emissivitySetting: radiometric.emissivitySetting,
+              scale_min: radiometric.scaleMinBoundary,
+              scale_max: radiometric.scaleMaxBoundary,
+              scaleMinBoundary: radiometric.scaleMinBoundary,
+              scaleMaxBoundary: radiometric.scaleMaxBoundary,
+              isotherm_threshold: radiometric.isothermThreshold,
+              isothermThreshold: radiometric.isothermThreshold,
+              box_average_temp:
+                radiometric.boxAverageTemperature ?? radiometric.roiStatisticalMean,
+              boxAverageTemperature: radiometric.boxAverageTemperature,
+              roi_statistical_mean: radiometric.roiStatisticalMean,
+              roiStatisticalMean: radiometric.roiStatisticalMean,
+              radiometric,
+              extracted_data: thermo.detailed?.extracted_data ?? null,
+              analysis: thermo.detailed?.analysis ?? null
+            },
+            polymorphic: {
+              asset_type: tel.asset_type || null,
+              phase_a_temp: tel.phase_a_temp ?? null,
+              phase_b_temp: tel.phase_b_temp ?? null,
+              phase_c_temp: tel.phase_c_temp ?? null,
+              measured_amps: tel.measured_amps ?? null,
+              rated_amps: tel.rated_amps ?? null,
+              de_bearing_temp: tel.de_bearing_temp ?? null,
+              ode_bearing_temp: tel.ode_bearing_temp ?? null,
+              refractory_skin_temp: tel.refractory_skin_temp ?? null,
+              max_allowable_limit: tel.max_allowable_limit ?? null,
+              i2r_normalized_delta_t:
+                typeof poly.i2r_normalized_delta_t === "number"
+                  ? poly.i2r_normalized_delta_t
+                  : null
+            },
+            file: {
+              fileName: thermalUpload.name || null
+            },
+            extras: {
+              polymorphic_fields: poly,
+              route: browseRoute || null,
+              component: browseComponent || null,
+              asset_tag: selectedAsset?.tag || browseAssetTag || null
+            }
+          }
         };
         setThermographyPeaks(thermo.peaks);
         const irResult = mapThermographyToUiResult(thermo);
@@ -2612,7 +3056,8 @@ export default function Diagnose({
           heterodyneKhz: snap.heterodyneKhz || usFrequency,
           gainDb: snap.gainDb || usGain,
           peakDbuV: snap.peakDbuV || undefined,
-          rmsDbuV: snap.rmsDbuV || undefined
+          rmsDbuV: snap.rmsDbuV || undefined,
+          crestFactor: snap.crestFactor || undefined
         };
 
         const res = await fetch(ANALYZE_ULTRASOUND_API_PATH, {
@@ -2636,7 +3081,7 @@ export default function Diagnose({
             `Ultrasound analysis failed (${res.status})`;
           const restartHint =
             res.status === 404
-              ? " Restart the MotorMedic Pro server (npm run dev) so POST /api/analyze-ultrasound is registered."
+              ? " Restart the Spectra CM server (npm run dev) so POST /api/analyze-ultrasound is registered."
               : "";
           setAnalysisError({
             title: String(title),
@@ -2680,6 +3125,187 @@ export default function Diagnose({
       return;
     }
 
+    if (activeTech === "mca") {
+      setShowResults(false);
+      setAnalysisResult(null);
+      setGaugeScore(0);
+      setStepIdx(0);
+      setProgress(12);
+      setIsAnalyzing(true);
+      setAnalysisError(null);
+      mcaPeaksRef.current = null;
+      mcaTelemetryRef.current = null;
+      clearAnalysisTimers();
+
+      ANALYSIS_STEPS.forEach((_, i) => {
+        if (i === 0) return;
+        analysisTimersRef.current.push(
+          window.setTimeout(() => {
+            setStepIdx((prev) => Math.max(prev, i));
+            setProgress((p) =>
+              Math.min(
+                90,
+                Math.max(p, Math.round(((i + 1) / ANALYSIS_STEPS.length) * 85))
+              )
+            );
+          }, Math.round(i * 700))
+        );
+      });
+
+      try {
+        const { winding, groundwall } = normalizeMcaOperatorSnapshot(mcaSnapshot);
+        const hasWinding =
+          mcaTripletHasData(winding.phaseR) ||
+          mcaTripletHasData(winding.phaseL) ||
+          mcaTripletHasData(winding.phaseZ) ||
+          mcaTripletHasData(winding.phaseFi) ||
+          mcaTripletHasData(winding.phaseIF);
+        const hasGw =
+          (groundwall.ir1mMOmega != null && groundwall.ir1mMOmega > 0) ||
+          (groundwall.ir30sMOmega != null && groundwall.ir30sMOmega > 0) ||
+          (groundwall.ir10mMOmega != null && groundwall.ir10mMOmega > 0);
+
+        if (!hasWinding && !hasGw) {
+          throw new Error(
+            "Enter MCA phase (R/L/Z/Fi/I-F) or insulation readings before running Advanced Diagnostic."
+          );
+        }
+
+        const windingResult = calculateWindingBalance(winding);
+        const gwResult = calculateGroundwallInsulation({
+          ir15sMOmega: groundwall.ir15sMOmega,
+          ir30sMOmega: groundwall.ir30sMOmega,
+          ir1mMOmega: groundwall.ir1mMOmega || 0,
+          ir10mMOmega: groundwall.ir10mMOmega,
+          testVoltageV: groundwall.testVoltageV || 0,
+          windingTempC: groundwall.windingTempC ?? winding.windingTempC,
+          insulationClass: groundwall.insulationClass
+        });
+
+        const primaryFault = hasWinding
+          ? windingResult.fault
+          : gwResult.fault;
+        const severityRaw = hasWinding
+          ? windingResult.severity
+          : gwResult.severity;
+        const healthScore = hasWinding
+          ? windingResult.healthScore
+          : gwResult.irIeeePass
+            ? 85
+            : 40;
+        const apiSeverity =
+          severityRaw === "CRITICAL"
+            ? "CRITICAL"
+            : severityRaw === "WARNING"
+              ? "ANOMALY"
+              : "NORMAL";
+
+        const payload = mcaPayloadForSave(
+          {
+            ...(mcaSnapshot || {}),
+            reportPi: gwResult.pi,
+            reportDar: gwResult.dar
+          },
+          {
+            primaryFault,
+            healthScore,
+            unbalance: hasWinding
+              ? {
+                  R: windingResult.unbalanceR,
+                  L: windingResult.unbalanceL,
+                  Z: windingResult.unbalanceZ,
+                  Fi: windingResult.unbalanceFi,
+                  IF: windingResult.unbalanceIF,
+                  maxRL: windingResult.maxUnbalanceRL
+                }
+              : undefined
+          }
+        );
+        mcaPeaksRef.current = payload.peaks;
+        mcaTelemetryRef.current = payload.telemetry_data;
+
+        const mcaUiResult: VibrationAnalysisResult = {
+          overallHealthScore: healthScore,
+          severity: apiSeverity,
+          summary: hasWinding
+            ? `${windingResult.fault} — max R/L unbalance ${windingResult.maxUnbalanceRL.toFixed(2)}%. ${windingResult.recommendation}`
+            : `${gwResult.fault} — IR@40°C ${gwResult.ir40MOmega} MΩ. ${gwResult.recommendation}`,
+          primaryFault: {
+            title: primaryFault,
+            frequencyHz: 0,
+            confidencePercent: hasWinding || hasGw ? 90 : 50,
+            severity: apiSeverity,
+            actionWindow: hasWinding
+              ? windingResult.recommendation
+              : gwResult.recommendation
+          },
+          identifiedFaults:
+            primaryFault && !/healthy|normal|good/i.test(primaryFault)
+              ? [
+                  {
+                    title: primaryFault,
+                    frequencyHz: 0,
+                    confidencePercent: 90,
+                    severity: apiSeverity,
+                    description: hasWinding
+                      ? windingResult.recommendation
+                      : gwResult.recommendation
+                  }
+                ]
+              : [],
+          financialImpact: {
+            preventiveRepairCost: 2500,
+            failureCostIfDelayed: 25000,
+            downtimeLossPerHour: 5000
+          },
+          repairRecommendations: [
+            hasWinding
+              ? windingResult.recommendation
+              : gwResult.recommendation,
+            "Archive this MCA fingerprint for Trend Analyzer phase balance / groundwall trending."
+          ],
+          consensusDetails: {
+            modelA_Hypothesis: hasWinding
+              ? `Winding unbalance R ${windingResult.unbalanceR.toFixed(2)}% · L ${windingResult.unbalanceL.toFixed(2)}%`
+              : `Groundwall IR@40 ${gwResult.ir40MOmega} MΩ · PI ${gwResult.pi ?? "n/a"}`,
+            modelB_Hypothesis: `MCA operator inputs · HP ${winding.ratedHp ?? "—"} · T ${winding.windingTempC ?? "—"}°C`,
+            refereeDebateSummary: JSON.stringify({
+              pipeline: "mcaOperatorInputs",
+              winding: payload.telemetry_data.winding,
+              groundwall: payload.telemetry_data.groundwall,
+              unbalance: hasWinding
+                ? {
+                    R: windingResult.unbalanceR,
+                    L: windingResult.unbalanceL,
+                    Z: windingResult.unbalanceZ
+                  }
+                : null
+            })
+          }
+        };
+
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        applyAnalysisResult(mcaUiResult, "local", undefined, {
+          analysisType: "mca",
+          skipPeakInference: true
+        });
+        toast("MCA diagnostic saved for Trend Analyzer.", "success");
+      } catch (err) {
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        const message =
+          err instanceof Error ? err.message : "Failed to run MCA analysis.";
+        setAnalysisError({
+          title: "MCA Analysis Error",
+          message,
+          errorType: "ANALYSIS_ERROR"
+        });
+        toast(message, "error");
+      }
+      return;
+    }
+
     if (activeTech !== "vibration") {
       // Other non-vibration techs keep the lightweight simulated path
       setUnit("velocity");
@@ -2706,6 +3332,12 @@ export default function Diagnose({
           setIsAnalyzing(false);
           setShowResults(true);
           setProgress(100);
+          window.setTimeout(() => {
+            window.scrollTo({
+              top: 0,
+              behavior: "smooth"
+            });
+          }, 80);
         }, totalMs)
       );
       return;
@@ -2739,6 +3371,24 @@ export default function Diagnose({
         );
       }
 
+      // Ensure unified trend record exists before consensus (re-extract if needed)
+      if (!vibrationExtractedRef.current && spectrumUpload.preview) {
+        try {
+          const blob = await fetch(spectrumUpload.preview).then((r) => r.blob());
+          const file = new File(
+            [blob],
+            spectrumUpload.name || "spectrum.png",
+            { type: blob.type || "image/png" }
+          );
+          await runVibrationVisionExtraction(file);
+        } catch (extractErr) {
+          console.warn(
+            "[Diagnose] Pre-analysis vibration extract skipped:",
+            extractErr
+          );
+        }
+      }
+
       const imageBase64 = await blobUrlToDataUrl(spectrumUpload.preview);
       const componentSpecs = {
         asset: selectedAsset?.label || browseAssetTag,
@@ -2763,15 +3413,75 @@ export default function Diagnose({
         lor
       };
 
-      const res = await fetch(ANALYZE_VIBRATION_API_PATH, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, componentSpecs, telemetry })
+      logPayloadSize("frontend-analyze-vibration", imageBase64);
+      const startTime = logPipelineStart("frontend-analyze-vibration");
+      logPipelineSend("frontend-analyze-vibration", {
+        url: ANALYZE_VIBRATION_API_PATH
       });
 
-      const payload = await res.json().catch(() => ({}));
+      let res: Response;
+      try {
+        res = await fetchWithTimeout(ANALYZE_VIBRATION_API_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageBase64,
+            componentSpecs,
+            telemetry,
+            mode: "full"
+          })
+        });
+      } catch (error) {
+        const kind = logPipelineFail("frontend-analyze-vibration", startTime, error);
+        console.error("❌ [PIPELINE FAIL] Frontend fetch threw:", {
+          kind,
+          elapsedSec: pipelineElapsedSec(startTime),
+          ...pipelineErrorFields(error)
+        });
+        throw error;
+      }
+
+      let payload: Record<string, unknown> = {};
+      const responseText = await res.text();
+      if (!responseText.trim()) {
+        const emptyErr = new Error(
+          `Empty response body from ${ANALYZE_VIBRATION_API_PATH} (HTTP ${res.status}). Restart npm run dev and check server logs.`
+        );
+        logPipelineFail("frontend-analyze-vibration:empty", startTime, emptyErr, res);
+        throw emptyErr;
+      }
+      try {
+        payload = JSON.parse(responseText) as Record<string, unknown>;
+      } catch (parseErr) {
+        logPipelineFail("frontend-analyze-vibration:json", startTime, parseErr, res);
+        console.error("❌ [PIPELINE FAIL] Non-JSON response body:", {
+          status: res.status,
+          preview: responseText.slice(0, 200)
+        });
+        throw parseErr;
+      }
 
       if (!res.ok || payload?.success === false) {
+        const kind = classifyPipelineFailure(
+          new Error(String(payload?.message || payload?.error || `HTTP ${res.status}`)),
+          res
+        );
+        logPipelineFail(
+          "frontend-analyze-vibration",
+          startTime,
+          new Error(String(payload?.detail || payload?.message || payload?.error || `HTTP ${res.status}`)),
+          res
+        );
+        console.error("❌ [PIPELINE FAIL] Consensus HTTP error:", {
+          kind,
+          status: res.status,
+          statusText: res.statusText,
+          elapsedSec: pipelineElapsedSec(startTime),
+          errorType: payload?.errorType,
+          title: payload?.title,
+          message: payload?.message,
+          detail: payload?.detail
+        });
         const errorType = String(payload?.errorType || "");
         const title =
           payload?.title ||
@@ -2789,7 +3499,7 @@ export default function Diagnose({
           `Consensus diagnostic failed (${res.status})`;
         const restartHint =
           res.status === 404
-            ? " Restart the MotorMedic Pro server (npm run dev) so POST /api/analyze-vibration is registered."
+            ? " Restart the Spectra CM server (npm run dev) so POST /api/analyze-vibration is registered."
             : "";
         setAnalysisError({
           title: String(title),
@@ -2804,22 +3514,32 @@ export default function Diagnose({
 
       clearAnalysisTimers();
       setIsAnalyzing(false);
+      logPipelineSuccess("frontend-analyze-vibration", startTime, {
+        status: res.status
+      });
       const payloadPeaks = Array.isArray((payload as any)?.spectrumPeaks)
         ? ((payload as any).spectrumPeaks as SpectrumChartPeak[])
         : chartRegionDetection?.peaks;
-      applyAnalysisResult(payload as VibrationAnalysisResult, "api", payloadPeaks);
+      applyAnalysisResult(payload as unknown as VibrationAnalysisResult, "api", payloadPeaks);
       toast("Consensus diagnostic complete.", "success");
     } catch (err) {
       clearAnalysisTimers();
       setIsAnalyzing(false);
       const message =
         err instanceof Error ? err.message : "Failed to run consensus vibration analysis.";
+      const timedOut =
+        /timed out|timeout|abort/i.test(message) ||
+        (err instanceof DOMException && err.name === "AbortError");
+      console.error("❌ [PIPELINE FAIL] handleRunAnalysis catch:", {
+        kind: classifyPipelineFailure(err),
+        ...pipelineErrorFields(err)
+      });
       setAnalysisError({
         title: "Consensus Diagnostic Error",
-        message,
+        message: timedOut ? SPECTRAL_EXTRACTION_TIMEOUT_MSG : message,
         errorType: "GATEWAY_TIMEOUT"
       });
-      toast(message, "error");
+      toast(timedOut ? SPECTRAL_EXTRACTION_TIMEOUT_MSG : message, "error");
     }
   };
 
@@ -2917,12 +3637,98 @@ export default function Diagnose({
     }
   };
 
+  const resolveVibrationAssetKey = () =>
+    (browseAssetTag && String(browseAssetTag).trim()) ||
+    (selectedAsset?.tag && String(selectedAsset.tag).trim()) ||
+    (selectedAsset?.id != null ? String(selectedAsset.id) : null) ||
+    selectedAsset?.label ||
+    "pending-asset";
+
+  /** Qwen-VL / local vision extract — only from Run Diagnostics spectrum upload. */
+  const runVibrationVisionExtraction = async (file: File) => {
+    setVibrationExtractStatus("extracting");
+    setVibrationExtractError(null);
+    setVibrationExtractSummary(null);
+    vibrationExtractedRef.current = null;
+    vibrationTrendRecordRef.current = null;
+    const startTime = logPipelineStart("frontend-extract-vibration", {
+      filename: file.name,
+      sizeKb: (file.size / 1024).toFixed(1)
+    });
+    try {
+      logPipelineSend("frontend-extract-vibration", { mode: "full" });
+      const data = await extractVibrationDataFromImage(
+        file,
+        VISION_MODEL_CONFIG.endpoint,
+        "full"
+      );
+      if (!data.spectralPeaks.length) {
+        throw new Error(SPECTRAL_EXTRACTION_FAILED_MSG);
+      }
+      logPipelineSuccess("frontend-extract-vibration", startTime, {
+        peakCount: data.spectralPeaks.length
+      });
+
+      vibrationExtractedRef.current = data;
+      const record = buildVibrationDiagnosticRecord({
+        assetId: resolveVibrationAssetKey(),
+        extracted: data,
+        component: browseComponent || null,
+        timestamp: new Date().toISOString()
+      });
+      vibrationTrendRecordRef.current = record;
+      if (record.spectral.length > 0) {
+        cacheVibrationRecordLocally(record);
+      }
+
+      console.log("💾 [VIBRATION] Saving diagnostic record:", {
+        assetId: record.assetId,
+        timestamp: record.timestamp,
+        hasSpectral: !!record.spectral?.length,
+        spectralLength: record.spectral?.length,
+        firstFewPeaks: record.spectral?.slice(0, 3)
+      });
+
+      setVibrationExtractSummary({
+        peakCount: record.spectral.length,
+        confidence: data.extractionConfidence
+      });
+      setVibrationExtractStatus("ready");
+      toast(
+        `Vibration chart extracted (${data.extractionConfidence}% confidence) · ${record.spectral.length} spectral peaks`,
+        "success"
+      );
+    } catch (err) {
+      logPipelineFail("frontend-extract-vibration", startTime, err);
+      console.error("❌ [PIPELINE FAIL] Extraction failed (no fallback):", {
+        kind: classifyPipelineFailure(err),
+        elapsedSec: pipelineElapsedSec(startTime),
+        ...pipelineErrorFields(err)
+      });
+      const message =
+        err instanceof Error ? err.message : SPECTRAL_EXTRACTION_FAILED_MSG;
+      vibrationExtractedRef.current = null;
+      vibrationTrendRecordRef.current = null;
+      setVibrationExtractSummary(null);
+      setVibrationExtractStatus("failed");
+      setVibrationExtractError(message);
+      toast(
+        /timed out|timeout/i.test(message)
+          ? SPECTRAL_EXTRACTION_TIMEOUT_MSG
+          : message,
+        "warning"
+      );
+    }
+  };
+
   const ingestSpectrumUpload = (file: File | null) => {
     if (!file) return;
     if (/\.(png|jpe?g|webp|gif)$/i.test(file.name)) {
       resetChartRegions();
       const preview = ingestUpload(file, setSpectrumUpload, /\.(png|jpe?g|webp|gif)$/i);
       if (preview) void detectAndCropSpectrumCharts(preview);
+      // Centralized Trend Analyzer payload — extract from spectrum image only here
+      void runVibrationVisionExtraction(file);
       return;
     }
     ingestUpload(file, setSpectrumUpload, /\.(png|jpe?g|csv)$/i);
@@ -3031,6 +3837,11 @@ export default function Diagnose({
 
   const handleClearVibSpectrum = () => {
     resetChartRegions();
+    vibrationExtractedRef.current = null;
+    vibrationTrendRecordRef.current = null;
+    setVibrationExtractStatus("idle");
+    setVibrationExtractError(null);
+    setVibrationExtractSummary(null);
     setSpectrumUpload((prev) => {
       if (prev?.preview) URL.revokeObjectURL(prev.preview);
       return null;
@@ -3157,7 +3968,7 @@ export default function Diagnose({
             Run <span className="text-yellow-400">Advanced Diagnostic</span>
           </h1>
           <p className="text-sm text-slate-400 max-w-xl">
-            Capture equipment context, observations, and measurement data — then let MotorMedic diagnose faults.
+            Capture equipment context, observations, and measurement data — then let Spectra diagnose faults.
           </p>
         </div>
         <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">
@@ -3440,6 +4251,10 @@ export default function Diagnose({
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
                 assetLabel: selectedAsset?.label || undefined,
                 component: browseComponent || undefined,
+                componentType:
+                  (showCustomType && customComponentType
+                    ? customComponentType
+                    : componentType) || undefined,
                 voltage: selectedAsset?.voltage || undefined,
                 location: selectedAsset?.location || undefined,
                 hp: selectedAsset?.hp,
@@ -3464,6 +4279,7 @@ export default function Diagnose({
           ) : activeTech === "mca" ? (
             <McaInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              onSnapshotChange={setMcaSnapshot}
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
@@ -4369,6 +5185,50 @@ export default function Diagnose({
                   onDropFile={(f) => ingestUpload(f, setRawUpload, /\.(csv|wav|txt)$/i)}
                 />
               </div>
+              {(vibrationExtractStatus !== "idle" || vibrationExtractError) && (
+                <div
+                  className={`rounded-lg border px-3 py-2 text-xs ${
+                    vibrationExtractStatus === "extracting"
+                      ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300"
+                      : vibrationExtractStatus === "ready"
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                        : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                  }`}
+                >
+                  {vibrationExtractStatus === "extracting" && (
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                      {AI_LOADING_MESSAGES[currentMessageIndex]}
+                    </span>
+                  )}
+                  {vibrationExtractStatus === "ready" && vibrationExtractSummary && (
+                      <span className="inline-flex items-center gap-2">
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                        Trend record ready — {vibrationExtractSummary.peakCount}{" "}
+                        spectral peaks · {vibrationExtractSummary.confidence}%
+                        confidence. Cached for Trend Analyzer; PostgreSQL on Run
+                        Diagnostics.
+                      </span>
+                    )}
+                  {vibrationExtractStatus === "failed" && (
+                    <span>
+                      {vibrationExtractError ||
+                        "Vision extraction failed. You can still run diagnostics."}
+                    </span>
+                  )}
+                </div>
+              )}
+              {vibrationExtractStatus === "extracting" && (
+                <div className="p-6 bg-slate-800/50 rounded-xl border border-cyan-500/30 mt-6">
+                  <Loader2 className="animate-spin text-cyan-400 w-12 h-12 mx-auto mb-4" />
+                  <p className="text-cyan-400 font-semibold text-center">
+                    {AI_LOADING_MESSAGES[currentMessageIndex]}
+                  </p>
+                  <p className="text-xs text-slate-400 text-center mt-2">
+                    This may take up to 60 seconds for complex high-resolution spectra.
+                  </p>
+                </div>
+              )}
               <input
                 ref={spectrumRef}
                 type="file"
@@ -4480,7 +5340,7 @@ export default function Diagnose({
               </span>
               <span className="text-slate-600">→</span>
               <span>
-                MotorMedic sensor{" "}
+                Spectra sensor{" "}
                 <span className="text-emerald-400 font-semibold">$600</span>
               </span>
               <span className="text-slate-600 hidden sm:inline">|</span>
@@ -4490,13 +5350,13 @@ export default function Diagnose({
             </div>
             {isAnalyzing && activeTech === "vibration" && (
               <div
-                className="relative overflow-hidden rounded-xl border border-cyan-400/40 bg-slate-950/90 px-4 py-3 flex items-center gap-3 shadow-[0_0_28px_rgba(34,211,238,0.18)]"
+                className="relative overflow-hidden rounded-xl border border-cyan-500/30 bg-slate-800/50 px-4 py-3 flex items-center gap-3 shadow-[0_0_28px_rgba(34,211,238,0.18)]"
                 style={{ animation: "hudPulse 1.8s ease-in-out infinite" }}
               >
                 <span className="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-400/10 to-transparent animate-pulse" />
-                <Loader2 className="h-4 w-4 text-cyan-300 animate-spin shrink-0 relative z-10" />
-                <span className="relative z-10 text-xs sm:text-sm font-semibold tracking-wide text-cyan-100">
-                  OpenAI Vision Analyzing Spectrum &amp; Kinematics...
+                <Loader2 className="h-4 w-4 text-cyan-400 animate-spin shrink-0 relative z-10" />
+                <span className="relative z-10 text-xs sm:text-sm font-semibold tracking-wide text-cyan-400">
+                  {AI_LOADING_MESSAGES[currentMessageIndex]}
                 </span>
               </div>
             )}
@@ -4533,7 +5393,11 @@ export default function Diagnose({
                   ? "Upload a spectrum chart image in Data Ingestion to enable analysis"
                   : activeTech === "ir" && equipmentReady && !hasThermalImage
                     ? "Upload a thermal image in Data Ingestion to enable analysis"
-                    : "Select Route, Asset, and Component to enable analysis"}
+                    : activeTech === "ultrasound" &&
+                        equipmentReady &&
+                        !ultrasoundTelemetryValid
+                      ? "Peak dBµV must be greater than or equal to RMS dBµV"
+                      : "Select Route, Asset, and Component to enable analysis"}
               </p>
             )}
           </section>
@@ -5651,50 +6515,64 @@ export default function Diagnose({
       {isAnalyzing &&
         createPortal(
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm px-4">
-            <div className="bg-slate-800 border border-slate-700 rounded-xl p-8 max-w-md w-full mx-4 shadow-2xl shadow-yellow-500/10">
-              <div className="text-center">
-                <Bot className="w-12 h-12 text-yellow-500 mx-auto mb-4 animate-pulse" />
-                <h3 className="text-xl font-bold text-white mb-2">
-                  {activeTech === "vibration"
-                    ? "OpenAI Vision Analyzing..."
-                    : "Analyzing..."}
-                </h3>
-                <p className="text-sm text-slate-400 mb-6">
-                  {activeTech === "vibration"
-                    ? "Consensus engine correlating spectrum peaks with kinematics..."
-                    : `MotorMedic is reviewing ${reportAsset.label}`}
+            {activeTech === "vibration" ? (
+              <div className="p-6 bg-slate-800/50 rounded-xl border border-cyan-500/30 max-w-md w-full mx-4 shadow-2xl shadow-cyan-500/10">
+                <Loader2 className="animate-spin text-cyan-400 w-12 h-12 mx-auto mb-4" />
+                <p className="text-cyan-400 font-semibold text-center">
+                  {AI_LOADING_MESSAGES[currentMessageIndex]}
                 </p>
-                <div className="space-y-3 text-left">
-                  {ANALYSIS_STEPS.map((s, i) => {
-                    const done = i < stepIdx;
-                    const active = i === stepIdx && stepIdx < ANALYSIS_STEPS.length;
-                    return (
-                      <div
-                        key={s}
-                        className={`flex items-center gap-3 ${
-                          done ? "text-slate-300" : active ? "text-yellow-400" : "text-slate-500"
-                        }`}
-                      >
-                        {done ? (
-                          <Check className="w-4 h-4 text-emerald-500 shrink-0" />
-                        ) : active ? (
-                          <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin shrink-0" />
-                        ) : (
-                          <span className="w-4 h-4 rounded-full border border-slate-600 shrink-0" />
-                        )}
-                        <span className="text-sm">{s}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                <p className="text-xs text-slate-400 text-center mt-2">
+                  This may take up to 60 seconds for complex high-resolution spectra.
+                </p>
                 <div className="mt-6 h-2 bg-slate-700 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-yellow-500 rounded-full transition-all duration-500 ease-out"
+                    className="h-full bg-cyan-500 rounded-full transition-all duration-500 ease-out"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-slate-800 border border-slate-700 rounded-xl p-8 max-w-md w-full mx-4 shadow-2xl shadow-yellow-500/10">
+                <div className="text-center">
+                  <Bot className="w-12 h-12 text-yellow-500 mx-auto mb-4 animate-pulse" />
+                  <h3 className="text-xl font-bold text-white mb-2">
+                    Analyzing...
+                  </h3>
+                  <p className="text-sm text-slate-400 mb-6">
+                    {`Spectra is reviewing ${reportAsset.label}`}
+                  </p>
+                  <div className="space-y-3 text-left">
+                    {ANALYSIS_STEPS.map((s, i) => {
+                      const done = i < stepIdx;
+                      const active = i === stepIdx && stepIdx < ANALYSIS_STEPS.length;
+                      return (
+                        <div
+                          key={s}
+                          className={`flex items-center gap-3 ${
+                            done ? "text-slate-300" : active ? "text-yellow-400" : "text-slate-500"
+                          }`}
+                        >
+                          {done ? (
+                            <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+                          ) : active ? (
+                            <div className="w-4 h-4 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                          ) : (
+                            <span className="w-4 h-4 rounded-full border border-slate-600 shrink-0" />
+                          )}
+                          <span className="text-sm">{s}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-6 h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-yellow-500 rounded-full transition-all duration-500 ease-out"
+                      style={{ width: `${progress}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>,
           document.body
         )}

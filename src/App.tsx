@@ -838,7 +838,7 @@ export default function App() {
               <Activity className="w-4.5 h-4.5 text-[#d4af37] animate-pulse" />
               <div className="flex flex-col justify-center">
                 <span className="text-xs font-black tracking-tight text-[#d4af37] font-display uppercase">
-                  MotorMedic <span className={theme === "dark" ? "text-slate-100 font-bold" : "text-white font-bold"}>Pro</span>
+                  Spectra <span className={theme === "dark" ? "text-slate-100 font-bold" : "text-white font-bold"}>CM</span>
                 </span>
                 <span className="text-[7px] font-mono font-semibold tracking-widest text-[#d4af37]/75 uppercase leading-none">Reliability SaaS</span>
               </div>
@@ -1191,7 +1191,7 @@ export default function App() {
             <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-4 text-xs space-y-2">
               <span className="font-bold text-slate-300">Integrations active:</span>
               <p className="text-[10px] text-slate-400 leading-normal">
-                Standard client-side local cache synchronized with MotorMedic structured diagnostic schemas.
+                Standard client-side local cache synchronized with Spectra structured diagnostic schemas.
               </p>
             </div>
           </div>
@@ -1315,7 +1315,7 @@ export default function App() {
           {/* Legal Footer — scrolls with main content */}
           <footer className="w-full py-6 mt-8 border-t border-slate-900 text-center text-slate-500 text-[11px] relative z-20" id="app-legal-footer">
             <div className="w-full max-w-full flex flex-col sm:flex-row items-center justify-between gap-4">
-              <span className="font-sans">© 2026 MotorMedic Pro. All rights reserved.</span>
+              <span className="font-sans">© 2026 Spectra CM. All rights reserved.</span>
               <div className="flex items-center gap-6">
                 <button
                   onClick={() => setShowLegalDoc("terms")}
@@ -1426,7 +1426,7 @@ export default function App() {
             <div className="flex items-center justify-between pb-4 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Activity className="w-5 h-5 text-yellow-400" />
-                <span className="font-bold text-white tracking-tight">MotorMedic Pro</span>
+                <span className="font-bold text-white tracking-tight">Spectra CM</span>
               </div>
               <button 
                 onClick={() => setIsHamburgerOpen(false)}

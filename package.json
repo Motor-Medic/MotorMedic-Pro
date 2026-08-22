@@ -1,8 +1,9 @@
 {
-  "name": "react-example",
+  "name": "spectra-cm",
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "description": "Spectra CM - Industrial Asset Reliability Platform",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
@@ -23,6 +24,7 @@
     "motion": "^12.23.24",
     "openai": "^6.46.0",
     "papaparse": "^5.5.4",
+    "pdfjs-dist": "^6.2.108",
     "pg": "^8.11.3",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

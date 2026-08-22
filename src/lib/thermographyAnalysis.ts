@@ -43,8 +43,20 @@ export interface ThermographyResult {
   detailed?: ThermographyDetailedAnalysis | null;
 }
 
+/** Radiometric / isotherm overlay values read from the thermal image HUD. */
+export interface ThermographyRadiometricMetrics {
+  boxAverageTemperature: number | null;
+  emissivitySetting: number | null;
+  isothermThreshold: number | null;
+  scaleMaxBoundary: number | null;
+  scaleMinBoundary: number | null;
+  roiStatisticalMean: number | null;
+}
+
 export interface ThermographyDetailedAnalysis {
   extracted_data?: Record<string, unknown>;
+  /** Normalized radiometric + isotherm fields for Trend Analyzer Tab 3. */
+  radiometric?: ThermographyRadiometricMetrics;
   analysis?: Record<string, unknown>;
   fault_details?: Record<string, unknown>;
   actionable_recommendations?: string[];
@@ -139,6 +151,22 @@ Analyze the thermal image and extract:
    - Measurement markers: Spot temps (Sp1, Sp2), box area stats (Max/Min/Avg)
    - Ambient/Reference temperature
    - Load percentage if displayed (critical for severity assessment)
+
+### RADIOMETRIC & ISOTHERM EXTRACTION (REQUIRED when visible on image)
+Inspect camera HUD overlays, palette scale bars, isotherm filters, and measurement boxes
+(FLIR, Seek, SmartIR, Testo, etc.). When any of these appear, you MUST populate
+extracted_data.radiometric with numeric values (omit individual keys only when truly not visible):
+
+- boxAverageTemperature: average temperature inside a measurement box / ROI (as labeled, °F or °C)
+- emissivitySetting: emissivity ε from camera settings overlay (typically 0.85–0.98)
+- isothermThreshold: isotherm alarm / filter threshold temperature (°F or °C)
+- scaleMaxBoundary: upper bound of the color palette / temperature scale
+- scaleMinBoundary: lower bound of the color palette / temperature scale
+- roiStatisticalMean: statistical mean temperature for the ROI (Mean / Avg / μ in box stats)
+
+Also mirror palette bounds in extracted_data.temperature_scale.min / .max and emissivity in
+extracted_data.emissivity. Do NOT return null for radiometric keys — omit the key if not visible.
+When a measurement box shows Avg/Mean, fill BOTH boxAverageTemperature and roiStatisticalMean.
 
 2. **Equipment Context:**
    - Asset type (Electrical switchgear, Motor, Bearing, etc.)
@@ -252,6 +280,14 @@ Do NOT include financial_impact, ROI, repair costs, downtime costs, or actionabl
   "extracted_data": {
     "emissivity": "number or 'Not visible'",
     "temperature_scale": {"min": number, "max": number, "unit": "°F or °C"},
+    "radiometric": {
+      "boxAverageTemperature": number,
+      "emissivitySetting": number,
+      "isothermThreshold": number,
+      "scaleMaxBoundary": number,
+      "scaleMinBoundary": number,
+      "roiStatisticalMean": number
+    },
     "hotspot_temperature": number,
     "reference_temperature": number,
     "ambient_temperature": number,
@@ -315,6 +351,109 @@ function clamp(n: number, min: number, max: number): number {
 function num(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** Parse overlay numbers; rejects "Not visible" and non-numeric strings. */
+function pickRadiometricNum(...vals: unknown[]): number | null {
+  for (const v of vals) {
+    if (v == null || v === "") continue;
+    if (typeof v === "string") {
+      const trimmed = v.trim();
+      if (!trimmed || /not visible|n\/a|unknown/i.test(trimmed)) continue;
+      const m = trimmed.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+      if (!m) continue;
+      const n = Number(m[0]);
+      if (Number.isFinite(n)) return n;
+      continue;
+    }
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
+}
+
+/**
+ * Normalize radiometric / isotherm fields from AI JSON (camelCase, snake_case, nested).
+ */
+export function extractRadiometricMetrics(
+  source: Record<string, unknown> | null | undefined
+): ThermographyRadiometricMetrics {
+  const root = source && typeof source === "object" ? source : {};
+  const extracted =
+    root.extracted_data && typeof root.extracted_data === "object"
+      ? (root.extracted_data as Record<string, unknown>)
+      : root;
+  const radiometric =
+    extracted.radiometric && typeof extracted.radiometric === "object"
+      ? (extracted.radiometric as Record<string, unknown>)
+      : root.radiometric && typeof root.radiometric === "object"
+        ? (root.radiometric as Record<string, unknown>)
+        : {};
+  const analysis =
+    root.analysis && typeof root.analysis === "object"
+      ? (root.analysis as Record<string, unknown>)
+      : null;
+  const tempScale =
+    extracted.temperature_scale && typeof extracted.temperature_scale === "object"
+      ? (extracted.temperature_scale as Record<string, unknown>)
+      : {};
+
+  const boxAverageTemperature = pickRadiometricNum(
+    radiometric.boxAverageTemperature,
+    extracted.boxAverageTemperature,
+    extracted.box_average_temperature,
+    extracted.box_average_temp,
+    extracted.box_avg_temp,
+    extracted.box_avg,
+    extracted.area_avg
+  );
+  const roiStatisticalMean = pickRadiometricNum(
+    radiometric.roiStatisticalMean,
+    extracted.roiStatisticalMean,
+    extracted.roi_statistical_mean,
+    extracted.roi_mean,
+    extracted.mean_temp,
+    extracted.box_mean,
+    radiometric.boxAverageTemperature,
+    boxAverageTemperature
+  );
+
+  return {
+    boxAverageTemperature,
+    emissivitySetting: pickRadiometricNum(
+      radiometric.emissivitySetting,
+      extracted.emissivitySetting,
+      extracted.emissivity_setting,
+      extracted.emissivity,
+      extracted.epsilon
+    ),
+    isothermThreshold: pickRadiometricNum(
+      radiometric.isothermThreshold,
+      extracted.isothermThreshold,
+      extracted.isotherm_threshold,
+      extracted.isotherm,
+      analysis?.isotherm_threshold,
+      analysis?.isothermThreshold
+    ),
+    scaleMaxBoundary: pickRadiometricNum(
+      radiometric.scaleMaxBoundary,
+      extracted.scaleMaxBoundary,
+      extracted.scale_max_boundary,
+      extracted.scale_max,
+      extracted.palette_max,
+      tempScale.max,
+      tempScale.maximum
+    ),
+    scaleMinBoundary: pickRadiometricNum(
+      radiometric.scaleMinBoundary,
+      extracted.scaleMinBoundary,
+      extracted.scale_min_boundary,
+      extracted.scale_min,
+      extracted.palette_min,
+      tempScale.min,
+      tempScale.minimum
+    ),
+    roiStatisticalMean
+  };
 }
 
 function normalizeSeverity(raw: unknown): ThermographyFaultSeverity {
@@ -544,8 +683,51 @@ export function normalizeThermographyResult(raw: unknown): ThermographyResult {
       ? "Temperature values estimated from visual analysis; radiometric data recommended for precise measurement"
       : null;
 
-  const detailed: ThermographyDetailedAnalysis = {
+  const radiometric = extractRadiometricMetrics({
     extracted_data: extracted || undefined,
+    analysis: analysis || undefined
+  });
+  const hasRadiometric = Object.values(radiometric).some((v) => v != null);
+  const extractedMerged: Record<string, unknown> = {
+    ...(extracted || {}),
+    radiometric: {
+      boxAverageTemperature: radiometric.boxAverageTemperature,
+      emissivitySetting: radiometric.emissivitySetting,
+      isothermThreshold: radiometric.isothermThreshold,
+      scaleMaxBoundary: radiometric.scaleMaxBoundary,
+      scaleMinBoundary: radiometric.scaleMinBoundary,
+      roiStatisticalMean: radiometric.roiStatisticalMean
+    },
+    ...(radiometric.emissivitySetting != null
+      ? { emissivity: radiometric.emissivitySetting }
+      : {}),
+    ...(radiometric.scaleMinBoundary != null || radiometric.scaleMaxBoundary != null
+      ? {
+          temperature_scale: {
+            ...(extracted?.temperature_scale &&
+            typeof extracted.temperature_scale === "object"
+              ? (extracted.temperature_scale as Record<string, unknown>)
+              : {}),
+            min:
+              radiometric.scaleMinBoundary ??
+              pickRadiometricNum(
+                (extracted?.temperature_scale as Record<string, unknown> | undefined)
+                  ?.min
+              ),
+            max:
+              radiometric.scaleMaxBoundary ??
+              pickRadiometricNum(
+                (extracted?.temperature_scale as Record<string, unknown> | undefined)
+                  ?.max
+              )
+          }
+        }
+      : {})
+  };
+
+  const detailed: ThermographyDetailedAnalysis = {
+    extracted_data: extracted || hasRadiometric ? extractedMerged : undefined,
+    radiometric,
     analysis: analysis || undefined,
     fault_details: faultDetails || undefined,
     actionable_recommendations: actionable.length ? actionable : undefined,
@@ -577,7 +759,7 @@ export function normalizeThermographyResult(raw: unknown): ThermographyResult {
     },
     recommendations,
     detailed:
-      extracted || analysis || faultDetails
+      extracted || analysis || faultDetails || hasRadiometric
         ? detailed
         : null
   };
@@ -626,6 +808,9 @@ Refractory Skin Temp: ${asText(metadata.refractory_skin_temp, "—")}
 Max Allowable Limit: ${asText(metadata.max_allowable_limit, "—")}
 
 Prefer operator-provided emissivity/ambient/load when image overlays are missing.
+When camera HUD shows palette scale, isotherm, emissivity, or box/ROI statistics, you MUST
+fill extracted_data.radiometric with boxAverageTemperature, emissivitySetting, isothermThreshold,
+scaleMaxBoundary, scaleMinBoundary, and roiStatisticalMean as numbers.
 If load < 40%, set analysis.load_corrected appropriately and note limited severity validity.
 Apply NFPA 70B 2026 ΔT class thresholds and NFPA 70E safety fields.`;
 }
@@ -797,13 +982,25 @@ export function thermographyPeaksForSave(result: ThermographyResult): unknown[] 
       ? (result.detailed.analysis as Record<string, unknown>)
       : {};
 
+  const radiometric =
+    result.detailed?.radiometric ??
+    extractRadiometricMetrics({
+      extracted_data: extracted,
+      analysis
+    });
+
   const pickNum = (...vals: unknown[]): number | null => {
     for (const v of vals) {
-      const n = typeof v === "number" ? v : Number(v);
-      if (Number.isFinite(n)) return n;
+      const n = pickRadiometricNum(v);
+      if (n != null) return n;
     }
     return null;
   };
+
+  const boxAvg =
+    radiometric.boxAverageTemperature ?? radiometric.roiStatisticalMean;
+  const roiMean =
+    radiometric.roiStatisticalMean ?? radiometric.boxAverageTemperature;
 
   return [
     {
@@ -833,23 +1030,21 @@ export function thermographyPeaksForSave(result: ThermographyResult): unknown[] 
       ),
       current_amps: pickNum(extracted.current_amps, extracted.amperage, extracted.amps),
       rated_amps: pickNum(extracted.rated_amps, extracted.fla, extracted.full_load_amps),
-      emissivity: pickNum(
-        extracted.emissivity,
-        extracted.emissivity_setting,
-        extracted.epsilon
-      ),
-      scale_min: pickNum(extracted.scale_min, extracted.palette_min),
-      scale_max: pickNum(extracted.scale_max, extracted.palette_max),
-      isotherm_threshold: pickNum(
-        extracted.isotherm_threshold,
-        analysis.isotherm_threshold
-      ),
-      box_average_temp: pickNum(
-        extracted.box_average_temp,
-        extracted.box_avg_temp,
-        extracted.box_avg,
-        extracted.area_avg
-      ),
+      // Radiometric & isotherm — canonical camelCase + snake_case for persistence / charts
+      boxAverageTemperature: boxAvg,
+      emissivitySetting: radiometric.emissivitySetting,
+      isothermThreshold: radiometric.isothermThreshold,
+      scaleMaxBoundary: radiometric.scaleMaxBoundary,
+      scaleMinBoundary: radiometric.scaleMinBoundary,
+      roiStatisticalMean: roiMean,
+      emissivity: radiometric.emissivitySetting,
+      emissivity_setting: radiometric.emissivitySetting,
+      scale_min: radiometric.scaleMinBoundary,
+      scale_max: radiometric.scaleMaxBoundary,
+      isotherm_threshold: radiometric.isothermThreshold,
+      box_average_temp: boxAvg,
+      box_average_temperature: boxAvg,
+      roi_statistical_mean: roiMean,
       reflected_apparent_temp: pickNum(
         extracted.reflected_apparent_temp,
         extracted.reflected_temp

@@ -32,6 +32,7 @@ export type UltrasoundPeaksLite = {
   rms_dbmv: number;
   baseline_dbmv?: number;
   delta_db?: number;
+  crest_factor?: number;
   mode?: string;
 };
 

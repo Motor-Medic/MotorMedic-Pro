@@ -233,7 +233,7 @@ export default function OnboardingWizard({ onClose, companyId, onSetupComplete }
                 </div>
                 <div className="space-y-2">
                   <h2 className="text-2xl font-extrabold text-slate-100 tracking-tight">
-                    Welcome to MotorMedic Pro!
+                    Welcome to Spectra CM!
                   </h2>
                   <p className="text-sm text-slate-400 max-w-md mx-auto leading-relaxed">
                     Let's get your facility set up in less than a minute. We'll create your first plant location, routing zone, and rotating asset.

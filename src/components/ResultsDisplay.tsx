@@ -380,7 +380,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
   };
 
   const handleSendEmailToManager = () => {
-    const subject = encodeURIComponent(`MotorMedic Pro Reliability Report: ${equipmentType || "Asset"} (Tag #${assetId || "101"})`);
+    const subject = encodeURIComponent(`Spectra CM Reliability Report: ${equipmentType || "Asset"} (Tag #${assetId || "101"})`);
     const body = encodeURIComponent(generatePlainTextReport());
     window.location.href = `mailto:shanedufrene1989@gmail.com?subject=${subject}&body=${body}`;
   };
@@ -615,7 +615,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
             <div>
               <span className="text-[9px] text-slate-500 uppercase font-bold block">Analyzed By</span>
               <p className="font-semibold text-slate-200">
-                {diagnosticResult?.analyzed_by || "MotorMedic Analyst"}
+                {diagnosticResult?.analyzed_by || "Spectra Analyst"}
               </p>
             </div>
           </div>
@@ -935,7 +935,7 @@ Report compiled dynamically using ISO 10816 baseline guidelines.`;
                   VIBRATION REINFORCEMENT LEARNING LOOP
                 </h4>
                 <p className="text-[11px] text-slate-400 font-sans">
-                  Was this automated diagnosis accurate? Provide feedback to train MotorMedic's neural model.
+                  Was this automated diagnosis accurate? Provide feedback to train Spectra's neural model.
                 </p>
               </div>
               

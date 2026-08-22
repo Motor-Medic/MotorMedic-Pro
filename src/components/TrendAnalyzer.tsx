@@ -28,34 +28,96 @@ import {
   Activity,
   AlertTriangle,
   AudioWaveform,
+  BarChart3,
+  Check,
+  ClipboardPaste,
   Clock,
+  Cog,
   Download,
   Droplet,
+  Droplets,
   FileText,
+  Loader2,
   Mail,
   Printer,
+  RotateCw,
   Search,
-  Settings,
+  Shield,
   Sparkles,
   Thermometer,
-  Waves,
+  Upload,
+  Wind,
   Wrench,
   Zap
 } from "lucide-react";
 import { TrendDataPoint } from "../types";
 import {
   fetchAnalysisResults,
+  saveAnalysisResult,
+  setAnalysisBaseline,
   type SavedAnalysisResult
 } from "../lib/analysisPersistence";
 import {
   buildThermoChartSeries,
+  extractThermoChartFields,
   hottestPhaseFromPoint,
   mechanicalKpis,
   nfpaClassBadge,
   radiometricKpis,
+  resolveThermoTempUnit,
   seriesHasAny,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
+import { calculateLeakImpact } from "../lib/ultrasound/leakCalculator";
+import {
+  calculateAdvancedSteamLoss,
+  estimateSteamOrificeFromPeakDb
+} from "../lib/steam/advancedSteamCalculator";
+import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
+import {
+  calculateGroundwallInsulation,
+  type InsulationClass
+} from "../lib/mca/groundwallCalculator";
+import {
+  calculateRotorInfluence,
+  parseRicClipboardText,
+  sanitizeRicPoint,
+  toRicRadarData,
+  type RicDataPoint
+} from "../lib/mca/rotorInfluenceCalculator";
+import {
+  calculateSurgeHealth,
+  parseSurgeClipboardText,
+  surgeHealthFromManualEar,
+  type SurgeDataPoint
+} from "../lib/mca/surgeCalculator";
+import {
+  extractMcaDataFromFile,
+  formatMcaPdfLabel,
+  mcaExtractHasGroundwall,
+  type McaExtractedData
+} from "../lib/mca/mcaPdfExtractor";
+import {
+  extractMcaGroundwallFromSaved,
+  extractMcaWindingFromSaved,
+  findLatestMcaWithGroundwall,
+  MCA_GROUNDWALL_EMPTY,
+  mergeGroundwallPreferPositive,
+  mcaPayloadForSave,
+  mcaTripletHasData
+} from "../lib/mca/mcaPersistence";
+import {
+  extractEnvelopingTrendPoint,
+  extractVibrationRecordFromAnalysis,
+  extractWaveformTrendPoint,
+  hasSpectralPeaks,
+  hasVibrationTrendCharts,
+  readCachedVibrationRecord,
+  type EnvelopingTrendPoint,
+  type VibrationDiagnosticRecord
+} from "../lib/vibration/vibrationDiagnosticRecord";
+import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
+import WaveformTab from "./trendAnalyzer/WaveformTab";
 import {
   getEquipmentData,
   getFlatEquipment,
@@ -153,6 +215,15 @@ function resolveAnalysisType(r: SavedAnalysisResult): string {
     if (String(p.type || "").toLowerCase() === "thermography") return "thermography";
     if (String(p.type || "").toLowerCase() === "ultrasound") return "ultrasound";
     if (String(p.type || "").toLowerCase() === "mca") return "mca";
+    if (
+      p.phase_r != null ||
+      p.phaseR != null ||
+      (p.phases != null && typeof p.phases === "object") ||
+      p.ir1mMOmega != null ||
+      p.groundwall != null
+    ) {
+      return "mca";
+    }
     if (String(p.type || "").toLowerCase() === "oil" || String(p.type || "").toLowerCase() === "oil_analysis")
       return "oil";
     if (p.frequencyHz != null || p.chart != null) return "vibration";
@@ -180,6 +251,8 @@ function uePeaksFromRow(r: SavedAnalysisResult): {
   peak: number | null;
   rms: number | null;
   delta: number | null;
+  crest: number | null;
+  mode: string | null;
 } {
   const peaks = Array.isArray(r.peaks) ? r.peaks : [];
   for (const raw of peaks) {
@@ -189,13 +262,742 @@ function uePeaksFromRow(r: SavedAnalysisResult): {
     const peak = Number(p.peak_dbmv ?? p.peak_dbuv);
     const rms = Number(p.rms_dbmv ?? p.rms_dbuv);
     const delta = Number(p.delta_db);
+    let crest = Number(p.crest_factor ?? p.crestFactor);
+    // dB space: never peak/rms — use 10^((peak−rms)/20)
+    if (!Number.isFinite(crest) && Number.isFinite(peak) && Number.isFinite(rms)) {
+      const cf = Math.pow(10, (peak - rms) / 20);
+      if (Number.isFinite(cf) && cf > 0) {
+        crest = Math.round(cf * 100) / 100;
+      }
+    }
+    const modeRaw = p.mode != null ? String(p.mode).trim() : "";
     return {
       peak: Number.isFinite(peak) ? peak : null,
       rms: Number.isFinite(rms) ? rms : null,
-      delta: Number.isFinite(delta) ? delta : null
+      delta: Number.isFinite(delta) ? delta : null,
+      crest: Number.isFinite(crest) ? crest : null,
+      mode: modeRaw || null
     };
   }
-  return { peak: null, rms: null, delta: null };
+  // Fallback: consensus_details.mode (older / detailed payloads)
+  const cd =
+    r.consensus_details && typeof r.consensus_details === "object"
+      ? (r.consensus_details as Record<string, unknown>)
+      : null;
+  const cdMode =
+    cd && (cd.mode != null || (cd.detailed && typeof cd.detailed === "object"))
+      ? String(
+          cd.mode ??
+            (cd.detailed as Record<string, unknown>)?.mode ??
+            ""
+        ).trim()
+      : "";
+  return {
+    peak: null,
+    rms: null,
+    delta: null,
+    crest: null,
+    mode: cdMode || null
+  };
+}
+
+/** Bearings & Mechanical tab — mechanical / bearing modes (legacy untagged included). */
+function isUeBearingMechanicalRow(r: SavedAnalysisResult): boolean {
+  const { mode } = uePeaksFromRow(r);
+  const m = (mode || "").toLowerCase();
+  if (!m) return true;
+  if (m === "mechanical" || m === "bearing" || m === "bearings") return true;
+  if (m.includes("bearing") || m.includes("mechanical")) return true;
+  if (m === "leak" || m === "electrical" || m === "pd" || m === "valve" || m === "steam") {
+    return false;
+  }
+  return false;
+}
+
+/** Compressed Air Leaks tab — leak-mode ultrasound (or Air Leak classification). */
+function isUeLeakRow(r: SavedAnalysisResult): boolean {
+  const { mode } = uePeaksFromRow(r);
+  const m = (mode || "").toLowerCase();
+  if (m === "leak" || m === "leaks") return true;
+  if (m.includes("leak")) return true;
+  const fault = String(r.primary_fault || "").toLowerCase();
+  if (fault.includes("air leak") || fault === "leak") return true;
+  // Peaks already carry leak economics
+  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
+  for (const raw of peaks) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
+    if (
+      p.estimated_cfm != null ||
+      p.annual_cost != null ||
+      p.orifice_size != null
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function safeFinite(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+type UeLeakCostSeverity = "small" | "medium" | "large" | "critical";
+
+function leakCostSeverity(annualCost: number): UeLeakCostSeverity {
+  if (annualCost < 100) return "small";
+  if (annualCost < 1000) return "medium";
+  if (annualCost <= 5000) return "large";
+  return "critical";
+}
+
+function leakCostTextClass(severity: UeLeakCostSeverity): string {
+  switch (severity) {
+    case "small":
+      return "text-emerald-400";
+    case "medium":
+      return "text-yellow-400";
+    case "large":
+      return "text-orange-400";
+    case "critical":
+      return "text-red-400";
+  }
+}
+
+function leakCostBadgeClass(severity: UeLeakCostSeverity): string {
+  switch (severity) {
+    case "small":
+      return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+    case "medium":
+      return "bg-yellow-500/15 border-yellow-500/40 text-yellow-300";
+    case "large":
+      return "bg-orange-500/15 border-orange-500/40 text-orange-300";
+    case "critical":
+      return "bg-red-500/15 border-red-500/40 text-red-300";
+  }
+}
+
+function formatUsdPerYear(n: number): string {
+  return `${new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2
+  }).format(n)}/yr`;
+}
+
+function formatLeakDate(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+}
+
+type UeLeakInventoryRow = {
+  id: string;
+  assetId: string;
+  dateIso: string;
+  dateMs: number;
+  dateLabel: string;
+  peakDb: number;
+  baselineDb: number;
+  orificeSize: number;
+  estimatedCfm: number;
+  annualCost: number;
+  co2Emissions: number;
+  healthScore: number | null;
+  severity: UeLeakCostSeverity;
+};
+
+/** Extract leak economics from peaks / financial_impact / telemetry_data (+ calculator backfill). */
+function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
+  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
+  let peakDb = 0;
+  let baselineDb = 28;
+  let orificeSize = 0;
+  let estimatedCfm = 0;
+  let annualCost = 0;
+  let co2Emissions = 0;
+  let foundUe = false;
+
+  for (const raw of peaks) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
+    foundUe = true;
+    peakDb = safeFinite(p.peak_dbmv ?? p.peak_dbuv, peakDb);
+    baselineDb = safeFinite(p.baseline_dbmv ?? p.baseline_dbuv, baselineDb);
+    orificeSize = safeFinite(p.orifice_size ?? p.orificeSize, orificeSize);
+    estimatedCfm = safeFinite(p.estimated_cfm ?? p.estimatedCfm, estimatedCfm);
+    annualCost = safeFinite(p.annual_cost ?? p.annualCost, annualCost);
+    co2Emissions = safeFinite(p.co2_emissions ?? p.co2Emissions, co2Emissions);
+    break;
+  }
+
+  const fi =
+    r.financial_impact && typeof r.financial_impact === "object"
+      ? r.financial_impact
+      : {};
+  if (!annualCost) {
+    annualCost = safeFinite(
+      (fi as Record<string, unknown>).annual_cost ??
+        (fi as Record<string, unknown>).annualCost,
+      0
+    );
+  }
+
+  const td =
+    r.telemetry_data && typeof r.telemetry_data === "object"
+      ? r.telemetry_data
+      : null;
+  if (td) {
+    const leakBlob =
+      (td.leak_impact && typeof td.leak_impact === "object"
+        ? (td.leak_impact as Record<string, unknown>)
+        : null) ||
+      (td.leak && typeof td.leak === "object"
+        ? (td.leak as Record<string, unknown>)
+        : null);
+    if (leakBlob) {
+      orificeSize = safeFinite(
+        leakBlob.orifice_size ?? leakBlob.orificeSize,
+        orificeSize
+      );
+      estimatedCfm = safeFinite(
+        leakBlob.estimated_cfm ?? leakBlob.flowRateCfm,
+        estimatedCfm
+      );
+      annualCost = safeFinite(
+        leakBlob.annual_cost ?? leakBlob.annualCost,
+        annualCost
+      );
+      co2Emissions = safeFinite(
+        leakBlob.co2_emissions ?? leakBlob.co2Emissions,
+        co2Emissions
+      );
+    }
+  }
+
+  // Backfill from peak/baseline when persisted economics are missing
+  if (
+    foundUe &&
+    peakDb > 0 &&
+    (estimatedCfm <= 0 || annualCost <= 0 || orificeSize <= 0)
+  ) {
+    const computed = calculateLeakImpact({
+      peakDb,
+      baselineDb
+    });
+    if (orificeSize <= 0) orificeSize = computed.orificeSize;
+    if (estimatedCfm <= 0) estimatedCfm = computed.flowRateCfm;
+    if (annualCost <= 0) annualCost = computed.annualCost;
+    if (co2Emissions <= 0) co2Emissions = computed.co2Emissions;
+  }
+
+  const dateIso = r.timestamp || r.created_at || "";
+  const dateMs = dateIso ? new Date(dateIso).getTime() : 0;
+
+  return {
+    id: String(r.id),
+    assetId: String(r.asset_id || ""),
+    dateIso,
+    dateMs: Number.isFinite(dateMs) ? dateMs : 0,
+    dateLabel: formatLeakDate(dateIso),
+    peakDb,
+    baselineDb,
+    orificeSize,
+    estimatedCfm,
+    annualCost,
+    co2Emissions,
+    healthScore:
+      r.health_score != null && Number.isFinite(Number(r.health_score))
+        ? Number(r.health_score)
+        : null,
+    severity: leakCostSeverity(annualCost)
+  };
+}
+
+/** Electrical PD tab — electrical / PD ultrasound modes. */
+function isUeElectricalPdRow(r: SavedAnalysisResult): boolean {
+  const { mode } = uePeaksFromRow(r);
+  const m = (mode || "").toLowerCase();
+  if (m === "electrical" || m === "pd" || m === "partial_discharge") return true;
+  if (m.includes("electrical") || m.includes("corona") || m.includes("tracking")) {
+    return true;
+  }
+  const fault = String(r.primary_fault || "").toLowerCase();
+  if (
+    fault.includes("corona") ||
+    fault.includes("tracking") ||
+    fault.includes("arcing") ||
+    fault.includes("partial discharge") ||
+    fault.includes("electrical")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+type UePdSeverity = "normal" | "low" | "medium" | "critical";
+type UePdClassification =
+  | "Normal"
+  | "Corona"
+  | "Surface Tracking"
+  | "General Discharge";
+
+/** Phase 1 thresholds on peak dBµV (ISO-style acoustic PD screening). */
+function classifyPdFromPeakDb(peakDb: number): {
+  classification: UePdClassification;
+  severity: UePdSeverity;
+  severityLabel: string;
+} {
+  const peak = safeFinite(peakDb, 0);
+  if (peak < 15) {
+    return {
+      classification: "Normal",
+      severity: "normal",
+      severityLabel: "Normal"
+    };
+  }
+  if (peak < 25) {
+    return {
+      classification: "Corona",
+      severity: "low",
+      severityLabel: "Low / Corona"
+    };
+  }
+  if (peak <= 40) {
+    return {
+      classification: "Surface Tracking",
+      severity: "medium",
+      severityLabel: "Medium / Tracking"
+    };
+  }
+  return {
+    classification: "General Discharge",
+    severity: "critical",
+    severityLabel: "Critical / Arcing"
+  };
+}
+
+function pdSeverityRank(severity: UePdSeverity): number {
+  switch (severity) {
+    case "normal":
+      return 0;
+    case "low":
+      return 1;
+    case "medium":
+      return 2;
+    case "critical":
+      return 3;
+  }
+}
+
+function pdSeverityBadgeClass(severity: UePdSeverity): string {
+  switch (severity) {
+    case "normal":
+      return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+    case "low":
+      return "bg-yellow-500/15 border-yellow-500/40 text-yellow-300";
+    case "medium":
+      return "bg-orange-500/15 border-orange-500/40 text-orange-300";
+    case "critical":
+      return "bg-red-500/15 border-red-500/40 text-red-300";
+  }
+}
+
+function pdSeverityTextClass(severity: UePdSeverity): string {
+  switch (severity) {
+    case "normal":
+      return "text-emerald-400";
+    case "low":
+      return "text-yellow-400";
+    case "medium":
+      return "text-orange-400";
+    case "critical":
+      return "text-red-400";
+  }
+}
+
+type UePdInventoryRow = {
+  id: string;
+  assetId: string;
+  dateIso: string;
+  dateMs: number;
+  dateLabel: string;
+  peakDb: number;
+  baselineDb: number;
+  baselineDelta: number;
+  classification: UePdClassification;
+  severity: UePdSeverity;
+  severityLabel: string;
+  /** Phase 2 stubs — present when AI payload exists. */
+  prpdData: Array<[number, number]> | null;
+  environmentalContext: { temperature?: number; humidity?: number } | null;
+  confidenceScore: number | null;
+};
+
+function parsePrpdData(raw: unknown): Array<[number, number]> | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const out: Array<[number, number]> = [];
+  for (const pt of raw) {
+    if (!Array.isArray(pt) || pt.length < 2) continue;
+    const a = Number(pt[0]);
+    const b = Number(pt[1]);
+    if (Number.isFinite(a) && Number.isFinite(b)) out.push([a, b]);
+  }
+  return out.length > 0 ? out : null;
+}
+
+function uePdInventoryFromRow(r: SavedAnalysisResult): UePdInventoryRow {
+  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
+  let peakDb = 0;
+  let baselineDb = 0;
+  let deltaDb: number | null = null;
+  let prpdData: Array<[number, number]> | null = null;
+  let environmentalContext: { temperature?: number; humidity?: number } | null =
+    null;
+  let confidenceScore: number | null = null;
+
+  for (const raw of peaks) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
+    peakDb = safeFinite(p.peak_dbmv ?? p.peak_dbuv, 0);
+    baselineDb = safeFinite(p.baseline_dbmv ?? p.baseline_dbuv, 0);
+    if (p.delta_db != null) deltaDb = safeFinite(p.delta_db, 0);
+    prpdData = parsePrpdData(p.prpd_data ?? p.prpdData);
+    const env = p.environmental_context ?? p.environmentalContext;
+    if (env && typeof env === "object") {
+      const e = env as Record<string, unknown>;
+      environmentalContext = {
+        ...(e.temperature != null
+          ? { temperature: safeFinite(e.temperature, 0) }
+          : {}),
+        ...(e.humidity != null ? { humidity: safeFinite(e.humidity, 0) } : {})
+      };
+      if (
+        environmentalContext.temperature == null &&
+        environmentalContext.humidity == null
+      ) {
+        environmentalContext = null;
+      }
+    }
+    const conf = optionalPdConfidence(p.confidence_score ?? p.confidenceScore);
+    confidenceScore = conf;
+    break;
+  }
+
+  // Phase 2 stubs may also live on telemetry_data / consensus_details
+  const td =
+    r.telemetry_data && typeof r.telemetry_data === "object"
+      ? r.telemetry_data
+      : null;
+  if (td) {
+    if (!prpdData) prpdData = parsePrpdData(td.prpd_data ?? td.prpdData);
+    if (!environmentalContext) {
+      const env = td.environmental_context ?? td.environmentalContext;
+      if (env && typeof env === "object") {
+        const e = env as Record<string, unknown>;
+        environmentalContext = {
+          ...(e.temperature != null
+            ? { temperature: safeFinite(e.temperature, 0) }
+            : {}),
+          ...(e.humidity != null ? { humidity: safeFinite(e.humidity, 0) } : {})
+        };
+      }
+    }
+    if (confidenceScore == null) {
+      confidenceScore = optionalPdConfidence(
+        td.confidence_score ?? td.confidenceScore
+      );
+    }
+  }
+
+  const baselineDelta =
+    deltaDb != null ? deltaDb : Math.max(0, peakDb - baselineDb);
+  const classified = classifyPdFromPeakDb(peakDb);
+  const dateIso = r.timestamp || r.created_at || "";
+  const dateMs = dateIso ? new Date(dateIso).getTime() : 0;
+
+  return {
+    id: String(r.id),
+    assetId: String(r.asset_id || ""),
+    dateIso,
+    dateMs: Number.isFinite(dateMs) ? dateMs : 0,
+    dateLabel: formatLeakDate(dateIso),
+    peakDb,
+    baselineDb,
+    baselineDelta: Math.round(baselineDelta * 10) / 10,
+    classification: classified.classification,
+    severity: classified.severity,
+    severityLabel: classified.severityLabel,
+    prpdData,
+    environmentalContext,
+    confidenceScore
+  };
+}
+
+function optionalPdConfidence(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Steam trap ultrasound rows — prefer mode === "steam_trap". */
+function isUeSteamTrapRow(r: SavedAnalysisResult): boolean {
+  const { mode } = uePeaksFromRow(r);
+  const m = (mode || "").toLowerCase().replace(/\s+/g, "_");
+  if (m === "steam_trap" || m === "steam-trap") return true;
+  if (m === "steam" || m === "valve" || m === "trap") return true;
+  if (m.includes("steam") || m.includes("trap")) return true;
+  const fault = String(r.primary_fault || "").toLowerCase();
+  if (
+    fault.includes("steam") ||
+    fault.includes("blow-by") ||
+    fault.includes("blow by") ||
+    fault.includes("trap") ||
+    fault.includes("blown-through") ||
+    fault.includes("water hammer")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+type UeSteamInventoryRow = {
+  id: string;
+  assetId: string;
+  trapId: string;
+  trapType: string;
+  dateIso: string;
+  dateMs: number;
+  dateLabel: string;
+  peakDb: number;
+  pressurePsig: number;
+  tempDrop: number | null;
+  upstreamTemp: number | null;
+  downstreamTemp: number | null;
+  status: string;
+  severity: "NORMAL" | "WARNING" | "CRITICAL";
+  action: string;
+  annualCostUsd: number;
+  massFlowLbHr: number;
+  roiPaybackDays: number | null;
+  orificeSizeIn: number;
+  thermalAvailable: boolean;
+};
+
+/**
+ * Best-effort Tin/Tout from latest thermography scan for the same asset.
+ * Prefers explicit inlet/outlet telemetry; falls back to hotspot/reference.
+ */
+function latestThermoSteamTemps(
+  thermoRows: SavedAnalysisResult[],
+  assetId: string
+): { upstreamTemp: number | null; downstreamTemp: number | null } {
+  const tag = String(assetId || "").trim().toLowerCase();
+  if (!tag) return { upstreamTemp: null, downstreamTemp: null };
+
+  const match = [...thermoRows].find((r) => {
+    const a = String(r.asset_id || "").trim().toLowerCase();
+    return a === tag || a.includes(tag) || tag.includes(a);
+  });
+  if (!match) return { upstreamTemp: null, downstreamTemp: null };
+
+  const fields = extractThermoChartFields(match);
+  const td =
+    match.telemetry_data && typeof match.telemetry_data === "object"
+      ? match.telemetry_data
+      : null;
+  const poly =
+    td && td.polymorphic && typeof td.polymorphic === "object"
+      ? (td.polymorphic as Record<string, unknown>)
+      : null;
+
+  const pickTemp = (...candidates: unknown[]): number | null => {
+    for (const c of candidates) {
+      if (c == null || c === "") continue;
+      const n = Number(c);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  };
+
+  return {
+    upstreamTemp: pickTemp(
+      poly?.upstream_temp,
+      poly?.inlet_temp,
+      td?.upstream_temp,
+      td?.inlet_temp,
+      fields.hotspot,
+      fields.deBearing,
+      fields.phaseA
+    ),
+    downstreamTemp: pickTemp(
+      poly?.downstream_temp,
+      poly?.outlet_temp,
+      td?.downstream_temp,
+      td?.outlet_temp,
+      fields.reference,
+      fields.odeBearing,
+      fields.ambientReferenceTemp,
+      fields.phaseB
+    )
+  };
+}
+
+function ueSteamInventoryFromRow(
+  r: SavedAnalysisResult,
+  thermoTemps: { upstreamTemp: number | null; downstreamTemp: number | null }
+): UeSteamInventoryRow {
+  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
+  const td =
+    r.telemetry_data && typeof r.telemetry_data === "object"
+      ? r.telemetry_data
+      : null;
+
+  let peakDb = 0;
+  let pressurePsig = 100;
+  let orificeSize = 0;
+  let trapType = "Thermodynamic";
+  let trapId = String(r.asset_id || r.component || r.id || "TRAP");
+  let upstreamTemp = thermoTemps.upstreamTemp;
+  let downstreamTemp = thermoTemps.downstreamTemp;
+  let operatingHours: number | undefined;
+  let fuelCost: number | undefined;
+
+  for (const raw of peaks) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
+    peakDb = safeFinite(p.peak_dbmv ?? p.peak_dbuv, 0);
+    pressurePsig = safeFinite(
+      p.system_pressure_psi ??
+        p.steam_pressure_psig ??
+        p.systemPressure ??
+        p.pressure_psi,
+      100
+    );
+    orificeSize = safeFinite(
+      p.orifice_size ?? p.orificeSize ?? p.orifice_size_in,
+      0
+    );
+    if (p.trap_type != null || p.trapType != null) {
+      trapType = String(p.trap_type ?? p.trapType);
+    }
+    if (p.trap_id != null || p.trapId != null) {
+      trapId = String(p.trap_id ?? p.trapId);
+    }
+    if (p.upstream_temp != null && Number.isFinite(Number(p.upstream_temp))) {
+      upstreamTemp = Number(p.upstream_temp);
+    }
+    if (p.downstream_temp != null && Number.isFinite(Number(p.downstream_temp))) {
+      downstreamTemp = Number(p.downstream_temp);
+    }
+    if (p.operating_hours != null) {
+      operatingHours = safeFinite(p.operating_hours, 8760);
+    }
+    if (p.fuel_cost_per_mlb != null || p.fuelCostPerThousandLb != null) {
+      fuelCost = safeFinite(
+        p.fuel_cost_per_mlb ?? p.fuelCostPerThousandLb,
+        18.5
+      );
+    }
+    break;
+  }
+
+  if (td) {
+    if (orificeSize <= 0) {
+      orificeSize = safeFinite(td.orifice_size ?? td.orificeSize, orificeSize);
+    }
+    if (td.trap_type != null || td.trapType != null) {
+      trapType = String(td.trap_type ?? td.trapType);
+    }
+    if (td.trap_id != null || td.trapId != null) {
+      trapId = String(td.trap_id ?? td.trapId);
+    }
+    if (upstreamTemp == null && td.upstream_temp != null) {
+      const n = Number(td.upstream_temp);
+      if (Number.isFinite(n)) upstreamTemp = n;
+    }
+    if (downstreamTemp == null && td.downstream_temp != null) {
+      const n = Number(td.downstream_temp);
+      if (Number.isFinite(n)) downstreamTemp = n;
+    }
+  }
+
+  if (!(orificeSize > 0)) {
+    orificeSize = estimateSteamOrificeFromPeakDb(peakDb);
+  }
+
+  const loss = calculateAdvancedSteamLoss({
+    orificeSize,
+    steamPressurePsig: pressurePsig,
+    ultrasoundPeakDb: peakDb,
+    upstreamTemp: upstreamTemp ?? undefined,
+    downstreamTemp: downstreamTemp ?? undefined,
+    trapType,
+    operatingHours,
+    fuelCostPerThousandLb: fuelCost
+  });
+
+  const dateIso = r.timestamp || r.created_at || "";
+  const dateMs = dateIso ? new Date(dateIso).getTime() : 0;
+
+  return {
+    id: String(r.id),
+    assetId: String(r.asset_id || ""),
+    trapId,
+    trapType,
+    dateIso,
+    dateMs: Number.isFinite(dateMs) ? dateMs : 0,
+    dateLabel: formatLeakDate(dateIso),
+    peakDb,
+    pressurePsig,
+    tempDrop: loss.tempDrop,
+    upstreamTemp,
+    downstreamTemp,
+    status: loss.status,
+    severity: loss.severity,
+    action: loss.action,
+    annualCostUsd: loss.annualCost,
+    massFlowLbHr: loss.massFlowLbHr,
+    roiPaybackDays: loss.roiPaybackDays,
+    orificeSizeIn: orificeSize,
+    thermalAvailable: loss.thermalAvailable
+  };
+}
+
+function steamSeverityBadgeClass(
+  severity: UeSteamInventoryRow["severity"]
+): string {
+  switch (severity) {
+    case "NORMAL":
+      return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+    case "WARNING":
+      return "bg-yellow-500/15 border-yellow-500/40 text-yellow-300";
+    case "CRITICAL":
+      return "bg-red-500/15 border-red-500/40 text-red-300";
+  }
+}
+
+function steamSeverityTextClass(
+  severity: UeSteamInventoryRow["severity"]
+): string {
+  switch (severity) {
+    case "NORMAL":
+      return "text-emerald-400";
+    case "WARNING":
+      return "text-yellow-400";
+    case "CRITICAL":
+      return "text-red-400";
+  }
 }
 
 function healthTrendFromAnalyses(rows: SavedAnalysisResult[]) {
@@ -307,11 +1109,32 @@ const DOMINANT_FREQ_ROWS = [
 
 type VibMode = "broadband" | "spectral" | "enveloping" | "waveform";
 
-const VIB_MODE_OPTIONS: { id: VibMode; label: string }[] = [
-  { id: "broadband", label: "⚡ Broadband & ISO 20816" },
-  { id: "spectral", label: "Spectral & Harmonics" },
-  { id: "enveloping", label: "🔬 Enveloping & Bearing" },
-  { id: "waveform", label: "🌀 Waveform & Phase" }
+const VIB_MODE_OPTIONS: {
+  id: VibMode;
+  label: string;
+  Icon?: React.ComponentType<{ className?: string }>;
+  activeClass?: string;
+  inactiveIconClass?: string;
+}[] = [
+  { id: "broadband", label: "Broadband & ISO 20816", Icon: Zap },
+  {
+    id: "spectral",
+    label: "Spectral & Harmonics",
+    Icon: BarChart3,
+    activeClass: "bg-cyan-500/10 border-cyan-500 text-cyan-400",
+    inactiveIconClass: "text-cyan-400"
+  },
+  { id: "enveloping", label: "Enveloping & Bearing", Icon: Cog },
+  { id: "waveform", label: "Waveform & Phase", Icon: AudioWaveform }
+];
+
+const REFERENCE_TREND_DATA = [
+  { date: "Jan", amp1X: 0.4, amp2X: 0.2, overall: 0.8 },
+  { date: "Feb", amp1X: 0.5, amp2X: 0.3, overall: 0.9 },
+  { date: "Mar", amp1X: 0.8, amp2X: 0.3, overall: 1.2 },
+  { date: "Apr", amp1X: 1.2, amp2X: 0.4, overall: 1.7 },
+  { date: "May", amp1X: 1.5, amp2X: 0.5, overall: 2.1 },
+  { date: "Jun", amp1X: 1.9, amp2X: 0.8, overall: 2.8 }
 ];
 
 const VIB_SPECTRAL = [
@@ -321,47 +1144,6 @@ const VIB_SPECTRAL = [
   { date: "Jul 26", oneX: 2.1, twoX: 0.95, harmonics: 0.62, vpf: 0.31, gmf: 0.34 },
   { date: "Aug 03", oneX: 2.55, twoX: 1.1, harmonics: 0.78, vpf: 0.38, gmf: 0.42 }
 ];
-
-const VIB_ENVELOPE = [
-  { date: "Jul 05", gse: 1.2, bpfo: 0.18, bpfi: 0.12, bsf: 0.08, ftf: 0.05 },
-  { date: "Jul 12", gse: 1.45, bpfo: 0.22, bpfi: 0.14, bsf: 0.1, ftf: 0.06 },
-  { date: "Jul 19", gse: 1.8, bpfo: 0.28, bpfi: 0.18, bsf: 0.14, ftf: 0.08 },
-  { date: "Jul 26", gse: 2.35, bpfo: 0.36, bpfi: 0.24, bsf: 0.2, ftf: 0.11 },
-  { date: "Aug 03", gse: 3.1, bpfo: 0.48, bpfi: 0.31, bsf: 0.28, ftf: 0.15 }
-];
-
-const VIB_BEARING_STAGES = [
-  { id: 1, label: "Stage 1: Ultrasonic Activity", tone: "green" as const },
-  { id: 2, label: "Stage 2: Natural Frequency Ringing", tone: "yellow" as const },
-  { id: 3, label: "Stage 3: Defect Harmonics in FFT", tone: "orange" as const },
-  { id: 4, label: "Stage 4: Broadband White Noise / Imminent Failure", tone: "red" as const }
-];
-
-const VIB_PHASE = [
-  { date: "Jul 05", phase: 42 },
-  { date: "Jul 12", phase: 48 },
-  { date: "Jul 19", phase: 55 },
-  { date: "Jul 26", phase: 78 },
-  { date: "Aug 03", phase: 112 }
-];
-
-const VIB_WAVEFORM = Array.from({ length: 80 }, (_, i) => {
-  const t = i * 0.5; // ms
-  const carrier = Math.sin((i / 80) * Math.PI * 8) * 2.2;
-  const impact =
-    i % 16 === 0 ? 4.5 + (i % 7) * 0.15 : i % 16 === 1 ? 2.8 : 0;
-  return { t: Number(t.toFixed(1)), amp: Number((carrier + impact * (i % 2 === 0 ? 1 : -0.6)).toFixed(3)) };
-});
-
-const VIB_ORBIT = Array.from({ length: 72 }, (_, i) => {
-  const a = (i / 72) * Math.PI * 2;
-  const rx = 1.0;
-  const ry = 0.62;
-  return {
-    x: Number((Math.cos(a) * rx + Math.cos(a * 2) * 0.08).toFixed(3)),
-    y: Number((Math.sin(a) * ry + Math.sin(a * 3) * 0.05).toFixed(3))
-  };
-});
 
 const VIB_ISO_ZONES = [
   { id: "A", label: "Zone A — Good", width: "22%", color: "bg-green-500" },
@@ -387,11 +1169,36 @@ const IR_MODE_OPTIONS: { id: IrMode; label: string }[] = [
 
 type UeMode = "bearings" | "leaks" | "electrical" | "steam";
 
-const UE_MODE_OPTIONS: { id: UeMode; label: string }[] = [
-  { id: "bearings", label: "Bearings & Mechanical" },
-  { id: "leaks", label: "Compressed Air Leaks" },
-  { id: "electrical", label: "Electrical PD" },
-  { id: "steam", label: "Steam Traps" }
+const UE_MODE_OPTIONS: {
+  id: UeMode;
+  label: string;
+  Icon: React.ComponentType<{ className?: string }>;
+  iconClass: string;
+}[] = [
+  {
+    id: "bearings",
+    label: "Bearings & Mechanical",
+    Icon: Cog,
+    iconClass: "bg-amber-500/15 border-amber-500/40 text-amber-400"
+  },
+  {
+    id: "leaks",
+    label: "Compressed Air Leaks",
+    Icon: Wind,
+    iconClass: "bg-sky-500/15 border-sky-500/40 text-sky-400"
+  },
+  {
+    id: "electrical",
+    label: "Electrical PD",
+    Icon: Zap,
+    iconClass: "bg-yellow-500/15 border-yellow-500/40 text-yellow-400"
+  },
+  {
+    id: "steam",
+    label: "Steam Traps",
+    Icon: Droplets,
+    iconClass: "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
+  }
 ];
 
 type McaMode = "winding" | "insulation" | "rotor" | "surge";
@@ -399,13 +1206,58 @@ type McaMode = "winding" | "insulation" | "rotor" | "surge";
 const MCA_MODE_OPTIONS: {
   id: McaMode;
   label: string;
-  icon: "settings" | "zap" | "activity" | "waves";
+  Icon: React.ComponentType<{ className?: string }>;
+  iconClass: string;
+  activeClass: string;
 }[] = [
-  { id: "winding", label: "Winding & Phase Balance", icon: "settings" },
-  { id: "insulation", label: "Groundwall Insulation", icon: "zap" },
-  { id: "rotor", label: "Rotor Influence Check", icon: "activity" },
-  { id: "surge", label: "Surge Waveforms", icon: "waves" }
+  {
+    id: "winding",
+    label: "Winding & Phase Balance",
+    Icon: Zap,
+    iconClass: "bg-cyan-500/10 border-cyan-500/40 text-cyan-400",
+    activeClass: "bg-cyan-500/10 border-cyan-500 text-cyan-400"
+  },
+  {
+    id: "insulation",
+    label: "Groundwall Insulation",
+    Icon: Shield,
+    iconClass: "bg-amber-500/10 border-amber-500/40 text-amber-400",
+    activeClass: "bg-amber-500/10 border-amber-500 text-amber-400"
+  },
+  {
+    id: "rotor",
+    label: "Rotor Influence Check",
+    Icon: RotateCw,
+    iconClass: "bg-purple-500/10 border-purple-500/40 text-purple-400",
+    activeClass: "bg-purple-500/10 border-purple-500 text-purple-400"
+  },
+  {
+    id: "surge",
+    label: "Surge Waveforms",
+    Icon: Activity,
+    iconClass: "bg-emerald-500/10 border-emerald-500/40 text-emerald-400",
+    activeClass: "bg-emerald-500/10 border-emerald-500 text-emerald-400"
+  }
 ];
+
+function mcaFmtCell(
+  value: number | null | undefined,
+  digits: number
+): string {
+  if (value == null || !Number.isFinite(value) || value === 0) return "---";
+  return value.toFixed(digits);
+}
+
+function mcaFaultBadgeClass(severity: string): string {
+  const s = severity.toUpperCase();
+  if (s === "CRITICAL") {
+    return "bg-red-500/15 border-red-500/40 text-red-300";
+  }
+  if (s === "WARNING") {
+    return "bg-yellow-500/15 border-yellow-500/40 text-yellow-300";
+  }
+  return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
+}
 
 type OilMode = "wear" | "chemistry" | "cleanliness" | "ferrography";
 
@@ -514,6 +1366,23 @@ function EventMarkerLines({
   );
 }
 
+function amplitudeNearHz(
+  peaks: Array<{ frequency: number; amplitude: number }>,
+  targetHz: number
+): number | null {
+  if (!peaks.length || !(targetHz > 0)) return null;
+  let best = peaks[0];
+  let bestD = Math.abs(best.frequency - targetHz);
+  for (const p of peaks) {
+    const d = Math.abs(p.frequency - targetHz);
+    if (d < bestD) {
+      best = p;
+      bestD = d;
+    }
+  }
+  return best.amplitude;
+}
+
 function peakAmplitudeFromAnalysis(row: SavedAnalysisResult): number | null {
   const peaks = Array.isArray(row.peaks) ? row.peaks : [];
   let max = 0;
@@ -589,7 +1458,33 @@ export default function TrendAnalyzer({
   const [spectrumView, setSpectrumView] = useState<"side-by-side" | "overlay">("side-by-side");
   const [irMode, setIrMode] = useState<IrMode>("hotspot");
   const [ueMode, setUeMode] = useState<UeMode>("bearings");
+  const [ueLeakSort, setUeLeakSort] = useState<{
+    key: "date" | "annual_cost";
+    dir: "asc" | "desc";
+  }>({ key: "date", dir: "desc" });
   const [mcaMode, setMcaMode] = useState<McaMode>("winding");
+  const [mcaPdfExtract, setMcaPdfExtract] = useState<McaExtractedData | null>(
+    null
+  );
+  const [mcaPdfFileName, setMcaPdfFileName] = useState<string | null>(null);
+  const [mcaPdfParsing, setMcaPdfParsing] = useState(false);
+  const [mcaPdfError, setMcaPdfError] = useState<string | null>(null);
+  const [mcaManualEdit, setMcaManualEdit] = useState(false);
+  const [mcaPdfDragOver, setMcaPdfDragOver] = useState(false);
+  const mcaPdfInputRef = useRef<HTMLInputElement>(null);
+  const [ricData, setRicData] = useState<RicDataPoint[]>([]);
+  const [ricBaselineData, setRicBaselineData] = useState<RicDataPoint[]>([]);
+  const [ricCompareBaseline, setRicCompareBaseline] = useState(false);
+  const [ricApplySmoothing, setRicApplySmoothing] = useState(true);
+  const [ricShowGrid, setRicShowGrid] = useState(false);
+  const [ricPasteError, setRicPasteError] = useState<string | null>(null);
+  const [surgeData, setSurgeData] = useState<SurgeDataPoint[]>([]);
+  const [manualEar, setManualEar] = useState<number | null>(null);
+  const [surgeTestVoltageV, setSurgeTestVoltageV] = useState<number | null>(
+    null
+  );
+  const [surgePasteError, setSurgePasteError] = useState<string | null>(null);
+  const surgeCsvInputRef = useRef<HTMLInputElement>(null);
   const [oilMode, setOilMode] = useState<OilMode>("wear");
   const [timeRange, setTimeRange] = useState<TimeRange>("30D");
   const [runningOnly, setRunningOnly] = useState(true);
@@ -604,6 +1499,12 @@ export default function TrendAnalyzer({
   const [dbTrendLoading, setDbTrendLoading] = useState(false);
   const [fetchTick, setFetchTick] = useState(0);
   const [assetSearch, setAssetSearch] = useState("");
+  const [envelopeBaseline, setEnvelopeBaseline] =
+    useState<EnvelopingTrendPoint | null>(null);
+  const [envelopeBaselineBusy, setEnvelopeBaselineBusy] = useState(false);
+  const [envelopeBaselineError, setEnvelopeBaselineError] = useState<
+    string | null
+  >(null);
   const seededFromPropRef = useRef<string | null>(null);
 
   // Seed selection from Equipment DB once per navigation prop — do not reset on Refresh
@@ -812,6 +1713,74 @@ export default function TrendAnalyzer({
     () => dbAnalyses.filter((r) => resolveAnalysisType(r) === "vibration"),
     [dbAnalyses]
   );
+
+  /** Latest unified vibration diagnostic record — prefer rows that include FFT peaks. */
+  const latestVibrationRecord = useMemo((): VibrationDiagnosticRecord | null => {
+    const fromDb = vibAnalyses
+      .map((row) => extractVibrationRecordFromAnalysis(row))
+      .filter((rec): rec is VibrationDiagnosticRecord => Boolean(rec));
+    const dbWithSpectral = fromDb.find((rec) => hasSpectralPeaks(rec));
+    if (dbWithSpectral) return dbWithSpectral;
+
+    const candidateKeys = [
+      analysisAssetQueryKey,
+      selectedAsset?.tag,
+      selectedAsset?.id != null ? String(selectedAsset.id) : null
+    ].filter((k): k is string => Boolean(k && String(k).trim()));
+    for (const key of candidateKeys) {
+      const cached = readCachedVibrationRecord(key);
+      if (hasSpectralPeaks(cached)) return cached;
+    }
+    for (const key of candidateKeys) {
+      const cached = readCachedVibrationRecord(key);
+      if (cached && hasVibrationTrendCharts(cached)) return cached;
+    }
+    return fromDb.find((rec) => hasVibrationTrendCharts(rec)) || fromDb[0] || null;
+  }, [
+    vibAnalyses,
+    analysisAssetQueryKey,
+    selectedAsset?.tag,
+    selectedAsset?.id
+  ]);
+
+  const hasVibrationDiagnosticRecord = hasVibrationTrendCharts(
+    latestVibrationRecord
+  );
+
+  // Debug: verify Trend Analyzer is reading the persisted spectral payload
+  useEffect(() => {
+    if (trendTech !== "vibration") return;
+    const hasSpectral = Boolean(latestVibrationRecord?.spectral?.length);
+    console.log("📈 [TREND ANALYZER] Loading vibration data for:", {
+      id: selectedAsset?.id,
+      tag: selectedAsset?.tag,
+      name: selectedAsset?.name,
+      queryKey: analysisAssetQueryKey
+    });
+    console.log("📥 [TREND ANALYZER] Loaded record:", {
+      hasRecord: !!latestVibrationRecord,
+      hasSpectral,
+      spectralLength: latestVibrationRecord?.spectral?.length ?? 0,
+      isUsingFallback: !hasSpectral,
+      broadbandVelocity: latestVibrationRecord?.broadband?.overallVelocity
+    });
+    if (hasSpectral) {
+      console.log(
+        "📊 [TREND ANALYZER] Real Spectral peaks loaded:",
+        latestVibrationRecord?.spectral
+      );
+    } else {
+      console.warn("⚠️ [TREND ANALYZER] No spectral peaks — using reference spectrum");
+    }
+  }, [
+    trendTech,
+    selectedAsset?.id,
+    selectedAsset?.tag,
+    selectedAsset?.name,
+    analysisAssetQueryKey,
+    latestVibrationRecord
+  ]);
+
   const thermoAnalyses = useMemo(
     () => dbAnalyses.filter((r) => resolveAnalysisType(r) === "thermography"),
     [dbAnalyses]
@@ -890,8 +1859,847 @@ export default function TrendAnalyzer({
 
   const latestDb = activeAnalyses[0] ?? null;
   const latestThermo = thermoAnalyses[0] ?? null;
-  const latestUe = ueAnalyses[0] ?? null;
   const latestMca = mcaAnalyses[0] ?? null;
+  const latestMcaGroundwallRow = useMemo(
+    () => findLatestMcaWithGroundwall(mcaAnalyses) ?? latestMca,
+    [mcaAnalyses, latestMca]
+  );
+  const mcaWindingParams = useMemo(() => {
+    const extracted = extractMcaWindingFromSaved(latestMca);
+    if (mcaPdfExtract) {
+      return {
+        phaseR: mcaPdfExtract.phaseR,
+        phaseL: mcaPdfExtract.phaseL,
+        phaseZ: mcaPdfExtract.phaseZ,
+        phaseFi: mcaPdfExtract.phaseFi,
+        phaseIF: mcaPdfExtract.phaseIF,
+        windingTempC:
+          mcaPdfExtract.windingTempC ?? extracted.windingTempC,
+        ratedHp: mcaPdfExtract.ratedHp ?? extracted.ratedHp,
+        fromTelemetry:
+          mcaTripletHasData(mcaPdfExtract.phaseR) ||
+          mcaTripletHasData(mcaPdfExtract.phaseL) ||
+          mcaTripletHasData(mcaPdfExtract.phaseZ) ||
+          mcaTripletHasData(mcaPdfExtract.phaseFi) ||
+          mcaTripletHasData(mcaPdfExtract.phaseIF),
+        fromPdf: true
+      };
+    }
+    return {
+      ...extracted,
+      fromPdf: false
+    };
+  }, [latestMca, mcaPdfExtract]);
+  const mcaWindingResult = useMemo(
+    () => calculateWindingBalance(mcaWindingParams),
+    [mcaWindingParams]
+  );
+  const hasMcaWindingData =
+    mcaTripletHasData(mcaWindingParams.phaseR) ||
+    mcaTripletHasData(mcaWindingParams.phaseL) ||
+    mcaTripletHasData(mcaWindingParams.phaseZ) ||
+    mcaTripletHasData(mcaWindingParams.phaseFi) ||
+    mcaTripletHasData(mcaWindingParams.phaseIF);
+
+  const mcaWindingChartData = useMemo(
+    () =>
+      hasMcaWindingData
+        ? [
+            {
+              phase: "T1-T2",
+              Resistance: mcaWindingParams.phaseR[0] || undefined,
+              Inductance: mcaWindingParams.phaseL[0] || undefined
+            },
+            {
+              phase: "T2-T3",
+              Resistance: mcaWindingParams.phaseR[1] || undefined,
+              Inductance: mcaWindingParams.phaseL[1] || undefined
+            },
+            {
+              phase: "T3-T1",
+              Resistance: mcaWindingParams.phaseR[2] || undefined,
+              Inductance: mcaWindingParams.phaseL[2] || undefined
+            }
+          ]
+        : [
+            { phase: "T1-T2" },
+            { phase: "T2-T3" },
+            { phase: "T3-T1" }
+          ],
+    [mcaWindingParams, hasMcaWindingData]
+  );
+
+  const mcaGwParams = useMemo(() => {
+    const fromDb = extractMcaGroundwallFromSaved(latestMcaGroundwallRow);
+    const pdfGw =
+      mcaPdfExtract != null
+        ? {
+            ir15sMOmega: mcaPdfExtract.ir15sMOmega,
+            ir30sMOmega: mcaPdfExtract.ir30sMOmega,
+            ir1mMOmega: mcaPdfExtract.ir1mMOmega,
+            ir10mMOmega: mcaPdfExtract.ir10mMOmega,
+            testVoltageV: mcaPdfExtract.testVoltageV,
+            windingTempC: mcaPdfExtract.windingTempC,
+            insulationClass: mcaPdfExtract.insulationClass,
+            reportPi: mcaPdfExtract.reportPi,
+            reportDar: mcaPdfExtract.reportDar
+          }
+        : null;
+    // Do not let PDF defaults of 0 wipe historical IR telemetry
+    return mergeGroundwallPreferPositive(pdfGw, {
+      ...MCA_GROUNDWALL_EMPTY,
+      ...fromDb
+    });
+  }, [mcaPdfExtract, latestMcaGroundwallRow]);
+
+  const mcaGwResult = useMemo(() => {
+    const computed = calculateGroundwallInsulation({
+      ir15sMOmega: mcaGwParams.ir15sMOmega,
+      ir30sMOmega: mcaGwParams.ir30sMOmega,
+      ir1mMOmega: mcaGwParams.ir1mMOmega || 0,
+      ir10mMOmega: mcaGwParams.ir10mMOmega,
+      testVoltageV: mcaGwParams.testVoltageV || 0,
+      windingTempC: mcaGwParams.windingTempC,
+      insulationClass: mcaGwParams.insulationClass as InsulationClass
+    });
+    // Prefer stored report PI/DAR when calculator lacks enough IR points
+    const pi =
+      computed.pi ??
+      (mcaGwParams.reportPi != null && mcaGwParams.reportPi > 0
+        ? mcaGwParams.reportPi
+        : null);
+    const dar =
+      computed.dar ??
+      (mcaGwParams.reportDar != null && mcaGwParams.reportDar > 0
+        ? mcaGwParams.reportDar
+        : null);
+    return {
+      ...computed,
+      pi,
+      dar,
+      darStatus:
+        dar != null && computed.dar == null
+          ? dar >= 1.4
+            ? ("Good Insulation" as const)
+            : dar >= 1.25
+              ? ("Questionable" as const)
+              : ("Dangerous / Moisture Ingress" as const)
+          : computed.darStatus,
+      piStatus:
+        pi != null && computed.pi == null
+          ? pi >= 2
+            ? ("Good Insulation Health" as const)
+            : pi >= 1.5
+              ? ("Warning / Contaminated" as const)
+              : ("Critical Degradation / Wet Winding" as const)
+          : computed.piStatus,
+      hasData:
+        computed.hasData ||
+        Boolean(mcaGwParams.fromTelemetry) ||
+        (mcaGwParams.reportPi != null && mcaGwParams.reportPi > 0) ||
+        (mcaGwParams.reportDar != null && mcaGwParams.reportDar > 0)
+    };
+  }, [mcaGwParams]);
+
+  const hasMcaGwData =
+    mcaGwResult.hasData ||
+    (mcaGwParams.ir1mMOmega != null && mcaGwParams.ir1mMOmega > 0) ||
+    (mcaGwParams.ir30sMOmega != null && mcaGwParams.ir30sMOmega > 0) ||
+    (mcaGwParams.ir10mMOmega != null && mcaGwParams.ir10mMOmega > 0) ||
+    (mcaGwParams.ir15sMOmega != null && mcaGwParams.ir15sMOmega > 0) ||
+    (mcaGwParams.reportPi != null && mcaGwParams.reportPi > 0) ||
+    (mcaGwParams.reportDar != null && mcaGwParams.reportDar > 0);
+
+  const mcaGwChartData = useMemo(
+    () =>
+      mcaGwResult.curvePoints
+        .filter((p) => p.rawMOmega != null || p.corrected40MOmega != null)
+        .map((p) => ({
+          time: p.label,
+          seconds: p.seconds,
+          Raw: p.rawMOmega,
+          Corrected40: p.corrected40MOmega
+        })),
+    [mcaGwResult.curvePoints]
+  );
+
+  const ricResult = useMemo(
+    () =>
+      calculateRotorInfluence(ricData, {
+        applySmoothing: ricApplySmoothing,
+        baselineData:
+          ricCompareBaseline && ricBaselineData.length > 0
+            ? ricBaselineData
+            : undefined
+      }),
+    [ricData, ricApplySmoothing, ricCompareBaseline, ricBaselineData]
+  );
+
+  const hasRicData = ricData.length > 0 && ricResult != null;
+
+  const ricLinearChartData = useMemo(() => {
+    if (!ricResult) return [];
+    const baseMap: Map<number, RicDataPoint> = new Map<number, RicDataPoint>();
+    for (const point of ricBaselineData as RicDataPoint[]) {
+      baseMap.set(Math.round(point.angle), point);
+    }
+    return ricResult.smoothedData.map((p: RicDataPoint) => {
+      const baselinePoint: RicDataPoint | undefined = baseMap.get(
+        Math.round(p.angle)
+      );
+      const row: {
+        angle: number;
+        L12: number;
+        L23: number;
+        L31: number;
+        BaseL12?: number;
+        BaseL23?: number;
+        BaseL31?: number;
+      } = {
+        angle: p.angle,
+        L12: p.l12,
+        L23: p.l23,
+        L31: p.l31
+      };
+      if (ricCompareBaseline && baselinePoint) {
+        row.BaseL12 = baselinePoint.l12;
+        row.BaseL23 = baselinePoint.l23;
+        row.BaseL31 = baselinePoint.l31;
+      }
+      return row;
+    });
+  }, [ricResult, ricBaselineData, ricCompareBaseline]);
+
+  const ricRadarChartData = useMemo(
+    () => toRicRadarData(ricResult?.smoothedData ?? ricData),
+    [ricResult, ricData]
+  );
+
+  const surgeCsvResult = useMemo(
+    () => calculateSurgeHealth(surgeData),
+    [surgeData]
+  );
+  const surgeManualResult = useMemo(
+    () => surgeHealthFromManualEar(manualEar),
+    [manualEar]
+  );
+  /** Prefer waveform EAR when CSV/clipboard data exists; else manual EAR. */
+  const surgeResult = surgeCsvResult ?? surgeManualResult;
+  const hasSurgeData = surgeResult != null;
+
+  const surgeChartData = useMemo(
+    () =>
+      surgeData.map((p) => ({
+        time: p.time,
+        V12: p.v12,
+        V23: p.v23,
+        V31: p.v31
+      })),
+    [surgeData]
+  );
+
+  const spectralHarmonicTrend = useMemo(() => {
+    const chronological = [...vibAnalyses].reverse();
+    const rows: Array<{
+      date: string;
+      amp1X: number;
+      amp2X: number;
+      overall: number;
+    }> = [];
+    for (const analysis of chronological) {
+      const rec = extractVibrationRecordFromAnalysis(analysis);
+      const rpm =
+        rec?.rpm ??
+        rec?.context?.motorSpeedRPM ??
+        machineSpecs.rpm ??
+        1780;
+      const h1 = rpm > 0 ? rpm / 60 : 1780 / 60;
+      const peaks = rec?.spectral || [];
+      const amp1X = amplitudeNearHz(peaks, h1) ?? 0;
+      const amp2X = amplitudeNearHz(peaks, h1 * 2) ?? 0;
+      const overall =
+        rec?.broadband?.overallVelocity ||
+        peakAmplitudeFromAnalysis(analysis) ||
+        0;
+      if (!(amp1X > 0 || amp2X > 0 || overall > 0)) continue;
+      const ts = rec?.timestamp || analysis.timestamp;
+      const date = ts
+        ? new Date(ts).toLocaleDateString(undefined, {
+            month: "short",
+            day: "numeric"
+          })
+        : "—";
+      rows.push({
+        date,
+        amp1X: Number(amp1X.toFixed(3)),
+        amp2X: Number(amp2X.toFixed(3)),
+        overall: Number(overall.toFixed(3))
+      });
+    }
+    return rows;
+  }, [vibAnalyses, machineSpecs.rpm]);
+
+  const isUsingReferenceSpectralTrend = spectralHarmonicTrend.length < 2;
+  const spectralTrendChartData = isUsingReferenceSpectralTrend
+    ? REFERENCE_TREND_DATA
+    : spectralHarmonicTrend;
+
+  const vibExtractedEnvelopeChart = useMemo(() => {
+    if (!latestVibrationRecord?.enveloping?.length) return [];
+    const defaultLabels = ["BPFO", "BPFI", "BSF", "FTF"];
+    return latestVibrationRecord.enveloping.map((p, i) => ({
+      frequency: p.frequency,
+      amplitude: p.amplitude,
+      label: p.label || defaultLabels[i] || `${p.frequency} Hz`
+    }));
+  }, [latestVibrationRecord]);
+
+  /** Chronological enveloping metrics from real analysis_results only (no mock fill). */
+  const envelopingTrendSeries = useMemo(() => {
+    const rows: EnvelopingTrendPoint[] = [];
+    for (const analysis of [...vibAnalyses].reverse()) {
+      const point = extractEnvelopingTrendPoint(analysis);
+      if (!point) continue;
+      rows.push(point);
+    }
+    return rows;
+  }, [vibAnalyses]);
+
+  const envelopingGeChartData = useMemo(
+    () =>
+      envelopingTrendSeries
+        .filter((p) => p.peakGe != null && p.peakGe > 0)
+        .map((p) => ({
+          date: p.date,
+          peakGe: p.peakGe as number,
+          analysisId: p.analysisId,
+          fault: p.primaryFault,
+          timestamp: p.timestamp
+        })),
+    [envelopingTrendSeries]
+  );
+
+  const envelopingKurtosisChartData = useMemo(
+    () =>
+      envelopingTrendSeries
+        .filter((p) => p.kurtosis != null && p.kurtosis > 0)
+        .map((p) => ({
+          date: p.date,
+          kurtosis: p.kurtosis as number,
+          analysisId: p.analysisId,
+          fault: p.primaryFault
+        })),
+    [envelopingTrendSeries]
+  );
+
+  const calculatedBearingFaults = useMemo(() => {
+    const kin = (selectedComp?.kinematics || {}) as Record<string, unknown>;
+    const rpm =
+      latestVibrationRecord?.rpm ||
+      latestVibrationRecord?.context?.motorSpeedRPM ||
+      machineSpecs.rpm;
+    return resolveBearingFaultFrequencies({
+      bearingLabel: machineSpecs.bearing !== "Not set" ? machineSpecs.bearing : null,
+      rpm,
+      kinematics: kin
+    });
+  }, [
+    selectedComp?.kinematics,
+    latestVibrationRecord?.rpm,
+    latestVibrationRecord?.context?.motorSpeedRPM,
+    machineSpecs.rpm,
+    machineSpecs.bearing
+  ]);
+
+  const latestEnvelopingPoint =
+    envelopingTrendSeries.length > 0
+      ? envelopingTrendSeries[envelopingTrendSeries.length - 1]
+      : null;
+
+  const envelopeBaselineCompare = useMemo(() => {
+    if (!envelopeBaseline || !latestEnvelopingPoint) return null;
+    const baseGe = envelopeBaseline.peakGe;
+    const nowGe = latestEnvelopingPoint.peakGe;
+    if (baseGe == null || !(baseGe > 0) || nowGe == null) return null;
+    const pct = ((nowGe - baseGe) / baseGe) * 100;
+    const baseKurt = envelopeBaseline.kurtosis;
+    const nowKurt = latestEnvelopingPoint.kurtosis;
+    const kurtPct =
+      baseKurt != null && baseKurt > 0 && nowKurt != null
+        ? ((nowKurt - baseKurt) / baseKurt) * 100
+        : null;
+    return {
+      gePct: pct,
+      kurtPct,
+      baselineDate: envelopeBaseline.date,
+      baselineGe: baseGe,
+      currentGe: nowGe
+    };
+  }, [envelopeBaseline, latestEnvelopingPoint]);
+
+  // Prefer DB baseline flag when available
+  useEffect(() => {
+    const fromDb = envelopingTrendSeries.find((p) => p.isBaseline);
+    if (fromDb) {
+      setEnvelopeBaseline(fromDb);
+      return;
+    }
+    setEnvelopeBaseline((prev) => {
+      if (!prev) return null;
+      const stillExists = envelopingTrendSeries.some(
+        (p) => p.analysisId === prev.analysisId
+      );
+      return stillExists ? prev : null;
+    });
+  }, [envelopingTrendSeries]);
+
+  const handleSetEnvelopeBaseline = async (point: EnvelopingTrendPoint) => {
+    setEnvelopeBaselineBusy(true);
+    setEnvelopeBaselineError(null);
+    try {
+      await setAnalysisBaseline(point.analysisId);
+      setEnvelopeBaseline(point);
+      setFetchTick((t) => t + 1);
+    } catch (err) {
+      // Still allow local comparison if API fails
+      setEnvelopeBaseline(point);
+      setEnvelopeBaselineError(
+        err instanceof Error
+          ? err.message
+          : "Baseline saved locally — server sync failed."
+      );
+    } finally {
+      setEnvelopeBaselineBusy(false);
+    }
+  };
+
+  const hasEnvelopingTabData =
+    envelopingTrendSeries.length > 0 ||
+    vibExtractedEnvelopeChart.length > 0 ||
+    calculatedBearingFaults != null;
+
+  const waveformTrendSeries = useMemo(() => {
+    const rows = [];
+    for (const analysis of [...vibAnalyses].reverse()) {
+      const point = extractWaveformTrendPoint(analysis);
+      if (point) rows.push(point);
+    }
+    return rows;
+  }, [vibAnalyses]);
+
+  const latestWaveformAnalysisMetrics = useMemo(() => {
+    const fromRecord = latestVibrationRecord?.waveformAnalysis;
+    const fromTrend =
+      waveformTrendSeries.length > 0
+        ? waveformTrendSeries[waveformTrendSeries.length - 1]
+        : null;
+    const peakToPeak =
+      fromRecord?.peakToPeak ?? fromTrend?.peakToPeak ?? null;
+    const crestFactor =
+      fromRecord?.crestFactor ??
+      latestVibrationRecord?.waveformMetrics?.crestFactor ??
+      fromTrend?.crestFactor ??
+      null;
+    const impactCount =
+      fromRecord?.impactCount ?? fromTrend?.impactCount ?? null;
+    const symmetry = fromRecord?.symmetry ?? fromTrend?.symmetry ?? null;
+    const modulation =
+      fromRecord?.modulation ?? fromTrend?.modulation ?? null;
+    const timePerRevolutionMs =
+      fromRecord?.timePerRevolutionMs ??
+      (latestVibrationRecord?.rpm && latestVibrationRecord.rpm > 0
+        ? 60000 / latestVibrationRecord.rpm
+        : machineSpecs.rpm && machineSpecs.rpm > 0
+          ? 60000 / machineSpecs.rpm
+          : null);
+
+    if (
+      peakToPeak == null &&
+      crestFactor == null &&
+      impactCount == null &&
+      !symmetry &&
+      !(latestVibrationRecord?.waveform?.length)
+    ) {
+      return null;
+    }
+
+    return {
+      peakToPeak,
+      crestFactor,
+      impactCount,
+      symmetry,
+      modulation,
+      timePerRevolutionMs
+    };
+  }, [
+    latestVibrationRecord,
+    waveformTrendSeries,
+    machineSpecs.rpm
+  ]);
+
+  const waveformRpm =
+    latestVibrationRecord?.rpm ||
+    latestVibrationRecord?.context?.motorSpeedRPM ||
+    machineSpecs.rpm ||
+    null;
+
+  const vibExtractedWaveformChart = useMemo(() => {
+    if (!latestVibrationRecord?.waveform?.length) return [];
+    return latestVibrationRecord.waveform.map((p) => ({
+      time: p.time,
+      amplitude: p.amplitude
+    }));
+  }, [latestVibrationRecord]);
+
+  const vibrationAwaitingRecordAlert = (
+    <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
+      <Activity className="h-8 w-8 text-slate-500 mb-3" />
+      <p className="text-sm font-semibold text-slate-200">
+        Awaiting Diagnostic Record — Run Diagnostics and upload a spectrum export
+        to populate analysis tabs.
+      </p>
+    </div>
+  );
+
+  const handleMcaPdfFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    const isPdf =
+      /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+    const isImage =
+      /^image\//i.test(file.type) ||
+      /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
+    if (!isPdf && !isImage) {
+      setMcaPdfError("Please upload an MCA report PDF (or image of a digital report).");
+      return;
+    }
+    setMcaPdfParsing(true);
+    setMcaPdfError(null);
+    try {
+      const extracted = await extractMcaDataFromFile(file);
+      setMcaPdfExtract(extracted);
+      setMcaPdfFileName(file.name);
+      setMcaManualEdit(false);
+      if (extracted.ricData && extracted.ricData.length > 0) {
+        setRicData(extracted.ricData);
+        setRicPasteError(null);
+      }
+
+      const hasGw = mcaExtractHasGroundwall(extracted);
+      const hasWinding =
+        mcaTripletHasData(extracted.phaseR) ||
+        mcaTripletHasData(extracted.phaseL) ||
+        mcaTripletHasData(extracted.phaseZ) ||
+        mcaTripletHasData(extracted.phaseFi) ||
+        mcaTripletHasData(extracted.phaseIF);
+
+      if (isImage && !hasGw && !hasWinding) {
+        setMcaPdfError(
+          "Image screenshots can’t be OCR’d here — export a text PDF from ALL-TEST / Megger / Baker for auto IR 30s / 1m / 10m / PI / DAR."
+        );
+        return;
+      }
+
+      if (extracted.confidenceScore < 20 && !hasGw) {
+        setMcaPdfError(
+          "Low extraction confidence — use Manual Entry to correct values."
+        );
+      } else if (hasGw) {
+        setMcaPdfError(null);
+      }
+
+      // Persist extracted MCA metrics so Trend Analyzer history / grids stay populated
+      if (analysisAssetQueryKey && (hasWinding || hasGw)) {
+        try {
+          const windingResult = calculateWindingBalance({
+            phaseR: extracted.phaseR,
+            phaseL: extracted.phaseL,
+            phaseZ: extracted.phaseZ,
+            phaseFi: extracted.phaseFi,
+            phaseIF: extracted.phaseIF,
+            windingTempC: extracted.windingTempC,
+            ratedHp: extracted.ratedHp
+          });
+          const gwResult = calculateGroundwallInsulation({
+            ir15sMOmega: extracted.ir15sMOmega,
+            ir30sMOmega: extracted.ir30sMOmega,
+            ir1mMOmega: extracted.ir1mMOmega || 0,
+            ir10mMOmega: extracted.ir10mMOmega,
+            testVoltageV: extracted.testVoltageV || 0,
+            windingTempC: extracted.windingTempC,
+            insulationClass: extracted.insulationClass
+          });
+          const primaryFault = hasWinding
+            ? windingResult.fault
+            : gwResult.fault;
+          const healthScore = hasWinding
+            ? windingResult.healthScore
+            : gwResult.irIeeePass
+              ? 85
+              : gwResult.hasData
+                ? 45
+                : 70;
+          const payload = mcaPayloadForSave(
+            {
+              ...extracted,
+              reportPi: extracted.reportPi ?? gwResult.pi ?? undefined,
+              reportDar: extracted.reportDar ?? gwResult.dar ?? undefined
+            },
+            {
+              primaryFault,
+              healthScore,
+              unbalance: hasWinding
+                ? {
+                    R: windingResult.unbalanceR,
+                    L: windingResult.unbalanceL,
+                    Z: windingResult.unbalanceZ,
+                    Fi: windingResult.unbalanceFi,
+                    IF: windingResult.unbalanceIF,
+                    maxRL: windingResult.maxUnbalanceRL
+                  }
+                : undefined
+            }
+          );
+          await saveAnalysisResult({
+            asset_id: analysisAssetQueryKey,
+            component: selectedComponent || null,
+            health_score: healthScore,
+            primary_fault: primaryFault,
+            fault_list:
+              primaryFault && !/healthy|normal|good|awaiting/i.test(primaryFault)
+                ? [
+                    {
+                      title: primaryFault,
+                      severity: hasWinding
+                        ? windingResult.severity
+                        : gwResult.severity,
+                      confidence: 85,
+                      description: hasWinding
+                        ? windingResult.recommendation
+                        : gwResult.recommendation
+                    }
+                  ]
+                : [],
+            peaks: payload.peaks,
+            recommendations: [
+              hasWinding
+                ? windingResult.recommendation
+                : gwResult.recommendation
+            ],
+            financial_impact: {},
+            severity: (() => {
+              const sev = hasWinding
+                ? windingResult.severity
+                : gwResult.severity;
+              return sev === "CRITICAL"
+                ? "CRITICAL"
+                : sev === "WARNING"
+                  ? "ANOMALY"
+                  : "NORMAL";
+            })(),
+            summary: hasGw
+              ? `MCA PDF extract (${file.name}) · IR1m ${extracted.ir1mMOmega ?? "—"} MΩ · PI ${extracted.reportPi ?? gwResult.pi ?? "—"} · DAR ${extracted.reportDar ?? gwResult.dar ?? "—"}`
+              : `MCA PDF extract (${file.name}) · ${primaryFault}`,
+            consensus_details: {
+              modelA_Hypothesis: `PDF ${formatMcaPdfLabel(extracted.formatDetected)}`,
+              modelB_Hypothesis: `Confidence ${extracted.confidenceScore}% · GW ${hasGw ? "yes" : "no"}`,
+              refereeDebateSummary: JSON.stringify({
+                pipeline: "mcaPdfExtract",
+                fileName: file.name,
+                winding: payload.telemetry_data.winding,
+                groundwall: payload.telemetry_data.groundwall,
+                extracted: {
+                  ir30sMOmega: extracted.ir30sMOmega ?? null,
+                  ir1mMOmega: extracted.ir1mMOmega ?? null,
+                  ir10mMOmega: extracted.ir10mMOmega ?? null,
+                  reportPi: extracted.reportPi ?? null,
+                  reportDar: extracted.reportDar ?? null,
+                  testVoltageV: extracted.testVoltageV ?? null
+                }
+              })
+            },
+            analysis_type: "mca",
+            telemetry_data: payload.telemetry_data,
+            create_alerts_for_high: false
+          });
+          // Refresh history so Groundwall IR Input Grid binds to saved row
+          const rows = await fetchAnalysisResults({
+            asset_id: analysisAssetQueryKey,
+            component: selectedComponent?.trim() || undefined,
+            limit: 100
+          });
+          setDbAnalyses(rows);
+        } catch (saveErr) {
+          console.warn(
+            "[TrendAnalyzer] MCA PDF save skipped:",
+            saveErr instanceof Error ? saveErr.message : saveErr
+          );
+        }
+      }
+    } catch (err) {
+      console.warn("[TrendAnalyzer] MCA PDF extract failed:", err);
+      setMcaPdfError(
+        err instanceof Error ? err.message : "Failed to parse MCA PDF."
+      );
+    } finally {
+      setMcaPdfParsing(false);
+    }
+  };
+
+  const handleRicPasteFromClipboard = async () => {
+    setRicPasteError(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      const parsed = parseRicClipboardText(text);
+      if (parsed.length < 3) {
+        setRicPasteError(
+          "Clipboard needs ≥3 valid rows (Angle, L12, L23, L31). Headers are skipped."
+        );
+        return;
+      }
+      setRicData(parsed);
+    } catch (err) {
+      console.warn("[TrendAnalyzer] RIC clipboard paste failed:", err);
+      setRicPasteError(
+        "Clipboard access failed — paste into a text field or grant clipboard permission."
+      );
+    }
+  };
+
+  const updateRicRow = (
+    index: number,
+    key: keyof RicDataPoint,
+    value: string
+  ) => {
+    setRicData((prev) => {
+      const next = prev.map((p) => ({ ...p }));
+      const row = { ...next[index] };
+      const n = Number(value);
+      row[key] = Number.isFinite(n) ? n : 0;
+      const clean = sanitizeRicPoint(row);
+      next[index] = clean || row;
+      return next;
+    });
+  };
+
+  const saveRicAsBaseline = () => {
+    if (ricData.length === 0) return;
+    setRicBaselineData(ricData.map((p) => ({ ...p })));
+    setRicCompareBaseline(true);
+  };
+
+  const applySurgeParsedPoints = (parsed: SurgeDataPoint[]) => {
+    if (parsed.length < 2) {
+      setSurgePasteError(
+        "Need ≥2 valid rows (Time, V12, V23, V31). Headers and non-numeric rows are skipped."
+      );
+      return;
+    }
+    setSurgeData(parsed);
+    setSurgePasteError(null);
+  };
+
+  const handleSurgePasteFromClipboard = async () => {
+    setSurgePasteError(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      applySurgeParsedPoints(parseSurgeClipboardText(text));
+    } catch (err) {
+      console.warn("[TrendAnalyzer] Surge clipboard paste failed:", err);
+      setSurgePasteError(
+        "Clipboard access failed — grant permission or upload a CSV file."
+      );
+    }
+  };
+
+  const handleSurgeCsvFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    setSurgePasteError(null);
+    try {
+      const text = await file.text();
+      applySurgeParsedPoints(parseSurgeClipboardText(text));
+    } catch (err) {
+      console.warn("[TrendAnalyzer] Surge CSV parse failed:", err);
+      setSurgePasteError(
+        err instanceof Error ? err.message : "Failed to read surge CSV."
+      );
+    }
+  };
+
+  const updateMcaPdfTriplet = (
+    key: "phaseR" | "phaseL" | "phaseZ" | "phaseFi" | "phaseIF",
+    index: 0 | 1 | 2,
+    value: string
+  ) => {
+    setMcaPdfExtract((prev) => {
+      const base =
+        prev ||
+        ({
+          phaseR: [...mcaWindingParams.phaseR] as [number, number, number],
+          phaseL: [...mcaWindingParams.phaseL] as [number, number, number],
+          phaseZ: [...mcaWindingParams.phaseZ] as [number, number, number],
+          phaseFi: [...mcaWindingParams.phaseFi] as [number, number, number],
+          phaseIF: [...mcaWindingParams.phaseIF] as [number, number, number],
+          windingTempC: mcaWindingParams.windingTempC,
+          ratedHp: mcaWindingParams.ratedHp,
+          rawText: "",
+          formatDetected: "UNKNOWN" as const,
+          confidenceScore: 0
+        } satisfies McaExtractedData);
+      const next = [...base[key]] as [number, number, number];
+      const n = Number(value);
+      next[index] = Number.isFinite(n) ? n : 0;
+      return { ...base, [key]: next };
+    });
+  };
+
+  const updateMcaGwField = (
+    key:
+      | "ir15sMOmega"
+      | "ir30sMOmega"
+      | "ir1mMOmega"
+      | "ir10mMOmega"
+      | "testVoltageV"
+      | "windingTempC"
+      | "insulationClass",
+    value: string
+  ) => {
+    setMcaPdfExtract((prev) => {
+      const base =
+        prev ||
+        ({
+          phaseR: [...mcaWindingParams.phaseR] as [number, number, number],
+          phaseL: [...mcaWindingParams.phaseL] as [number, number, number],
+          phaseZ: [...mcaWindingParams.phaseZ] as [number, number, number],
+          phaseFi: [...mcaWindingParams.phaseFi] as [number, number, number],
+          phaseIF: [...mcaWindingParams.phaseIF] as [number, number, number],
+          windingTempC: mcaGwParams.windingTempC,
+          ratedHp: mcaWindingParams.ratedHp,
+          ir15sMOmega: mcaGwParams.ir15sMOmega,
+          ir30sMOmega: mcaGwParams.ir30sMOmega,
+          ir1mMOmega: mcaGwParams.ir1mMOmega,
+          ir10mMOmega: mcaGwParams.ir10mMOmega,
+          testVoltageV: mcaGwParams.testVoltageV,
+          insulationClass: mcaGwParams.insulationClass,
+          rawText: "",
+          formatDetected: "UNKNOWN" as const,
+          confidenceScore: 0
+        } satisfies McaExtractedData);
+      if (key === "insulationClass") {
+        const c = value.toUpperCase();
+        const insulationClass =
+          c === "A" || c === "B" || c === "F" || c === "H"
+            ? (c as InsulationClass)
+            : base.insulationClass || "F";
+        return { ...base, insulationClass };
+      }
+      const n = Number(value);
+      return {
+        ...base,
+        [key]: Number.isFinite(n) ? n : 0
+      };
+    });
+  };
+
   const latestOil = oilAnalyses[0] ?? null;
   const thermoChartSeries = useMemo(
     () => buildThermoChartSeries(thermoAnalyses),
@@ -923,7 +2731,8 @@ export default function TrendAnalyzer({
     "scaleMax",
     "isothermThreshold",
     "boxAverage",
-    "reflectedApparentTemp"
+    "reflectedApparentTemp",
+    "ambientReferenceTemp"
   ]);
   const radioKpis = radiometricKpis(thermoChartSeries);
   const hasMechanicalSeries = seriesHasAny(thermoChartSeries, [
@@ -937,8 +2746,141 @@ export default function TrendAnalyzer({
     "thermalDissipationRate"
   ]);
   const mechKpis = mechanicalKpis(thermoChartSeries);
-  const ueTrendSeries = useMemo(() => {
-    return [...ueAnalyses]
+  const thermoTempUnit = useMemo(
+    () => resolveThermoTempUnit(thermoChartSeries),
+    [thermoChartSeries]
+  );
+  const thermoTempAxisLabel = `Temperature (${thermoTempUnit})`;
+  const ueBearingAnalyses = useMemo(
+    () => ueAnalyses.filter(isUeBearingMechanicalRow),
+    [ueAnalyses]
+  );
+  const ueLeakAnalyses = useMemo(
+    () => ueAnalyses.filter(isUeLeakRow),
+    [ueAnalyses]
+  );
+  const ueLeakInventoryRows = useMemo(() => {
+    const rows = ueLeakAnalyses.map(ueLeakInventoryFromRow);
+    const mult = ueLeakSort.dir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      if (ueLeakSort.key === "annual_cost") {
+        return (a.annualCost - b.annualCost) * mult;
+      }
+      return (a.dateMs - b.dateMs) * mult;
+    });
+  }, [ueLeakAnalyses, ueLeakSort]);
+  const ueLeakKpis = useMemo(() => {
+    let totalAnnualCost = 0;
+    let totalCfm = 0;
+    let totalCo2 = 0;
+    for (const row of ueLeakInventoryRows) {
+      totalAnnualCost += safeFinite(row.annualCost, 0);
+      totalCfm += safeFinite(row.estimatedCfm, 0);
+      totalCo2 += safeFinite(row.co2Emissions, 0);
+    }
+    return {
+      totalAnnualCost: Math.round(totalAnnualCost * 100) / 100,
+      totalCfm: Math.round(totalCfm * 10) / 10,
+      totalCo2: Math.round(totalCo2 * 10) / 10
+    };
+  }, [ueLeakInventoryRows]);
+  const ueElectricalAnalyses = useMemo(
+    () => ueAnalyses.filter(isUeElectricalPdRow),
+    [ueAnalyses]
+  );
+  const uePdInventoryRows = useMemo(() => {
+    return [...ueElectricalAnalyses.map(uePdInventoryFromRow)].sort(
+      (a, b) => b.dateMs - a.dateMs
+    );
+  }, [ueElectricalAnalyses]);
+  const uePdKpis = useMemo(() => {
+    if (uePdInventoryRows.length === 0) {
+      return {
+        peakElectricalDb: 0,
+        avgBaselineDelta: 0,
+        threatSeverity: "normal" as UePdSeverity,
+        threatLabel: "Normal"
+      };
+    }
+    let maxPeak = 0;
+    let deltaSum = 0;
+    let topSeverity: UePdSeverity = "normal";
+    let topLabel = "Normal";
+    for (const row of uePdInventoryRows) {
+      maxPeak = Math.max(maxPeak, safeFinite(row.peakDb, 0));
+      deltaSum += safeFinite(row.baselineDelta, 0);
+      if (pdSeverityRank(row.severity) >= pdSeverityRank(topSeverity)) {
+        topSeverity = row.severity;
+        topLabel = row.severityLabel;
+      }
+    }
+    return {
+      peakElectricalDb: Math.round(maxPeak * 10) / 10,
+      avgBaselineDelta:
+        Math.round((deltaSum / uePdInventoryRows.length) * 10) / 10,
+      threatSeverity: topSeverity,
+      threatLabel: topLabel
+    };
+  }, [uePdInventoryRows]);
+  const ueSteamAnalyses = useMemo(
+    () => ueAnalyses.filter(isUeSteamTrapRow),
+    [ueAnalyses]
+  );
+  const ueSteamThermoTemps = useMemo(() => {
+    const assetKey =
+      selectedAsset?.tag ||
+      selectedAssetKey ||
+      (ueSteamAnalyses[0]?.asset_id ?? "");
+    return latestThermoSteamTemps(thermoAnalyses, String(assetKey));
+  }, [thermoAnalyses, selectedAsset?.tag, selectedAssetKey, ueSteamAnalyses]);
+  const ueSteamInventoryRows = useMemo(() => {
+    return [...ueSteamAnalyses]
+      .map((r) => ueSteamInventoryFromRow(r, ueSteamThermoTemps))
+      .sort((a, b) => b.dateMs - a.dateMs);
+  }, [ueSteamAnalyses, ueSteamThermoTemps]);
+  const ueSteamKpis = useMemo(() => {
+    let totalAnnualCost = 0;
+    let criticalCount = 0;
+    let blownCount = 0;
+    let blockedCount = 0;
+    let paybackSum = 0;
+    let paybackN = 0;
+    for (const row of ueSteamInventoryRows) {
+      totalAnnualCost += safeFinite(row.annualCostUsd, 0);
+      if (row.severity === "CRITICAL") {
+        criticalCount += 1;
+        const s = row.status.toLowerCase();
+        if (s.includes("blown") || s.includes("live steam")) blownCount += 1;
+        if (s.includes("blocked") || s.includes("cold")) blockedCount += 1;
+      }
+      if (
+        row.severity !== "NORMAL" &&
+        row.roiPaybackDays != null &&
+        row.roiPaybackDays > 0
+      ) {
+        paybackSum += row.roiPaybackDays;
+        paybackN += 1;
+      }
+    }
+    return {
+      totalAnnualCost: Math.round(totalAnnualCost * 100) / 100,
+      criticalCount,
+      blownCount,
+      blockedCount,
+      avgPaybackDays: paybackN > 0 ? Math.round(paybackSum / paybackN) : null,
+      systemHealthy: criticalCount === 0 && paybackN === 0
+    };
+  }, [ueSteamInventoryRows]);
+  const toggleUeLeakSort = (key: "date" | "annual_cost") => {
+    setUeLeakSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "date" ? "desc" : "desc" }
+    );
+  };
+  const ueBearingChartSeries = useMemo(() => {
+    return [...ueBearingAnalyses]
+      .slice()
       .reverse()
       .map((r) => {
         const up = uePeaksFromRow(r);
@@ -949,13 +2891,25 @@ export default function TrendAnalyzer({
                 day: "numeric"
               })
             : "—",
-          health: Number(r.health_score) || 0,
-          peak: up.peak,
+          timestamp: r.timestamp || r.created_at || "",
           rms: up.rms,
+          peak: up.peak,
+          crest: up.crest,
+          health: Number(r.health_score) || null,
           fault: r.primary_fault || "—"
         };
       });
-  }, [ueAnalyses]);
+  }, [ueBearingAnalyses]);
+  const latestUeBearing =
+    ueBearingAnalyses.length > 0 ? ueBearingAnalyses[0] : null;
+  const latestUeBearingPeaks = latestUeBearing
+    ? uePeaksFromRow(latestUeBearing)
+    : null;
+  const hasUeBearingSeries = ueBearingChartSeries.some(
+    (p) =>
+      (typeof p.rms === "number" && Number.isFinite(p.rms)) ||
+      (typeof p.peak === "number" && Number.isFinite(p.peak))
+  );
   const mcaTrendSeries = useMemo(
     () => healthTrendFromAnalyses(mcaAnalyses),
     [mcaAnalyses]
@@ -1233,20 +3187,38 @@ export default function TrendAnalyzer({
       {trendTech === "vibration" && (
         <>
           <div className="flex flex-wrap gap-2 mb-6">
-            {VIB_MODE_OPTIONS.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                onClick={() => setVibMode(mode.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
-                  vibMode === mode.id
-                    ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                    : "bg-slate-800 border-slate-700 text-slate-400"
-                }`}
-              >
-                {mode.label}
-              </button>
-            ))}
+            {VIB_MODE_OPTIONS.map((mode) => {
+              const active = vibMode === mode.id;
+              const Icon = mode.Icon;
+              const activeClass =
+                mode.activeClass ||
+                "bg-cyan-500/20 border-cyan-500 text-cyan-400";
+              return (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => setVibMode(mode.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                    active
+                      ? activeClass
+                      : "bg-slate-800 border-slate-700 text-slate-400"
+                  }`}
+                >
+                  {Icon && (
+                    <Icon
+                      className={`h-3.5 w-3.5 shrink-0 ${
+                        active
+                          ? mode.id === "spectral"
+                            ? "text-cyan-400"
+                            : "opacity-90"
+                          : mode.inactiveIconClass || "text-slate-500"
+                      }`}
+                    />
+                  )}
+                  {mode.label}
+                </button>
+              );
+            })}
           </div>
 
           <div className="flex flex-wrap gap-2 mb-6">
@@ -1275,18 +3247,14 @@ export default function TrendAnalyzer({
             {selectedComponent ? ` / ${selectedComponent}` : ""} from PostgreSQL.
           </p>
         </div>
-      ) : !hasAnyAnalysisData ? (
+      ) : !hasAnyAnalysisData && !hasVibrationDiagnosticRecord ? (
         <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
           <div className="w-12 h-12 rounded-xl border border-slate-700 bg-slate-950 flex items-center justify-center mb-4">
             <Activity className="h-5 w-5 text-slate-500" />
           </div>
           <p className="text-sm font-semibold text-slate-200">
-            {selectedComponent
-              ? "No analysis data for this component."
-              : "No analysis data for this asset."}
-          </p>
-          <p className="text-xs text-slate-500 mt-2 max-w-md">
-            Run a diagnostic to populate trends.
+            Awaiting Diagnostic Record — Run Diagnostics and upload a spectrum export
+            to populate analysis tabs.
           </p>
           {dbTrendError && (
             <p className="text-xs text-amber-400 mt-3">{dbTrendError}</p>
@@ -1294,6 +3262,46 @@ export default function TrendAnalyzer({
         </div>
       ) : (
         <>
+      {latestVibrationRecord && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className={CARD}>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+              Overall Velocity
+            </p>
+            <p className="text-2xl font-bold text-cyan-400 font-mono">
+              {latestVibrationRecord.broadband.overallVelocity > 0
+                ? `${latestVibrationRecord.broadband.overallVelocity} mm/s`
+                : "—"}
+            </p>
+          </div>
+          <div className={CARD}>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+              Overall Acceleration
+            </p>
+            <p className="text-2xl font-bold text-cyan-400 font-mono">
+              {latestVibrationRecord.broadband.overallAcceleration > 0
+                ? `${latestVibrationRecord.broadband.overallAcceleration} g`
+                : "—"}
+            </p>
+          </div>
+          <div className={CARD}>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+              Health Score
+            </p>
+            <p className="text-2xl font-bold text-emerald-400 font-mono">
+              {latestVibrationRecord.broadband.healthScore}
+            </p>
+          </div>
+          <div className={CARD}>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+              Primary Fault
+            </p>
+            <p className="text-sm font-semibold text-amber-300 leading-snug">
+              {latestVibrationRecord.broadband.primaryFault || "—"}
+            </p>
+          </div>
+        </div>
+      )}
       {/* ===== SECTION 2: KPI RIBBON & PREDICTIVE BANNER ===== */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className={CARD}>
@@ -1303,10 +3311,14 @@ export default function TrendAnalyzer({
           <ul className="space-y-2.5">
             <li className="text-sm font-bold text-white">
               Health Score:{" "}
-              {latestDb?.health_score != null ? latestDb.health_score : "—"}
+              {latestVibrationRecord?.broadband.healthScore ??
+                (latestDb?.health_score != null ? latestDb.health_score : "—")}
             </li>
             <li className="text-sm font-semibold text-yellow-500">
-              Primary Fault: {latestDb?.primary_fault || "No saved analysis"}
+              Primary Fault:{" "}
+              {latestVibrationRecord?.broadband.primaryFault ||
+                latestDb?.primary_fault ||
+                "No saved analysis"}
             </li>
             <li className="text-sm font-semibold text-slate-300">
               Analyses:{" "}
@@ -1317,7 +3329,12 @@ export default function TrendAnalyzer({
                   : dbAnalyses.length}
             </li>
             <li className="text-sm font-semibold text-green-400">
-              Source: PostgreSQL
+              Source:{" "}
+              {latestVibrationRecord
+                ? vibAnalyses.length
+                  ? "PostgreSQL + Trend Record"
+                  : "Local cache"
+                : "PostgreSQL"}
             </li>
           </ul>
         </div>
@@ -1610,7 +3627,88 @@ export default function TrendAnalyzer({
           )}
 
           {vibMode === "spectral" && (
-            <TechEmptyState technology="Spectral trend" />
+            <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-6 mb-6">
+              <div className="mb-4">
+                <h3 className="text-base font-bold text-white inline-flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-cyan-400" />
+                  Spectral &amp; Harmonics
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  Time-series amplitude trend · 1X unbalance, 2X misalignment, overall vibration
+                </p>
+              </div>
+
+              {isUsingReferenceSpectralTrend && (
+                <div className="text-xs text-amber-400 bg-amber-500/10 px-3 py-1 rounded-full inline-flex items-center gap-1 mb-4">
+                  <Activity className="h-3 w-3 shrink-0" />
+                  Live historical data pending. Displaying reference degradation trend.
+                </div>
+              )}
+
+              <div className="h-[420px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={spectralTrendChartData}
+                    margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                    <XAxis
+                      dataKey="date"
+                      stroke="#94a3b8"
+                      tick={{ fontSize: 11 }}
+                      label={{
+                        value: "Date",
+                        position: "insideBottom",
+                        offset: -12,
+                        fill: "#64748b",
+                        fontSize: 11
+                      }}
+                    />
+                    <YAxis
+                      stroke="#38bdf8"
+                      tick={{ fontSize: 10 }}
+                      label={{
+                        value: "Amplitude (mm/s)",
+                        angle: -90,
+                        position: "insideLeft",
+                        fill: "#38bdf8",
+                        fontSize: 11
+                      }}
+                    />
+                    <Tooltip contentStyle={tooltipStyle} />
+                    <Legend />
+                    <Line
+                      type="monotone"
+                      dataKey="amp1X"
+                      name="1X Amplitude (Unbalance)"
+                      stroke="#38bdf8"
+                      strokeWidth={2}
+                      dot={{ r: 3 }}
+                      isAnimationActive={false}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="amp2X"
+                      name="2X Amplitude (Misalignment)"
+                      stroke="#f59e0b"
+                      strokeWidth={2}
+                      dot={{ r: 3 }}
+                      isAnimationActive={false}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="overall"
+                      name="Overall Vibration"
+                      stroke="#94a3b8"
+                      strokeWidth={2}
+                      strokeDasharray="3 3"
+                      dot={{ r: 3 }}
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           )}
           {false && vibMode === "spectral" && (
             <>
@@ -1994,281 +4092,418 @@ export default function TrendAnalyzer({
           )}
 
           {vibMode === "enveloping" && (
-            <TechEmptyState technology="Enveloping" />
-          )}
-          {false && vibMode === "enveloping" && (
             <>
-              <div className="w-full bg-slate-900/50 border border-white/10 rounded-xl p-4 mb-6">
-                <h3 className="text-base font-bold text-white mb-1">
-                  Automated Bearing Failure Stage Matrix
-                </h3>
-                <p className="text-xs text-slate-400 mb-4">
-                  Current diagnosis: Stage 3 — Defect harmonics present in FFT (BPFO elevating)
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {VIB_BEARING_STAGES.map((stage) => {
-                    const isActive = stage.id === 3;
-                    const toneClass =
-                      stage.tone === "green"
-                        ? "border-green-500/50 bg-green-500/10 text-green-400"
-                        : stage.tone === "yellow"
-                          ? "border-yellow-500/50 bg-yellow-500/10 text-yellow-400"
-                          : stage.tone === "orange"
-                            ? "border-orange-500/50 bg-orange-500/10 text-orange-400"
-                            : "border-red-500/50 bg-red-500/10 text-red-400";
-                    return (
-                      <div
-                        key={stage.id}
-                        className={`rounded-lg border p-3 ${toneClass} ${
-                          isActive ? "ring-2 ring-orange-400/60" : "opacity-60"
-                        } ${stage.id === 4 ? "animate-pulse" : ""}`}
-                      >
-                        <p className="text-[10px] font-bold uppercase tracking-widest mb-1">
-                          Stage {stage.id}
-                          {isActive ? " · ACTIVE" : ""}
+              {vibAnalyses.length === 0 ? (
+                vibrationAwaitingRecordAlert
+              ) : !hasEnvelopingTabData ? (
+                <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
+                  <Cog className="h-8 w-8 text-slate-500 mb-3" />
+                  <p className="text-sm font-semibold text-slate-200">
+                    Awaiting Diagnostic Record — Run Diagnostics to populate analysis trends.
+                  </p>
+                  <p className="text-xs text-slate-500 mt-2 max-w-md">
+                    Saved vibration analyses for this asset have no enveloping / acceleration metrics yet.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {envelopeBaselineCompare && (
+                    <div className="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-200">
+                          Peak g<sub>E</sub>{" "}
+                          {envelopeBaselineCompare.gePct >= 0 ? "increased" : "decreased"} by{" "}
+                          <span className="font-mono">
+                            {envelopeBaselineCompare.gePct >= 0 ? "+" : ""}
+                            {envelopeBaselineCompare.gePct.toFixed(0)}%
+                          </span>{" "}
+                          since baseline on {envelopeBaselineCompare.baselineDate}
                         </p>
-                        <p className="text-xs font-semibold leading-snug">{stage.label.replace(/^Stage \d+:\s*/, "")}</p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Baseline {envelopeBaselineCompare.baselineGe.toFixed(3)} gE → current{" "}
+                          {envelopeBaselineCompare.currentGe.toFixed(3)} gE
+                          {envelopeBaselineCompare.kurtPct != null
+                            ? ` · Kurtosis ${
+                                envelopeBaselineCompare.kurtPct >= 0 ? "+" : ""
+                              }${envelopeBaselineCompare.kurtPct.toFixed(0)}%`
+                            : ""}
+                        </p>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                      <button
+                        type="button"
+                        onClick={() => setEnvelopeBaseline(null)}
+                        className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
+                      >
+                        Clear baseline
+                      </button>
+                    </div>
+                  )}
+                  {envelopeBaselineError && (
+                    <p className="text-xs text-amber-400 mb-4">{envelopeBaselineError}</p>
+                  )}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <div className={CARD}>
-                  <h3 className="text-base font-bold text-white mb-3">
-                    Demodulation / PeakVue (gSE)
-                  </h3>
-                  <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={VIB_ENVELOPE} margin={chartMargin}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                        <YAxis stroke="#eab308" tick={{ fontSize: 11 }} />
-                        <Tooltip contentStyle={tooltipStyle} />
-                        <Line
-                          type="monotone"
-                          dataKey="gse"
-                          stroke="#eab308"
-                          strokeWidth={2.5}
-                          name="gSE"
-                          dot={{ r: 3 }}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
+                  {/* Calculated bearing fault frequency badges */}
+                  <div className="mb-6">
+                    <div className="flex flex-wrap items-end justify-between gap-2 mb-3">
+                      <div>
+                        <h3 className="text-base font-bold text-white">
+                          Bearing Fault Frequency Calculator
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                          {calculatedBearingFaults
+                            ? `${machineSpecs.bearing} @ ${calculatedBearingFaults.rpm} RPM · 1X = ${calculatedBearingFaults.shaftHz.toFixed(2)} Hz · source ${calculatedBearingFaults.geometry.source}`
+                            : "Configure DE bearing part # and RPM on the asset to calculate BPFO / BPFI / BSF / FTF"}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      {(
+                        [
+                          ["BPFO", "Outer Race", calculatedBearingFaults?.bpfo, "border-red-500/40 text-red-400"],
+                          ["BPFI", "Inner Race", calculatedBearingFaults?.bpfi, "border-purple-500/40 text-purple-400"],
+                          ["BSF", "Ball Spin", calculatedBearingFaults?.bsf, "border-orange-500/40 text-orange-400"],
+                          ["FTF", "Cage / Train", calculatedBearingFaults?.ftf, "border-cyan-500/40 text-cyan-400"]
+                        ] as const
+                      ).map(([key, sub, hz, tone]) => (
+                        <div
+                          key={key}
+                          className={`rounded-xl border bg-slate-950/60 px-4 py-3 ${tone}`}
+                        >
+                          <p className="text-[10px] font-bold uppercase tracking-widest opacity-80">
+                            {key}
+                          </p>
+                          <p className="text-xs text-slate-500 mt-0.5">{sub}</p>
+                          <p className="text-2xl font-bold font-mono mt-2 text-white">
+                            {hz != null && hz > 0 ? `${hz.toFixed(2)} Hz` : "—"}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
 
-                <div className={CARD}>
-                  <h3 className="text-base font-bold text-white mb-3">BPFO Trend</h3>
-                  <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={VIB_ENVELOPE} margin={chartMargin}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                        <YAxis stroke="#ef4444" tick={{ fontSize: 11 }} />
-                        <Tooltip contentStyle={tooltipStyle} />
-                        <Line
-                          type="monotone"
-                          dataKey="bpfo"
-                          stroke="#ef4444"
-                          strokeWidth={2.5}
-                          name="BPFO"
-                          dot={{ r: 3 }}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                  {/* Latest measured enveloping peaks */}
+                  {(vibExtractedEnvelopeChart.length > 0 ||
+                    latestEnvelopingPoint) && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                      <div className={CARD}>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                          Peak g<sub>E</sub>
+                        </p>
+                        <p className="text-2xl font-bold text-amber-400 font-mono">
+                          {latestEnvelopingPoint?.peakGe != null
+                            ? `${latestEnvelopingPoint.peakGe.toFixed(3)}`
+                            : "—"}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1">gE / gSE</p>
+                      </div>
+                      <div className={CARD}>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                          Kurtosis / Crest
+                        </p>
+                        <p className="text-2xl font-bold text-cyan-400 font-mono">
+                          {latestEnvelopingPoint?.kurtosis != null
+                            ? latestEnvelopingPoint.kurtosis.toFixed(2)
+                            : "—"}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          From waveform / telemetry
+                        </p>
+                      </div>
+                      <div className={CARD}>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                          Accel (g)
+                        </p>
+                        <p className="text-2xl font-bold text-orange-400 font-mono">
+                          {latestEnvelopingPoint?.overallAcceleration != null
+                            ? latestEnvelopingPoint.overallAcceleration.toFixed(3)
+                            : latestVibrationRecord?.broadband.overallAcceleration
+                              ? latestVibrationRecord.broadband.overallAcceleration.toFixed(3)
+                              : "—"}
+                        </p>
+                      </div>
+                      <div className={CARD}>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                          Health
+                        </p>
+                        <p className="text-2xl font-bold text-yellow-400 font-mono">
+                          {latestEnvelopingPoint?.healthScore != null
+                            ? latestEnvelopingPoint.healthScore
+                            : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
 
-                <div className={CARD}>
-                  <h3 className="text-base font-bold text-white mb-3">BPFI Trend</h3>
-                  <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={VIB_ENVELOPE} margin={chartMargin}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                        <YAxis stroke="#a855f7" tick={{ fontSize: 11 }} />
-                        <Tooltip contentStyle={tooltipStyle} />
-                        <Line
-                          type="monotone"
-                          dataKey="bpfi"
-                          stroke="#a855f7"
-                          strokeWidth={2.5}
-                          name="BPFI"
-                          dot={{ r: 3 }}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                    <div className={CARD}>
+                      <h3 className="text-base font-bold text-white mb-1">
+                        Peak g<sub>E</sub> Trend
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        Real demodulation / acceleration envelope from diagnostic history
+                      </p>
+                      <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
+                        {envelopingGeChartData.length === 0 ? (
+                          <div className="h-full flex items-center justify-center px-4 text-center">
+                            <p className="text-sm text-slate-500">
+                              No recorded g<sub>E</sub> values yet — run a diagnostic with enveloping / acceleration data.
+                            </p>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart
+                              data={envelopingGeChartData}
+                              margin={chartMargin}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                              <XAxis
+                                dataKey="date"
+                                stroke="#94a3b8"
+                                tick={{ fontSize: 11 }}
+                              />
+                              <YAxis stroke="#eab308" tick={{ fontSize: 11 }} />
+                              <Tooltip contentStyle={tooltipStyle} />
+                              {envelopeBaseline?.peakGe != null &&
+                                envelopeBaseline.peakGe > 0 && (
+                                  <ReferenceLine
+                                    y={envelopeBaseline.peakGe}
+                                    stroke="#f59e0b"
+                                    strokeDasharray="6 4"
+                                    label={{
+                                      value: `Baseline ${envelopeBaseline.peakGe.toFixed(2)} gE`,
+                                      fill: "#f59e0b",
+                                      fontSize: 10,
+                                      position: "insideTopRight"
+                                    }}
+                                  />
+                                )}
+                              <Line
+                                type="monotone"
+                                dataKey="peakGe"
+                                stroke="#eab308"
+                                strokeWidth={2.5}
+                                name="Peak gE"
+                                dot={{ r: 4 }}
+                                connectNulls={false}
+                                isAnimationActive={false}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+                    </div>
 
-                <div className={CARD}>
-                  <h3 className="text-base font-bold text-white mb-3">BSF / FTF Trend</h3>
-                  <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={VIB_ENVELOPE} margin={chartMargin}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                        <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                        <Tooltip contentStyle={tooltipStyle} />
-                        <Legend />
-                        <Line
-                          type="monotone"
-                          dataKey="bsf"
-                          stroke="#f97316"
-                          strokeWidth={2.5}
-                          name="BSF"
-                          dot={{ r: 3 }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="ftf"
-                          stroke="#22d3ee"
-                          strokeWidth={2.5}
-                          name="FTF"
-                          dot={{ r: 3 }}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
+                    <div className={CARD}>
+                      <h3 className="text-base font-bold text-white mb-1">
+                        Kurtosis Trend
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        Crest / kurtosis from waveform metrics — gaps omitted (no zero fill)
+                      </p>
+                      <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
+                        {envelopingKurtosisChartData.length === 0 ? (
+                          <div className="h-full flex items-center justify-center px-4 text-center">
+                            <p className="text-sm text-slate-500">
+                              No kurtosis / crest factor recorded yet.
+                            </p>
+                          </div>
+                        ) : (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart
+                              data={envelopingKurtosisChartData}
+                              margin={chartMargin}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                              <XAxis
+                                dataKey="date"
+                                stroke="#94a3b8"
+                                tick={{ fontSize: 11 }}
+                              />
+                              <YAxis stroke="#22d3ee" tick={{ fontSize: 11 }} />
+                              <Tooltip contentStyle={tooltipStyle} />
+                              {envelopeBaseline?.kurtosis != null &&
+                                envelopeBaseline.kurtosis > 0 && (
+                                  <ReferenceLine
+                                    y={envelopeBaseline.kurtosis}
+                                    stroke="#22d3ee"
+                                    strokeDasharray="6 4"
+                                    label={{
+                                      value: "Baseline",
+                                      fill: "#22d3ee",
+                                      fontSize: 10,
+                                      position: "insideTopRight"
+                                    }}
+                                  />
+                                )}
+                              <Line
+                                type="monotone"
+                                dataKey="kurtosis"
+                                stroke="#22d3ee"
+                                strokeWidth={2.5}
+                                name="Kurtosis"
+                                dot={{ r: 4 }}
+                                connectNulls={false}
+                                isAnimationActive={false}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+
+                  {vibExtractedEnvelopeChart.length > 0 && (
+                    <div className={`${CARD} mb-6`}>
+                      <h3 className="text-base font-bold text-white mb-1">
+                        Measured Bearing Band Amplitudes
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-4">
+                        From latest diagnostic enveloping peaks
+                        {latestVibrationRecord?.extractionConfidence != null
+                          ? ` · confidence ${latestVibrationRecord.extractionConfidence}%`
+                          : ""}
+                        {calculatedBearingFaults
+                          ? ` · match vs calc BPFO ${calculatedBearingFaults.bpfo.toFixed(1)} Hz / BPFI ${calculatedBearingFaults.bpfi.toFixed(1)} Hz`
+                          : ""}
+                      </p>
+                      <div className="h-[320px] bg-slate-950 rounded-lg border border-white/10 p-2">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={vibExtractedEnvelopeChart}
+                            margin={{ top: 12, right: 16, bottom: 28, left: 48 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                            <XAxis
+                              dataKey="label"
+                              stroke="#94a3b8"
+                              tick={{ fontSize: 11 }}
+                            />
+                            <YAxis
+                              stroke="#f59e0b"
+                              tick={{ fontSize: 10 }}
+                              label={{
+                                value: "Amplitude",
+                                angle: -90,
+                                position: "insideLeft",
+                                fill: "#f59e0b",
+                                fontSize: 11
+                              }}
+                            />
+                            <Tooltip
+                              contentStyle={tooltipStyle}
+                              formatter={(value, _n, props) => [
+                                `${Number(value).toFixed(3)} @ ${
+                                  (props?.payload as { frequency?: number })
+                                    ?.frequency ?? "—"
+                                } Hz`,
+                                "Amplitude"
+                              ]}
+                            />
+                            <Bar
+                              dataKey="amplitude"
+                              fill="#f59e0b"
+                              name="Amplitude"
+                              isAnimationActive={false}
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* History table with Set as Baseline */}
+                  <div className={`${CARD} mb-2`}>
+                    <h3 className="text-base font-bold text-white mb-1">
+                      Enveloping History
+                    </h3>
+                    <p className="text-xs text-slate-500 mb-4">
+                      PostgreSQL analysis_results for this asset · Set any row as baseline for % change
+                    </p>
+                    {envelopingTrendSeries.length === 0 ? (
+                      <p className="text-sm text-slate-500 py-8 text-center">
+                        No enveloping metrics in saved diagnostics yet.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto rounded-lg border border-white/10">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
+                              <th className="px-3 py-2 font-bold">Date</th>
+                              <th className="px-3 py-2 font-bold">Peak gE</th>
+                              <th className="px-3 py-2 font-bold">Kurtosis</th>
+                              <th className="px-3 py-2 font-bold">Health</th>
+                              <th className="px-3 py-2 font-bold">Fault</th>
+                              <th className="px-3 py-2 font-bold">Baseline</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[...envelopingTrendSeries].reverse().map((row) => {
+                              const isBase =
+                                envelopeBaseline?.analysisId === row.analysisId;
+                              return (
+                                <tr
+                                  key={row.analysisId}
+                                  className={`border-t border-white/10 ${
+                                    isBase ? "bg-amber-500/5" : ""
+                                  }`}
+                                >
+                                  <td className="px-3 py-2.5 text-white font-medium">
+                                    {row.date}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-amber-300 font-mono text-xs">
+                                    {row.peakGe != null
+                                      ? row.peakGe.toFixed(3)
+                                      : "—"}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-cyan-300 font-mono text-xs">
+                                    {row.kurtosis != null
+                                      ? row.kurtosis.toFixed(2)
+                                      : "—"}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-slate-300 font-mono text-xs">
+                                    {row.healthScore != null
+                                      ? row.healthScore
+                                      : "—"}
+                                  </td>
+                                  <td className="px-3 py-2.5 text-slate-400 text-xs max-w-[180px] truncate">
+                                    {row.primaryFault}
+                                  </td>
+                                  <td className="px-3 py-2.5">
+                                    <button
+                                      type="button"
+                                      disabled={envelopeBaselineBusy}
+                                      onClick={() => handleSetEnvelopeBaseline(row)}
+                                      className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded border cursor-pointer transition-colors ${
+                                        isBase
+                                          ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                                          : "bg-slate-800 border-slate-600 text-slate-300 hover:border-amber-500/40 hover:text-amber-200"
+                                      }`}
+                                    >
+                                      {isBase ? "Baseline" : "Set as Baseline"}
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           )}
 
           {vibMode === "waveform" && (
-            <TechEmptyState technology="Waveform" />
-          )}
-          {false && vibMode === "waveform" && (
-            <>
-              <div className={`${CARD} mb-4`}>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                  Kurtosis KPI
-                </p>
-                <p className="text-2xl font-bold text-yellow-500">K = 4.2</p>
-                <p className="text-xs text-slate-400 mt-1">
-                  Kurtosis (K &gt; 3.0 indicates impacting)
-                </p>
-              </div>
-
-              <div className={`${CARD} mb-6`}>
-                <h3 className="text-base font-bold text-white mb-3">Time Waveform Display</h3>
-                <div className="h-64 bg-slate-950 rounded-lg border border-white/10 p-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={VIB_WAVEFORM} margin={chartMargin}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis
-                        dataKey="t"
-                        stroke="#94a3b8"
-                        tick={{ fontSize: 11 }}
-                        label={{ value: "ms", position: "insideBottom", offset: -2, fill: "#64748b", fontSize: 10 }}
-                      />
-                      <YAxis
-                        stroke="#22d3ee"
-                        tick={{ fontSize: 11 }}
-                        label={{
-                          value: "g",
-                          angle: -90,
-                          position: "insideLeft",
-                          fill: "#22d3ee",
-                          fontSize: 11
-                        }}
-                      />
-                      <Tooltip contentStyle={tooltipStyle} />
-                      <Line
-                        type="monotone"
-                        dataKey="amp"
-                        stroke="#22d3ee"
-                        strokeWidth={1.5}
-                        name="Amplitude"
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              <div className={`${CARD} mb-6`}>
-                <h3 className="text-base font-bold text-white mb-3">1X Phase Angle Trend</h3>
-                <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={VIB_PHASE} margin={chartMargin}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                      <YAxis
-                        stroke="#eab308"
-                        tick={{ fontSize: 11 }}
-                        domain={[0, 180]}
-                        label={{
-                          value: "deg",
-                          angle: -90,
-                          position: "insideLeft",
-                          fill: "#eab308",
-                          fontSize: 11
-                        }}
-                      />
-                      <Tooltip contentStyle={tooltipStyle} />
-                      <Line
-                        type="monotone"
-                        dataKey="phase"
-                        stroke="#eab308"
-                        strokeWidth={2.5}
-                        name="1X Phase"
-                        dot={{ r: 3 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-                <p className="text-xs text-slate-400 mt-3">
-                  Phase shift &gt; 30° between samples indicates developing unbalance or soft foot.
-                </p>
-              </div>
-
-              <div className={`${CARD} mb-6`}>
-                <h3 className="text-base font-bold text-white mb-3">
-                  Animated Shaft Orbit / Lissajous Plot
-                </h3>
-                <div className="h-72 bg-slate-950 rounded-lg border border-white/10 p-2">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart margin={{ top: 16, right: 24, bottom: 16, left: 24 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis
-                        type="number"
-                        dataKey="x"
-                        name="X"
-                        domain={[-1.4, 1.4]}
-                        stroke="#94a3b8"
-                        tick={{ fontSize: 11 }}
-                      />
-                      <YAxis
-                        type="number"
-                        dataKey="y"
-                        name="Y"
-                        domain={[-1.0, 1.0]}
-                        stroke="#94a3b8"
-                        tick={{ fontSize: 11 }}
-                      />
-                      <Tooltip
-                        cursor={{ strokeDasharray: "3 3" }}
-                        contentStyle={tooltipStyle}
-                      />
-                      <Scatter
-                        name="Orbit"
-                        data={VIB_ORBIT}
-                        fill="#22d3ee"
-                        line={{ stroke: "#22d3ee", strokeWidth: 1.5 }}
-                        lineType="joint"
-                      />
-                    </ScatterChart>
-                  </ResponsiveContainer>
-                </div>
-                <p className="text-xs text-slate-400 mt-3">
-                  Detecting oil whirl/whip in sleeve bearings.
-                </p>
-              </div>
-            </>
+            <WaveformTab
+              rpm={waveformRpm}
+              trendPoints={waveformTrendSeries}
+              latestMetrics={latestWaveformAnalysisMetrics}
+              waveformSamples={vibExtractedWaveformChart}
+              emptyAlert={vibrationAwaitingRecordAlert}
+              analysesCount={vibAnalyses.length}
+            />
           )}
         </>
       )}
@@ -2678,10 +4913,16 @@ export default function TrendAnalyzer({
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                         Emissivity Consistency Check
                       </p>
-                      <p className="text-2xl font-bold text-purple-400 flex items-center gap-2">
+                      <p
+                        className={`text-2xl font-bold flex items-center gap-2 ${
+                          radioKpis.latest?.emissivity != null
+                            ? "text-purple-400"
+                            : "text-slate-400"
+                        }`}
+                      >
                         {radioKpis.latest?.emissivity != null
                           ? `ε = ${radioKpis.latest.emissivity}`
-                          : "N/A"}
+                          : "Not Configured"}
                         {radioKpis.emissivityDrift && (
                           <AlertTriangle
                             className="h-5 w-5 text-amber-400 shrink-0"
@@ -2694,53 +4935,72 @@ export default function TrendAnalyzer({
                           ? radioKpis.emissivityDrift
                             ? `Changed vs baseline ε = ${radioKpis.baselineEmissivity}`
                             : `Matches baseline ε = ${radioKpis.baselineEmissivity}`
-                          : "—"}
+                          : "From telemetry environmental settings"}
                       </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                         Palette Span Range
                       </p>
-                      <p className="text-2xl font-bold text-cyan-400">
-                        {radioKpis.paletteSpan != null
+                      <p
+                        className={`text-2xl font-bold ${
+                          radioKpis.paletteConfigured
+                            ? "text-cyan-400"
+                            : "text-slate-400"
+                        }`}
+                      >
+                        {radioKpis.paletteConfigured
                           ? `Range: ${radioKpis.paletteSpan}°`
-                          : "N/A"}
+                          : "Not Configured"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1 font-mono">
-                        {radioKpis.latest?.scaleMin != null &&
-                        radioKpis.latest?.scaleMax != null
-                          ? `${radioKpis.latest.scaleMin}° → ${radioKpis.latest.scaleMax}°`
-                          : "—"}
+                        {radioKpis.paletteConfigured
+                          ? `${radioKpis.latest!.scaleMin}° → ${radioKpis.latest!.scaleMax}°`
+                          : "Camera scale pending"}
                       </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                         Isotherm Alarm Status
                       </p>
-                      <p className="text-2xl font-bold text-orange-400">
-                        {radioKpis.latest?.isothermThreshold != null
-                          ? `Active: >${radioKpis.latest.isothermThreshold}°`
-                          : "N/A"}
+                      <p
+                        className={`text-2xl font-bold ${
+                          radioKpis.isothermConfigured
+                            ? "text-orange-400"
+                            : "text-slate-400"
+                        }`}
+                      >
+                        {radioKpis.isothermConfigured
+                          ? `Active: >${radioKpis.latest!.isothermThreshold}°`
+                          : "Not Configured"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
-                        {radioKpis.latest?.isothermThreshold != null
+                        {radioKpis.isothermConfigured
                           ? "Isotherm filter engaged"
-                          : "—"}
+                          : "Camera measurement settings pending"}
                       </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                         ROI Statistical Mean
                       </p>
-                      <p className="text-2xl font-bold text-green-400">
-                        {radioKpis.latest?.boxAverage != null
-                          ? `Box Avg: ${radioKpis.latest.boxAverage}°`
-                          : "N/A"}
+                      <p
+                        className={`text-2xl font-bold ${
+                          radioKpis.boxAverageConfigured
+                            ? "text-green-400"
+                            : "text-slate-400"
+                        }`}
+                      >
+                        {radioKpis.boxAverageConfigured
+                          ? `Box Avg: ${radioKpis.latest!.boxAverage}°`
+                          : "Awaiting AI Extraction"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {radioKpis.latest?.reflectedApparentTemp != null
                           ? `Reflected: ${radioKpis.latest.reflectedApparentTemp}°`
-                          : "Baseline thermal creep tracking"}
+                          : radioKpis.boxAverageConfigured
+                            ? "Baseline thermal creep tracking"
+                            : "ROI statistics not yet available"}
                       </p>
                     </div>
                   </div>
@@ -2752,7 +5012,7 @@ export default function TrendAnalyzer({
                       !hasThermographyData
                         ? "No thermography scans for this asset"
                         : !hasRadiometricSeries
-                          ? "No radiometric calibration fields in saved scans yet"
+                          ? "Environmental & radiometric fields will appear as scans include them"
                           : null
                     }
                   >
@@ -2978,7 +5238,7 @@ export default function TrendAnalyzer({
                         <YAxis
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "Temperature (°C)",
+                            value: thermoTempAxisLabel,
                             angle: -90,
                             position: "insideLeft",
                             fill: "#64748b",
@@ -3062,20 +5322,29 @@ export default function TrendAnalyzer({
       {trendTech === "ultrasound" && (
         <>
           <div className="flex flex-wrap gap-2 mb-6">
-            {UE_MODE_OPTIONS.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                onClick={() => setUeMode(mode.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
-                  ueMode === mode.id
-                    ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                    : "bg-slate-800 border-slate-700 text-slate-400"
-                }`}
-              >
-                {mode.label}
-              </button>
-            ))}
+            {UE_MODE_OPTIONS.map((mode) => {
+              const Icon = mode.Icon;
+              const isActive = ueMode === mode.id;
+              return (
+                <button
+                  key={mode.id}
+                  type="button"
+                  onClick={() => setUeMode(mode.id)}
+                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                    isActive
+                      ? "bg-cyan-500/20 border-cyan-500 text-cyan-300"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
+                  }`}
+                >
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md border shrink-0 ${mode.iconClass}`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </span>
+                  {mode.label}
+                </button>
+              );
+            })}
           </div>
 
           {dbTrendLoading ? (
@@ -3084,136 +5353,560 @@ export default function TrendAnalyzer({
             </div>
           ) : !hasUltrasoundData ? (
             <TechEmptyState technology="Ultrasound" />
-          ) : (
+          ) : ueMode === "bearings" ? (
             <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                 <div className={CARD}>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                    Ultrasound KPI
-                    <span className="ml-2 text-slate-600 normal-case tracking-normal">
-                      · {UE_MODE_OPTIONS.find((m) => m.id === ueMode)?.label}
-                    </span>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Acoustic Friction (RMS dB)
                   </p>
-                  <ul className="space-y-2.5">
-                    <li className="text-sm font-bold text-cyan-400">
-                      Peak:{" "}
-                      {uePeaksFromRow(latestUe!).peak != null
-                        ? `${uePeaksFromRow(latestUe!).peak} dBµV`
-                        : "—"}
-                    </li>
-                    <li className="text-sm font-semibold text-sky-400">
-                      RMS:{" "}
-                      {uePeaksFromRow(latestUe!).rms != null
-                        ? `${uePeaksFromRow(latestUe!).rms} dBµV`
-                        : "—"}
-                    </li>
-                    <li className="text-sm font-semibold text-yellow-400">
-                      Δ:{" "}
-                      {uePeaksFromRow(latestUe!).delta != null
-                        ? `${uePeaksFromRow(latestUe!).delta} dB`
-                        : "—"}
-                    </li>
-                    <li className="text-sm font-semibold text-white">
-                      Fault: {latestUe?.primary_fault || "—"}
-                    </li>
-                    <li className="text-sm font-semibold text-slate-300">
-                      Health: {latestUe?.health_score ?? "—"}
-                    </li>
-                  </ul>
+                  <p className="text-2xl font-bold text-sky-400 font-mono">
+                    {latestUeBearingPeaks?.rms != null
+                      ? `${latestUeBearingPeaks.rms} dBµV`
+                      : "—"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Latest mechanical / bearing scan RMS
+                  </p>
                 </div>
-                <div className={`${CARD} md:col-span-2`}>
-                  <p className="text-sm font-semibold text-white leading-relaxed">
-                    {latestUe?.summary || latestUe?.primary_fault || "Ultrasound analysis saved."}
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Impact Severity (Peak dB)
                   </p>
-                  <p className="text-xs text-slate-500 mt-2">
-                    {ueAnalyses.length} ultrasound run
-                    {ueAnalyses.length === 1 ? "" : "s"} from PostgreSQL
+                  <p className="text-2xl font-bold text-orange-400 font-mono">
+                    {latestUeBearingPeaks?.peak != null
+                      ? `${latestUeBearingPeaks.peak} dBµV`
+                      : "—"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Peak acoustic amplitude vs baseline
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Crest Factor
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {latestUeBearingPeaks?.crest != null
+                      ? latestUeBearingPeaks.crest
+                      : "—"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Peak dB - RMS dB — early bearing defect indicator
                   </p>
                 </div>
               </div>
 
-              <div className={`${CARD} mb-6`}>
+              <ThermoChartFrame
+                title="Bearings & Mechanical — RMS / Peak acoustic trend"
+                subtitle="Solid: RMS dBµV (friction) · Dashed: Peak dBµV (impact) · From analysis_results.peaks"
+                overlay={
+                  !hasUeBearingSeries
+                    ? "No mechanical / bearing ultrasound metrics in saved scans yet"
+                    : null
+                }
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart
+                    data={ueBearingChartSeries}
+                    margin={chartMargin}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      label={{
+                        value: "Date",
+                        position: "insideBottom",
+                        offset: -2,
+                        fill: "#64748b",
+                        fontSize: 11
+                      }}
+                    />
+                    <YAxis
+                      tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      label={{
+                        value: "Level (dBµV)",
+                        angle: -90,
+                        position: "insideLeft",
+                        fill: "#64748b",
+                        fontSize: 11
+                      }}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "#0f172a",
+                        border: "1px solid #334155",
+                        borderRadius: 8
+                      }}
+                    />
+                    <Legend verticalAlign="bottom" height={28} />
+                    <Line
+                      type="monotone"
+                      dataKey="rms"
+                      name="RMS dBµV"
+                      stroke="#3b82f6"
+                      strokeWidth={2.5}
+                      dot={{ r: 3 }}
+                      connectNulls
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="peak"
+                      name="Peak dBµV"
+                      stroke="#f97316"
+                      strokeWidth={2.5}
+                      strokeDasharray="6 4"
+                      dot={{ r: 3 }}
+                      connectNulls
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </ThermoChartFrame>
+
+              <div className={`${CARD} mb-6 overflow-x-auto`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                  Health Trend
+                  Saved Mechanical / Bearing Scans
                 </p>
-                <div className="h-64">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={ueTrendSeries}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                      <YAxis domain={[0, 100]} tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                      <Tooltip
-                        contentStyle={{
-                          background: "#0f172a",
-                          border: "1px solid #334155",
-                          borderRadius: 8
-                        }}
-                      />
-                      <Legend />
-                      <Line
-                        type="monotone"
-                        dataKey="health"
-                        name="Health Score"
-                        stroke="#38bdf8"
-                        strokeWidth={2}
-                        dot={{ r: 3 }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="peak"
-                        name="Peak dBµV"
-                        stroke="#fbbf24"
-                        strokeWidth={2}
-                        dot={{ r: 3 }}
-                        connectNulls
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                {ueBearingAnalyses.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">
+                    No mechanical-mode ultrasound rows for this asset yet. Run a
+                    Mechanical / Bearing diagnostic to populate this table.
+                  </p>
+                ) : (
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                        <th className="py-2 pr-3 font-bold">Date</th>
+                        <th className="py-2 pr-3 font-bold">RMS</th>
+                        <th className="py-2 pr-3 font-bold">Peak</th>
+                        <th className="py-2 pr-3 font-bold">Crest</th>
+                        <th className="py-2 pr-3 font-bold">Fault</th>
+                        <th className="py-2 pr-3 font-bold">Health</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ueBearingAnalyses.map((r) => {
+                        const up = uePeaksFromRow(r);
+                        return (
+                          <tr
+                            key={r.id}
+                            className="border-b border-slate-800/80 text-slate-300"
+                          >
+                            <td className="py-2 pr-3 whitespace-nowrap">
+                              {r.timestamp
+                                ? new Date(r.timestamp).toLocaleString()
+                                : r.created_at
+                                  ? new Date(r.created_at).toLocaleString()
+                                  : "—"}
+                            </td>
+                            <td className="py-2 pr-3 font-mono">
+                              {up.rms != null ? up.rms : "—"}
+                            </td>
+                            <td className="py-2 pr-3 font-mono">
+                              {up.peak != null ? up.peak : "—"}
+                            </td>
+                            <td className="py-2 pr-3 font-mono">
+                              {up.crest != null ? up.crest : "—"}
+                            </td>
+                            <td className="py-2 pr-3">{r.primary_fault || "—"}</td>
+                            <td className="py-2 pr-3 font-mono">
+                              {r.health_score ?? "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          ) : ueMode === "leaks" ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Total Annual Waste
+                  </p>
+                  <p className="text-2xl font-bold text-red-400 font-mono">
+                    {formatUsdPerYear(ueLeakKpis.totalAnnualCost)}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Sum of active leak annual energy cost
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Total Flow Loss
+                  </p>
+                  <p className="text-2xl font-bold text-sky-400 font-mono">
+                    {ueLeakKpis.totalCfm.toFixed(1)} CFM
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Continuous compressed-air loss across inventory
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Total Carbon Footprint
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {ueLeakKpis.totalCo2.toFixed(1)} MT CO₂e/yr
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    EPA eGRID CO₂e from compressor energy waste
+                  </p>
                 </div>
               </div>
 
               <div className={`${CARD} mb-6 overflow-x-auto`}>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                  Saved Ultrasound Analyses
-                </p>
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
-                      <th className="py-2 pr-3 font-bold">Date</th>
-                      <th className="py-2 pr-3 font-bold">Health</th>
-                      <th className="py-2 pr-3 font-bold">Fault</th>
-                      <th className="py-2 pr-3 font-bold">Peak</th>
-                      <th className="py-2 pr-3 font-bold">RMS</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ueAnalyses.map((r) => {
-                      const up = uePeaksFromRow(r);
-                      return (
-                        <tr key={r.id} className="border-b border-slate-800/80 text-slate-300">
-                          <td className="py-2 pr-3 whitespace-nowrap">
-                            {r.timestamp
-                              ? new Date(r.timestamp).toLocaleString()
-                              : r.created_at
-                                ? new Date(r.created_at).toLocaleString()
-                                : "—"}
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    Active Leak Inventory
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    Sort by Date or Annual Cost · severity from $/yr thresholds
+                  </p>
+                </div>
+                {ueLeakInventoryRows.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-12 px-4">
+                    <div className="w-12 h-12 rounded-xl border border-sky-500/40 bg-sky-500/10 text-sky-400 flex items-center justify-center mb-4">
+                      <Wind className="h-5 w-5" />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-200 max-w-lg">
+                      No compressed air leaks detected for this asset. Run an
+                      ultrasound diagnostic in Leak Detection mode to populate
+                      this inventory.
+                    </p>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                        <th className="py-2 pr-3 font-bold">
+                          <button
+                            type="button"
+                            onClick={() => toggleUeLeakSort("date")}
+                            className="inline-flex items-center gap-1 cursor-pointer hover:text-slate-300 bg-transparent border-0 p-0 text-[10px] font-bold uppercase tracking-wider text-slate-500"
+                          >
+                            Date
+                            {ueLeakSort.key === "date"
+                              ? ueLeakSort.dir === "asc"
+                                ? " ↑"
+                                : " ↓"
+                              : ""}
+                          </button>
+                        </th>
+                        <th className="py-2 pr-3 font-bold">Peak Level</th>
+                        <th className="py-2 pr-3 font-bold">Est. Orifice</th>
+                        <th className="py-2 pr-3 font-bold">Flow Loss</th>
+                        <th className="py-2 pr-3 font-bold">
+                          <button
+                            type="button"
+                            onClick={() => toggleUeLeakSort("annual_cost")}
+                            className="inline-flex items-center gap-1 cursor-pointer hover:text-slate-300 bg-transparent border-0 p-0 text-[10px] font-bold uppercase tracking-wider text-slate-500"
+                          >
+                            Annual Cost ($/yr)
+                            {ueLeakSort.key === "annual_cost"
+                              ? ueLeakSort.dir === "asc"
+                                ? " ↑"
+                                : " ↓"
+                              : ""}
+                          </button>
+                        </th>
+                        <th className="py-2 pr-3 font-bold">CO₂ Impact</th>
+                        <th className="py-2 pr-3 font-bold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ueLeakInventoryRows.map((row) => (
+                        <tr
+                          key={row.id}
+                          className="border-b border-slate-800/80 text-slate-300"
+                        >
+                          <td className="py-2.5 pr-3 whitespace-nowrap">
+                            {row.dateLabel}
                           </td>
-                          <td className="py-2 pr-3 font-mono">{r.health_score ?? "—"}</td>
-                          <td className="py-2 pr-3">{r.primary_fault || "—"}</td>
-                          <td className="py-2 pr-3 font-mono">
-                            {up.peak != null ? up.peak : "—"}
+                          <td className="py-2.5 pr-3 font-mono">
+                            {safeFinite(row.peakDb, 0).toFixed(1)} dBµV
                           </td>
-                          <td className="py-2 pr-3 font-mono">
-                            {up.rms != null ? up.rms : "—"}
+                          <td className="py-2.5 pr-3 font-mono">
+                            {safeFinite(row.orificeSize, 0).toFixed(4)} in
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono text-sky-300">
+                            {safeFinite(row.estimatedCfm, 0).toFixed(2)} CFM
+                          </td>
+                          <td
+                            className={`py-2.5 pr-3 font-mono font-semibold ${leakCostTextClass(row.severity)}`}
+                          >
+                            {formatUsdPerYear(safeFinite(row.annualCost, 0))}
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono">
+                            {safeFinite(row.co2Emissions, 0).toFixed(2)} MT/yr
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${leakCostBadgeClass(row.severity)}`}
+                            >
+                              Active Leak
+                            </span>
                           </td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </>
-          )}
+          ) : ueMode === "electrical" ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Peak Electrical dB
+                  </p>
+                  <p className="text-2xl font-bold text-yellow-400 font-mono">
+                    {uePdKpis.peakElectricalDb.toFixed(1)} dBµV
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Max peak_dbmv across electrical / PD scans
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Avg Baseline Delta
+                  </p>
+                  <p className="text-2xl font-bold text-sky-400 font-mono">
+                    {uePdKpis.avgBaselineDelta.toFixed(1)} dB
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Mean peak − baseline across PD event history
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Threat Level
+                  </p>
+                  <p
+                    className={`text-2xl font-bold font-mono ${pdSeverityTextClass(uePdKpis.threatSeverity)}`}
+                  >
+                    {uePdInventoryRows.length === 0
+                      ? "—"
+                      : uePdKpis.threatLabel}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Highest severity from peak dBµV thresholds
+                  </p>
+                </div>
+              </div>
+
+              <div className={`${CARD} mb-6 overflow-x-auto`}>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    PD Event History
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    Phase 1 · dB thresholds · PRPD / env AI stubs reserved
+                  </p>
+                </div>
+                {uePdInventoryRows.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-12 px-4">
+                    <div className="w-12 h-12 rounded-xl border border-yellow-500/40 bg-yellow-500/10 text-yellow-400 flex items-center justify-center mb-4">
+                      <Zap className="h-5 w-5" />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-200 max-w-lg">
+                      No electrical PD events detected for this asset. Run an
+                      ultrasound diagnostic in Electrical mode to populate this
+                      history.
+                    </p>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                        <th className="py-2 pr-3 font-bold">Date</th>
+                        <th className="py-2 pr-3 font-bold">Peak Level</th>
+                        <th className="py-2 pr-3 font-bold">Baseline Delta</th>
+                        <th className="py-2 pr-3 font-bold">Classification</th>
+                        <th className="py-2 pr-3 font-bold">Severity Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {uePdInventoryRows.map((row) => (
+                        <tr
+                          key={row.id}
+                          className="border-b border-slate-800/80 text-slate-300"
+                        >
+                          <td className="py-2.5 pr-3 whitespace-nowrap">
+                            {row.dateLabel}
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono text-yellow-300">
+                            {safeFinite(row.peakDb, 0).toFixed(1)} dBµV
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono">
+                            {safeFinite(row.baselineDelta, 0).toFixed(1)} dB
+                          </td>
+                          <td className="py-2.5 pr-3">{row.classification}</td>
+                          <td className="py-2.5 pr-3">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${pdSeverityBadgeClass(row.severity)}`}
+                            >
+                              {row.severityLabel}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          ) : ueMode === "steam" ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Total Annual Steam Waste
+                  </p>
+                  <p className="text-2xl font-bold text-red-400 font-mono">
+                    {formatUsdPerYear(ueSteamKpis.totalAnnualCost)}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Domain-safe Napier / subsonic mass-loss economics
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Critical Fault Traps
+                  </p>
+                  <p className="text-2xl font-bold text-orange-400 font-mono">
+                    {ueSteamKpis.criticalCount}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {ueSteamKpis.blownCount} Blown-Through •{" "}
+                    {ueSteamKpis.blockedCount} Blocked
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Avg Repair Payback
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {ueSteamKpis.avgPaybackDays != null
+                      ? `${ueSteamKpis.avgPaybackDays} days`
+                      : "N/A - System Healthy"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Mean ROI days across active failing traps
+                  </p>
+                </div>
+              </div>
+
+              <div className={`${CARD} mb-6 overflow-x-auto`}>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    Steam Trap Inventory
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    Priority fusion matrix · thermal{" "}
+                    {ueSteamThermoTemps.upstreamTemp != null &&
+                    ueSteamThermoTemps.downstreamTemp != null
+                      ? "linked"
+                      : "optional / unavailable"}
+                  </p>
+                </div>
+                {ueSteamInventoryRows.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-12 px-4">
+                    <div className="w-12 h-12 rounded-xl border border-cyan-500/40 bg-cyan-500/10 text-cyan-400 flex items-center justify-center mb-4">
+                      <Droplets className="h-5 w-5" />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-200 max-w-lg">
+                      No steam trap diagnostics for this asset. Run an ultrasound
+                      scan in Valves &amp; Steam Traps mode (mode = steam_trap)
+                      to populate this inventory.
+                    </p>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                        <th className="py-2 pr-3 font-bold">Date</th>
+                        <th className="py-2 pr-3 font-bold">Trap ID / Type</th>
+                        <th className="py-2 pr-3 font-bold">Pressure &amp; ΔT</th>
+                        <th className="py-2 pr-3 font-bold">Acoustic Level</th>
+                        <th className="py-2 pr-3 font-bold">Fusion Status</th>
+                        <th className="py-2 pr-3 font-bold">Annual Waste</th>
+                        <th className="py-2 pr-3 font-bold">Payback</th>
+                        <th className="py-2 pr-3 font-bold">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ueSteamInventoryRows.map((row) => (
+                        <tr
+                          key={row.id}
+                          className="border-b border-slate-800/80 text-slate-300"
+                        >
+                          <td className="py-2.5 pr-3 whitespace-nowrap">
+                            {row.dateLabel}
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <div className="font-semibold text-slate-200">
+                              {row.trapId}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {row.trapType}
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono text-xs">
+                            <div>{safeFinite(row.pressurePsig, 0)} psig</div>
+                            <div className="text-slate-500">
+                              {row.tempDrop != null
+                                ? `ΔT ${row.tempDrop.toFixed(1)} °F`
+                                : "ΔT N/A"}
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono text-cyan-300">
+                            {safeFinite(row.peakDb, 0).toFixed(1)} dBµV
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <span
+                              className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-bold tracking-wider ${steamSeverityBadgeClass(row.severity)}`}
+                              title={row.action}
+                            >
+                              {row.status}
+                            </span>
+                          </td>
+                          <td
+                            className={`py-2.5 pr-3 font-mono font-semibold ${steamSeverityTextClass(row.severity)}`}
+                          >
+                            {formatUsdPerYear(safeFinite(row.annualCostUsd, 0))}
+                          </td>
+                          <td className="py-2.5 pr-3 font-mono">
+                            {row.roiPaybackDays != null
+                              ? `${row.roiPaybackDays} days`
+                              : "—"}
+                          </td>
+                          <td className="py-2.5 pr-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                window.alert(
+                                  `Generate Work Order\n\nTrap: ${row.trapId} (${row.trapType})\nStatus: ${row.status}\nAction: ${row.action}\nAnnual Waste: ${formatUsdPerYear(row.annualCostUsd)}\nPayback: ${row.roiPaybackDays != null ? `${row.roiPaybackDays} days` : "N/A"}`
+                                );
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
+                            >
+                              Generate Work Order
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </>
+          ) : null}
         </>
       )}
 
@@ -3222,26 +5915,24 @@ export default function TrendAnalyzer({
         <>
           <div className="flex flex-wrap gap-2 mb-6">
             {MCA_MODE_OPTIONS.map((mode) => {
-              const Icon =
-                mode.icon === "settings"
-                  ? Settings
-                  : mode.icon === "zap"
-                    ? Zap
-                    : mode.icon === "waves"
-                      ? Waves
-                      : Activity;
+              const Icon = mode.Icon;
+              const isActive = mcaMode === mode.id;
               return (
                 <button
                   key={mode.id}
                   type="button"
                   onClick={() => setMcaMode(mode.id)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
-                    mcaMode === mode.id
-                      ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                      : "bg-slate-800 border-slate-700 text-slate-400"
+                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                    isActive
+                      ? mode.activeClass
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
                   }`}
                 >
-                  <Icon className="h-3.5 w-3.5" />
+                  <span
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md border shrink-0 ${mode.iconClass}`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </span>
                   {mode.label}
                 </button>
               );
@@ -3252,51 +5943,393 @@ export default function TrendAnalyzer({
             <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
               <p className="text-sm font-semibold text-slate-200">Loading MCA trends…</p>
             </div>
-          ) : !hasMcaData ? (
-            <TechEmptyState technology="MCA" />
-          ) : (
+          ) : mcaMode === "winding" ? (
             <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                <div className={CARD}>
+              <div
+                className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+                  mcaPdfDragOver
+                    ? "border-cyan-400 bg-cyan-500/10"
+                    : "border-cyan-500/30 hover:border-cyan-400 bg-slate-900/50"
+                }`}
+                onClick={() => mcaPdfInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setMcaPdfDragOver(true);
+                }}
+                onDragLeave={() => setMcaPdfDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setMcaPdfDragOver(false);
+                  const f = e.dataTransfer.files?.[0];
+                  void handleMcaPdfFile(f);
+                }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    mcaPdfInputRef.current?.click();
+                  }
+                }}
+              >
+                <input
+                  ref={mcaPdfInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    void handleMcaPdfFile(f);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex flex-col items-center gap-3">
+                  {mcaPdfParsing ? (
+                    <>
+                      <Loader2 className="h-8 w-8 text-cyan-400 animate-spin" />
+                      <p className="text-sm font-semibold text-cyan-300">
+                        Parsing MCA PDF…
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-12 h-12 rounded-xl border border-cyan-500/40 bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
+                        <Upload className="h-5 w-5" />
+                      </div>
+                      <p className="text-sm font-semibold text-slate-200">
+                        Upload MCA Test PDF (ALL-TEST Pro, Megger ADX, Baker AWA)
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-md">
+                        Drag and drop or click to browse — client-side extraction only
+                        (no upload to server).
+                      </p>
+                    </>
+                  )}
+                </div>
+                {mcaPdfExtract && !mcaPdfParsing && (
+                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
+                    <Check className="h-3.5 w-3.5 shrink-0" />
+                    Auto-Extracted from{" "}
+                    {formatMcaPdfLabel(mcaPdfExtract.formatDetected)} Report
+                    (Confidence: {mcaPdfExtract.confidenceScore}%)
+                    {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
+                  </div>
+                )}
+                {mcaPdfError && (
+                  <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
+                )}
+              </div>
+
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMcaManualEdit((v) => !v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                    mcaManualEdit
+                      ? "bg-cyan-500/15 border-cyan-500 text-cyan-300"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
+                  }`}
+                >
+                  Manual Entry / Edit Values
+                </button>
+                {mcaPdfExtract && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMcaPdfExtract(null);
+                      setMcaPdfFileName(null);
+                      setMcaPdfError(null);
+                      setMcaManualEdit(false);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer"
+                  >
+                    Clear PDF Extract
+                  </button>
+                )}
+              </div>
+
+              {mcaManualEdit && (
+                <div className={`${CARD} mb-6`}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                    MCA KPI
-                    <span className="ml-2 text-slate-600 normal-case tracking-normal">
-                      · {MCA_MODE_OPTIONS.find((m) => m.id === mcaMode)?.label}
+                    Manual Phase Metrics (T1-T2 · T2-T3 · T3-T1)
+                  </p>
+                  {(
+                    [
+                      ["phaseR", "R (Ω)"],
+                      ["phaseL", "L (mH)"],
+                      ["phaseZ", "Z (Ω)"],
+                      ["phaseFi", "Fi (°)"],
+                      ["phaseIF", "I/F (%)"]
+                    ] as const
+                  ).map(([key, label]) => (
+                    <div
+                      key={key}
+                      className="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-2 items-center"
+                    >
+                      <span className="text-xs text-slate-400 font-semibold">
+                        {label}
+                      </span>
+                      {([0, 1, 2] as const).map((idx) => (
+                        <input
+                          key={idx}
+                          type="number"
+                          step="any"
+                          placeholder="—"
+                          value={
+                            mcaWindingParams[key][idx] === 0
+                              ? ""
+                              : mcaWindingParams[key][idx]
+                          }
+                          onChange={(e) =>
+                            updateMcaPdfTriplet(key, idx, e.target.value)
+                          }
+                          className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none font-mono"
+                        />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className={`${CARD} mb-6 overflow-x-auto`}>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    Phase Input / Summary Grid
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    {mcaPdfExtract
+                      ? `PDF · ${formatMcaPdfLabel(mcaPdfExtract.formatDetected)}`
+                      : mcaWindingParams.fromTelemetry
+                        ? "From saved MCA telemetry"
+                        : "Awaiting Data · upload PDF or use Manual Entry"}
+                    {hasMcaWindingData && mcaWindingResult.tempCorrected
+                      ? " · R @ 25°C copper correction"
+                      : ""}
+                  </p>
+                </div>
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                      <th className="py-2 pr-3 font-bold">Parameter</th>
+                      <th className="py-2 pr-3 font-bold font-mono">T1-T2</th>
+                      <th className="py-2 pr-3 font-bold font-mono">T2-T3</th>
+                      <th className="py-2 pr-3 font-bold font-mono">T3-T1</th>
+                      <th className="py-2 pr-3 font-bold">% Unbalance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-slate-300">
+                    <tr className="border-b border-slate-800/80">
+                      <td className="py-2 pr-3">
+                        R (Ω)
+                        {hasMcaWindingData && mcaWindingResult.tempCorrected
+                          ? " @25°C"
+                          : ""}
+                      </td>
+                      <td className="py-2 pr-3 font-mono text-cyan-300">
+                        {mcaFmtCell(mcaWindingResult.phaseR25[0], 3)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono text-cyan-300">
+                        {mcaFmtCell(mcaWindingResult.phaseR25[1], 3)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono text-cyan-300">
+                        {mcaFmtCell(mcaWindingResult.phaseR25[2], 3)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {hasMcaWindingData
+                          ? `${mcaWindingResult.unbalanceR.toFixed(2)}%`
+                          : "---"}
+                      </td>
+                    </tr>
+                    <tr className="border-b border-slate-800/80">
+                      <td className="py-2 pr-3">L (mH)</td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseL[0], 2)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseL[1], 2)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseL[2], 2)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {hasMcaWindingData
+                          ? `${mcaWindingResult.unbalanceL.toFixed(2)}%`
+                          : "---"}
+                      </td>
+                    </tr>
+                    <tr className="border-b border-slate-800/80">
+                      <td className="py-2 pr-3">Z (Ω)</td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseZ[0], 2)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseZ[1], 2)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseZ[2], 2)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {hasMcaWindingData
+                          ? `${mcaWindingResult.unbalanceZ.toFixed(2)}%`
+                          : "---"}
+                      </td>
+                    </tr>
+                    <tr className="border-b border-slate-800/80">
+                      <td className="py-2 pr-3">Phase Angle Fi (°)</td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseFi[0], 1)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseFi[1], 1)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseFi[2], 1)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {hasMcaWindingData
+                          ? `${mcaWindingResult.unbalanceFi.toFixed(2)}%`
+                          : "---"}
+                      </td>
+                    </tr>
+                    <tr className="border-b border-slate-800/80">
+                      <td className="py-2 pr-3">I/F (%)</td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseIF[0], 1)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseIF[1], 1)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {mcaFmtCell(mcaWindingParams.phaseIF[2], 1)}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">
+                        {hasMcaWindingData
+                          ? `${mcaWindingResult.unbalanceIF.toFixed(2)}%`
+                          : "---"}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Max Phase Unbalance
+                  </p>
+                  <p className="text-2xl font-bold text-cyan-400 font-mono">
+                    {hasMcaWindingData
+                      ? `${mcaWindingResult.maxUnbalanceRL.toFixed(2)}%`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasMcaWindingData
+                      ? `Max of R ${mcaWindingResult.unbalanceR.toFixed(2)}% · L ${mcaWindingResult.unbalanceL.toFixed(2)}%`
+                      : "Awaiting Data"}
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Thermal &amp; Life Impact
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {hasMcaWindingData
+                      ? `+${mcaWindingResult.extraTempRiseC.toFixed(1)} °C`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Insulation life remaining{" "}
+                    <span className="text-slate-300 font-semibold">
+                      {hasMcaWindingData
+                        ? `${mcaWindingResult.remainingLifePercent.toFixed(1)}%`
+                        : "N/A"}
                     </span>
                   </p>
-                  <ul className="space-y-2.5">
-                    <li className="text-sm font-bold text-white">
-                      Health: {latestMca?.health_score ?? "—"}
-                    </li>
-                    <li className="text-sm font-semibold text-yellow-500">
-                      Fault: {latestMca?.primary_fault || "—"}
-                    </li>
-                    <li className="text-sm font-semibold text-slate-300">
-                      Runs: {mcaAnalyses.length}
-                    </li>
-                  </ul>
                 </div>
-                <div className={`${CARD} md:col-span-2`}>
-                  <p className="text-sm font-semibold text-white leading-relaxed">
-                    {latestMca?.summary || latestMca?.primary_fault || "MCA analysis saved."}
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    MCA Health Index
                   </p>
-                  <p className="text-xs text-slate-500 mt-2">
-                    {mcaAnalyses.length} MCA run
-                    {mcaAnalyses.length === 1 ? "" : "s"} from PostgreSQL
+                  <p className="text-2xl font-bold text-emerald-400 font-mono">
+                    {hasMcaWindingData
+                      ? `${mcaWindingResult.healthScore}%`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Usable HP{" "}
+                    <span className="text-slate-300 font-semibold">
+                      {hasMcaWindingData && mcaWindingResult.usableHp != null
+                        ? `${mcaWindingResult.usableHp} HP`
+                        : "N/A"}
+                    </span>
+                    {hasMcaWindingData
+                      ? ` · NEMA derate ${mcaWindingResult.nemaDeratingFactor.toFixed(3)}`
+                      : ""}
                   </p>
                 </div>
               </div>
 
               <div className={`${CARD} mb-6`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                  Health Trend
+                  Diagnostic Fault Isolation
                 </p>
-                <div className="h-64">
+                <div className="flex flex-wrap items-start gap-3">
+                  <span
+                    className={`inline-flex items-center px-2.5 py-1 rounded-md border text-xs font-bold tracking-wide ${
+                      hasMcaWindingData
+                        ? mcaFaultBadgeClass(mcaWindingResult.severity)
+                        : "bg-slate-800/80 border-slate-700 text-slate-400"
+                    }`}
+                  >
+                    {hasMcaWindingData
+                      ? mcaWindingResult.fault
+                      : "Awaiting Data"}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 pt-1">
+                    {hasMcaWindingData ? mcaWindingResult.severity : "---"}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-300 mt-3 leading-relaxed">
+                  <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mr-2">
+                    Recommended action
+                  </span>
+                  {hasMcaWindingData
+                    ? mcaWindingResult.recommendation
+                    : "Upload MCA PDF or enter phase values manually"}
+                </p>
+              </div>
+
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Tri-Phase Balance Comparison — R (Ω) &amp; L (mH)
+                </p>
+                <div className="h-72 relative">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={mcaTrendSeries}>
+                    <BarChart
+                      data={mcaWindingChartData}
+                      margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                    >
                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-                      <YAxis domain={[0, 100]} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                      <XAxis
+                        dataKey="phase"
+                        tick={{ fill: "#94a3b8", fontSize: 11 }}
+                      />
+                      <YAxis
+                        yAxisId="left"
+                        orientation="left"
+                        stroke="#38bdf8"
+                        domain={[0, "auto"]}
+                        unit=" Ω"
+                        tick={{ fill: "#38bdf8", fontSize: 11 }}
+                      />
+                      <YAxis
+                        yAxisId="right"
+                        orientation="right"
+                        stroke="#eab308"
+                        domain={[0, "auto"]}
+                        unit=" mH"
+                        tick={{ fill: "#eab308", fontSize: 11 }}
+                      />
                       <Tooltip
                         contentStyle={{
                           background: "#0f172a",
@@ -3305,53 +6338,1076 @@ export default function TrendAnalyzer({
                         }}
                       />
                       <Legend />
-                      <Line
-                        type="monotone"
-                        dataKey="health"
-                        name="Health Score"
-                        stroke="#eab308"
-                        strokeWidth={2}
-                        dot={{ r: 3 }}
-                      />
-                    </LineChart>
+                      {hasMcaWindingData && (
+                        <>
+                          <Bar
+                            yAxisId="left"
+                            dataKey="Resistance"
+                            name="Resistance (Ω)"
+                            fill="#38bdf8"
+                            radius={[4, 4, 0, 0]}
+                          />
+                          <Bar
+                            yAxisId="right"
+                            dataKey="Inductance"
+                            name="Inductance (mH)"
+                            fill="#eab308"
+                            radius={[4, 4, 0, 0]}
+                          />
+                        </>
+                      )}
+                    </BarChart>
                   </ResponsiveContainer>
+                  {!hasMcaWindingData && (
+                    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                      <p className="text-xs text-slate-500 bg-slate-950/70 px-3 py-1.5 rounded-lg border border-slate-800">
+                        Awaiting Data
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : mcaMode === "insulation" ? (
+            <>
+              <div
+                className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+                  mcaPdfDragOver
+                    ? "border-amber-400 bg-amber-500/10"
+                    : "border-amber-500/30 hover:border-amber-400 bg-slate-900/50"
+                }`}
+                onClick={() => mcaPdfInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setMcaPdfDragOver(true);
+                }}
+                onDragLeave={() => setMcaPdfDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setMcaPdfDragOver(false);
+                  const f = e.dataTransfer.files?.[0];
+                  void handleMcaPdfFile(f);
+                }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    mcaPdfInputRef.current?.click();
+                  }
+                }}
+              >
+                <input
+                  ref={mcaPdfInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    void handleMcaPdfFile(f);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex flex-col items-center gap-3">
+                  {mcaPdfParsing ? (
+                    <>
+                      <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
+                      <p className="text-sm font-semibold text-amber-300">
+                        Parsing MCA PDF…
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-12 h-12 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                        <Shield className="h-5 w-5" />
+                      </div>
+                      <p className="text-sm font-semibold text-slate-200">
+                        Upload MCA Test PDF (ALL-TEST Pro, Megger ADX, Baker AWA)
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-md">
+                        Auto-extract IR 30s / 1m / 10m, PI, and DAR from ALL-TEST Pro,
+                        Megger, or Baker text PDFs — values save to history automatically.
+                      </p>
+                    </>
+                  )}
+                </div>
+                {mcaPdfExtract && !mcaPdfParsing && (
+                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
+                    <Check className="h-3.5 w-3.5 shrink-0" />
+                    Auto-Extracted from{" "}
+                    {formatMcaPdfLabel(mcaPdfExtract.formatDetected)} Report
+                    (Confidence: {mcaPdfExtract.confidenceScore}%)
+                    {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
+                  </div>
+                )}
+                {mcaPdfError && (
+                  <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
+                )}
+              </div>
+
+              <div className={`${CARD} mb-6`}>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                    Groundwall IR Input Grid
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    {mcaPdfExtract
+                      ? `PDF · ${formatMcaPdfLabel(mcaPdfExtract.formatDetected)}`
+                      : mcaGwParams.fromTelemetry
+                        ? "From saved MCA telemetry"
+                        : "Awaiting Data · upload PDF or enter IR readings"}
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {(
+                    [
+                      ["ir30sMOmega", "IR 30s (MΩ)"],
+                      ["ir1mMOmega", "IR 1m (MΩ)"],
+                      ["ir10mMOmega", "IR 10m (MΩ)"],
+                      ["testVoltageV", "Test Voltage (V DC)"],
+                      ["windingTempC", "Winding Temp (°C)"]
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label key={key} className="flex flex-col gap-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        {label}
+                      </span>
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="—"
+                        value={
+                          mcaGwParams[key] == null || mcaGwParams[key] === 0
+                            ? ""
+                            : mcaGwParams[key]
+                        }
+                        onChange={(e) => updateMcaGwField(key, e.target.value)}
+                        className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
+                      />
+                    </label>
+                  ))}
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Insulation Class
+                    </span>
+                    <select
+                      value={mcaGwParams.insulationClass}
+                      onChange={(e) =>
+                        updateMcaGwField("insulationClass", e.target.value)
+                      }
+                      className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
+                    >
+                      <option value="A">Class A (PI ≥ 1.5)</option>
+                      <option value="B">Class B (PI ≥ 2.0)</option>
+                      <option value="F">Class F (PI ≥ 2.0)</option>
+                      <option value="H">Class H (PI ≥ 2.0)</option>
+                    </select>
+                  </label>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-3">
+                  {hasMcaGwData
+                    ? `IEEE 43-2013 · kT = ${mcaGwResult.kT.toFixed(3)} · IR corrected to 40°C baseline`
+                    : "IEEE 43-2013 · Awaiting IR data"}
+                  {mcaGwParams.reportPi != null
+                    ? ` · Report PI ${mcaGwParams.reportPi}`
+                    : ""}
+                  {mcaGwParams.reportDar != null
+                    ? ` · Report DAR ${mcaGwParams.reportDar}`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    IR @ 40°C Baseline
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {hasMcaGwData
+                      ? `${mcaGwResult.ir40MOmega.toFixed(1)} MΩ`
+                      : "---"}
+                  </p>
+                  {hasMcaGwData ? (
+                    <span
+                      className={`mt-2 inline-flex px-2 py-0.5 rounded border text-[10px] font-bold tracking-wide ${
+                        mcaGwResult.irIeeePass
+                          ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                          : "bg-red-500/15 border-red-500/40 text-red-300"
+                      }`}
+                    >
+                      IEEE 43 {mcaGwResult.irIeeePass ? "PASS" : "FAIL"} (≥{" "}
+                      {mcaGwResult.irIeeeMinMOmega} MΩ)
+                    </span>
+                  ) : (
+                    <p className="text-xs text-slate-500 mt-2">Awaiting Data</p>
+                  )}
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Polarization Index (PI)
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {hasMcaGwData && mcaGwResult.pi != null
+                      ? mcaGwResult.pi.toFixed(2)
+                      : "---"}
+                    {hasMcaGwData &&
+                      mcaGwResult.pi != null &&
+                      mcaGwResult.piIeeePass != null && (
+                        <span
+                          className={`ml-2 text-sm ${
+                            mcaGwResult.piIeeePass
+                              ? "text-emerald-400"
+                              : "text-red-400"
+                          }`}
+                        >
+                          {mcaGwResult.piIeeePass ? "PASS" : "FAIL"}
+                        </span>
+                      )}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasMcaGwData
+                      ? `${mcaGwResult.piStatus}${
+                          mcaGwResult.pi != null
+                            ? ` · min ${mcaGwResult.piIeeeMin}`
+                            : " · needs IR 10m"
+                        }`
+                      : "Awaiting Data"}
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Dielectric Absorption (DAR)
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {hasMcaGwData && mcaGwResult.dar != null
+                      ? mcaGwResult.dar.toFixed(2)
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasMcaGwData ? mcaGwResult.darStatus : "Awaiting Data"}
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Leakage Current
+                  </p>
+                  <p className="text-2xl font-bold text-amber-400 font-mono">
+                    {hasMcaGwData && mcaGwParams.testVoltageV > 0
+                      ? `${mcaGwResult.leakageCurrentUA.toFixed(2)} μA`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasMcaGwData && mcaGwParams.testVoltageV > 0
+                      ? `@ ${mcaGwParams.testVoltageV} V DC · IR@40°C`
+                      : "Awaiting Data"}
+                  </p>
                 </div>
               </div>
 
-              <div className={`${CARD} mb-6 overflow-x-auto`}>
+              <div className={`${CARD} mb-6`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                  Saved MCA Analyses
+                  Diagnostic Fault Isolation
                 </p>
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
-                      <th className="py-2 pr-3 font-bold">Date</th>
-                      <th className="py-2 pr-3 font-bold">Health</th>
-                      <th className="py-2 pr-3 font-bold">Fault</th>
-                      <th className="py-2 pr-3 font-bold">Summary</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mcaAnalyses.map((r) => (
-                      <tr key={r.id} className="border-b border-slate-800/80 text-slate-300">
-                        <td className="py-2 pr-3 whitespace-nowrap">
-                          {r.timestamp
-                            ? new Date(r.timestamp).toLocaleString()
-                            : r.created_at
-                              ? new Date(r.created_at).toLocaleString()
-                              : "—"}
-                        </td>
-                        <td className="py-2 pr-3 font-mono">{r.health_score ?? "—"}</td>
-                        <td className="py-2 pr-3">{r.primary_fault || "—"}</td>
-                        <td className="py-2 pr-3 text-slate-400 max-w-md truncate">
-                          {r.summary || "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="flex flex-wrap items-start gap-3">
+                  <span
+                    className={`inline-flex items-center px-2.5 py-1 rounded-md border text-xs font-bold tracking-wide ${
+                      hasMcaGwData
+                        ? mcaFaultBadgeClass(mcaGwResult.severity)
+                        : "bg-slate-800/80 border-slate-700 text-slate-400"
+                    }`}
+                  >
+                    {hasMcaGwData ? mcaGwResult.fault : "Awaiting Data"}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 pt-1">
+                    {hasMcaGwData ? mcaGwResult.severity : "---"}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-300 mt-3 leading-relaxed">
+                  <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mr-2">
+                    Recommended action
+                  </span>
+                  {hasMcaGwData
+                    ? mcaGwResult.recommendation
+                    : "Upload MCA PDF or enter IR values manually"}
+                </p>
+              </div>
+
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Polarization Curve — Raw vs IR @ 40°C
+                </p>
+                <div className="h-72 relative">
+                  {hasMcaGwData && mcaGwChartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={mcaGwChartData}
+                        margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis
+                          dataKey="time"
+                          tick={{ fill: "#94a3b8", fontSize: 11 }}
+                        />
+                        <YAxis
+                          tick={{ fill: "#fbbf24", fontSize: 11 }}
+                          unit=" MΩ"
+                          domain={[0, "auto"]}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#0f172a",
+                            border: "1px solid #334155",
+                            borderRadius: 8
+                          }}
+                        />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="Raw"
+                          name="Raw IR (MΩ)"
+                          stroke="#94a3b8"
+                          strokeWidth={2}
+                          dot={{ r: 4, fill: "#94a3b8" }}
+                          connectNulls
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="Corrected40"
+                          name="IR @ 40°C (MΩ)"
+                          stroke="#f59e0b"
+                          strokeWidth={2}
+                          dot={{ r: 4, fill: "#f59e0b" }}
+                          connectNulls
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-6 border border-dashed border-amber-500/20 rounded-lg bg-slate-950/40">
+                      <Shield className="h-6 w-6 text-amber-500/50 mb-2" />
+                      <p className="text-sm text-slate-400">
+                        Upload PDF or enter values to view curve
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             </>
+          ) : mcaMode === "rotor" ? (
+            <>
+              <div
+                className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+                  mcaPdfDragOver
+                    ? "border-purple-400 bg-purple-500/10"
+                    : "border-purple-500/30 hover:border-purple-400 bg-slate-900/50"
+                }`}
+                onClick={() => mcaPdfInputRef.current?.click()}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setMcaPdfDragOver(true);
+                }}
+                onDragLeave={() => setMcaPdfDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setMcaPdfDragOver(false);
+                  const f = e.dataTransfer.files?.[0];
+                  void handleMcaPdfFile(f);
+                }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    mcaPdfInputRef.current?.click();
+                  }
+                }}
+              >
+                <input
+                  ref={mcaPdfInputRef}
+                  type="file"
+                  accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    void handleMcaPdfFile(f);
+                    e.target.value = "";
+                  }}
+                />
+                <div className="flex flex-col items-center gap-3">
+                  {mcaPdfParsing ? (
+                    <>
+                      <Loader2 className="h-8 w-8 text-purple-400 animate-spin" />
+                      <p className="text-sm font-semibold text-purple-300">
+                        Parsing MCA PDF…
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-12 h-12 rounded-xl border border-purple-500/40 bg-purple-500/10 text-purple-400 flex items-center justify-center">
+                        <RotateCw className="h-5 w-5" />
+                      </div>
+                      <p className="text-sm font-semibold text-slate-200">
+                        Upload MCA Test PDF (RIC / Rotor Influence tables)
+                      </p>
+                      <p className="text-xs text-slate-500 max-w-md">
+                        Auto-extract angle vs L12 / L23 / L31 — client-side only.
+                      </p>
+                    </>
+                  )}
+                </div>
+                {mcaPdfExtract && !mcaPdfParsing && (
+                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
+                    <Check className="h-3.5 w-3.5 shrink-0" />
+                    Auto-Extracted from{" "}
+                    {formatMcaPdfLabel(mcaPdfExtract.formatDetected)} Report
+                    {mcaPdfExtract.ricData?.length
+                      ? ` · ${mcaPdfExtract.ricData.length} RIC points`
+                      : ""}
+                    {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
+                  </div>
+                )}
+                {mcaPdfError && (
+                  <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
+                )}
+              </div>
+
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleRicPasteFromClipboard()}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border border-purple-500/40 bg-purple-500/10 text-purple-300 hover:border-purple-400 cursor-pointer"
+                >
+                  <ClipboardPaste className="h-3.5 w-3.5" />
+                  Paste from Clipboard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRicShowGrid((v) => !v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                    ricShowGrid
+                      ? "bg-purple-500/15 border-purple-500 text-purple-300"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
+                  }`}
+                >
+                  Manual Grid / Edit Values
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRicApplySmoothing((v) => !v)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                    ricApplySmoothing
+                      ? "bg-purple-500/15 border-purple-500 text-purple-300"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
+                  }`}
+                >
+                  3-Pt Smoothing {ricApplySmoothing ? "On" : "Off"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRicCompareBaseline((v) => !v)}
+                  disabled={ricBaselineData.length === 0}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    ricCompareBaseline
+                      ? "bg-purple-500/15 border-purple-500 text-purple-300"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
+                  }`}
+                >
+                  Compare to Baseline
+                </button>
+                <button
+                  type="button"
+                  onClick={saveRicAsBaseline}
+                  disabled={ricData.length === 0}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Save Current as Baseline
+                </button>
+                {ricData.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRicData([]);
+                      setRicPasteError(null);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer"
+                  >
+                    Clear RIC Data
+                  </button>
+                )}
+              </div>
+              {ricPasteError && (
+                <p className="mb-4 text-xs text-amber-400">{ricPasteError}</p>
+              )}
+
+              {ricShowGrid && (
+                <div className={`${CARD} mb-6 overflow-x-auto`}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                    RIC Data Grid — Angle (0–360°) · L12 · L23 · L31 (mH)
+                  </p>
+                  {ricData.length === 0 ? (
+                    <p className="text-sm text-slate-500 py-6 text-center">
+                      Awaiting Data — paste clipboard rows or upload a PDF
+                    </p>
+                  ) : (
+                    <table className="w-full text-left text-sm">
+                      <thead>
+                        <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                          <th className="py-2 pr-2 font-bold">#</th>
+                          <th className="py-2 pr-2 font-bold">Angle</th>
+                          <th className="py-2 pr-2 font-bold font-mono">L12</th>
+                          <th className="py-2 pr-2 font-bold font-mono">L23</th>
+                          <th className="py-2 pr-2 font-bold font-mono">L31</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-slate-300">
+                        {ricData.map((row, idx) => (
+                          <tr
+                            key={`${row.angle}-${idx}`}
+                            className="border-b border-slate-800/80"
+                          >
+                            <td className="py-1.5 pr-2 text-slate-500 text-xs">
+                              {idx + 1}
+                            </td>
+                            {(
+                              [
+                                ["angle", row.angle],
+                                ["l12", row.l12],
+                                ["l23", row.l23],
+                                ["l31", row.l31]
+                              ] as const
+                            ).map(([key, val]) => (
+                              <td key={key} className="py-1.5 pr-2">
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={val}
+                                  onChange={(e) =>
+                                    updateRicRow(idx, key, e.target.value)
+                                  }
+                                  className="w-full min-w-[4.5rem] bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-sm text-white focus:border-purple-500 outline-none font-mono"
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Max Inductance Variation
+                  </p>
+                  <p className="text-2xl font-bold text-purple-400 font-mono">
+                    {hasRicData
+                      ? `${ricResult!.maxVariation.toFixed(2)}%`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasRicData
+                      ? `L12 ${ricResult!.variationL12.toFixed(2)}% · L23 ${ricResult!.variationL23.toFixed(2)}% · L31 ${ricResult!.variationL31.toFixed(2)}%`
+                      : "Awaiting Data"}
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Eccentricity Index
+                  </p>
+                  <p className="text-2xl font-bold text-purple-400 font-mono">
+                    {hasRicData
+                      ? `${ricResult!.eccentricityIndex.toFixed(2)}%`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Mean phase peak-to-peak variation
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Peak Variance
+                  </p>
+                  <p className="text-2xl font-bold text-purple-400 font-mono">
+                    {hasRicData
+                      ? `${ricResult!.peakVariance.toFixed(2)}`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasRicData
+                      ? ricResult!.peakVarianceErratic
+                        ? "Erratic signature"
+                        : "Stable signature"
+                      : "Awaiting Data"}
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Baseline Degradation
+                  </p>
+                  <p className="text-2xl font-bold text-purple-400 font-mono">
+                    {hasRicData && ricResult!.degradationPercent != null
+                      ? `${ricResult!.degradationPercent.toFixed(2)}%`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasRicData && ricResult!.degradationPercent != null
+                      ? ricResult!.degradationFlagged
+                        ? "Flagged · shift > 2%"
+                        : "Within 2% band"
+                      : "Save baseline to compare"}
+                  </p>
+                </div>
+              </div>
+
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Diagnostic Fault Isolation
+                </p>
+                <div className="flex flex-wrap items-start gap-3">
+                  <span
+                    className={`inline-flex items-center px-2.5 py-1 rounded-md border text-xs font-bold tracking-wide ${
+                      hasRicData
+                        ? mcaFaultBadgeClass(ricResult!.severity)
+                        : "bg-slate-800/80 border-slate-700 text-slate-400"
+                    }`}
+                  >
+                    {hasRicData ? ricResult!.fault : "Awaiting Data"}
+                  </span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 pt-1">
+                    {hasRicData ? ricResult!.severity : "---"}
+                  </span>
+                </div>
+                <p className="text-sm text-slate-300 mt-3 leading-relaxed">
+                  <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mr-2">
+                    Recommended action
+                  </span>
+                  {hasRicData
+                    ? ricResult!.recommendation
+                    : "Upload PDF or paste RIC clipboard data (Angle, L12, L23, L31)"}
+                </p>
+              </div>
+
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Linear RIC Trace — Inductance vs Rotor Angle
+                </p>
+                <div className="h-72 relative">
+                  {hasRicData ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={ricLinearChartData}
+                        margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis
+                          dataKey="angle"
+                          tick={{ fill: "#94a3b8", fontSize: 11 }}
+                          unit="°"
+                        />
+                        <YAxis
+                          tick={{ fill: "#c084fc", fontSize: 11 }}
+                          unit=" mH"
+                          domain={["auto", "auto"]}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#0f172a",
+                            border: "1px solid #334155",
+                            borderRadius: 8
+                          }}
+                        />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="L12"
+                          name="L12 (mH)"
+                          stroke="#c084fc"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="L23"
+                          name="L23 (mH)"
+                          stroke="#a78bfa"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="L31"
+                          name="L31 (mH)"
+                          stroke="#818cf8"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        {ricCompareBaseline && ricBaselineData.length > 0 && (
+                          <>
+                            <Line
+                              type="monotone"
+                              dataKey="BaseL12"
+                              name="Baseline L12"
+                              stroke="#c084fc"
+                              strokeWidth={1.5}
+                              strokeDasharray="6 4"
+                              dot={false}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="BaseL23"
+                              name="Baseline L23"
+                              stroke="#a78bfa"
+                              strokeWidth={1.5}
+                              strokeDasharray="6 4"
+                              dot={false}
+                            />
+                            <Line
+                              type="monotone"
+                              dataKey="BaseL31"
+                              name="Baseline L31"
+                              stroke="#818cf8"
+                              strokeWidth={1.5}
+                              strokeDasharray="6 4"
+                              dot={false}
+                            />
+                          </>
+                        )}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-6 border border-dashed border-purple-500/20 rounded-lg bg-slate-950/40">
+                      <RotateCw className="h-6 w-6 text-purple-500/50 mb-2" />
+                      <p className="text-sm text-slate-400">
+                        Upload PDF or paste RIC values to view linear trace
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Polar Magnetic Map — L12 · L23 · L31
+                </p>
+                <div className="h-80 relative">
+                  {hasRicData ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RadarChart data={ricRadarChartData}>
+                        <PolarGrid stroke="#334155" />
+                        <PolarAngleAxis
+                          dataKey="angleLabel"
+                          tick={{ fill: "#94a3b8", fontSize: 10 }}
+                        />
+                        <PolarRadiusAxis
+                          tick={{ fill: "#64748b", fontSize: 10 }}
+                          stroke="#475569"
+                        />
+                        <Radar
+                          name="L12"
+                          dataKey="L12"
+                          stroke="#c084fc"
+                          fill="#c084fc"
+                          fillOpacity={0.25}
+                        />
+                        <Radar
+                          name="L23"
+                          dataKey="L23"
+                          stroke="#a78bfa"
+                          fill="#a78bfa"
+                          fillOpacity={0.2}
+                        />
+                        <Radar
+                          name="L31"
+                          dataKey="L31"
+                          stroke="#818cf8"
+                          fill="#818cf8"
+                          fillOpacity={0.15}
+                        />
+                        <Legend />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#0f172a",
+                            border: "1px solid #334155",
+                            borderRadius: 8
+                          }}
+                        />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-6 border border-dashed border-purple-500/20 rounded-lg bg-slate-950/40">
+                      <RotateCw className="h-6 w-6 text-purple-500/50 mb-2" />
+                      <p className="text-sm text-slate-400">
+                        Upload PDF or paste RIC values to view polar map
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : mcaMode === "surge" ? (
+            <>
+              <div className={`${CARD} mb-6 border border-emerald-500/20`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Surge Test Inputs
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Test Voltage (V)
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      placeholder="—"
+                      value={surgeTestVoltageV ?? ""}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        setSurgeTestVoltageV(
+                          e.target.value === "" || !Number.isFinite(n)
+                            ? null
+                            : n
+                        );
+                      }}
+                      className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none font-mono"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      Manual Area Difference (%)
+                    </span>
+                    <input
+                      type="number"
+                      step="any"
+                      placeholder="—"
+                      value={manualEar ?? ""}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        setManualEar(
+                          e.target.value === "" || !Number.isFinite(n)
+                            ? null
+                            : n
+                        );
+                      }}
+                      className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none font-mono"
+                    />
+                  </label>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    ref={surgeCsvInputRef}
+                    type="file"
+                    accept=".csv,text/csv,text/plain,.txt"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      void handleSurgeCsvFile(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => surgeCsvInputRef.current?.click()}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:border-emerald-400 cursor-pointer"
+                  >
+                    <Upload className="h-3.5 w-3.5" />
+                    Upload Surge CSV
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSurgePasteFromClipboard()}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:border-emerald-400 cursor-pointer"
+                  >
+                    <ClipboardPaste className="h-3.5 w-3.5" />
+                    Paste from Clipboard
+                  </button>
+                  {(surgeData.length > 0 ||
+                    manualEar != null ||
+                    surgeTestVoltageV != null) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSurgeData([]);
+                        setManualEar(null);
+                        setSurgeTestVoltageV(null);
+                        setSurgePasteError(null);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer"
+                    >
+                      Clear Surge Data
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-3">
+                  CSV / clipboard columns: Time, V12, V23, V31
+                  {surgeData.length > 0
+                    ? ` · ${surgeData.length} waveform samples loaded`
+                    : ""}
+                  {surgeTestVoltageV != null
+                    ? ` · Test @ ${surgeTestVoltageV} V`
+                    : ""}
+                </p>
+                {surgePasteError && (
+                  <p className="mt-2 text-xs text-amber-400">{surgePasteError}</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Max Error Area Ratio (EAR)
+                  </p>
+                  <p className="text-2xl font-bold text-emerald-400 font-mono">
+                    {hasSurgeData ? `${surgeResult!.maxEar.toFixed(2)}%` : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {hasSurgeData
+                      ? surgeCsvResult
+                        ? `V12-V23 ${surgeCsvResult.ear12_23.toFixed(2)}% · V23-V31 ${surgeCsvResult.ear23_31.toFixed(2)}% · V31-V12 ${surgeCsvResult.ear31_12.toFixed(2)}%`
+                        : "From manual area difference"
+                      : "Awaiting Data"}
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Surge Health Status
+                  </p>
+                  {hasSurgeData ? (
+                    <span
+                      className={`inline-flex items-center px-2.5 py-1 rounded-md border text-xs font-bold tracking-wide ${mcaFaultBadgeClass(surgeResult!.severity)}`}
+                    >
+                      {surgeResult!.fault}
+                    </span>
+                  ) : (
+                    <p className="text-2xl font-bold text-emerald-400 font-mono">
+                      ---
+                    </p>
+                  )}
+                  <p className="text-xs text-slate-500 mt-2">
+                    {hasSurgeData ? surgeResult!.severity : "Awaiting Data"}
+                  </p>
+                </div>
+              </div>
+
+              {hasSurgeData && (
+                <div className={`${CARD} mb-6`}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                    Diagnostic Fault Isolation
+                  </p>
+                  <div className="flex flex-wrap items-start gap-3">
+                    <span
+                      className={`inline-flex items-center px-2.5 py-1 rounded-md border text-xs font-bold tracking-wide ${mcaFaultBadgeClass(surgeResult!.severity)}`}
+                    >
+                      {surgeResult!.fault}
+                    </span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 pt-1">
+                      {surgeResult!.severity}
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-300 mt-3 leading-relaxed">
+                    <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mr-2">
+                      Recommended action
+                    </span>
+                    {surgeResult!.recommendation}
+                  </p>
+                </div>
+              )}
+
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Comparative Surge Waveforms — V12 · V23 · V31
+                </p>
+                <div className="h-80 relative">
+                  {surgeData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={surgeChartData}
+                        margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                        <XAxis
+                          dataKey="time"
+                          tick={{ fill: "#94a3b8", fontSize: 11 }}
+                          unit=" µs"
+                        />
+                        <YAxis
+                          tick={{ fill: "#34d399", fontSize: 11 }}
+                          unit=" V"
+                          domain={["auto", "auto"]}
+                        />
+                        <Tooltip
+                          contentStyle={{
+                            background: "#0f172a",
+                            border: "1px solid #334155",
+                            borderRadius: 8
+                          }}
+                        />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="V12"
+                          name="V12"
+                          stroke="#34d399"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="V23"
+                          name="V23"
+                          stroke="#22d3ee"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="V31"
+                          name="V31"
+                          stroke="#c084fc"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-center px-6 border border-dashed border-emerald-500/20 rounded-lg bg-slate-950/40">
+                      <Activity className="h-6 w-6 text-emerald-500/50 mb-2" />
+                      <p className="text-sm text-slate-400">
+                        Upload Surge CSV or paste Time / V12 / V23 / V31 to
+                        overlay waveforms
+                      </p>
+                      <p className="text-xs text-slate-600 mt-2 max-w-md">
+                        Overlapping waves form a solid healthy trace; separation
+                        reveals turn insulation asymmetry.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : !hasMcaData ? (
+            <TechEmptyState technology="MCA" />
+          ) : (
+            <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
+              <div
+                className={`w-12 h-12 rounded-xl border flex items-center justify-center mb-4 ${
+                  MCA_MODE_OPTIONS.find((m) => m.id === mcaMode)?.iconClass ||
+                  "border-slate-700 bg-slate-950 text-slate-500"
+                }`}
+              >
+                {(() => {
+                  const Icon =
+                    MCA_MODE_OPTIONS.find((m) => m.id === mcaMode)?.Icon || Activity;
+                  return <Icon className="h-5 w-5" />;
+                })()}
+              </div>
+              <p className="text-sm font-semibold text-slate-200">
+                {MCA_MODE_OPTIONS.find((m) => m.id === mcaMode)?.label} — Phase 1 pending
+              </p>
+              <p className="text-xs text-slate-500 mt-2 max-w-md">
+                All MCA modes are available — use the sub-tabs above.
+              </p>
+            </div>
           )}
         </>
       )}

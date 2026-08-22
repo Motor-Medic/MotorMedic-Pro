@@ -1,6 +1,6 @@
 {
-  "name": "MotorMedic Pro",
-  "description": "Professional condition monitoring and mechanical/electrical/hydraulic systems fault diagnosis tool.",
+  "name": "Spectra CM",
+  "description": "Spectra CM - Industrial Asset Reliability Platform",
   "requestFramePermissions": [
     "microphone"
   ],

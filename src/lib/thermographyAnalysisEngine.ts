@@ -132,7 +132,8 @@ export async function runThermographyAnalysis(
           faults: dataNormalized.fault_list.length,
           delta_t: dataNormalized.peaks.delta_t,
           severity_class: dataNormalized.detailed?.severity_class,
-          confidence: dataNormalized.detailed?.confidence_score
+          confidence: dataNormalized.detailed?.confidence_score,
+          radiometric: dataNormalized.detailed?.radiometric ?? null
         });
         return { success: true, data: dataNormalized };
       } catch (parseErr) {

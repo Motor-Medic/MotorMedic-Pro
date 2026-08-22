@@ -149,7 +149,7 @@ function BulkImportModalInner({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "MotorMedic_Pro_Asset_Template.xlsx";
+      a.download = "Spectra_CM_Asset_Template.xlsx";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

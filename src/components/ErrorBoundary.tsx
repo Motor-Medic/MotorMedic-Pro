@@ -22,7 +22,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("Uncaught error in MotorMedic Pro:", error, errorInfo);
+    console.error("Uncaught error in Spectra CM:", error, errorInfo);
   }
 
   private handleReset = () => {
@@ -42,7 +42,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
             <div className="space-y-2">
               <h1 className="text-xl font-bold font-display text-white">Something went wrong</h1>
               <p className="text-xs text-slate-400 leading-relaxed">
-                MotorMedic Pro encountered an unexpected execution error. Please try refreshing the application.
+                Spectra CM encountered an unexpected execution error. Please try refreshing the application.
               </p>
             </div>
 

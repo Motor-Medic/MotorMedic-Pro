@@ -505,7 +505,7 @@ export default function WorkOrderGenerator({
 
                   <p className="text-[11px] text-slate-500 sm:max-w-xs">
                     {isCustom
-                      ? "Teach MotorMedic your work order layout from a screenshot."
+                      ? "Teach Spectra your work order layout from a screenshot."
                       : `Fields are labelled and exported to match ${activeCmmsLabel} conventions.`}
                   </p>
                 </div>

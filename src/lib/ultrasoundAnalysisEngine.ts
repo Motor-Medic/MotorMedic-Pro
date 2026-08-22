@@ -3,6 +3,7 @@
  * Import from Express / Node API routes only — not from React client code.
  *
  * PLACEHOLDER: returns mock UltrasoundResult until Master AI prompt + model call are wired.
+ * Leak mode: attaches calculateLeakImpact() economics onto peaks + financial_impact.
  *
  * WHERE TO INSERT THE MASTER ULTRASOUND AI PROMPT:
  *   1. Paste full prompt into `ULTRASOUND_MASTER_PROMPT` in `ultrasoundAnalysis.ts`
@@ -15,12 +16,24 @@
 import {
   ULTRASOUND_MASTER_PROMPT,
   buildUltrasoundUserPrompt,
+  crestFactorFromPeakRmsDb,
   normalizeUltrasoundResult,
   type AnalyzeUltrasoundOutcome,
   type AnalyzeUltrasoundRequest,
   type UltrasoundMetadata,
   type UltrasoundResult
 } from "./ultrasoundAnalysis";
+import { calculateLeakImpact } from "./ultrasound/leakCalculator";
+
+function optionalPositiveNumber(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function optionalNonNegNumber(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
 
 /**
  * Placeholder domain function — mock result matching UltrasoundResult.
@@ -40,12 +53,22 @@ export async function analyzeUltrasoundData(
   const mode = String(metadata.mode || "leak").toLowerCase();
   const peakFromMeta = Number(metadata.peakDbuV);
   const rmsFromMeta = Number(metadata.rmsDbuV);
+  const crestFromMeta = Number(metadata.crestFactor ?? metadata.crest_factor);
+  const baselineFromMeta = Number(metadata.baselineDb ?? metadata.baseline_dbmv);
+  // Defaults match live parser / cleaned PMP030 test row (Peak ≥ RMS)
   const peak =
-    Number.isFinite(peakFromMeta) && peakFromMeta > 0 ? peakFromMeta : 44;
+    Number.isFinite(peakFromMeta) && peakFromMeta > 0 ? peakFromMeta : 55;
   const rms =
-    Number.isFinite(rmsFromMeta) && rmsFromMeta > 0 ? rmsFromMeta : 38;
-  const baseline = 28;
+    Number.isFinite(rmsFromMeta) && rmsFromMeta > 0 ? rmsFromMeta : 39;
+  const baseline =
+    Number.isFinite(baselineFromMeta) && baselineFromMeta >= 0
+      ? baselineFromMeta
+      : 28;
   const delta = Math.round((peak - baseline) * 10) / 10;
+  const crest_factor =
+    Number.isFinite(crestFromMeta) && crestFromMeta > 0
+      ? Math.round(crestFromMeta * 100) / 100
+      : crestFactorFromPeakRmsDb(peak, rms) ?? undefined;
 
   const primaryByMode: Record<string, string> = {
     leak: "Air Leak",
@@ -55,6 +78,22 @@ export async function analyzeUltrasoundData(
   };
   const primary = primaryByMode[mode] || "Air Leak";
 
+  const isLeak = mode === "leak";
+  const leakImpact = isLeak
+    ? calculateLeakImpact({
+        peakDb: peak,
+        baselineDb: baseline,
+        systemPressure: optionalPositiveNumber(metadata.systemPressure),
+        electricityCost: optionalNonNegNumber(
+          metadata.electricityCost ?? metadata.costPerKwh
+        ),
+        operatingHours: optionalPositiveNumber(metadata.operatingHours),
+        compressorEfficiency: optionalPositiveNumber(
+          metadata.compressorEfficiency
+        )
+      })
+    : null;
+
   const mock: UltrasoundResult = {
     health_score: delta >= 20 ? 38 : delta >= 12 ? 55 : 72,
     primary_fault: primary,
@@ -63,7 +102,9 @@ export async function analyzeUltrasoundData(
         fault: primary,
         severity: delta >= 20 ? "HIGH" : delta >= 12 ? "MEDIUM" : "LOW",
         confidence: 78,
-        description: `Placeholder UE analysis (${mode}): peak ${peak} dBµV vs baseline ${baseline} (Δ ${delta} dB). Replace with Master AI prompt output.`
+        description: isLeak
+          ? `Placeholder UE leak analysis: peak ${peak} dBµV vs baseline ${baseline} (Δ ${delta} dB) · ~${leakImpact?.flowRateCfm} CFM · $${leakImpact?.annualCost}/yr.`
+          : `Placeholder UE analysis (${mode}): peak ${peak} dBµV vs baseline ${baseline} (Δ ${delta} dB). Replace with Master AI prompt output.`
       }
     ],
     peaks: {
@@ -71,19 +112,38 @@ export async function analyzeUltrasoundData(
       rms_dbmv: rms,
       baseline_dbmv: baseline,
       delta_db: delta,
-      mode
+      crest_factor,
+      mode,
+      ...(leakImpact
+        ? {
+            orifice_size: leakImpact.orificeSize,
+            estimated_cfm: leakImpact.flowRateCfm,
+            annual_kwh: leakImpact.annualKwh,
+            annual_cost: leakImpact.annualCost,
+            co2_emissions: leakImpact.co2Emissions
+          }
+        : {})
     },
     financial_impact: {
-      preventive_cost: mode === "leak" ? 450 : 1850,
-      failure_cost: mode === "leak" ? 9800 : 22000,
-      roi_percentage: mode === "leak" ? 2078 : 1089,
-      downtime_loss: 2500
+      preventive_cost: isLeak ? 450 : 1850,
+      failure_cost: isLeak
+        ? Math.max(9800, Math.round(leakImpact?.annualCost ?? 9800))
+        : 22000,
+      roi_percentage: isLeak ? 2078 : 1089,
+      downtime_loss: 2500,
+      ...(leakImpact ? { annual_cost: leakImpact.annualCost } : {})
     },
-    recommendations: [
-      "Placeholder: confirm source with UE probe sweep.",
-      "Trend peak/RMS dBµV on the next collection route.",
-      "Generate CMMS work order after Master AI prompt is wired."
-    ],
+    recommendations: isLeak
+      ? [
+          `Isolate and repair estimated ${leakImpact?.orificeSize}" orifice (~${leakImpact?.flowRateCfm} CFM).`,
+          `Projected annual waste: $${leakImpact?.annualCost} (${leakImpact?.annualKwh} kWh, ${leakImpact?.co2Emissions} t CO₂e).`,
+          "Re-scan after repair to confirm dBµV returns to baseline."
+        ]
+      : [
+          "Placeholder: confirm source with UE probe sweep.",
+          "Trend peak/RMS dBµV on the next collection route.",
+          "Generate CMMS work order after Master AI prompt is wired."
+        ],
     detailed: {
       mode,
       transducer: metadata.transducer ? String(metadata.transducer) : undefined,
@@ -91,7 +151,20 @@ export async function analyzeUltrasoundData(
       gain_db: Number(metadata.gainDb) || 30,
       confidence_score: 0.78,
       iso_29821_note:
-        "Placeholder engine — ISO 29821 severity mapping will come from Master AI prompt."
+        "Placeholder engine — ISO 29821 severity mapping will come from Master AI prompt.",
+      ...(leakImpact
+        ? {
+            analysis: {
+              leak_impact: {
+                orifice_size: leakImpact.orificeSize,
+                estimated_cfm: leakImpact.flowRateCfm,
+                annual_kwh: leakImpact.annualKwh,
+                annual_cost: leakImpact.annualCost,
+                co2_emissions: leakImpact.co2Emissions
+              }
+            }
+          }
+        : {})
     }
   };
 
@@ -113,7 +186,9 @@ export async function runUltrasoundAnalysis(
       primary: data.primary_fault,
       faults: data.fault_list.length,
       peak_dbmv: data.peaks.peak_dbmv,
-      mode: data.peaks.mode
+      mode: data.peaks.mode,
+      estimated_cfm: data.peaks.estimated_cfm,
+      annual_cost: data.peaks.annual_cost
     });
     return { success: true, data };
   } catch (err) {

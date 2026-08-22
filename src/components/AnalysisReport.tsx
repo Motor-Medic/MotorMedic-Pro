@@ -29,6 +29,8 @@ import {
   fetchAnalysisResults,
   type SavedAnalysisResult
 } from "../lib/analysisPersistence";
+import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
+import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -7084,7 +7086,7 @@ function OilAnalysisResults() {
           </p>
           <p>
             <span className="text-slate-500 uppercase tracking-wider font-bold mr-2">Lab</span>
-            MotorMedic Certified Lab
+            Spectra Certified Lab
           </p>
         </div>
       </div>
@@ -8108,6 +8110,21 @@ export default function AnalysisReport({
   const displayAssetLabel =
     loadedAssetLabel || `${reportAsset.name} - ${reportAsset.tag}`;
 
+  const reportVibrationRecord = useMemo(() => {
+    const candidates = [selectedAnalysis, ...loadedAnalyses].filter(
+      (row): row is SavedAnalysisResult => Boolean(row)
+    );
+    for (const row of candidates) {
+      const rec = extractVibrationRecordFromAnalysis(row);
+      if (rec?.spectral?.length) return rec;
+    }
+    for (const row of candidates) {
+      const rec = extractVibrationRecordFromAnalysis(row);
+      if (rec) return rec;
+    }
+    return null;
+  }, [selectedAnalysis, loadedAnalyses]);
+
   useEffect(() => {
     return () => {
       if (loadTimerRef.current != null) window.clearTimeout(loadTimerRef.current);
@@ -8798,6 +8815,7 @@ export default function AnalysisReport({
                     </div>
                   )}
                 </section>
+                <SpectralFftWorkspace record={reportVibrationRecord} />
             </div>
           )}
           {false && selectedTech !== "vibration" && activeTab === 1 && (

@@ -15,6 +15,21 @@ import type { VibrationAnalysisResult } from "./consensusEngine";
 /** Canonical Express + client path — keep in sync with server.ts */
 export const ANALYZE_ULTRASOUND_API_PATH = "/api/analyze-ultrasound";
 
+/**
+ * Linear crest factor from Peak/RMS already expressed in dB (or dBµV).
+ * CF = 10^((peakDb − rmsDb) / 20) ≡ Peak_lin / RMS_lin.
+ * Never divide dB values (peakDb / rmsDb).
+ */
+export function crestFactorFromPeakRmsDb(
+  peakDb: number,
+  rmsDb: number
+): number | null {
+  if (!Number.isFinite(peakDb) || !Number.isFinite(rmsDb)) return null;
+  const cf = Math.pow(10, (peakDb - rmsDb) / 20);
+  if (!Number.isFinite(cf) || cf <= 0) return null;
+  return Math.round(cf * 100) / 100;
+}
+
 export type UltrasoundFaultSeverity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 export interface UltrasoundFaultItem {
@@ -34,13 +49,42 @@ export interface UltrasoundResult {
     rms_dbmv: number;
     baseline_dbmv?: number;
     delta_db?: number;
+    /**
+     * Linear crest factor from dBµV: 10^((peak − rms) / 20).
+     * Never compute as peak_db / rms_db.
+     */
+    crest_factor?: number;
     mode?: string;
+    /** Leak mode — equivalent orifice diameter (inches). */
+    orifice_size?: number;
+    /** Leak mode — continuous flow loss (CFM). */
+    estimated_cfm?: number;
+    /** Leak mode — annual energy waste (kWh/year). */
+    annual_kwh?: number;
+    /** Leak mode — annual financial cost ($/year). */
+    annual_cost?: number;
+    /** Leak mode — CO₂e (metric tons/year). */
+    co2_emissions?: number;
+    /**
+     * Phase 2 AI stub — Phase Resolved Partial Discharge pattern
+     * as [phase_angle_deg, amplitude] pairs. Optional; ignored in Phase 1 UI.
+     */
+    prpd_data?: Array<[number, number]>;
+    /** Phase 2 AI stub — ambient context for PD interpretation. */
+    environmental_context?: {
+      temperature?: number;
+      humidity?: number;
+    };
+    /** Phase 2 AI stub — model confidence 0–1 or 0–100. */
+    confidence_score?: number;
   };
   financial_impact: {
     preventive_cost: number;
     failure_cost: number;
     roi_percentage: number;
     downtime_loss: number;
+    /** Leak mode — annual energy cost ($/year), mirrored from peaks. */
+    annual_cost?: number;
   };
   recommendations: string[];
   /** Optional rich payload (persisted in consensus_details). */
@@ -72,10 +116,20 @@ export interface UltrasoundMetadata {
   distanceUnit?: string;
   peakDbuV?: number | string;
   rmsDbuV?: number | string;
+  /** Crest Factor = 10^((Peak_dB − RMS_dB) / 20) (mechanical / bearing). */
+  crestFactor?: number | string;
   wavFileName?: string;
   photoFileName?: string;
   gasType?: string;
   systemPressure?: number | string;
+  /** Baseline dBµV for leak Δ calculation (default 28 in engine). */
+  baselineDb?: number | string;
+  /** Electricity cost $/kWh for leak annual cost. */
+  electricityCost?: number | string;
+  /** Operating hours per year for leak annualization. */
+  operatingHours?: number | string;
+  /** Compressor specific power: kW per 100 CFM (default 18). */
+  compressorEfficiency?: number | string;
   equipmentRpm?: number | string;
   voltageClass?: string;
   valveType?: string;
@@ -120,8 +174,8 @@ Return ONLY valid JSON matching the UltrasoundResult schema:
   "health_score": 0-100,
   "primary_fault": string,
   "fault_list": [{ "fault", "severity", "confidence", "description" }],
-  "peaks": { "peak_dbmv", "rms_dbmv", "baseline_dbmv?", "delta_db?", "mode?" },
-  "financial_impact": { "preventive_cost", "failure_cost", "roi_percentage", "downtime_loss" },
+  "peaks": { "peak_dbmv", "rms_dbmv", "baseline_dbmv?", "delta_db?", "crest_factor?", "mode?", "orifice_size?", "estimated_cfm?", "annual_kwh?", "annual_cost?", "co2_emissions?", "prpd_data?", "environmental_context?", "confidence_score?" },
+  "financial_impact": { "preventive_cost", "failure_cost", "roi_percentage", "downtime_loss", "annual_cost?" },
   "recommendations": string[]
 }
 `;
@@ -133,6 +187,12 @@ function clamp(n: number, min: number, max: number): number {
 function num(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function optionalFinite(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 function asText(value: unknown, fallback = ""): string {
@@ -188,6 +248,18 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
     peaksRaw.delta_db != null
       ? num(peaksRaw.delta_db, peak - baseline)
       : Math.round((peak - baseline) * 10) / 10;
+  const crestRaw =
+    peaksRaw.crest_factor ??
+    peaksRaw.crestFactor ??
+    obj.crest_factor ??
+    obj.crestFactor;
+  let crestFactor: number | undefined;
+  if (crestRaw != null && crestRaw !== "") {
+    const c = Number(crestRaw);
+    if (Number.isFinite(c) && c > 0) crestFactor = Math.round(c * 100) / 100;
+  } else {
+    crestFactor = crestFactorFromPeakRmsDb(peak, rms) ?? undefined;
+  }
 
   const preventive = num(
     finRaw.preventive_cost ?? finRaw.preventiveRepairCost,
@@ -253,6 +325,64 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
       ? (obj.detailed as UltrasoundDetailedAnalysis)
       : null;
 
+  const orificeSize = optionalFinite(
+    peaksRaw.orifice_size ?? peaksRaw.orificeSize ?? obj.orifice_size
+  );
+  const estimatedCfm = optionalFinite(
+    peaksRaw.estimated_cfm ?? peaksRaw.estimatedCfm ?? obj.estimated_cfm
+  );
+  const annualKwh = optionalFinite(
+    peaksRaw.annual_kwh ?? peaksRaw.annualKwh ?? obj.annual_kwh
+  );
+  const annualCostLeak = optionalFinite(
+    peaksRaw.annual_cost ??
+      peaksRaw.annualCost ??
+      finRaw.annual_cost ??
+      obj.annual_cost
+  );
+  const co2Emissions = optionalFinite(
+    peaksRaw.co2_emissions ?? peaksRaw.co2Emissions ?? obj.co2_emissions
+  );
+
+  const prpdRaw = peaksRaw.prpd_data ?? peaksRaw.prpdData ?? obj.prpd_data;
+  let prpdData: Array<[number, number]> | undefined;
+  if (Array.isArray(prpdRaw)) {
+    const pts: Array<[number, number]> = [];
+    for (const pt of prpdRaw) {
+      if (!Array.isArray(pt) || pt.length < 2) continue;
+      const a = Number(pt[0]);
+      const b = Number(pt[1]);
+      if (Number.isFinite(a) && Number.isFinite(b)) pts.push([a, b]);
+    }
+    if (pts.length > 0) prpdData = pts;
+  }
+
+  const envRaw =
+    peaksRaw.environmental_context ??
+    peaksRaw.environmentalContext ??
+    obj.environmental_context;
+  let environmentalContext:
+    | { temperature?: number; humidity?: number }
+    | undefined;
+  if (envRaw && typeof envRaw === "object") {
+    const e = envRaw as Record<string, unknown>;
+    const temperature = optionalFinite(e.temperature);
+    const humidity = optionalFinite(e.humidity);
+    if (temperature != null || humidity != null) {
+      environmentalContext = {
+        ...(temperature != null ? { temperature } : {}),
+        ...(humidity != null ? { humidity } : {})
+      };
+    }
+  }
+
+  const confidenceScore = optionalFinite(
+    peaksRaw.confidence_score ??
+      peaksRaw.confidenceScore ??
+      obj.confidence_score ??
+      (detailedRaw as UltrasoundDetailedAnalysis | null)?.confidence_score
+  );
+
   return {
     health_score: health,
     primary_fault: primary,
@@ -262,13 +392,27 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
       rms_dbmv: Math.round(rms * 10) / 10,
       baseline_dbmv: Math.round(baseline * 10) / 10,
       delta_db: delta,
-      mode: asText(peaksRaw.mode ?? obj.mode, "") || undefined
+      crest_factor: crestFactor,
+      mode: asText(peaksRaw.mode ?? obj.mode, "") || undefined,
+      ...(orificeSize != null ? { orifice_size: orificeSize } : {}),
+      ...(estimatedCfm != null ? { estimated_cfm: estimatedCfm } : {}),
+      ...(annualKwh != null ? { annual_kwh: annualKwh } : {}),
+      ...(annualCostLeak != null ? { annual_cost: annualCostLeak } : {}),
+      ...(co2Emissions != null ? { co2_emissions: co2Emissions } : {}),
+      ...(prpdData ? { prpd_data: prpdData } : {}),
+      ...(environmentalContext
+        ? { environmental_context: environmentalContext }
+        : {}),
+      ...(confidenceScore != null ? { confidence_score: confidenceScore } : {})
     },
     financial_impact: {
       preventive_cost: Math.round(preventive),
       failure_cost: Math.round(failure),
       roi_percentage: Math.round(roi),
-      downtime_loss: Math.round(downtime)
+      downtime_loss: Math.round(downtime),
+      ...(annualCostLeak != null
+        ? { annual_cost: Math.round(annualCostLeak * 100) / 100 }
+        : {})
     },
     recommendations:
       recommendations.length > 0
@@ -302,6 +446,7 @@ Gain dB: ${asText(metadata.gainDb, "30")}
 Distance: ${asText(metadata.distance, "—")} ${asText(metadata.distanceUnit, "")}
 Peak dBµV: ${asText(metadata.peakDbuV, "unknown")}
 RMS dBµV: ${asText(metadata.rmsDbuV, "unknown")}
+Crest Factor: ${asText(metadata.crestFactor, "unknown")}
 WAV: ${asText(metadata.wavFileName, "none")}
 Photo: ${asText(metadata.photoFileName, "none")}
 
@@ -451,7 +596,17 @@ export function ultrasoundPeaksForSave(result: UltrasoundResult): unknown[] {
       rms_dbmv: result.peaks.rms_dbmv,
       baseline_dbmv: result.peaks.baseline_dbmv ?? null,
       delta_db: result.peaks.delta_db ?? null,
-      mode: result.peaks.mode ?? null
+      crest_factor: result.peaks.crest_factor ?? null,
+      mode: result.peaks.mode ?? null,
+      orifice_size: result.peaks.orifice_size ?? null,
+      estimated_cfm: result.peaks.estimated_cfm ?? null,
+      annual_kwh: result.peaks.annual_kwh ?? null,
+      annual_cost: result.peaks.annual_cost ?? null,
+      co2_emissions: result.peaks.co2_emissions ?? null,
+      // Phase 2 AI stubs (optional — null-safe for legacy rows)
+      prpd_data: result.peaks.prpd_data ?? null,
+      environmental_context: result.peaks.environmental_context ?? null,
+      confidence_score: result.peaks.confidence_score ?? null
     }
   ];
 }

@@ -19,7 +19,10 @@ export interface TechEquipmentContext {
   route?: string;
   assetTag?: string;
   assetLabel?: string;
+  /** Top header "Select Component" value (e.g. "Pump DE", "Motor NDE"). */
   component?: string;
+  /** Specs-panel / asset-level type (e.g. "Pump", "Electric Motor", "Gearbox"). */
+  componentType?: string;
   voltage?: string;
   location?: string;
   hp?: number;
@@ -122,6 +125,7 @@ const ASSET_TYPE_OPTIONS = [
   { label: "Pump", value: "pump" },
   { label: "Bearing", value: "bearing" },
   { label: "Fan", value: "fan" },
+  { label: "Mechanical", value: "mechanical" },
   { label: "Boiler", value: "boiler" },
   { label: "Other", value: "other" }
 ] as const;
@@ -138,8 +142,49 @@ const MECHANICAL_ASSET_TYPES = new Set([
   "gearbox",
   "pump",
   "bearing",
-  "fan"
+  "fan",
+  "mechanical"
 ]);
+
+/**
+ * Map top-header Select Component / Component Type labels → Section 3 asset_type values.
+ * Prefer component names like "Pump DE" over asset-level "Electric Motor".
+ */
+export function inferIrAssetTypeFromLabel(raw?: string | null): string {
+  if (raw == null) return "";
+  const s = String(raw).trim().toLowerCase();
+  if (!s) return "";
+
+  if ((ASSET_TYPE_OPTIONS as readonly { value: string }[]).some((o) => o.value === s)) {
+    return s;
+  }
+  if (s === "mechanical") return "mechanical";
+
+  // Order: more specific mechanical tokens before generic "motor"
+  if (/\bpump\b/.test(s)) return "pump";
+  if (/\bgear(?:box)?\b|\bgb[-_]?\d/.test(s)) return "gearbox";
+  if (/\bfan\b|\bblower\b/.test(s)) return "fan";
+  if (/\bbearing\b/.test(s)) return "bearing";
+  if (/\bswitchgear\b|\bmcc\b/.test(s)) return "switchgear";
+  if (/\btransformer\b|\bxfmr\b/.test(s)) return "transformer";
+  if (/\bboiler\b|\brefract/.test(s)) return "boiler";
+  if (/\bmotor\b/.test(s)) return "motor";
+  if (/\bcompress/.test(s)) return "other";
+  if (s === "other") return "other";
+
+  return "";
+}
+
+function inferIrAssetTypeFromEquipment(
+  equipment?: TechEquipmentContext | null
+): string {
+  // Header component wins over asset-level componentType
+  return (
+    inferIrAssetTypeFromLabel(equipment?.component) ||
+    inferIrAssetTypeFromLabel(equipment?.componentType) ||
+    ""
+  );
+}
 
 function parseOptionalNumber(raw: string): number | null {
   const t = String(raw ?? "").trim();
@@ -339,6 +384,10 @@ export default function ThermographyInputAccordions({
   );
   const autoFillRequestId = useRef(0);
   const fieldSourcesRef = useRef<TelemetrySources>({});
+  /** Section 3 Asset Type manually edited — blocks LAST SCAN overwrite (header still wins). */
+  const assetTypeManualRef = useRef(false);
+  const equipmentRef = useRef(equipment);
+  equipmentRef.current = equipment;
   const settersRef = useRef({
     asset_type: setAssetType,
     phase_a_temp: setPhaseATemp,
@@ -355,6 +404,16 @@ export default function ThermographyInputAccordions({
   useEffect(() => {
     fieldSourcesRef.current = fieldSources;
   }, [fieldSources]);
+
+  /** Sync Section 3 assetType from top-header Select Component (and componentType fallback). */
+  useEffect(() => {
+    const inferred = inferIrAssetTypeFromEquipment(equipment);
+    if (!inferred) return;
+    // Header / component selection always wins over last-scan and clears manual lock
+    assetTypeManualRef.current = false;
+    setAssetType(inferred);
+    setFieldSources((prev) => ({ ...prev, asset_type: null }));
+  }, [equipment?.component, equipment?.componentType]);
 
   useEffect(() => {
     const onVis = () => setPageVisible(document.visibilityState === "visible");
@@ -404,7 +463,35 @@ export default function ThermographyInputAccordions({
     const liveOnly = mode === "live-refresh";
     const opts = { skipIfManual: liveOnly, liveOnly };
 
-    applyFieldFromContext("asset_type", f.asset_type, settersRef.current.asset_type, opts);
+    // asset_type: header component > manual Section 3 > last scan / defaults
+    const inferredAssetType = inferIrAssetTypeFromEquipment(equipmentRef.current);
+    if (liveOnly) {
+      if (
+        !assetTypeManualRef.current &&
+        fieldSourcesRef.current.asset_type !== "manual" &&
+        !inferredAssetType
+      ) {
+        applyFieldFromContext(
+          "asset_type",
+          f.asset_type,
+          settersRef.current.asset_type,
+          opts
+        );
+      }
+    } else if (assetTypeManualRef.current || fieldSourcesRef.current.asset_type === "manual") {
+      // Keep operator override — do not apply LAST SCAN asset_type
+    } else if (inferredAssetType) {
+      setAssetType(inferredAssetType);
+      setFieldSources((prev) => ({ ...prev, asset_type: null }));
+    } else {
+      applyFieldFromContext(
+        "asset_type",
+        f.asset_type,
+        settersRef.current.asset_type,
+        opts
+      );
+    }
+
     applyFieldFromContext("phase_a_temp", f.phase_a_temp, settersRef.current.phase_a_temp, opts);
     applyFieldFromContext("phase_b_temp", f.phase_b_temp, settersRef.current.phase_b_temp, opts);
     applyFieldFromContext("phase_c_temp", f.phase_c_temp, settersRef.current.phase_c_temp, opts);
@@ -1489,6 +1576,7 @@ export default function ThermographyInputAccordions({
               <select
                 value={assetType}
                 onChange={(e) => {
+                  assetTypeManualRef.current = true;
                   markManual("asset_type");
                   setAssetType(e.target.value);
                 }}
@@ -1504,7 +1592,8 @@ export default function ThermographyInputAccordions({
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
             </div>
             <p className={helperCls}>
-              Selects which telemetry groups appear below. Leave blank or choose Other to show both.
+              Synced from Select Component above. Manual changes override Last Scan pre-fill;
+              changing the header component updates this again.
             </p>
           </label>
         </div>

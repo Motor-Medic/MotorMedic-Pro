@@ -10,10 +10,36 @@ import Anthropic from "@anthropic-ai/sdk";
 import { generateMcMasterQuery } from "./src/lib/mcmaster";
 import { analyzeVibration } from "./src/lib/diagnosisEngine";
 import {
+  VIBRATION_VISION_PROMPT,
+  VIBRATION_VISION_PROMPT_SIMPLE,
+  VISION_MODEL_CONFIG
+} from "./src/lib/vibration/visionModelConfig";
+import {
+  OPENROUTER_API_BASE,
+  OPENROUTER_VISION_MODELS,
+  isLmStudioDevMode,
+  openRouterRefererHeaders
+} from "./src/lib/openRouterModels";
+import {
   ANALYZE_VIBRATION_API_ALIAS,
-  ANALYZE_VIBRATION_API_PATH,
-  runConsensusVibrationAnalysis
+  ANALYZE_VIBRATION_API_PATH
+  // Temporary: multi-agent consensus disabled for UI development
+  // runConsensusVibrationAnalysis
 } from "./src/lib/consensusEngine";
+import { runSingleModelVibrationAnalysis } from "./src/lib/singleModelVibrationAnalysis";
+import {
+  logPayloadSize,
+  logPipelineFail,
+  logPipelineSend,
+  logPipelineStart,
+  logPipelineSuccess,
+  pipelineErrorFields
+} from "./src/lib/pipelineTrace";
+import {
+  buildAnalyzeVibrationErrorBody,
+  buildAnalyzeVibrationSuccessBody,
+  sendExpressJson
+} from "./src/lib/safeApiJson";
 import { DETECT_SPECTRUM_REGIONS_API_PATH } from "./src/lib/spectrumChartRegions";
 import { detectSpectrumChartRegionsWithOpenAI } from "./src/lib/detectSpectrumRegions";
 import { ANALYZE_THERMOGRAPHY_API_PATH } from "./src/lib/thermographyAnalysis";
@@ -55,6 +81,14 @@ if (dbUrl) {
   console.warn("⚠️ DATABASE_URL is not configured. Database storage will be bypassed.");
 }
 
+process.on("unhandledRejection", (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  console.error("❌ [PIPELINE] Unhandled promise rejection:", pipelineErrorFields(err));
+});
+process.on("uncaughtException", (err) => {
+  console.error("❌ [PIPELINE] Uncaught exception (server still running):", pipelineErrorFields(err));
+});
+
 // Initialize Express
 const app = express();
 const PORT = 3000;
@@ -75,15 +109,56 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
  * Pipeline: Gemini vision → DeepSeek/OpenRouter + Groq/OpenAI analysts → referee.
  * Domain failures return HTTP 422/503 with structured error payloads (never mocks).
  */
+/**
+ * Express 4 does not catch async rejections — wrap handlers so errors always become JSON.
+ */
+function asyncJsonHandler(
+  fn: (req: express.Request, res: express.Response) => Promise<void>
+) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    Promise.resolve(fn(req, res)).catch((err) => {
+      if (res.headersSent) {
+        console.error("[API] Async handler error after headers sent:", err);
+        return next(err);
+      }
+      logPipelineFail("analyze-vibration:async", performance.now(), err);
+      console.error("API Route Error:", err);
+      sendExpressJson(
+        res,
+        buildAnalyzeVibrationErrorBody(err, {
+          errorType: "GATEWAY_TIMEOUT",
+          title: "Consensus Diagnostic Error",
+          httpStatus: 500
+        }),
+        500
+      );
+    });
+  };
+}
+
 async function handleAnalyzeVibrationExpress(
   req: express.Request,
   res: express.Response
 ) {
+  req.setTimeout(60_000);
+  res.setTimeout(60_000);
+  const startTime = logPipelineStart("analyze-vibration", {
+    contentLength: req.headers["content-length"] || null,
+    socketTimeoutMs: req.socket?.timeout || null
+  });
   try {
     const body = req.body || {};
+    const imageBase64 =
+      typeof body.imageBase64 === "string" ? body.imageBase64 : "";
+    logPayloadSize("analyze-vibration", imageBase64);
     console.log("[analyze-vibration] Payload keys:", Object.keys(body));
 
-    const outcome = await runConsensusVibrationAnalysis(body);
+    logPipelineSend("analyze-vibration", {
+      mode: body.mode || "full",
+      hasImage: Boolean(imageBase64)
+    });
+    // OLD: const outcome = await runConsensusVibrationAnalysis(body);
+    const outcome = await runSingleModelVibrationAnalysis(body);
 
     if (!outcome || outcome.success !== true) {
       const errPayload = outcome?.success === false
@@ -98,6 +173,12 @@ async function handleAnalyzeVibrationExpress(
           };
 
       const status = errPayload.httpStatus || 503;
+      logPipelineFail(
+        "analyze-vibration",
+        startTime,
+        new Error(errPayload.detail || errPayload.message),
+        { status, statusText: errPayload.errorType }
+      );
       console.error("[analyze-vibration] Domain error:", {
         status,
         errorType: errPayload.errorType,
@@ -105,16 +186,28 @@ async function handleAnalyzeVibrationExpress(
         detail: errPayload.detail
       });
 
-      return res.status(status).json({
-        success: false,
-        errorType: errPayload.errorType,
-        title: errPayload.title,
-        message: errPayload.message,
-        error: errPayload.message,
-        ...(errPayload.detail ? { detail: errPayload.detail } : {})
-      });
+      sendExpressJson(
+        res,
+        {
+          success: false,
+          errorType: errPayload.errorType,
+          title: errPayload.title,
+          message: errPayload.message,
+          error: errPayload.message,
+          broadband: { velocity: 0 },
+          spectral: [],
+          metadata: { processedAt: new Date().toISOString() },
+          ...(errPayload.detail ? { detail: errPayload.detail } : {})
+        },
+        status
+      );
+      return;
     }
 
+    logPipelineSuccess("analyze-vibration", startTime, {
+      severity: outcome.data?.severity,
+      health: outcome.data?.overallHealthScore
+    });
     console.log("[analyze-vibration] Analysis complete:", {
       severity: outcome.data?.severity,
       health: outcome.data?.overallHealthScore,
@@ -122,28 +215,30 @@ async function handleAnalyzeVibrationExpress(
       confidence: outcome.data?.primaryFault?.confidencePercent
     });
 
-    return res.json({
-      success: true,
-      ...outcome.data,
-      analysisSource: "consensus"
-    });
-  } catch (error: any) {
-    console.error("[analyze-vibration] Unhandled Express error:", error);
-    return res.status(503).json({
-      success: false,
-      errorType: "GATEWAY_TIMEOUT",
-      title: "Consensus Diagnostic Error",
-      message:
-        "An AI provider timed out during multi-agent synthesis. Please retry analysis.",
-      error:
-        "An AI provider timed out during multi-agent synthesis. Please retry analysis.",
-      detail: error?.message || "Unhandled consensus engine exception."
-    });
+    sendExpressJson(
+      res,
+      buildAnalyzeVibrationSuccessBody(
+        (outcome.data || {}) as unknown as Record<string, unknown>
+      ),
+      200
+    );
+  } catch (error: unknown) {
+    logPipelineFail("analyze-vibration", startTime, error);
+    console.error("API Route Error:", error);
+    sendExpressJson(
+      res,
+      buildAnalyzeVibrationErrorBody(error, {
+        errorType: "GATEWAY_TIMEOUT",
+        title: "Consensus Diagnostic Error",
+        httpStatus: 500
+      }),
+      500
+    );
   }
 }
 
-app.post(ANALYZE_VIBRATION_API_PATH, handleAnalyzeVibrationExpress);
-app.post(ANALYZE_VIBRATION_API_ALIAS, handleAnalyzeVibrationExpress);
+app.post(ANALYZE_VIBRATION_API_PATH, asyncJsonHandler(handleAnalyzeVibrationExpress));
+app.post(ANALYZE_VIBRATION_API_ALIAS, asyncJsonHandler(handleAnalyzeVibrationExpress));
 app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
   res.json({
     ok: true,
@@ -156,6 +251,206 @@ app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
 });
 
 /**
+ * POST /api/extract-vibration-image
+ * Production: OpenRouter GPT-4o vision for FFT spectrum extraction.
+ * Dev-only: set USE_LM_STUDIO=true + LM_STUDIO_ENDPOINT for local testing.
+ */
+app.post("/api/extract-vibration-image", async (req, res) => {
+  req.setTimeout(60_000);
+  res.setTimeout(60_000);
+  const startTime = logPipelineStart("extract-vibration-image", {
+    contentLength: req.headers["content-length"] || null
+  });
+  try {
+    const body = req.body || {};
+    const imageBase64 = body.imageBase64 || body.fileData;
+    const fileName =
+      typeof body.fileName === "string" ? body.fileName : "vibration-chart.png";
+    if (!imageBase64 || typeof imageBase64 !== "string") {
+      return res.status(400).json({
+        error: "imageBase64 is required.",
+        message: "Upload a vibration spectrum image (PNG/JPG/WebP)."
+      });
+    }
+    logPayloadSize("extract-vibration-image", imageBase64);
+
+    const mode = body.mode === "simple" ? "simple" : "full";
+    const maxTokens =
+      typeof body.maxTokens === "number"
+        ? body.maxTokens
+        : mode === "simple"
+          ? VISION_MODEL_CONFIG.maxTokensSimple
+          : VISION_MODEL_CONFIG.maxTokens;
+
+    const prompt =
+      (typeof body.prompt === "string" && body.prompt.trim()) ||
+      (mode === "simple"
+        ? VIBRATION_VISION_PROMPT_SIMPLE
+        : VIBRATION_VISION_PROMPT);
+
+    const useLmStudio = isLmStudioDevMode();
+    const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+
+    if (!useLmStudio && !openRouterKey) {
+      return res.status(503).json({
+        error: "OPENROUTER_API_KEY is not configured.",
+        message:
+          "Set OPENROUTER_API_KEY in .env for production vision extraction (openai/gpt-4o via OpenRouter)."
+      });
+    }
+
+    const model =
+      (typeof body.model === "string" && body.model) ||
+      (useLmStudio
+        ? process.env.LM_STUDIO_MODEL || VISION_MODEL_CONFIG.model
+        : VISION_MODEL_CONFIG.model);
+
+    const upstreamUrl = useLmStudio
+      ? process.env.LM_STUDIO_ENDPOINT!
+      : `${OPENROUTER_API_BASE}/chat/completions`;
+
+    const upstreamHeaders: Record<string, string> = {
+      "Content-Type": "application/json"
+    };
+    if (useLmStudio) {
+      /* LM Studio local dev — no auth header */
+    } else {
+      upstreamHeaders.Authorization = `Bearer ${openRouterKey}`;
+      Object.assign(upstreamHeaders, openRouterRefererHeaders());
+    }
+
+    console.log("🤖 [VIBRATION] Forwarding to vision provider:", {
+      provider: useLmStudio ? "lm-studio-dev" : "openrouter",
+      model,
+      fileName,
+      mode,
+      maxTokens,
+      promptChars: prompt.length
+    });
+
+    logPipelineSend("extract-vibration-image", {
+      provider: useLmStudio ? "lm-studio-dev" : "openrouter",
+      model,
+      mode
+    });
+
+    let upstreamJson: Record<string, unknown> = {};
+    let lastUpstreamError: unknown;
+
+    const modelsToTry = useLmStudio
+      ? [model]
+      : OPENROUTER_VISION_MODELS.filter(
+          (m, i, arr) => arr.indexOf(m) === i
+        );
+
+    for (const tryModel of modelsToTry) {
+      try {
+        const upstream = await fetch(upstreamUrl, {
+          method: "POST",
+          headers: upstreamHeaders,
+          signal: AbortSignal.timeout(60_000),
+          body: JSON.stringify({
+            model: tryModel,
+            max_tokens: maxTokens,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "image_url", image_url: { url: imageBase64 } },
+                  { type: "text", text: prompt }
+                ]
+              }
+            ]
+          })
+        });
+
+        upstreamJson = (await upstream.json().catch(() => ({}))) as Record<
+          string,
+          unknown
+        >;
+
+        if (!upstream.ok) {
+          lastUpstreamError = new Error(
+            (typeof upstreamJson.error === "string" && upstreamJson.error) ||
+              `Vision provider HTTP ${upstream.status} (${tryModel})`
+          );
+          console.warn(
+            `[extract-vibration-image] Model ${tryModel} failed:`,
+            upstream.status,
+            upstreamJson
+          );
+          continue;
+        }
+
+        break;
+      } catch (fetchErr) {
+        lastUpstreamError = fetchErr;
+        console.warn(`[extract-vibration-image] Model ${tryModel} fetch error:`, fetchErr);
+      }
+    }
+
+    const choices = upstreamJson.choices;
+    const first =
+      Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+        ? (choices[0] as { message?: { content?: string } })
+        : null;
+    const content = first?.message?.content;
+
+    if (!content || typeof content !== "string") {
+      logPipelineFail(
+        "extract-vibration-image",
+        startTime,
+        lastUpstreamError || new Error("Vision model returned no text content."),
+        { status: 422 }
+      );
+      return res.status(422).json({
+        error: "Vision model returned no text content.",
+        message:
+          "Could not extract vibration data from image. Try a clearer FFT screenshot.",
+        detail:
+          lastUpstreamError instanceof Error
+            ? lastUpstreamError.message
+            : undefined
+      });
+    }
+
+    logPipelineSuccess("extract-vibration-image", startTime, {
+      fileName,
+      contentLength: content.length,
+      provider: useLmStudio ? "lm-studio-dev" : "openrouter"
+    });
+    console.log("✅ [VIBRATION] Vision Model Response:", {
+      fileName,
+      contentPreview: content.slice(0, 800),
+      contentLength: content.length
+    });
+
+    return res.json({
+      ...upstreamJson,
+      sourceImage: fileName,
+      content
+    });
+  } catch (error: any) {
+    const timedOut =
+      error?.name === "TimeoutError" ||
+      error?.name === "AbortError" ||
+      /timeout|timed out|aborted/i.test(String(error?.message || ""));
+    logPipelineFail("extract-vibration-image", startTime, error, {
+      status: timedOut ? 504 : 503
+    });
+    console.error("[extract-vibration-image] Unhandled error:", error);
+    return res.status(timedOut ? 504 : 503).json({
+      error: timedOut
+        ? "AI analysis timed out. The spectrum image may be too complex. Please try a clearer image."
+        : error?.message || "Failed to extract vibration data from image.",
+      message: timedOut
+        ? "Vision extraction timed out after 60 seconds."
+        : "Vision extraction failed. Verify OPENROUTER_API_KEY and credits at https://openrouter.ai"
+    });
+  }
+});
+
+/**
  * GPT-4o Vision chart-panel localization for hybrid FFT/TWF/Envelope display.
  * Mounted early so it is not swallowed by the unmatched /api 404 interceptor.
  */
@@ -163,6 +458,7 @@ async function handleDetectSpectrumRegionsExpress(
   req: express.Request,
   res: express.Response
 ) {
+  const startTime = logPipelineStart("detect-spectrum-regions");
   try {
     const body = req.body || {};
     const imageBase64 = body.imageBase64 || body.fileData;
@@ -174,10 +470,13 @@ async function handleDetectSpectrumRegionsExpress(
         detectionConfidence: 0
       });
     }
-
+    logPayloadSize("detect-spectrum-regions", imageBase64);
+    logPipelineSend("detect-spectrum-regions");
     const detection = await detectSpectrumChartRegionsWithOpenAI(imageBase64);
+    logPipelineSuccess("detect-spectrum-regions", startTime);
     return res.json(detection);
   } catch (error: any) {
+    logPipelineFail("detect-spectrum-regions", startTime, error);
     console.error("[detect-spectrum-regions] Error:", error);
     return res.status(503).json({
       error: error?.message || "Failed to detect spectrum chart regions.",
@@ -485,6 +784,249 @@ function asJsonb(value: unknown, fallback: unknown) {
   return JSON.stringify(value);
 }
 
+/**
+ * Hybrid polymorphic payload for analysis_results.telemetry_data.
+ * Dedicated columns (phase_a_temp, measured_amps, …) stay populated for Tab 2 /
+ * Trend Analyzer; this JSONB holds environmental, AI vision, and future fields.
+ */
+function buildAnalysisTelemetryData(body: Record<string, unknown>, peaks: unknown[]): Record<string, unknown> {
+  const client =
+    body.telemetry_data && typeof body.telemetry_data === "object"
+      ? (body.telemetry_data as Record<string, unknown>)
+      : {};
+  const peak0 =
+    Array.isArray(peaks) && peaks[0] && typeof peaks[0] === "object"
+      ? (peaks[0] as Record<string, unknown>)
+      : {};
+  const envClient =
+    client.environmental && typeof client.environmental === "object"
+      ? (client.environmental as Record<string, unknown>)
+      : {};
+  const aiClient =
+    client.ai_vision && typeof client.ai_vision === "object"
+      ? (client.ai_vision as Record<string, unknown>)
+      : {};
+  const polyClient =
+    client.polymorphic && typeof client.polymorphic === "object"
+      ? (client.polymorphic as Record<string, unknown>)
+      : {};
+
+  const pick = (...vals: unknown[]) => {
+    for (const v of vals) {
+      if (v == null || v === "") continue;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string" && v.trim()) return v;
+      if (typeof v === "boolean") return v;
+      if (typeof v === "object") return v;
+    }
+    return null;
+  };
+
+  return {
+    schema_version: 1,
+    captured_at:
+      typeof client.captured_at === "string"
+        ? client.captured_at
+        : new Date().toISOString(),
+    analysis_type: String(body.analysis_type || client.analysis_type || "vibration"),
+    environmental: {
+      emissivity: pick(
+        envClient.emissivity,
+        body.emissivity,
+        peak0.emissivity,
+        peak0.emissivity_setting,
+        peak0.emissivitySetting,
+        aiClient.emissivity,
+        aiClient.emissivity_setting,
+        aiClient.emissivitySetting
+      ),
+      ambient_temp: pick(
+        envClient.ambient_temp,
+        envClient.ambientTemp,
+        body.ambient_temp,
+        body.ambientTemp,
+        peak0.ambient_reference_temp
+      ),
+      reflected_temp: pick(
+        envClient.reflected_temp,
+        envClient.reflectedTemp,
+        body.reflected_temp,
+        body.reflectedTemp,
+        peak0.reflected_apparent_temp
+      ),
+      distance: pick(envClient.distance, body.distance, peak0.distance),
+      distance_unit: pick(
+        envClient.distance_unit,
+        envClient.distanceUnit,
+        body.distance_unit,
+        body.distanceUnit
+      ),
+      humidity: pick(envClient.humidity, body.humidity),
+      wind_speed: pick(envClient.wind_speed, envClient.windSpeed, body.windSpeed),
+      solar_condition: pick(
+        envClient.solar_condition,
+        envClient.solarCondition,
+        body.solarCondition
+      ),
+      temp_unit: pick(envClient.temp_unit, envClient.tempUnit, body.tempUnit),
+      load_percent: pick(
+        envClient.load_percent,
+        envClient.loadPercent,
+        body.loadPercent,
+        peak0.load_percentage
+      ),
+      ...envClient
+    },
+    ai_vision: {
+      hotspot_temp: pick(aiClient.hotspot_temp, peak0.hotspot_temp),
+      reference_temp: pick(aiClient.reference_temp, peak0.reference_temp),
+      delta_t: pick(aiClient.delta_t, peak0.delta_t),
+      neta_class: pick(
+        aiClient.neta_class,
+        aiClient.severity_class,
+        peak0.severity_class,
+        peak0.neta_class
+      ),
+      severity_class: pick(
+        aiClient.severity_class,
+        peak0.severity_class,
+        aiClient.neta_class
+      ),
+      equipment_category: pick(
+        aiClient.equipment_category,
+        peak0.equipment_category
+      ),
+      emissivity: pick(
+        aiClient.emissivity,
+        aiClient.emissivity_setting,
+        aiClient.emissivitySetting,
+        peak0.emissivity,
+        peak0.emissivity_setting,
+        peak0.emissivitySetting
+      ),
+      isotherm_threshold: pick(
+        aiClient.isotherm_threshold,
+        aiClient.isothermThreshold,
+        peak0.isotherm_threshold,
+        peak0.isothermThreshold
+      ),
+      box_average_temp: pick(
+        aiClient.box_average_temp,
+        aiClient.boxAverageTemperature,
+        aiClient.roi_statistical_mean,
+        aiClient.roiStatisticalMean,
+        peak0.box_average_temp,
+        peak0.boxAverageTemperature,
+        peak0.box_average_temperature,
+        peak0.roi_statistical_mean,
+        peak0.roiStatisticalMean
+      ),
+      boxAverageTemperature: pick(
+        aiClient.boxAverageTemperature,
+        peak0.boxAverageTemperature,
+        peak0.box_average_temperature,
+        aiClient.box_average_temp,
+        peak0.box_average_temp
+      ),
+      roiStatisticalMean: pick(
+        aiClient.roiStatisticalMean,
+        peak0.roiStatisticalMean,
+        peak0.roi_statistical_mean,
+        aiClient.roi_statistical_mean,
+        peak0.box_average_temp
+      ),
+      scale_min: pick(
+        aiClient.scale_min,
+        aiClient.scaleMinBoundary,
+        peak0.scale_min,
+        peak0.scaleMinBoundary,
+        peak0.scale_min_boundary
+      ),
+      scale_max: pick(
+        aiClient.scale_max,
+        aiClient.scaleMaxBoundary,
+        peak0.scale_max,
+        peak0.scaleMaxBoundary,
+        peak0.scale_max_boundary
+      ),
+      scaleMinBoundary: pick(
+        aiClient.scaleMinBoundary,
+        peak0.scaleMinBoundary,
+        aiClient.scale_min,
+        peak0.scale_min
+      ),
+      scaleMaxBoundary: pick(
+        aiClient.scaleMaxBoundary,
+        peak0.scaleMaxBoundary,
+        aiClient.scale_max,
+        peak0.scale_max
+      ),
+      ...aiClient
+    },
+    // Mirror of dedicated columns (source of truth remains the FLOAT columns)
+    polymorphic: {
+      asset_type: pick(polyClient.asset_type, body.asset_type, peak0.asset_type),
+      phase_a_temp: pick(polyClient.phase_a_temp, body.phase_a_temp, peak0.phase_a_temp),
+      phase_b_temp: pick(polyClient.phase_b_temp, body.phase_b_temp, peak0.phase_b_temp),
+      phase_c_temp: pick(polyClient.phase_c_temp, body.phase_c_temp, peak0.phase_c_temp),
+      measured_amps: pick(
+        polyClient.measured_amps,
+        body.measured_amps,
+        peak0.measured_amps,
+        peak0.current_amps
+      ),
+      rated_amps: pick(polyClient.rated_amps, body.rated_amps, peak0.rated_amps),
+      de_bearing_temp: pick(
+        polyClient.de_bearing_temp,
+        body.de_bearing_temp,
+        peak0.de_bearing_temp
+      ),
+      ode_bearing_temp: pick(
+        polyClient.ode_bearing_temp,
+        body.ode_bearing_temp,
+        peak0.ode_bearing_temp
+      ),
+      refractory_skin_temp: pick(
+        polyClient.refractory_skin_temp,
+        body.refractory_skin_temp,
+        peak0.refractory_skin_temp
+      ),
+      max_allowable_limit: pick(
+        polyClient.max_allowable_limit,
+        body.max_allowable_limit,
+        peak0.max_allowable_limit
+      ),
+      i2r_normalized_delta_t: pick(
+        polyClient.i2r_normalized_delta_t,
+        body.i2r_normalized_delta_t,
+        peak0.i2r_normalized_delta_t
+      ),
+      ...polyClient
+    },
+    // Pass-through for any future / camera / SCADA extras from the client
+    extras:
+      client.extras && typeof client.extras === "object"
+        ? client.extras
+        : undefined,
+    file: client.file && typeof client.file === "object" ? client.file : undefined,
+    ...Object.fromEntries(
+      Object.entries(client).filter(
+        ([k]) =>
+          ![
+            "schema_version",
+            "captured_at",
+            "analysis_type",
+            "environmental",
+            "ai_vision",
+            "polymorphic",
+            "extras",
+            "file"
+          ].includes(k)
+      )
+    )
+  };
+}
+
 app.post("/api/save-analysis-result", async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
@@ -532,6 +1074,26 @@ app.post("/api/save-analysis-result", async (req, res) => {
     const odeBearingTemp = optionalNumeric(body.ode_bearing_temp);
     const refractorySkinTemp = optionalNumeric(body.refractory_skin_temp);
     let maxAllowableLimit = optionalNumeric(body.max_allowable_limit);
+    const waveformPeakToPeak = optionalNumeric(body.waveform_peak_to_peak);
+    const waveformCrestFactor = optionalNumeric(body.waveform_crest_factor);
+    const waveformImpactCount =
+      body.waveform_impact_count != null &&
+      Number.isFinite(Number(body.waveform_impact_count))
+        ? Math.round(Number(body.waveform_impact_count))
+        : null;
+    const waveformSymmetry =
+      body.waveform_symmetry != null && String(body.waveform_symmetry).trim()
+        ? String(body.waveform_symmetry).trim()
+        : null;
+    const waveformModulation =
+      body.waveform_modulation != null && String(body.waveform_modulation).trim()
+        ? String(body.waveform_modulation).trim()
+        : null;
+    const envelopePeakAmplitude = optionalNumeric(body.envelope_peak_amplitude);
+    const envelopeDominantFrequency = optionalNumeric(
+      body.envelope_dominant_frequency
+    );
+    const envelopeEnergy = optionalNumeric(body.envelope_energy);
 
     // Auto-enrich missing static specs from Equipment DB (`assets`) by asset_id
     // (tag_number preferred; also matches numeric id or name for compatibility)
@@ -585,6 +1147,25 @@ app.post("/api/save-analysis-result", async (req, res) => {
       i2rNormalized = calcI2rNormalizedDeltaT(measuredAmps, ratedAmps, deltaT);
     }
 
+    // Hybrid JSONB blob (does not replace dedicated FLOAT columns)
+    const telemetryData = buildAnalysisTelemetryData(
+      {
+        ...body,
+        asset_type: assetType,
+        phase_a_temp: phaseATemp,
+        phase_b_temp: phaseBTemp,
+        phase_c_temp: phaseCTemp,
+        measured_amps: measuredAmps,
+        rated_amps: ratedAmps,
+        de_bearing_temp: deBearingTemp,
+        ode_bearing_temp: odeBearingTemp,
+        refractory_skin_temp: refractorySkinTemp,
+        max_allowable_limit: maxAllowableLimit,
+        i2r_normalized_delta_t: i2rNormalized
+      },
+      peaks
+    );
+
     const insert = await pool.query(
       `INSERT INTO analysis_results (
          asset_id, component, health_score, primary_fault, fault_list, peaks,
@@ -592,10 +1173,17 @@ app.post("/api/save-analysis-result", async (req, res) => {
          consensus_details, analysis_type,
          asset_type, phase_a_temp, phase_b_temp, phase_c_temp,
          measured_amps, rated_amps, de_bearing_temp, ode_bearing_temp,
-         refractory_skin_temp, max_allowable_limit, i2r_normalized_delta_t
+         refractory_skin_temp, max_allowable_limit, i2r_normalized_delta_t,
+         telemetry_data,
+         waveform_peak_to_peak, waveform_crest_factor, waveform_impact_count,
+         waveform_symmetry, waveform_modulation,
+         envelope_peak_amplitude, envelope_dominant_frequency, envelope_energy
        ) VALUES (
          $1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9::jsonb,$10,$11,$12::jsonb,$13,
-         $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+         $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
+         $25::jsonb,
+         $26,$27,$28,$29,$30,
+         $31,$32,$33
        )
        RETURNING *`,
       [
@@ -622,7 +1210,16 @@ app.post("/api/save-analysis-result", async (req, res) => {
         odeBearingTemp,
         refractorySkinTemp,
         maxAllowableLimit,
-        i2rNormalized
+        i2rNormalized,
+        asJsonb(telemetryData, {}),
+        waveformPeakToPeak,
+        waveformCrestFactor,
+        waveformImpactCount,
+        waveformSymmetry,
+        waveformModulation,
+        envelopePeakAmplitude,
+        envelopeDominantFrequency,
+        envelopeEnergy
       ]
     );
 
@@ -2121,7 +2718,7 @@ async function sendResendEmail({
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        from: "MotorMedic Alerts <onboarding@resend.dev>",
+        from: "Spectra Alerts <onboarding@resend.dev>",
         to: [to],
         subject: subject,
         html: htmlContent
@@ -2167,7 +2764,7 @@ function buildEmailTemplate({
     <html>
     <head>
       <meta charset="utf-8">
-      <title>MotorMedic Pro Alert</title>
+      <title>Spectra CM Alert</title>
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 0; }
         .container { max-width: 600px; margin: 30px auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; }
@@ -2227,7 +2824,7 @@ function buildEmailTemplate({
           </div>
         </div>
         <div class="footer">
-          Generated automatically by MotorMedic Pro Enterprise Diagnostic System.<br>
+          Generated automatically by Spectra CM Enterprise Diagnostic System.<br>
           Based on ISO 10816 and ISO 18436 vibration standards.
         </div>
       </div>
@@ -2246,7 +2843,7 @@ SUBJECT: ⚠️ CRITICAL FAULT DETECTED: ${equipmentName} - STAGE ${stage.toUppe
 BODY:
 Dear Reliability Engineering Team,
 
-This is an automated Condition Monitoring Alert from MotorMedic Pro.
+This is an automated Condition Monitoring Alert from Spectra CM.
 The AI Diagnostic Consensus Engine has identified a high-risk anomaly.
 
 ASSET DETAILS:
@@ -4919,7 +5516,7 @@ app.post("/api/chatbot", async (req, res) => {
       model: "gemini-3.5-flash",
       contents: formattedContents,
       config: {
-        systemInstruction: "You are MotorMedic Pro Assistant, an expert in vibration analysis and condition monitoring. Answer questions about: bearing defects, unbalance, misalignment, motor issues, MotorMedic Pro features, pricing ($399-$1,299/mo), and reliability engineering best practices. Be professional and helpful."
+        systemInstruction: "You are Spectra CM Assistant, an expert in vibration analysis and condition monitoring. Answer questions about: bearing defects, unbalance, misalignment, motor issues, Spectra CM features, pricing ($399-$1,299/mo), and reliability engineering best practices. Be professional and helpful."
       }
     });
 
@@ -5129,7 +5726,7 @@ app.post("/api/send-alert", async (req, res) => {
 
     console.log(`📨 Direct alert email request: Asset=${assetName}, Fault=${fName}, Recipient=${targetEmail}`);
 
-    const description = `This notification was sent via the manual alert trigger on the MotorMedic Pro diagnosis control panel.`;
+    const description = `This notification was sent via the manual alert trigger on the Spectra CM diagnosis control panel.`;
     const recommendedAction = `Verify the asset immediately. Inspect vibration spectral patterns, bearing temperature, and ensure compliance with ISO guidelines.`;
 
     const htmlContent = buildEmailTemplate({
@@ -10906,6 +11503,86 @@ async function initializeDatabase() {
     await pool.query(`
       ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS i2r_normalized_delta_t DOUBLE PRECISION NULL;
     `);
+    // Hybrid polymorphic blob (environmental + AI vision + dynamic fields)
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS telemetry_data JSONB NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS waveform_peak_to_peak DECIMAL(10,4) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS waveform_crest_factor DECIMAL(5,2) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS waveform_impact_count INTEGER NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS waveform_symmetry VARCHAR(20) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS waveform_modulation VARCHAR(20) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS envelope_peak_amplitude DECIMAL(10,6) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS envelope_dominant_frequency DECIMAL(10,2) NULL;
+    `);
+    await pool.query(`
+      ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS envelope_energy DECIMAL(10,6) NULL;
+    `);
+    // Fix legacy PMP030 ultrasound Peak 38 / RMS 45 → Peak 55 / RMS 39 + crest
+    await pool.query(`
+      UPDATE analysis_results ar
+      SET peaks = (
+        SELECT COALESCE(
+          jsonb_agg(
+            CASE
+              WHEN LOWER(COALESCE(e->>'type', '')) = 'ultrasound'
+                AND (
+                  (
+                    NULLIF(e->>'peak_dbmv', '')::double precision = 38
+                    AND NULLIF(e->>'rms_dbmv', '')::double precision = 45
+                  )
+                  OR (
+                    NULLIF(e->>'peak_dbuv', '')::double precision = 38
+                    AND NULLIF(e->>'rms_dbuv', '')::double precision = 45
+                  )
+                )
+              THEN e || jsonb_build_object(
+                'peak_dbmv', 55,
+                'rms_dbmv', 39,
+                'crest_factor', round((power(10::numeric, ((55.0 - 39.0) / 20.0)))::numeric, 2)
+              )
+              ELSE e
+            END
+          ),
+          '[]'::jsonb
+        )
+        FROM jsonb_array_elements(COALESCE(ar.peaks, '[]'::jsonb)) AS e
+      )
+      WHERE (
+        COALESCE(ar.asset_id, '') ILIKE '%PMP030%'
+        OR COALESCE(ar.component, '') ILIKE '%PMP030%'
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(COALESCE(ar.peaks, '[]'::jsonb)) AS e
+        WHERE LOWER(COALESCE(e->>'type', '')) = 'ultrasound'
+          AND (
+            (
+              NULLIF(e->>'peak_dbmv', '')::double precision = 38
+              AND NULLIF(e->>'rms_dbmv', '')::double precision = 45
+            )
+            OR (
+              NULLIF(e->>'peak_dbuv', '')::double precision = 38
+              AND NULLIF(e->>'rms_dbuv', '')::double precision = 45
+            )
+          )
+      );
+    `).catch(() => {
+      /* ignore if peaks shape unexpected */
+    });
     // Backfill thermography rows previously saved without analysis_type
     await pool.query(`
       UPDATE analysis_results
@@ -11091,10 +11768,10 @@ app.use("/api", (req, res) => {
   console.warn(
     `[API 404] ${req.method} ${req.originalUrl} — no Express route matched. ` +
       `If you recently added this endpoint (e.g. ${ANALYZE_VIBRATION_API_PATH}), ` +
-      `restart the MotorMedic Pro server with: npm run dev`
+      `restart the Spectra CM server with: npm run dev`
   );
   res.status(404).json({
-    error: "API endpoint not found on the MotorMedic Pro backend.",
+    error: "API endpoint not found on the Spectra CM backend.",
     details: `No route matches ${req.method} ${req.path}`,
     hint: "Restart the server (npm run dev) after adding or changing API routes in server.ts."
   });
@@ -11121,8 +11798,8 @@ async function setupServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`MotorMedic Pro server running on http://localhost:${PORT}`);
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Spectra CM server running on http://localhost:${PORT}`);
     console.log(
       `Mounted: POST ${ANALYZE_VIBRATION_API_PATH} (alias ${ANALYZE_VIBRATION_API_ALIAS}) → consensus engine`
     );
@@ -11135,17 +11812,25 @@ async function setupServer() {
     console.log(
       `Mounted: POST ${DETECT_SPECTRUM_REGIONS_API_PATH} → GPT-4o chart region detection`
     );
+    const hasOpenRouter = !!(process.env.OPENROUTER_API_KEY);
     const hasGemini = !!(process.env.GEMINI_API_KEY);
     const hasOpenAI = !!(process.env.OPENAI_API_KEY);
     const hasAnthropic = !!(process.env.ANTHROPIC_API_KEY);
     const hasDeepSeek = !!(
       process.env.DEEPSEEK_API_KEY || process.env.OPENROUTER_API_KEY
     );
-    const hasGroq = !!(process.env.GROQ_API_KEY);
     console.log(
-      `AI Team Status: Gemini [${hasGemini ? "OK" : "MISSING"}], OpenAI [${hasOpenAI ? "OK" : "MISSING"}], Anthropic [${hasAnthropic ? "OK" : "MISSING"}], DeepSeek/OpenRouter [${hasDeepSeek ? "OK" : "MISSING"}], Groq [${hasGroq ? "OK" : "MISSING"}]`
+      `AI Team Status: OpenRouter [${hasOpenRouter ? "OK" : "MISSING"}], Gemini [${hasGemini ? "OK" : "MISSING"}], OpenAI [${hasOpenAI ? "OK" : "MISSING"}], Anthropic [${hasAnthropic ? "OK" : "MISSING"}], DeepSeek/OpenRouter analyst [${hasDeepSeek ? "OK" : "MISSING"}]`
     );
+    if (hasOpenRouter) {
+      console.log(
+        `OpenRouter models: vision=${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o"}, consensus=${process.env.OPENROUTER_CONSENSUS_MODEL || "qwen/qwen-2.5-vl-72b-instruct"}`
+      );
+    }
   });
+  // Align with Next.js maxDuration = 60 for AI synthesis / vision extraction.
+  httpServer.timeout = 60_000;
+  httpServer.headersTimeout = 61_000;
 }
 
 setupServer();

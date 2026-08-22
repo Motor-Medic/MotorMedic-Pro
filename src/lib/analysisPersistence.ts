@@ -51,6 +51,16 @@ export interface SavedAnalysisResult {
   refractory_skin_temp?: number | null;
   max_allowable_limit?: number | null;
   i2r_normalized_delta_t?: number | null;
+  /** Hybrid polymorphic JSONB (environmental + AI vision + extras). */
+  telemetry_data?: Record<string, unknown> | null;
+  waveform_peak_to_peak?: number | null;
+  waveform_crest_factor?: number | null;
+  waveform_impact_count?: number | null;
+  waveform_symmetry?: string | null;
+  waveform_modulation?: string | null;
+  envelope_peak_amplitude?: number | null;
+  envelope_dominant_frequency?: number | null;
+  envelope_energy?: number | null;
 }
 
 export interface SavedAlert {
@@ -104,6 +114,16 @@ export interface SaveAnalysisPayload {
   refractory_skin_temp?: number | null;
   max_allowable_limit?: number | null;
   i2r_normalized_delta_t?: number | null;
+  /** Hybrid polymorphic JSONB (environmental + AI vision + extras). */
+  telemetry_data?: Record<string, unknown> | null;
+  waveform_peak_to_peak?: number | null;
+  waveform_crest_factor?: number | null;
+  waveform_impact_count?: number | null;
+  waveform_symmetry?: string | null;
+  waveform_modulation?: string | null;
+  envelope_peak_amplitude?: number | null;
+  envelope_dominant_frequency?: number | null;
+  envelope_energy?: number | null;
 }
 
 export async function saveAnalysisResult(

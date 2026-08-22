@@ -21,7 +21,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
               Legal & Compliance Center
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              MotorMedic Pro™ — Industrial Condition Monitoring SaaS Platform
+              Spectra CM™ — Industrial Condition Monitoring SaaS Platform
             </p>
           </div>
           
@@ -65,7 +65,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                 </span>
                 <h2 className="text-2xl font-semibold text-slate-900 mt-4 mb-2">Terms of Service</h2>
                 <p className="text-slate-500 text-sm">
-                  Please read these Terms of Service carefully before accessing or using the MotorMedic Pro platform.
+                  Please read these Terms of Service carefully before accessing or using the Spectra CM platform.
                 </p>
               </div>
 
@@ -76,8 +76,8 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     1. Acceptance of Terms
                   </h3>
                   <p className="text-slate-600 leading-relaxed text-sm">
-                    By accessing, registering, subscribing, or using the MotorMedic Pro platform (the "Service"), 
-                    offered by MotorMedic Pro LLC ("Company", "we", "us", or "our"), you ("User", "Subscriber", 
+                    By accessing, registering, subscribing, or using the Spectra CM platform (the "Service"), 
+                    offered by Spectra CM LLC ("Company", "we", "us", or "our"), you ("User", "Subscriber", 
                     "Customer", "Company Registered Representative") agree to be bound by these Terms of Service 
                     ("Terms"). If you do not agree to all of the terms and conditions outlined herein, you are 
                     strictly prohibited from accessing or utilizing the Service. If you are entering into these 
@@ -92,7 +92,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     2. Description of Service
                   </h3>
                   <p className="text-slate-600 leading-relaxed text-sm">
-                    MotorMedic Pro is an advanced, multi-tenant, cloud-based industrial condition monitoring and 
+                    Spectra CM is an advanced, multi-tenant, cloud-based industrial condition monitoring and 
                     predictive maintenance software-as-a-service (SaaS) platform. The Service integrates 
                     automated machinery diagnostic tools, vibration signal analysis engines, infrared thermal 
                     profile mapping, motor current signature analysis (MCA), and historical trending algorithms. 
@@ -126,7 +126,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     4. Subscriptions, Payments & Billing Tiers
                   </h3>
                   <p className="text-slate-600 leading-relaxed text-sm mb-3">
-                    Access to MotorMedic Pro is structured on a recurring tier-based subscription basis. 
+                    Access to Spectra CM is structured on a recurring tier-based subscription basis. 
                     Subscriptions are billed monthly in advance and processed securely via our payment gateway 
                     partner (Stripe). Current standard subscription tiers include:
                   </p>
@@ -167,10 +167,10 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                   <p className="text-slate-600 leading-relaxed text-sm mb-3">
                     <strong>User Content Ownership:</strong> Customers retain absolute and full ownership of their raw equipment data, 
                     uploaded vibration files, infrared photos, operational descriptions, notes, and generated diagnostic reports. 
-                    MotorMedic Pro claims no ownership rights over your proprietary asset profiles or operational metrics.
+                    Spectra CM claims no ownership rights over your proprietary asset profiles or operational metrics.
                   </p>
                   <p className="text-slate-600 leading-relaxed text-sm">
-                    <strong>Service IP:</strong> MotorMedic Pro retains exclusive ownership over the software, user interface design, 
+                    <strong>Service IP:</strong> Spectra CM retains exclusive ownership over the software, user interface design, 
                     CSS styling, proprietary API architectures, prompt engineering blocks, multi-agent debate moderators, and 
                     proprietary diagnostic models.
                   </p>
@@ -184,7 +184,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                   <div className="space-y-3 text-amber-900 text-xs leading-relaxed">
                     <p>
                       <strong>Diagnostic Disclaimer:</strong> The predictive models and multi-agent debate loops 
-                      integrated within MotorMedic Pro provide engineering suggestions, baseline trends, and probable fault hypotheses. 
+                      integrated within Spectra CM provide engineering suggestions, baseline trends, and probable fault hypotheses. 
                       These suggestions **DO NOT** guarantee mechanical or operational accuracy. The Customer and its certified reliability 
                       personnel bear absolute responsibility for validating any diagnostic findings and supervising physical engineering decisions.
                     </p>
@@ -207,7 +207,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     7. Limitation of Liability
                   </h3>
                   <p className="text-slate-600 leading-relaxed text-sm">
-                    To the maximum extent permitted by applicable law, in no event shall MotorMedic Pro LLC or its developers 
+                    To the maximum extent permitted by applicable law, in no event shall Spectra CM LLC or its developers 
                     be liable for any indirect, incidental, special, exemplary, punitive, or consequential damages whatsoever, 
                     including but not limited to loss of profits, data corruption, plant downtime, business interruption, 
                     or equipment replacement costs, arising out of or in connection with the platform or these Terms, regardless of the 
@@ -224,7 +224,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     United States, without regard to conflict of law principles. Any legal actions must be filed in courts located in Louisiana.
                   </p>
                   <div className="bg-slate-50 p-4 rounded-xl space-y-2 text-slate-600 text-sm">
-                    <p className="font-semibold text-slate-800">MotorMedic Pro LLC</p>
+                    <p className="font-semibold text-slate-800">Spectra CM LLC</p>
                     <p className="flex items-center gap-2">
                       <Mail className="w-4 h-4 text-slate-400" />
                       support@motormedicpro.com
@@ -368,7 +368,7 @@ export default function LegalDocuments({ onClose, initialTab = "terms" }: LegalD
                     please contact us directly:
                   </p>
                   <div className="bg-slate-50 p-4 rounded-xl space-y-2 text-slate-600 text-sm">
-                    <p className="font-semibold text-slate-800">MotorMedic Pro Data Compliance Officer</p>
+                    <p className="font-semibold text-slate-800">Spectra CM Data Compliance Officer</p>
                     <p className="flex items-center gap-2">
                       <Mail className="w-4 h-4 text-slate-400" />
                       support@motormedicpro.com

@@ -1,51 +1,128 @@
 /**
  * POST /api/analyze-vibration
- * Next.js App Router handler — 3-stage multi-model consensus engine
- * (Gemini vision + DeepSeek/OpenRouter + Groq/OpenAI).
+ * Next.js App Router handler — temporary single-model GPT-4o analysis
+ * (multi-agent consensus bypassed to unblock UI development).
  *
- * Production MotorMedic Pro also serves this via Express in server.ts
+ * Production Spectra CM also serves this via Express in server.ts
  * (ANALYZE_VIBRATION_API_PATH). Both entry points call
- * runConsensusVibrationAnalysis so behavior stays aligned.
+ * runSingleModelVibrationAnalysis so behavior stays aligned.
  */
 
+import { ANALYZE_VIBRATION_API_PATH, type AnalyzeVibrationRequest } from "../../../lib/consensusEngine";
+// Temporary: multi-agent consensus disabled
+// import { runConsensusVibrationAnalysis } from "../../../lib/consensusEngine";
+import { runSingleModelVibrationAnalysis } from "../../../lib/singleModelVibrationAnalysis";
 import {
-  ANALYZE_VIBRATION_API_PATH,
-  runConsensusVibrationAnalysis,
-  type AnalyzeVibrationRequest
-} from "../../../lib/consensusEngine";
+  logPayloadSize,
+  logPipelineFail,
+  logPipelineSend,
+  logPipelineStart,
+  logPipelineSuccess
+} from "../../../lib/pipelineTrace";
+import {
+  buildAnalyzeVibrationSuccessBody,
+  jsonResponseBody
+} from "../../../lib/safeApiJson";
 
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const revalidate = 0;
 export { ANALYZE_VIBRATION_API_PATH };
 
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" }
-  });
-}
-
 export async function POST(req: Request) {
+  const startTime = logPipelineStart("analyze-vibration-next");
   let body: AnalyzeVibrationRequest;
   try {
     body = (await req.json()) as AnalyzeVibrationRequest;
-  } catch {
-    console.error(
-      `[${ANALYZE_VIBRATION_API_PATH}] Invalid JSON body. Restart server after .env/route changes if requests keep failing.`
+  } catch (error) {
+    logPipelineFail("analyze-vibration-next:json", startTime, error);
+    console.error("API Route Error:", error);
+    const message =
+      error instanceof Error ? error.message : "Invalid JSON request body.";
+    return jsonResponseBody(
+      {
+        success: false,
+        errorType: "INVALID_REQUEST",
+        message,
+        error: message,
+        detail: String(error)
+      },
+      400
     );
-    return jsonResponse({ error: "Invalid JSON request body." }, 400);
   }
 
-  const result = await runConsensusVibrationAnalysis(body);
+  logPayloadSize("analyze-vibration-next", body.imageBase64);
+  logPipelineSend("analyze-vibration-next");
 
-  if (result.success === false) {
-    console.error(
-      `[${ANALYZE_VIBRATION_API_PATH}]`,
-      result.errorType,
-      result.title,
-      result.detail || ""
+  try {
+    // OLD: const result = await runConsensusVibrationAnalysis(body);
+    const result = await runSingleModelVibrationAnalysis(body);
+
+    if (result.success === false) {
+      logPipelineFail(
+        "analyze-vibration-next",
+        startTime,
+        new Error(result.detail || result.message),
+        { status: result.httpStatus }
+      );
+      console.error(
+        `[${ANALYZE_VIBRATION_API_PATH}]`,
+        result.errorType,
+        result.title,
+        result.detail || ""
+      );
+      return jsonResponseBody(
+        {
+          success: false,
+          errorType: result.errorType,
+          title: result.title,
+          message: result.message,
+          error: result.message,
+          broadband: { velocity: 0 },
+          spectral: [],
+          metadata: { processedAt: new Date().toISOString() },
+          ...(result.detail ? { detail: result.detail } : {})
+        },
+        result.httpStatus
+      );
+    }
+
+    logPipelineSuccess("analyze-vibration-next", startTime);
+    return jsonResponseBody(
+      buildAnalyzeVibrationSuccessBody(
+        (result.data || {}) as unknown as Record<string, unknown>
+      ),
+      200
     );
-    return jsonResponse(result, result.httpStatus);
+  } catch (error: unknown) {
+    logPipelineFail("analyze-vibration-next", startTime, error);
+    console.error("Single-Model Analysis Failed:", error);
+    const err = error as {
+      status?: number;
+      message?: string;
+      detail?: string;
+    };
+    const status =
+      typeof err.status === "number" && err.status >= 400 ? err.status : 500;
+    const message =
+      err.message ||
+      (error instanceof Error ? error.message : "Analysis failed");
+    const detail =
+      err.detail ||
+      (error instanceof Error ? error.stack || error.message : String(error));
+    return jsonResponseBody(
+      {
+        success: false,
+        errorType: err.status || "UNKNOWN_ERROR",
+        message,
+        error: message,
+        detail,
+        broadband: { velocity: 0 },
+        spectral: [],
+        metadata: { processedAt: new Date().toISOString() }
+      },
+      status
+    );
   }
-
-  return jsonResponse(result);
 }

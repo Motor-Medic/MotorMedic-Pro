@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   Cog,
@@ -9,6 +9,7 @@ import {
   Zap
 } from "lucide-react";
 import type { UltrasoundMetadata } from "../lib/ultrasoundAnalysis";
+import { analyzeUltrasoundWav } from "../lib/ultrasound/audioAnalyzer";
 
 type UeAccordionSection = "mode" | "hardware" | "specific" | "ingestion";
 export type UltrasoundMode = "leak" | "mechanical" | "electrical" | "valve";
@@ -40,7 +41,7 @@ const TRANSDUCER_TYPES = [
 ] as const;
 
 const HARDWARE_BRAND_PROFILES = [
-  "MotorMedic Pro Sensor (Cloud Synced)",
+  "Spectra CM Sensor (Cloud Synced)",
   "UE Systems Ultraprobe Series",
   "SDT Ultrasound / CTRL Systems"
 ] as const;
@@ -198,9 +199,45 @@ export default function UltrasoundInputAccordions({
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [peakDbuV, setPeakDbuV] = useState("");
   const [rmsDbuV, setRmsDbuV] = useState("");
+  const [crestFactor, setCrestFactor] = useState("");
+  const [crestManual, setCrestManual] = useState(false);
+  const [wavAnalyzing, setWavAnalyzing] = useState(false);
+  const [wavMetricsNote, setWavMetricsNote] = useState<string | null>(null);
   const [physicalAssetTag, setPhysicalAssetTag] = useState("");
   const wavRef = useRef<HTMLInputElement>(null);
+  const telemetryWavRef = useRef<HTMLInputElement>(null);
   const photoRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * Crest Factor from Peak/RMS dB fields:
+   * CF = 10^((Peak_dB − RMS_dB) / 20) = Peak_linear / RMS_linear
+   * Never divide dB values (peak / rms).
+   */
+  const autoCrestFactor = useMemo(() => {
+    const peak = Number(peakDbuV);
+    const rms = Number(rmsDbuV);
+    if (!Number.isFinite(peak) || !Number.isFinite(rms)) return null;
+    const cf = Math.pow(10, (peak - rms) / 20);
+    return Number.isFinite(cf) && cf > 0 ? Math.round(cf * 100) / 100 : null;
+  }, [peakDbuV, rmsDbuV]);
+
+  /** Manual Peak/RMS must satisfy Peak ≥ RMS when both are entered. */
+  const peakRmsInvalid = useMemo(() => {
+    const peak = Number(peakDbuV);
+    const rms = Number(rmsDbuV);
+    if (peakDbuV === "" || rmsDbuV === "") return false;
+    if (!Number.isFinite(peak) || !Number.isFinite(rms)) return false;
+    return rms > peak;
+  }, [peakDbuV, rmsDbuV]);
+
+  useEffect(() => {
+    if (crestManual) return;
+    if (autoCrestFactor == null) {
+      setCrestFactor("");
+      return;
+    }
+    setCrestFactor(String(autoCrestFactor));
+  }, [autoCrestFactor, crestManual]);
 
   const toggleSection = (id: UeAccordionSection) => {
     setOpenSections((prev) =>
@@ -208,18 +245,51 @@ export default function UltrasoundInputAccordions({
     );
   };
 
-  const handleWav = (file: File) => {
-    if (!/\.wav$/i.test(file.name)) {
+  const applyWavMetrics = async (file: File) => {
+    if (!/\.wav$/i.test(file.name) && !/wav|wave/i.test(file.type || "")) {
       onToast?.("Please upload a .WAV audio file.", "warning");
       return;
     }
+
+    setWavAnalyzing(true);
     setWavName(file.name);
-    onToast?.(`Ultrasound audio loaded: ${file.name}`, "success");
+    setWavMetricsNote(null);
+
+    try {
+      const metrics = await analyzeUltrasoundWav(file);
+      setPeakDbuV(String(metrics.peakDb));
+      setRmsDbuV(String(metrics.rmsDb));
+      setCrestFactor(String(metrics.crestFactor));
+      setCrestManual(false);
+      setWavMetricsNote(
+        `Extracted · Peak ${metrics.peakDb} dB · RMS ${metrics.rmsDb} dB · CF ${metrics.crestFactor}`
+      );
+      // Ensure telemetry accordion is open so populated fields are visible
+      setOpenSections((prev) =>
+        prev.includes("ingestion") ? prev : [...prev, "ingestion"]
+      );
+      onToast?.("Acoustic metrics extracted successfully.", "success");
+    } catch (err) {
+      setWavMetricsNote(null);
+      onToast?.(
+        err instanceof Error ? err.message : "Failed to analyze WAV audio.",
+        "error"
+      );
+    } finally {
+      setWavAnalyzing(false);
+    }
+  };
+
+  const handleWav = (file: File) => {
+    void applyWavMetrics(file);
   };
 
   const clearWav = () => {
     setWavName(null);
+    setWavMetricsNote(null);
+    setWavAnalyzing(false);
     if (wavRef.current) wavRef.current.value = "";
+    if (telemetryWavRef.current) telemetryWavRef.current.value = "";
   };
 
   const handlePhoto = (file?: File | null) => {
@@ -271,6 +341,10 @@ export default function UltrasoundInputAccordions({
       distanceUnit,
       peakDbuV: peakDbuV || undefined,
       rmsDbuV: rmsDbuV || undefined,
+      crestFactor:
+        ultrasoundMode === "mechanical" && crestFactor
+          ? crestFactor
+          : undefined,
       wavFileName: wavName || undefined,
       photoFileName: photoName || undefined,
       gasType,
@@ -297,6 +371,7 @@ export default function UltrasoundInputAccordions({
     distanceUnit,
     peakDbuV,
     rmsDbuV,
+    crestFactor,
     wavName,
     photoName,
     gasType,
@@ -375,16 +450,19 @@ export default function UltrasoundInputAccordions({
                 const file = e.dataTransfer.files?.[0];
                 if (file) handleWav(file);
               }}
-              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+              disabled={wavAnalyzing}
+              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors disabled:opacity-60"
             >
               <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
               <p className="text-sm font-bold text-white">
-                {ultrasoundMode === "leak"
-                  ? "Drop .WAV audio here — Optional"
-                  : "Drop .WAV audio here"}
+                {wavAnalyzing
+                  ? "Analyzing acoustic metrics…"
+                  : ultrasoundMode === "leak"
+                    ? "Drag & Drop Audio File (.wav) — Optional"
+                    : "Drag & Drop Audio File (.wav)"}
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                Heterodyned audio (2–4 kHz) or raw high-sample rate (96/192 kHz)
+                Zero-touch Peak / RMS / Crest Factor extraction (client-side Web Audio)
               </p>
             </button>
           ) : (
@@ -397,20 +475,29 @@ export default function UltrasoundInputAccordions({
                   <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
                     <span className="truncate max-w-[180px] text-white">{wavName}</span>
                     <span className="text-slate-500">|</span>
-                    <span className="text-amber-300">Audio Ready</span>
+                    <span className="text-amber-300">
+                      {wavAnalyzing ? "Analyzing…" : "Audio Ready"}
+                    </span>
                   </div>
+                  {wavMetricsNote && (
+                    <p className="text-[11px] text-emerald-400/90 font-mono">
+                      {wavMetricsNote}
+                    </p>
+                  )}
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       onClick={clearWav}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
+                      disabled={wavAnalyzing}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors disabled:opacity-50"
                     >
                       ✕ Remove
                     </button>
                     <button
                       type="button"
                       onClick={() => wavRef.current?.click()}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                      disabled={wavAnalyzing}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors disabled:opacity-50"
                     >
                       Replace audio
                     </button>
@@ -1008,16 +1095,65 @@ export default function UltrasoundInputAccordions({
         open={openSections.includes("ingestion")}
         onToggle={toggleSection}
       >
+        <div className="space-y-3 mb-5">
+          <span className={fieldLabel}>Drag & Drop Audio File (.wav)</span>
+          <button
+            type="button"
+            onClick={() => telemetryWavRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              const file = e.dataTransfer.files?.[0];
+              if (file) handleWav(file);
+            }}
+            disabled={wavAnalyzing}
+            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-cyan-500/50 bg-slate-950/60 hover:bg-slate-950 px-5 py-6 text-center cursor-pointer transition-colors disabled:opacity-60"
+          >
+            <FileAudio className="h-7 w-7 text-cyan-400 mx-auto mb-2" />
+            <p className="text-sm font-bold text-white">
+              {wavAnalyzing
+                ? "Extracting Peak / RMS / Crest Factor…"
+                : "Drop .WAV here to auto-fill Peak, RMS & Crest Factor"}
+            </p>
+            <p className="text-xs text-slate-500 mt-1">
+              Client-side Web Audio analysis — no server upload required for metrics
+            </p>
+          </button>
+          <input
+            ref={telemetryWavRef}
+            type="file"
+            accept=".wav,audio/wav,audio/wave,audio/x-wav"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleWav(file);
+              e.target.value = "";
+            }}
+          />
+          {wavMetricsNote && (
+            <p className="text-[11px] text-emerald-400/90 font-mono">{wavMetricsNote}</p>
+          )}
+        </div>
+
         <div>
           <span className={fieldLabel}>Manual Telemetry</span>
-          <div className="grid grid-cols-2 gap-4">
+          <div
+            className={`grid gap-4 ${
+              ultrasoundMode === "mechanical"
+                ? "grid-cols-1 sm:grid-cols-3"
+                : "grid-cols-2"
+            }`}
+          >
             <label className="block min-w-0">
               <span className={fieldLabel}>Peak dBµV</span>
               <input
                 type="number"
                 step={0.1}
                 value={peakDbuV}
-                onChange={(e) => setPeakDbuV(e.target.value)}
+                onChange={(e) => {
+                  setCrestManual(false);
+                  setPeakDbuV(e.target.value);
+                }}
                 placeholder="42.5"
                 className={inputCls}
               />
@@ -1028,12 +1164,47 @@ export default function UltrasoundInputAccordions({
                 type="number"
                 step={0.1}
                 value={rmsDbuV}
-                onChange={(e) => setRmsDbuV(e.target.value)}
+                onChange={(e) => {
+                  setCrestManual(false);
+                  setRmsDbuV(e.target.value);
+                }}
                 placeholder="28.1"
                 className={inputCls}
               />
             </label>
+            {ultrasoundMode === "mechanical" && (
+              <label className="block min-w-0">
+                <span className={fieldLabel}>Crest Factor</span>
+                <input
+                  type="number"
+                  step={0.01}
+                  min={0}
+                  value={crestFactor}
+                  onChange={(e) => {
+                    setCrestManual(true);
+                    setCrestFactor(e.target.value);
+                  }}
+                  placeholder={
+                    autoCrestFactor != null ? String(autoCrestFactor) : "e.g. 1.51"
+                  }
+                  className={inputCls}
+                />
+                <p className={helperCls}>
+                  Auto: Peak dB − RMS dB → 10^((Peak − RMS) / 20)
+                  {autoCrestFactor != null ? ` (= ${autoCrestFactor})` : ""}. Edit to
+                  override.
+                </p>
+              </label>
+            )}
           </div>
+          {peakRmsInvalid && (
+            <p
+              className="mt-2 text-xs text-amber-400 leading-snug"
+              role="alert"
+            >
+              Peak dBµV must be greater than or equal to RMS dBµV.
+            </p>
+          )}
         </div>
 
         <label className="block min-w-0 mt-4">

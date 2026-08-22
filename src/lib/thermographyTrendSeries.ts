@@ -43,6 +43,8 @@ export type ThermoChartPoint = {
   thermalDissipationRate: number | null;
   frictionalSeverity: string | null;
   frictionalAnomaly: boolean;
+  /** Operator / EXIF unit from telemetry_data.environmental.temp_unit when saved. */
+  tempUnit: "°C" | "°F" | null;
 };
 
 function num(v: unknown): number | null {
@@ -55,6 +57,47 @@ function asText(v: unknown): string | null {
   if (v == null) return null;
   const s = String(v).trim();
   return s || null;
+}
+
+/** Normalize stored unit strings to °C / °F. */
+export function normalizeThermoTempUnit(raw: unknown): "°C" | "°F" | null {
+  if (raw == null || raw === "") return null;
+  const s = String(raw).trim().toUpperCase().replace(/\s+/g, "");
+  if (s === "°C" || s === "C" || s === "CELSIUS" || s === "DEGC" || s === "℃")
+    return "°C";
+  if (s === "°F" || s === "F" || s === "FAHRENHEIT" || s === "DEGF" || s === "℉")
+    return "°F";
+  return null;
+}
+
+/**
+ * Active chart temperature unit: latest scan with an explicit unit, else heuristic
+ * from displayed temps, else °F (Diagnose form default).
+ */
+export function resolveThermoTempUnit(
+  series: ThermoChartPoint[]
+): "°C" | "°F" {
+  for (let i = series.length - 1; i >= 0; i--) {
+    const u = series[i]?.tempUnit;
+    if (u === "°C" || u === "°F") return u;
+  }
+  // Heuristic when older rows lack temp_unit (same idea as ThermographyResultsDashboard)
+  for (let i = series.length - 1; i >= 0; i--) {
+    const p = series[i];
+    if (!p) continue;
+    const sample =
+      p.deBearing ??
+      p.odeBearing ??
+      p.refractorySkinTemp ??
+      p.skinTemp ??
+      p.ambientReferenceTemp ??
+      p.hotspot ??
+      p.reference;
+    if (sample != null && Number.isFinite(sample)) {
+      return sample > 0 && sample < 80 ? "°C" : "°F";
+    }
+  }
+  return "°F";
 }
 
 function formatDate(ts: string | null | undefined): string {
@@ -95,6 +138,39 @@ function thermoPeakObj(row: SavedAnalysisResult): Record<string, unknown> {
     if (raw && typeof raw === "object") return raw as Record<string, unknown>;
   }
   return {};
+}
+
+/** Hybrid JSONB blob from analysis_results.telemetry_data (object or JSON string). */
+function telemetryDataBlob(row: SavedAnalysisResult): {
+  root: Record<string, unknown>;
+  environmental: Record<string, unknown>;
+  aiVision: Record<string, unknown>;
+  polymorphic: Record<string, unknown>;
+} {
+  let root: Record<string, unknown> = {};
+  const raw = row.telemetry_data;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    root = raw as Record<string, unknown>;
+  } else if (typeof raw === "string" && raw.trim().startsWith("{")) {
+    try {
+      root = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      root = {};
+    }
+  }
+  const environmental =
+    root.environmental && typeof root.environmental === "object"
+      ? (root.environmental as Record<string, unknown>)
+      : {};
+  const aiVision =
+    root.ai_vision && typeof root.ai_vision === "object"
+      ? (root.ai_vision as Record<string, unknown>)
+      : {};
+  const polymorphic =
+    root.polymorphic && typeof root.polymorphic === "object"
+      ? (root.polymorphic as Record<string, unknown>)
+      : {};
+  return { root, environmental, aiVision, polymorphic };
 }
 
 /** Map NETA / NFPA class labels + API severity → 1–4 for step chart. */
@@ -163,6 +239,12 @@ export function extractThermoChartFields(
 ): ThermoChartPoint {
   const peak = thermoPeakObj(row);
   const blob = parseConsensusBlob(row);
+  const { environmental: env, aiVision, polymorphic: poly } =
+    telemetryDataBlob(row);
+  const aiRadiometric =
+    aiVision.radiometric && typeof aiVision.radiometric === "object"
+      ? (aiVision.radiometric as Record<string, unknown>)
+      : null;
   const extracted =
     blob.extracted_data && typeof blob.extracted_data === "object"
       ? (blob.extracted_data as Record<string, unknown>)
@@ -174,22 +256,27 @@ export function extractThermoChartFields(
 
   const severityLabel =
     asText(peak.severity_class) ||
+    deepText(aiVision, ["severity_class", "neta_class"]) ||
     deepText(analysis, ["severity_class", "severity_level"]) ||
     asText(row.severity) ||
     null;
   const severityClass =
     severityClassToLevel(peak.severity_class) ??
+    severityClassToLevel(aiVision.severity_class ?? aiVision.neta_class) ??
     severityClassToLevel(deepText(analysis, ["severity_class", "severity_level"])) ??
     severityClassToLevel(row.severity);
 
   const hotspot =
     num(peak.hotspot_temp) ??
+    num(aiVision.hotspot_temp) ??
     deepNum(extracted, ["hotspot_temperature", "hotspot_temp", "max_temp"]);
   const reference =
     num(peak.reference_temp) ??
+    num(aiVision.reference_temp) ??
     deepNum(extracted, ["reference_temperature", "reference_temp", "ambient_temp"]);
   const deltaT =
     num(peak.delta_t) ??
+    num(aiVision.delta_t) ??
     deepNum(analysis, ["delta_t.value", "delta_t"]) ??
     (hotspot != null && reference != null
       ? Math.round((hotspot - reference) * 10) / 10
@@ -204,22 +291,31 @@ export function extractThermoChartFields(
     severityClass,
     severityLabel,
     phaseA:
+      num(row.phase_a_temp) ??
+      num(poly.phase_a_temp) ??
       num(peak.phase_a_temp) ??
       deepNum(extracted, ["phase_a_temp", "phase_a", "phaseA"]),
     phaseB:
+      num(row.phase_b_temp) ??
+      num(poly.phase_b_temp) ??
       num(peak.phase_b_temp) ??
       deepNum(extracted, ["phase_b_temp", "phase_b", "phaseB"]),
     phaseC:
+      num(row.phase_c_temp) ??
+      num(poly.phase_c_temp) ??
       num(peak.phase_c_temp) ??
       deepNum(extracted, ["phase_c_temp", "phase_c", "phaseC"]),
     loadPercent:
       num(peak.load_percentage) ??
+      num(env.load_percent) ??
       deepNum(extracted, ["load_percentage", "load_percent", "load"]) ??
       deepNum(analysis, ["load_percentage", "load_percent"]),
     i2rDelta:
       num(peak.calculated_i2r_delta) ??
       deepNum(analysis, ["i2r_delta", "calculated_i2r_delta"]),
     i2rNormalizedDelta:
+      num(row.i2r_normalized_delta_t) ??
+      num(poly.i2r_normalized_delta_t) ??
       num(peak.i2r_normalized_delta_t) ??
       num(peak.normalized_delta_t) ??
       deepNum(analysis, [
@@ -228,36 +324,108 @@ export function extractThermoChartFields(
         "delta_t_at_full_load"
       ]),
     currentAmps:
+      num(row.measured_amps) ??
+      num(poly.measured_amps) ??
       num(peak.current_amps) ??
+      num(peak.measured_amps) ??
       deepNum(extracted, ["current_amps", "amperage", "amps"]),
     ratedAmps:
+      num(row.rated_amps) ??
+      num(poly.rated_amps) ??
       num(peak.rated_amps) ??
       deepNum(extracted, ["rated_amps", "fla", "full_load_amps"]),
     loadThreshold: 40,
+    // Tab 3 — hybrid JSONB environmental (form physics) + AI vision radiometric
     emissivity:
-      num(peak.emissivity) ??
+      num(env.emissivity) ??
+      num(aiRadiometric?.emissivitySetting) ??
+      num(peak.emissivitySetting) ??
       num(peak.emissivity_setting) ??
-      deepNum(extracted, ["emissivity", "emissivity_setting", "epsilon"]),
+      num(peak.emissivity) ??
+      num(aiVision.emissivitySetting) ??
+      num(aiVision.emissivity_setting) ??
+      num(aiVision.emissivity) ??
+      deepNum(extracted, [
+        "radiometric.emissivitySetting",
+        "emissivitySetting",
+        "emissivity",
+        "emissivity_setting",
+        "epsilon"
+      ]),
     scaleMin:
+      num(aiRadiometric?.scaleMinBoundary) ??
+      num(aiVision.scaleMinBoundary) ??
+      num(aiVision.scale_min) ??
+      num(peak.scaleMinBoundary) ??
+      num(peak.scale_min_boundary) ??
       num(peak.scale_min) ??
-      deepNum(extracted, ["scale_min", "palette_min", "temp_scale_min"]),
+      deepNum(extracted, [
+        "radiometric.scaleMinBoundary",
+        "scaleMinBoundary",
+        "scale_min_boundary",
+        "scale_min",
+        "palette_min",
+        "temperature_scale.min",
+        "temp_scale_min"
+      ]),
     scaleMax:
+      num(aiRadiometric?.scaleMaxBoundary) ??
+      num(aiVision.scaleMaxBoundary) ??
+      num(aiVision.scale_max) ??
+      num(peak.scaleMaxBoundary) ??
+      num(peak.scale_max_boundary) ??
       num(peak.scale_max) ??
-      deepNum(extracted, ["scale_max", "palette_max", "temp_scale_max"]),
+      deepNum(extracted, [
+        "radiometric.scaleMaxBoundary",
+        "scaleMaxBoundary",
+        "scale_max_boundary",
+        "scale_max",
+        "palette_max",
+        "temperature_scale.max",
+        "temp_scale_max"
+      ]),
     isothermThreshold:
+      num(aiRadiometric?.isothermThreshold) ??
+      num(aiVision.isothermThreshold) ??
+      num(aiVision.isotherm_threshold) ??
+      num(peak.isothermThreshold) ??
       num(peak.isotherm_threshold) ??
-      deepNum(extracted, ["isotherm_threshold", "isotherm"]) ??
-      deepNum(analysis, ["isotherm_threshold"]),
+      deepNum(extracted, [
+        "radiometric.isothermThreshold",
+        "isothermThreshold",
+        "isotherm_threshold",
+        "isotherm"
+      ]) ??
+      deepNum(analysis, ["isotherm_threshold", "isothermThreshold"]),
     boxAverage:
+      num(aiRadiometric?.boxAverageTemperature) ??
+      num(aiRadiometric?.roiStatisticalMean) ??
+      num(aiVision.boxAverageTemperature) ??
+      num(aiVision.box_average_temperature) ??
+      num(aiVision.box_average_temp) ??
+      num(aiVision.roiStatisticalMean) ??
+      num(aiVision.roi_statistical_mean) ??
+      num(peak.boxAverageTemperature) ??
+      num(peak.box_average_temperature) ??
       num(peak.box_average_temp) ??
       num(peak.box_avg_temp) ??
+      num(peak.roiStatisticalMean) ??
+      num(peak.roi_statistical_mean) ??
       deepNum(extracted, [
+        "radiometric.boxAverageTemperature",
+        "radiometric.roiStatisticalMean",
+        "boxAverageTemperature",
+        "roiStatisticalMean",
+        "box_average_temperature",
         "box_average_temp",
         "box_avg_temp",
         "box_avg",
-        "area_avg"
+        "area_avg",
+        "roi_statistical_mean"
       ]),
     reflectedApparentTemp:
+      num(env.reflected_temp) ??
+      num(env.reflectedTemp) ??
       num(peak.reflected_apparent_temp) ??
       deepNum(extracted, [
         "reflected_apparent_temp",
@@ -265,9 +433,13 @@ export function extractThermoChartFields(
         "reflectedApparentTemp"
       ]),
     deBearing:
+      num(row.de_bearing_temp) ??
+      num(poly.de_bearing_temp) ??
       num(peak.de_bearing_temp) ??
       deepNum(extracted, ["de_bearing_temp", "bearing_de", "de_temp"]),
     odeBearing:
+      num(row.ode_bearing_temp) ??
+      num(poly.ode_bearing_temp) ??
       num(peak.ode_bearing_temp) ??
       deepNum(extracted, [
         "ode_bearing_temp",
@@ -279,11 +451,15 @@ export function extractThermoChartFields(
       num(peak.skin_temp) ??
       deepNum(extracted, ["skin_temp", "housing_temp", "case_temp"]),
     refractorySkinTemp:
+      num(row.refractory_skin_temp) ??
+      num(poly.refractory_skin_temp) ??
       num(peak.refractory_skin_temp) ??
       deepNum(extracted, ["refractory_skin_temp", "lagging_temp", "shell_temp"]) ??
       num(peak.skin_temp) ??
       deepNum(extracted, ["skin_temp", "housing_temp"]),
     ambientReferenceTemp:
+      num(env.ambient_temp) ??
+      num(env.ambientTemp) ??
       num(peak.ambient_reference_temp) ??
       deepNum(extracted, [
         "ambient_reference_temp",
@@ -292,6 +468,8 @@ export function extractThermoChartFields(
       ]) ??
       num(peak.reference_temp),
     maxAllowable:
+      num(row.max_allowable_limit) ??
+      num(poly.max_allowable_limit) ??
       num(peak.max_allowable_limit) ??
       deepNum(analysis, ["max_allowable_limit", "alarm_limit", "limit_temp"]),
     thermalGradient:
@@ -322,7 +500,18 @@ export function extractThermoChartFields(
         /friction|bearing defect|lubrication|binding|misalignment/i.test(
           String(row.primary_fault || "")
         )
-    )
+    ),
+    tempUnit:
+      normalizeThermoTempUnit(env.temp_unit) ??
+      normalizeThermoTempUnit(env.tempUnit) ??
+      normalizeThermoTempUnit(peak.temp_unit) ??
+      normalizeThermoTempUnit(peak.tempUnit) ??
+      normalizeThermoTempUnit(
+        deepText(extracted, ["temp_unit", "tempUnit", "temperature_unit"])
+      ) ??
+      normalizeThermoTempUnit(
+        deepText(analysis, ["temp_unit", "tempUnit", "temperature_unit"])
+      )
   };
 }
 
@@ -408,6 +597,10 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
   baselineEmissivity: number | null;
   emissivityDrift: boolean;
   paletteSpan: number | null;
+  /** Camera scale span when min/max boundaries are stored. */
+  paletteConfigured: boolean;
+  isothermConfigured: boolean;
+  boxAverageConfigured: boolean;
 } {
   const latest = series.length ? series[series.length - 1] : null;
   const baseline =
@@ -417,15 +610,19 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
     baseline != null &&
     current != null &&
     Math.abs(current - baseline) > 0.02;
-  const paletteSpan =
-    latest?.scaleMax != null && latest?.scaleMin != null
-      ? Math.round((latest.scaleMax - latest.scaleMin) * 10) / 10
-      : null;
+  const paletteConfigured =
+    latest?.scaleMax != null && latest?.scaleMin != null;
+  const paletteSpan = paletteConfigured
+    ? Math.round((latest!.scaleMax! - latest!.scaleMin!) * 10) / 10
+    : null;
   return {
     latest,
     baselineEmissivity: baseline,
     emissivityDrift,
-    paletteSpan
+    paletteSpan,
+    paletteConfigured,
+    isothermConfigured: latest?.isothermThreshold != null,
+    boxAverageConfigured: latest?.boxAverage != null
   };
 }
 

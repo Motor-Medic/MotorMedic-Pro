@@ -16,7 +16,7 @@ export default function Privacy({ onBack }: PrivacyProps) {
             <ShieldCheck className="w-8 h-8 text-[#10b981]" />
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">Privacy Policy</h1>
-              <p className="text-xs text-slate-500 mt-0.5">MotorMedic Pro™ — Secure B2B Condition Monitoring Platform</p>
+              <p className="text-xs text-slate-500 mt-0.5">Spectra CM™ — Secure B2B Condition Monitoring Platform</p>
             </div>
           </div>
           {onBack && (
@@ -116,7 +116,7 @@ export default function Privacy({ onBack }: PrivacyProps) {
               You maintain the absolute right to request complete extraction or deletion of your telemetry profiles and employee logs. Deletion requests made by authorized corporate managers will be fully executed on our live databases and backup systems within 30 days.
             </p>
             <div className="bg-[#0b101d] p-4 rounded-xl space-y-2 text-slate-400 text-xs md:text-sm border border-slate-800/50">
-              <p className="font-semibold text-white">MotorMedic Pro Security & Compliance</p>
+              <p className="font-semibold text-white">Spectra CM Security & Compliance</p>
               <p className="flex items-center gap-2"><Mail className="w-4 h-4 text-slate-500" /> support@motormedicpro.com</p>
               <p className="flex items-center gap-2"><Phone className="w-4 h-4 text-slate-500" /> 225-210-6586</p>
             </div>
