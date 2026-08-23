@@ -1,5 +1,7 @@
-import React, { useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, Upload } from "lucide-react";
+import React, { useCallback, useState } from "react";
+import { ChevronDown } from "lucide-react";
+import type { OilReportData } from "../types/oilVision";
+import OilVisionDropzone from "./trendAnalyzer/OilVisionDropzone";
 
 type OilAccordionSection = "identity" | "telemetry" | "spectroscopy" | "degradation";
 
@@ -76,6 +78,68 @@ const inputCompact =
   "bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full";
 const selectCls = `${inputCls} appearance-none cursor-pointer pr-10`;
 const microLabel = "text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block";
+
+function numStr(v: number | null | undefined): string {
+  return v != null && Number.isFinite(v) ? String(v) : "";
+}
+
+function matchBrand(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const lower = raw.toLowerCase();
+  for (const b of BRANDS) {
+    if (b === "Custom") continue;
+    if (lower.includes(b.toLowerCase())) return b;
+  }
+  return "Custom";
+}
+
+function matchIsoGrade(raw: string | null | undefined): string | null {
+  if (!raw?.trim()) return null;
+  const vg = raw.match(/(\d+)/)?.[1];
+  if (vg) {
+    const candidate = `ISO VG ${vg}`;
+    if ((ISO_GRADES as readonly string[]).includes(candidate)) return candidate;
+  }
+  for (const g of ISO_GRADES) {
+    if (raw.toLowerCase().includes(g.toLowerCase())) return g;
+  }
+  return raw.trim();
+}
+
+function matchSampleExtraction(
+  raw: string | null | undefined
+): SampleExtractionMethod | null {
+  if (!raw?.trim()) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes("minimess") || lower.includes("live zone")) {
+    return "Live Zone Minimess Valve";
+  }
+  if (lower.includes("siphon") || lower.includes("vacuum") || lower.includes("drop tube")) {
+    return "Siphon/Vacuum Pump (Drop Tube)";
+  }
+  if (lower.includes("drain")) return "Sump Drain Valve";
+  return null;
+}
+
+function oilReportHasData(data: OilReportData): boolean {
+  const { header: h, metals: m, fluidProperties: f, operatingParams: o } = data;
+  return Boolean(
+    h.labName ||
+      h.reportNumber ||
+      h.sampleDate ||
+      h.lubricantBrand ||
+      h.lubricantGrade ||
+      m.iron != null ||
+      m.copper != null ||
+      m.chromium != null ||
+      f.viscosity40C != null ||
+      f.waterPpm != null ||
+      f.acidNumber != null ||
+      f.baseNumber != null ||
+      o.operatingHours != null ||
+      o.oilHours != null
+  );
+}
 
 function AccordionShell({
   id,
@@ -192,9 +256,6 @@ export default function OilInputAccordions({
   const [sootContent, setSootContent] = useState("");
   const [waterPpm, setWaterPpm] = useState("");
   const [iso4406Code, setIso4406Code] = useState("");
-  const [pdfName, setPdfName] = useState<string | null>(null);
-  const [pdfPreview, setPdfPreview] = useState<string | null>(null);
-  const pdfRef = useRef<HTMLInputElement>(null);
 
   /** Engine → TBN; Gearbox / Hydraulic / Turbine → TAN */
   const showTbn = assetType === "Engine";
@@ -210,34 +271,104 @@ export default function OilInputAccordions({
     setPpm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handlePdf = (file?: File | null) => {
-    if (!file) return;
-    if (
-      !/\.(jpe?g|png|gif|webp)$/i.test(file.name) &&
-      !file.type.startsWith("image/")
-    ) {
-      onToast?.("Upload an image (.jpg / .png / .webp).", "warning");
-      return;
-    }
-    const preview = URL.createObjectURL(file);
-    setPdfPreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return preview;
-    });
-    setPdfName(file.name);
-    onToast?.(`Oil analysis image ready: ${file.name}`, "success");
-  };
+  const applyOilReportToForm = useCallback(
+    (data: OilReportData, _fileName: string) => {
+      const h = data.header;
+      const m = data.metals;
+      const f = data.fluidProperties;
+      const o = data.operatingParams;
 
-  const clearPdfPreview = () => {
-    setPdfPreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
-    setPdfName(null);
-    if (pdfRef.current) pdfRef.current.value = "";
-  };
+      const brandMatch = matchBrand(h.lubricantBrand);
+      if (brandMatch) setBrand(brandMatch);
 
-  const hasPdfPreview = Boolean(pdfPreview || pdfName);
+      const gradeMatch = matchIsoGrade(h.lubricantGrade);
+      if (gradeMatch) setIsoGrade(gradeMatch);
+
+      const extractionMatch = matchSampleExtraction(h.samplePoint);
+      if (extractionMatch) setSampleExtraction(extractionMatch);
+
+      if (o.operatingHours != null) setAssetHours(numStr(o.operatingHours));
+      if (o.oilHours != null) setFluidAgeHours(numStr(o.oilHours));
+      if (o.makeUpOilLiters != null) {
+        setMakeupOilAdded(numStr(o.makeUpOilLiters));
+        setMakeupOilUnit("Liters");
+      }
+
+      const ppmUpdates: Record<string, string> = {};
+      if (m.iron != null) ppmUpdates.fe = numStr(m.iron);
+      if (m.copper != null) ppmUpdates.cu = numStr(m.copper);
+      if (m.lead != null) ppmUpdates.pb = numStr(m.lead);
+      if (m.tin != null) ppmUpdates.sn = numStr(m.tin);
+      if (m.aluminum != null) ppmUpdates.al = numStr(m.aluminum);
+      if (m.chromium != null) ppmUpdates.cr = numStr(m.chromium);
+      if (m.nickel != null) ppmUpdates.ni = numStr(m.nickel);
+      if (m.silicon != null) ppmUpdates.si = numStr(m.silicon);
+      if (m.sodium != null) ppmUpdates.na = numStr(m.sodium);
+      if (m.potassium != null) ppmUpdates.k = numStr(m.potassium);
+      if (m.zinc != null) ppmUpdates.zn = numStr(m.zinc);
+      if (m.calcium != null) ppmUpdates.ca = numStr(m.calcium);
+      if (m.magnesium != null) ppmUpdates.mg = numStr(m.magnesium);
+      if (Object.keys(ppmUpdates).length) {
+        setPpm((prev) => ({ ...prev, ...ppmUpdates }));
+      }
+
+      if (f.viscosity40C != null) setVisc40(numStr(f.viscosity40C));
+      if (f.viscosity100C != null) setVisc100(numStr(f.viscosity100C));
+      if (f.acidNumber != null) setTan(numStr(f.acidNumber));
+      if (f.baseNumber != null) setTbn(numStr(f.baseNumber));
+      if (f.oxidation != null) setFtirOxidation(numStr(f.oxidation));
+      if (f.nitration != null) setFtirNitration(numStr(f.nitration));
+      if (f.sulfation != null) setFtirSulfation(numStr(f.sulfation));
+      if (f.sootPercent != null) setSootContent(numStr(f.sootPercent));
+      if (f.waterPpm != null) setWaterPpm(numStr(f.waterPpm));
+      if (f.particleCountIso4406) setIso4406Code(f.particleCountIso4406);
+
+      const nextOpen: OilAccordionSection[] = [];
+      if (brandMatch || gradeMatch) nextOpen.push("identity");
+      if (
+        o.operatingHours != null ||
+        o.oilHours != null ||
+        o.makeUpOilLiters != null ||
+        extractionMatch
+      ) {
+        nextOpen.push("telemetry");
+      }
+      if (Object.keys(ppmUpdates).length) nextOpen.push("spectroscopy");
+      if (
+        f.viscosity40C != null ||
+        f.viscosity100C != null ||
+        f.acidNumber != null ||
+        f.baseNumber != null ||
+        f.oxidation != null ||
+        f.waterPpm != null
+      ) {
+        nextOpen.push("degradation");
+      }
+      if (nextOpen.length) {
+        setOpenSections((prev) => Array.from(new Set([...prev, ...nextOpen])));
+      }
+
+      onToast?.(
+        `Oil lab report read by vision — form fields updated for review (${data.formatDetected}, confidence ${data.confidenceScore}%).`,
+        "success"
+      );
+    },
+    [onToast]
+  );
+
+  const handleVisionExtracted = useCallback(
+    (data: OilReportData, fileName: string) => {
+      if (!oilReportHasData(data)) {
+        onToast?.(
+          "Vision model found no oil analysis fields — try a sharper screenshot or enter values manually.",
+          "warning"
+        );
+        return;
+      }
+      applyOilReportToForm(data, fileName);
+    },
+    [applyOilReportToForm, onToast]
+  );
 
   return (
     <div className="space-y-0">
@@ -253,100 +384,10 @@ export default function OilInputAccordions({
           </p>
         </div>
       )}
-      {/* Data Ingestion — permanently visible (not inside accordion) */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#FFC700]">
-              Data Ingestion
-            </p>
-            <h3 className="text-sm font-bold text-white mt-1">
-              Lab Report / Image Upload
-            </h3>
-            <p className="text-[11px] text-slate-500 mt-1">
-              Always visible — photo or screenshot for Oil Analysis AI
-            </p>
-          </div>
-          <Upload className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
-        </div>
-
-        <div className="space-y-4">
-          <span className={fieldLabel}>Lab Report / Image Upload (AI Vision)</span>
-          {!hasPdfPreview ? (
-            <button
-              type="button"
-              onClick={() => pdfRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                handlePdf(e.dataTransfer.files?.[0] ?? null);
-              }}
-              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
-            >
-              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
-              <p className="text-sm font-bold text-white">
-                Drop lab report image here
-              </p>
-              <p className="text-xs text-slate-500 mt-1">
-                .png, .jpg, .webp — photo or screenshot of oil lab report
-              </p>
-            </button>
-          ) : (
-            <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
-              <div className="flex flex-col sm:flex-row gap-4 items-start">
-                <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner">
-                  {pdfPreview ? (
-                    <img
-                      src={pdfPreview}
-                      alt={pdfName || "Oil lab preview"}
-                      className="w-full h-full object-cover object-left-top"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold">
-                      Preview
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0 space-y-2">
-                  <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
-                    <span className="truncate max-w-[180px] text-white">
-                      {pdfName || "lab-report.png"}
-                    </span>
-                    <span className="text-slate-500">|</span>
-                    <span className="text-amber-300">AI Vision Ready</span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={clearPdfPreview}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
-                    >
-                      ✕ Remove
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => pdfRef.current?.click()}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
-                    >
-                      Replace image
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-          <input
-            ref={pdfRef}
-            type="file"
-            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.gif"
-            className="hidden"
-            onChange={(e) => {
-              handlePdf(e.target.files?.[0] ?? null);
-              e.target.value = "";
-            }}
-          />
-        </div>
-      </div>
+      <OilVisionDropzone
+        onExtracted={handleVisionExtracted}
+        onError={(msg) => onToast?.(msg, "error")}
+      />
 
       {/* SECTION 1 — Fluid Identity */}
       <AccordionShell
@@ -601,13 +642,14 @@ export default function OilInputAccordions({
             Wear Metals (PPM)
           </p>
           <div className="grid grid-cols-3 gap-3 sm:gap-4">
-            {WEAR_METALS.map(({ key, label }) => (
-              <PpmField
-                key={key}
-                label={label}
-                value={ppm[key] ?? ""}
-                onChange={(v) => setPpmKey(key, v)}
-              />
+            {WEAR_METALS.map(({ key: ppmKey, label }) => (
+              <React.Fragment key={ppmKey}>
+                <PpmField
+                  label={label}
+                  value={ppm[ppmKey] ?? ""}
+                  onChange={(v) => setPpmKey(ppmKey, v)}
+                />
+              </React.Fragment>
             ))}
           </div>
         </div>
@@ -617,13 +659,14 @@ export default function OilInputAccordions({
             Contaminants (PPM)
           </p>
           <div className="grid grid-cols-3 gap-3 sm:gap-4">
-            {CONTAMINANTS.map(({ key, label }) => (
-              <PpmField
-                key={key}
-                label={label}
-                value={ppm[key] ?? ""}
-                onChange={(v) => setPpmKey(key, v)}
-              />
+            {CONTAMINANTS.map(({ key: ppmKey, label }) => (
+              <React.Fragment key={ppmKey}>
+                <PpmField
+                  label={label}
+                  value={ppm[ppmKey] ?? ""}
+                  onChange={(v) => setPpmKey(ppmKey, v)}
+                />
+              </React.Fragment>
             ))}
           </div>
         </div>
@@ -633,13 +676,14 @@ export default function OilInputAccordions({
             Additives (PPM)
           </p>
           <div className="grid grid-cols-3 gap-3 sm:gap-4">
-            {ADDITIVES.map(({ key, label }) => (
-              <PpmField
-                key={key}
-                label={label}
-                value={ppm[key] ?? ""}
-                onChange={(v) => setPpmKey(key, v)}
-              />
+            {ADDITIVES.map(({ key: ppmKey, label }) => (
+              <React.Fragment key={ppmKey}>
+                <PpmField
+                  label={label}
+                  value={ppm[ppmKey] ?? ""}
+                  onChange={(v) => setPpmKey(ppmKey, v)}
+                />
+              </React.Fragment>
             ))}
           </div>
         </div>

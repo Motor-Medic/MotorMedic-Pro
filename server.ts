@@ -15,6 +15,10 @@ import {
   VISION_MODEL_CONFIG
 } from "./src/lib/vibration/visionModelConfig";
 import {
+  MCA_VISION_MODELS,
+  MCA_VISION_PROMPT
+} from "./src/lib/mca/mcaVisionExtractor";
+import {
   OPENROUTER_API_BASE,
   OPENROUTER_VISION_MODELS,
   isLmStudioDevMode,
@@ -55,6 +59,15 @@ import {
   EXTRACT_THERMAL_METADATA_API_PATH,
   extractThermalMetadata
 } from "./src/lib/extractThermalMetadata";
+import {
+  OIL_ANALYSIS_API_PATH,
+  fetchOilSamplesForAsset,
+  saveOilSample
+} from "./src/lib/oilAnalysisPersistence";
+import {
+  OIL_VISION_API_PATH,
+  extractOilReportFromImageBase64
+} from "./src/lib/oilVisionExtractor";
 
 dotenv.config();
 
@@ -256,10 +269,16 @@ app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
  * Dev-only: set USE_LM_STUDIO=true + LM_STUDIO_ENDPOINT for local testing.
  */
 app.post("/api/extract-vibration-image", async (req, res) => {
-  req.setTimeout(60_000);
-  res.setTimeout(60_000);
+  const purposeHint =
+    req.body?.purpose === "mca" ||
+    req.body?.domain === "mca" ||
+    /mca/i.test(String(req.body?.fileName || ""));
+  const timeoutMs = purposeHint ? 90_000 : 60_000;
+  req.setTimeout(timeoutMs);
+  res.setTimeout(timeoutMs);
   const startTime = logPipelineStart("extract-vibration-image", {
-    contentLength: req.headers["content-length"] || null
+    contentLength: req.headers["content-length"] || null,
+    purpose: purposeHint ? "mca" : "vibration"
   });
   try {
     const body = req.body || {};
@@ -269,10 +288,17 @@ app.post("/api/extract-vibration-image", async (req, res) => {
     if (!imageBase64 || typeof imageBase64 !== "string") {
       return res.status(400).json({
         error: "imageBase64 is required.",
-        message: "Upload a vibration spectrum image (PNG/JPG/WebP)."
+        message: purposeHint
+          ? "Upload an MCA analyzer screenshot (PNG/JPG/WebP)."
+          : "Upload a vibration spectrum image (PNG/JPG/WebP)."
       });
     }
     logPayloadSize("extract-vibration-image", imageBase64);
+
+    const isMca =
+      body.purpose === "mca" ||
+      body.domain === "mca" ||
+      /mca/i.test(String(body.fileName || ""));
 
     const mode = body.mode === "simple" ? "simple" : "full";
     const maxTokens =
@@ -280,13 +306,17 @@ app.post("/api/extract-vibration-image", async (req, res) => {
         ? body.maxTokens
         : mode === "simple"
           ? VISION_MODEL_CONFIG.maxTokensSimple
-          : VISION_MODEL_CONFIG.maxTokens;
+          : isMca
+            ? Math.max(VISION_MODEL_CONFIG.maxTokens, 4500)
+            : VISION_MODEL_CONFIG.maxTokens;
 
     const prompt =
       (typeof body.prompt === "string" && body.prompt.trim()) ||
-      (mode === "simple"
-        ? VIBRATION_VISION_PROMPT_SIMPLE
-        : VIBRATION_VISION_PROMPT);
+      (isMca
+        ? MCA_VISION_PROMPT
+        : mode === "simple"
+          ? VIBRATION_VISION_PROMPT_SIMPLE
+          : VIBRATION_VISION_PROMPT);
 
     const useLmStudio = isLmStudioDevMode();
     const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
@@ -319,28 +349,43 @@ app.post("/api/extract-vibration-image", async (req, res) => {
       Object.assign(upstreamHeaders, openRouterRefererHeaders());
     }
 
-    console.log("🤖 [VIBRATION] Forwarding to vision provider:", {
-      provider: useLmStudio ? "lm-studio-dev" : "openrouter",
-      model,
-      fileName,
-      mode,
-      maxTokens,
-      promptChars: prompt.length
-    });
+    console.log(
+      isMca
+        ? "🤖 [MCA] Forwarding screenshot to vision provider:"
+        : "🤖 [VIBRATION] Forwarding to vision provider:",
+      {
+        provider: useLmStudio ? "lm-studio-dev" : "openrouter",
+        model,
+        fileName,
+        mode,
+        purpose: isMca ? "mca" : "vibration",
+        maxTokens,
+        promptChars: prompt.length
+      }
+    );
 
     logPipelineSend("extract-vibration-image", {
       provider: useLmStudio ? "lm-studio-dev" : "openrouter",
       model,
-      mode
+      mode,
+      purpose: isMca ? "mca" : "vibration"
     });
 
     let upstreamJson: Record<string, unknown> = {};
     let lastUpstreamError: unknown;
 
-    const modelsToTry = useLmStudio
+    const bodyModels = Array.isArray(body.models)
+      ? (body.models.filter(
+          (m: unknown): m is string => typeof m === "string" && Boolean(m.trim())
+        ) as string[])
+      : [];
+    const defaultModels: string[] = isMca
+      ? [...MCA_VISION_MODELS]
+      : [...OPENROUTER_VISION_MODELS];
+    const modelsToTry: string[] = useLmStudio
       ? [model]
-      : OPENROUTER_VISION_MODELS.filter(
-          (m, i, arr) => arr.indexOf(m) === i
+      : (bodyModels.length > 0 ? bodyModels : defaultModels).filter(
+          (m: string, i: number, arr: string[]) => arr.indexOf(m) === i
         );
 
     for (const tryModel of modelsToTry) {
@@ -348,7 +393,7 @@ app.post("/api/extract-vibration-image", async (req, res) => {
         const upstream = await fetch(upstreamUrl, {
           method: "POST",
           headers: upstreamHeaders,
-          signal: AbortSignal.timeout(60_000),
+          signal: AbortSignal.timeout(isMca ? 90_000 : 60_000),
           body: JSON.stringify({
             model: tryModel,
             max_tokens: maxTokens,
@@ -405,8 +450,9 @@ app.post("/api/extract-vibration-image", async (req, res) => {
       );
       return res.status(422).json({
         error: "Vision model returned no text content.",
-        message:
-          "Could not extract vibration data from image. Try a clearer FFT screenshot.",
+        message: isMca
+          ? "Could not extract MCA fields from the screenshot. Try a clearer PNG/JPEG of the full report."
+          : "Could not extract vibration data from image. Try a clearer FFT screenshot.",
         detail:
           lastUpstreamError instanceof Error
             ? lastUpstreamError.message
@@ -417,13 +463,19 @@ app.post("/api/extract-vibration-image", async (req, res) => {
     logPipelineSuccess("extract-vibration-image", startTime, {
       fileName,
       contentLength: content.length,
-      provider: useLmStudio ? "lm-studio-dev" : "openrouter"
+      provider: useLmStudio ? "lm-studio-dev" : "openrouter",
+      purpose: isMca ? "mca" : "vibration"
     });
-    console.log("✅ [VIBRATION] Vision Model Response:", {
-      fileName,
-      contentPreview: content.slice(0, 800),
-      contentLength: content.length
-    });
+    console.log(
+      isMca
+        ? "✅ [MCA] Vision Model Response:"
+        : "✅ [VIBRATION] Vision Model Response:",
+      {
+        fileName,
+        contentPreview: content.slice(0, 800),
+        contentLength: content.length
+      }
+    );
 
     return res.json({
       ...upstreamJson,
@@ -1704,6 +1756,119 @@ app.get("/api/analysis-results", async (req, res) => {
   } catch (error: any) {
     console.error("[analysis-results] GET error:", error);
     return res.status(500).json({ error: error?.message || "Failed to fetch analysis results." });
+  }
+});
+
+app.get(OIL_ANALYSIS_API_PATH, async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const assetId =
+      req.query.assetId != null ? String(req.query.assetId).trim() : "";
+    if (!assetId) {
+      return res.status(400).json({ error: "assetId is required" });
+    }
+    const { samples } = await fetchOilSamplesForAsset(assetId);
+    return res.json({ success: true, samples });
+  } catch (error: any) {
+    console.error("[oil-analysis] GET error:", error);
+    return res.status(500).json({ error: "Failed to fetch data" });
+  }
+});
+
+app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const {
+      assetId,
+      sampleDate,
+      operatingHours,
+      iron,
+      copper,
+      chromium,
+      lead,
+      aluminum,
+      silicon,
+      tin,
+      nickel
+    } = req.body || {};
+
+    if (!assetId || !sampleDate || operatingHours == null) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    const result = await saveOilSample({
+      assetId: String(assetId),
+      sampleDate: String(sampleDate),
+      operatingHours: Number(operatingHours),
+      iron,
+      copper,
+      chromium,
+      lead,
+      aluminum,
+      silicon,
+      tin,
+      nickel
+    });
+
+    if ("error" in result) {
+      return res.status(result.status).json({ error: result.error });
+    }
+
+    return res.json({ success: true, sample: result.sample });
+  } catch (error: any) {
+    console.error("[oil-analysis] POST error:", error);
+    return res.status(500).json({ error: "Failed to save data" });
+  }
+});
+
+app.post(OIL_VISION_API_PATH, async (req, res) => {
+  req.setTimeout(90_000);
+  res.setTimeout(90_000);
+  try {
+    const imageBase64 = req.body?.imageBase64 || req.body?.fileData;
+    if (!imageBase64 || typeof imageBase64 !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "INVALID_REQUEST",
+        message: "imageBase64 is required (data URL or raw base64)."
+      });
+    }
+
+    const outcome = await extractOilReportFromImageBase64({
+      imageBase64,
+      fileName:
+        typeof req.body?.fileName === "string" ? req.body.fileName : null,
+      models: Array.isArray(req.body?.models) ? req.body.models : undefined,
+      maxTokens:
+        typeof req.body?.maxTokens === "number" ? req.body.maxTokens : undefined
+    });
+
+    if (outcome.success === false) {
+      return res.status(outcome.httpStatus).json({
+        success: false,
+        error: outcome.error,
+        message: outcome.message,
+        ...(outcome.detail ? { detail: outcome.detail } : {})
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: outcome.data,
+      model: outcome.model,
+      path: OIL_VISION_API_PATH
+    });
+  } catch (error: any) {
+    console.error("[oil-analysis/vision-extract] POST error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "VISION_FAILED",
+      message: error?.message || "Oil vision extraction failed."
+    });
   }
 });
 
@@ -11714,8 +11879,54 @@ async function initializeDatabase() {
       ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
     `);
 
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS oil_analysis (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        asset_id TEXT NOT NULL,
+        technology_type VARCHAR(20) DEFAULT 'oil_analysis',
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS oil_samples (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        oil_analysis_id UUID NOT NULL REFERENCES oil_analysis(id) ON DELETE CASCADE,
+        sample_date DATE NOT NULL,
+        operating_hours INTEGER NOT NULL,
+        iron DECIMAL(10, 2) DEFAULT 0,
+        copper DECIMAL(10, 2) DEFAULT 0,
+        chromium DECIMAL(10, 2) DEFAULT 0,
+        lead DECIMAL(10, 2) DEFAULT 0,
+        aluminum DECIMAL(10, 2) DEFAULT 0,
+        silicon DECIMAL(10, 2) DEFAULT 0,
+        tin DECIMAL(10, 2) DEFAULT 0,
+        nickel DECIMAL(10, 2) DEFAULT 0,
+        baseline_iron DECIMAL(10, 2),
+        baseline_copper DECIMAL(10, 2),
+        baseline_chromium DECIMAL(10, 2),
+        baseline_lead DECIMAL(10, 2),
+        baseline_aluminum DECIMAL(10, 2),
+        baseline_silicon DECIMAL(10, 2),
+        iron_alarm_limit DECIMAL(10, 2) DEFAULT 100,
+        copper_alarm_limit DECIMAL(10, 2) DEFAULT 50,
+        chromium_alarm_limit DECIMAL(10, 2) DEFAULT 25,
+        lead_alarm_limit DECIMAL(10, 2) DEFAULT 30,
+        aluminum_alarm_limit DECIMAL(10, 2) DEFAULT 40,
+        silicon_alarm_limit DECIMAL(10, 2) DEFAULT 30,
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_oil_samples_analysis ON oil_samples(oil_analysis_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_oil_analysis_asset ON oil_analysis(asset_id);
+    `);
+
     console.log(
-      "✅ Run-Diagnostics persistence tables verified: analysis_results, alerts, diagnosis_logs, work_orders."
+      "✅ Run-Diagnostics persistence tables verified: analysis_results, alerts, diagnosis_logs, work_orders, oil_analysis."
     );
 
     // Seed some maintenance logs if none exist
@@ -11808,6 +12019,9 @@ async function setupServer() {
     );
     console.log(
       `Mounted: POST ${ANALYZE_ULTRASOUND_API_PATH} → ultrasound analysis engine (placeholder)`
+    );
+    console.log(
+      `Mounted: POST ${OIL_VISION_API_PATH} → oil analysis vision extractor`
     );
     console.log(
       `Mounted: POST ${DETECT_SPECTRUM_REGIONS_API_PATH} → GPT-4o chart region detection`

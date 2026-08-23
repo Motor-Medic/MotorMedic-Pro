@@ -5,7 +5,9 @@
 
 import type { SavedAnalysisResult } from "../analysisPersistence";
 import type { InsulationClass } from "./groundwallCalculator";
-import type { McaExtractedData } from "./mcaPdfExtractor";
+import type { McaExtractedData, RicDataPoint } from "./mcaPdfExtractor";
+import { sanitizeRicSeries } from "./rotorInfluenceCalculator";
+import { sanitizeSurgeSeries, type SurgeDataPoint } from "./surgeCalculator";
 
 export type McaPhaseTriplet = [number, number, number];
 
@@ -66,6 +68,17 @@ export type McaOperatorSnapshot = {
   megohms?: number | string | null;
   reportPi?: number | string | null;
   reportDar?: number | string | null;
+  /** Rotor Influence Check series (angle → L12/L23/L31). */
+  ricData?: RicDataPoint[] | null;
+  /** Surge waveform samples (time, V12, V23, V31). */
+  surgeData?: SurgeDataPoint[] | null;
+  surgeTestVoltageV?: number | string | null;
+  surgeEar?: number | string | null;
+  extractMeta?: {
+    fileName?: string | null;
+    formatDetected?: string | null;
+    confidenceScore?: number | null;
+  } | null;
 };
 
 export const MCA_WINDING_EMPTY: McaWindingSnapshot = {
@@ -212,7 +225,10 @@ export function mcaPeakBlob(row: SavedAnalysisResult | null): Record<string, unk
       p.winding != null ||
       p.groundwall != null ||
       p.ir1mMOmega != null ||
-      p.ir_1m != null
+      p.ir_1m != null ||
+      p.ricData != null ||
+      p.ric_data != null ||
+      p.rotor_influence != null
     ) {
       return p;
     }
@@ -480,6 +496,8 @@ export function extractMcaGroundwallFromSaved(
     groundwall.ir15sMOmega,
     groundwall.ir_15s,
     groundwall.ir15s,
+    root.ir15sMOmega,
+    root.ir_15s,
     consensusGw.ir15sMOmega
   );
   const ir30sMOmega = pickPos(
@@ -497,6 +515,9 @@ export function extractMcaGroundwallFromSaved(
     groundwall.ir_30s,
     groundwall.ir30s,
     groundwall.reading30s,
+    root.ir30sMOmega,
+    root.ir_30s,
+    root.ir30s,
     consensusGw.ir30sMOmega,
     consensusGw.ir_30s
   );
@@ -520,6 +541,9 @@ export function extractMcaGroundwallFromSaved(
     groundwall.ir1m,
     groundwall.megohms,
     groundwall.reading1Min,
+    root.ir1mMOmega,
+    root.ir_1m,
+    root.megohms,
     consensusGw.ir1mMOmega,
     consensusGw.megohms
   );
@@ -538,6 +562,8 @@ export function extractMcaGroundwallFromSaved(
     groundwall.ir_10m,
     groundwall.ir10m,
     groundwall.reading10Min,
+    root.ir10mMOmega,
+    root.ir_10m,
     consensusGw.ir10mMOmega
   );
   const testVoltageV = pickPos(
@@ -547,6 +573,7 @@ export function extractMcaGroundwallFromSaved(
     nestedGw.testVoltage,
     nestedIns.testVoltageV,
     nestedIns.test_voltage_v,
+    nestedIns.test_voltage,
     blob.testVoltageV,
     blob.test_voltage_v,
     blob.test_voltage,
@@ -554,7 +581,11 @@ export function extractMcaGroundwallFromSaved(
     groundwall.testVoltageV,
     groundwall.test_voltage_v,
     groundwall.test_voltage,
-    consensusGw.testVoltageV
+    root.testVoltageV,
+    root.test_voltage_v,
+    root.test_voltage,
+    consensusGw.testVoltageV,
+    consensusGw.test_voltage
   );
   const windingTempC = pickAny(
     nestedGw.windingTempC,
@@ -579,8 +610,11 @@ export function extractMcaGroundwallFromSaved(
         blob.insulation_class ??
         groundwall.insulationClass ??
         groundwall.insulation_class ??
+        root.insulationClass ??
+        root.insulation_class ??
         consensus.insulationClass ??
-        consensusGw.insulationClass
+        consensusGw.insulationClass ??
+        consensusGw.insulation_class
     ) ?? "F";
 
   const reportPi = pickAny(
@@ -597,6 +631,9 @@ export function extractMcaGroundwallFromSaved(
     groundwall.reportPi,
     groundwall.report_pi,
     groundwall.pi,
+    root.reportPi,
+    root.report_pi,
+    root.pi,
     consensusGw.reportPi,
     consensusGw.pi
   );
@@ -613,6 +650,9 @@ export function extractMcaGroundwallFromSaved(
     groundwall.reportDar,
     groundwall.report_dar,
     groundwall.dar,
+    root.reportDar,
+    root.report_dar,
+    root.dar,
     consensusGw.reportDar,
     consensusGw.dar
   );
@@ -623,8 +663,8 @@ export function extractMcaGroundwallFromSaved(
     ir10mMOmega > 0 ||
     ir15sMOmega > 0 ||
     testVoltageV > 0 ||
-    reportPi != null ||
-    reportDar != null;
+    (reportPi != null && reportPi > 0) ||
+    (reportDar != null && reportDar > 0);
 
   return {
     ir15sMOmega,
@@ -649,6 +689,30 @@ export function findLatestMcaWithGroundwall(
     if (gw.fromTelemetry) return row;
   }
   return null;
+}
+
+/** Pull Rotor Influence Check series from a saved MCA analysis_results row. */
+export function extractMcaRicFromSaved(
+  row: SavedAnalysisResult | null
+): RicDataPoint[] {
+  if (!row) return [];
+  const blob = mcaPeakBlob(row);
+  const { root } = telemetryRoots(row);
+  const candidates = [
+    blob.ricData,
+    blob.ric_data,
+    blob.rotorInfluence,
+    blob.rotor_influence,
+    root.ricData,
+    root.ric_data,
+    root.rotorInfluence,
+    root.rotor_influence
+  ];
+  for (const c of candidates) {
+    const series = sanitizeRicSeries(c as RicDataPoint[] | null);
+    if (series.length > 0) return series;
+  }
+  return [];
 }
 
 /** Prefer positive PDF/manual values; otherwise keep DB / fallback. */
@@ -815,6 +879,21 @@ export function mcaPayloadForSave(
   telemetry_data: Record<string, unknown>;
 } {
   const { winding, groundwall } = normalizeMcaOperatorSnapshot(snap);
+  const snapRec = (snap || {}) as McaOperatorSnapshot & Partial<McaExtractedData>;
+  const ricNormalized = sanitizeRicSeries(
+    Array.isArray(snapRec.ricData) ? snapRec.ricData : null
+  );
+  const ricData = ricNormalized.length > 0 ? ricNormalized : null;
+  const surgeNormalized = sanitizeSurgeSeries(
+    Array.isArray(snapRec.surgeData) ? snapRec.surgeData : null
+  );
+  const surgeData = surgeNormalized.length >= 2 ? surgeNormalized : null;
+  const surgeTestVoltageV = finiteNum(snapRec.surgeTestVoltageV);
+  const surgeEar = finiteNum(snapRec.surgeEar);
+  const extractMeta =
+    snapRec.extractMeta && typeof snapRec.extractMeta === "object"
+      ? snapRec.extractMeta
+      : null;
   const phases = {
     uv: {
       resistance: winding.phaseR[0],
@@ -884,6 +963,7 @@ export function mcaPayloadForSave(
     ir_10m: groundwall.ir10mMOmega ?? null,
     testVoltageV: groundwall.testVoltageV ?? null,
     test_voltage_v: groundwall.testVoltageV ?? null,
+    test_voltage: groundwall.testVoltageV ?? null,
     insulationClass: groundwall.insulationClass ?? null,
     insulation_class: groundwall.insulationClass ?? null,
     groundwall: {
@@ -891,7 +971,13 @@ export function mcaPayloadForSave(
       ir30sMOmega: groundwall.ir30sMOmega ?? null,
       ir1mMOmega: groundwall.ir1mMOmega ?? null,
       ir10mMOmega: groundwall.ir10mMOmega ?? null,
+      ir_15s: groundwall.ir15sMOmega ?? null,
+      ir_30s: groundwall.ir30sMOmega ?? null,
+      ir_1m: groundwall.ir1mMOmega ?? null,
+      ir_10m: groundwall.ir10mMOmega ?? null,
       testVoltageV: groundwall.testVoltageV ?? null,
+      test_voltage_v: groundwall.testVoltageV ?? null,
+      test_voltage: groundwall.testVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
       insulation_class: groundwall.insulationClass ?? null,
@@ -907,11 +993,18 @@ export function mcaPayloadForSave(
       ir30sMOmega: groundwall.ir30sMOmega ?? null,
       ir1mMOmega: groundwall.ir1mMOmega ?? null,
       ir10mMOmega: groundwall.ir10mMOmega ?? null,
+      ir_30s: groundwall.ir30sMOmega ?? null,
+      ir_1m: groundwall.ir1mMOmega ?? null,
+      ir_10m: groundwall.ir10mMOmega ?? null,
       testVoltageV: groundwall.testVoltageV ?? null,
+      test_voltage: groundwall.testVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
+      insulation_class: groundwall.insulationClass ?? null,
       reportPi: groundwall.reportPi ?? null,
-      reportDar: groundwall.reportDar ?? null
+      reportDar: groundwall.reportDar ?? null,
+      pi: groundwall.reportPi ?? null,
+      dar: groundwall.reportDar ?? null
     },
     reportPi: groundwall.reportPi ?? null,
     report_pi: groundwall.reportPi ?? null,
@@ -919,6 +1012,28 @@ export function mcaPayloadForSave(
     report_dar: groundwall.reportDar ?? null,
     pi: groundwall.reportPi ?? null,
     dar: groundwall.reportDar ?? null,
+    ...(ricData
+      ? {
+          ricData,
+          ric_data: ricData,
+          rotor_influence: ricData,
+          rotorInfluence: ricData
+        }
+      : {}),
+    ...(surgeData
+      ? {
+          surge: {
+            waveform: surgeData,
+            test_voltage_v: surgeTestVoltageV,
+            testVoltageV: surgeTestVoltageV,
+            ear: surgeEar,
+            EAR: surgeEar
+          },
+          surge_waveform: surgeData,
+          surgeWaveform: surgeData
+        }
+      : {}),
+    ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {}),
     ...(extras?.unbalance ? { unbalance: extras.unbalance } : {}),
     ...(extras?.primaryFault ? { primary_fault: extras.primaryFault } : {}),
     ...(extras?.healthScore != null ? { health_score: extras.healthScore } : {})
@@ -953,7 +1068,13 @@ export function mcaPayloadForSave(
       ir30sMOmega: groundwall.ir30sMOmega ?? null,
       ir1mMOmega: groundwall.ir1mMOmega ?? null,
       ir10mMOmega: groundwall.ir10mMOmega ?? null,
+      ir_15s: groundwall.ir15sMOmega ?? null,
+      ir_30s: groundwall.ir30sMOmega ?? null,
+      ir_1m: groundwall.ir1mMOmega ?? null,
+      ir_10m: groundwall.ir10mMOmega ?? null,
       testVoltageV: groundwall.testVoltageV ?? null,
+      test_voltage_v: groundwall.testVoltageV ?? null,
+      test_voltage: groundwall.testVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
       insulation_class: groundwall.insulationClass ?? null,
@@ -969,12 +1090,40 @@ export function mcaPayloadForSave(
       ir30sMOmega: groundwall.ir30sMOmega ?? null,
       ir1mMOmega: groundwall.ir1mMOmega ?? null,
       ir10mMOmega: groundwall.ir10mMOmega ?? null,
+      ir_30s: groundwall.ir30sMOmega ?? null,
+      ir_1m: groundwall.ir1mMOmega ?? null,
+      ir_10m: groundwall.ir10mMOmega ?? null,
       testVoltageV: groundwall.testVoltageV ?? null,
+      test_voltage: groundwall.testVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
+      insulation_class: groundwall.insulationClass ?? null,
       reportPi: groundwall.reportPi ?? null,
-      reportDar: groundwall.reportDar ?? null
-    }
+      reportDar: groundwall.reportDar ?? null,
+      pi: groundwall.reportPi ?? null,
+      dar: groundwall.reportDar ?? null
+    },
+    ...(ricData
+      ? {
+          ricData,
+          ric_data: ricData,
+          rotor_influence: ricData,
+          rotorInfluence: ricData
+        }
+      : {}),
+    ...(surgeData
+      ? {
+          surge: {
+            waveform: surgeData,
+            test_voltage_v: surgeTestVoltageV,
+            testVoltageV: surgeTestVoltageV,
+            ear: surgeEar,
+            EAR: surgeEar
+          },
+          surge_waveform: surgeData
+        }
+      : {}),
+    ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {})
   };
 
   return { peaks: [peak], telemetry_data };

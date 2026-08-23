@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -99,6 +99,7 @@ import {
 } from "../lib/mca/mcaPdfExtractor";
 import {
   extractMcaGroundwallFromSaved,
+  extractMcaRicFromSaved,
   extractMcaWindingFromSaved,
   findLatestMcaWithGroundwall,
   MCA_GROUNDWALL_EMPTY,
@@ -106,6 +107,20 @@ import {
   mcaPayloadForSave,
   mcaTripletHasData
 } from "../lib/mca/mcaPersistence";
+import {
+  deepMergeMcaSsot,
+  EMPTY_MCA_SSOT,
+  hasMcaSsotGroundwall,
+  hasMcaSsotPhaseBalance,
+  hasMcaSsotRotorInfluence,
+  hasMcaSsotSurge,
+  mcaGroundwallFromSsot,
+  mcaSsotFromExtracted,
+  mcaSsotFromSaved,
+  mcaSsotToOperatorSnapshot,
+  mcaWindingFromSsot,
+  type McaSsotRecord
+} from "../lib/mca/mcaSsot";
 import {
   extractEnvelopingTrendPoint,
   extractVibrationRecordFromAnalysis,
@@ -118,6 +133,7 @@ import {
 } from "../lib/vibration/vibrationDiagnosticRecord";
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
+import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
 import {
   getEquipmentData,
   getFlatEquipment,
@@ -225,7 +241,7 @@ function resolveAnalysisType(r: SavedAnalysisResult): string {
       return "mca";
     }
     if (String(p.type || "").toLowerCase() === "oil" || String(p.type || "").toLowerCase() === "oil_analysis")
-      return "oil";
+      return "oil_analysis";
     if (p.frequencyHz != null || p.chart != null) return "vibration";
   }
   const fault = String(r.primary_fault || "").toLowerCase();
@@ -1060,7 +1076,7 @@ const TREND_TECH_CARDS = [
     iconClass: "bg-yellow-500/15 border-yellow-500/40 text-yellow-400"
   },
   {
-    id: "oil",
+    id: "oil_analysis",
     title: "Oil Analysis",
     description: "Wear metals, viscosity, contamination",
     Icon: Droplet,
@@ -1259,13 +1275,18 @@ function mcaFaultBadgeClass(severity: string): string {
   return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
 }
 
-type OilMode = "wear" | "chemistry" | "cleanliness" | "ferrography";
+type OilSubTab = "wear_metals" | "chemistry" | "cleanliness" | "ferrography";
 
-const OIL_MODE_OPTIONS: { id: OilMode; label: string }[] = [
-  { id: "wear", label: "🔩 Wear Metals & Debris" },
-  { id: "chemistry", label: "🧪 Fluid Chemistry" },
-  { id: "cleanliness", label: "🧹 Cleanliness" },
-  { id: "ferrography", label: "Ferrography & Varnish" }
+const OIL_SUB_TABS: {
+  id: OilSubTab;
+  label: string;
+  disabled?: boolean;
+  comingSoon?: boolean;
+}[] = [
+  { id: "wear_metals", label: "Wear Metals & Debris" },
+  { id: "chemistry", label: "Fluid Chemistry", disabled: true, comingSoon: true },
+  { id: "cleanliness", label: "Cleanliness", disabled: true, comingSoon: true },
+  { id: "ferrography", label: "Ferrography & Varnish", disabled: true, comingSoon: true }
 ];
 
 function buildRulCone(speedFactor: number) {
@@ -1463,29 +1484,26 @@ export default function TrendAnalyzer({
     dir: "asc" | "desc";
   }>({ key: "date", dir: "desc" });
   const [mcaMode, setMcaMode] = useState<McaMode>("winding");
-  const [mcaPdfExtract, setMcaPdfExtract] = useState<McaExtractedData | null>(
-    null
-  );
+  /** MCA Single Source of Truth — all four tabs read slices from this record. */
+  const [mcaRecord, setMcaRecord] = useState<McaSsotRecord>(EMPTY_MCA_SSOT);
+  const mergeMcaRecord = useCallback((patch: Partial<McaSsotRecord>) => {
+    setMcaRecord((prev) => deepMergeMcaSsot(prev, patch));
+  }, []);
   const [mcaPdfFileName, setMcaPdfFileName] = useState<string | null>(null);
   const [mcaPdfParsing, setMcaPdfParsing] = useState(false);
   const [mcaPdfError, setMcaPdfError] = useState<string | null>(null);
   const [mcaManualEdit, setMcaManualEdit] = useState(false);
   const [mcaPdfDragOver, setMcaPdfDragOver] = useState(false);
   const mcaPdfInputRef = useRef<HTMLInputElement>(null);
-  const [ricData, setRicData] = useState<RicDataPoint[]>([]);
+  const mcaAssetKeyRef = useRef(selectedAssetKey);
   const [ricBaselineData, setRicBaselineData] = useState<RicDataPoint[]>([]);
   const [ricCompareBaseline, setRicCompareBaseline] = useState(false);
   const [ricApplySmoothing, setRicApplySmoothing] = useState(true);
   const [ricShowGrid, setRicShowGrid] = useState(false);
   const [ricPasteError, setRicPasteError] = useState<string | null>(null);
-  const [surgeData, setSurgeData] = useState<SurgeDataPoint[]>([]);
-  const [manualEar, setManualEar] = useState<number | null>(null);
-  const [surgeTestVoltageV, setSurgeTestVoltageV] = useState<number | null>(
-    null
-  );
   const [surgePasteError, setSurgePasteError] = useState<string | null>(null);
   const surgeCsvInputRef = useRef<HTMLInputElement>(null);
-  const [oilMode, setOilMode] = useState<OilMode>("wear");
+  const [activeOilSubTab, setActiveOilSubTab] = useState<OilSubTab>("wear_metals");
   const [timeRange, setTimeRange] = useState<TimeRange>("30D");
   const [runningOnly, setRunningOnly] = useState(true);
   const [overlayParam, setOverlayParam] = useState<OverlayParam>(null);
@@ -1844,7 +1862,7 @@ export default function TrendAnalyzer({
     if (trendTech === "thermography") return thermoAnalyses;
     if (trendTech === "ultrasound") return ueAnalyses;
     if (trendTech === "mca") return mcaAnalyses;
-    if (trendTech === "oil") return oilAnalyses;
+    if (trendTech === "oil_analysis") return oilAnalyses;
     if (trendTech === "vibration") return vibAnalyses;
     return dbAnalyses;
   }, [
@@ -1864,32 +1882,44 @@ export default function TrendAnalyzer({
     () => findLatestMcaWithGroundwall(mcaAnalyses) ?? latestMca,
     [mcaAnalyses, latestMca]
   );
-  const mcaWindingParams = useMemo(() => {
-    const extracted = extractMcaWindingFromSaved(latestMca);
-    if (mcaPdfExtract) {
-      return {
-        phaseR: mcaPdfExtract.phaseR,
-        phaseL: mcaPdfExtract.phaseL,
-        phaseZ: mcaPdfExtract.phaseZ,
-        phaseFi: mcaPdfExtract.phaseFi,
-        phaseIF: mcaPdfExtract.phaseIF,
-        windingTempC:
-          mcaPdfExtract.windingTempC ?? extracted.windingTempC,
-        ratedHp: mcaPdfExtract.ratedHp ?? extracted.ratedHp,
-        fromTelemetry:
-          mcaTripletHasData(mcaPdfExtract.phaseR) ||
-          mcaTripletHasData(mcaPdfExtract.phaseL) ||
-          mcaTripletHasData(mcaPdfExtract.phaseZ) ||
-          mcaTripletHasData(mcaPdfExtract.phaseFi) ||
-          mcaTripletHasData(mcaPdfExtract.phaseIF),
-        fromPdf: true
-      };
+
+  // SSOT hydration: merge DB telemetry into master record (never wipe sibling domains).
+  useEffect(() => {
+    const assetChanged = mcaAssetKeyRef.current !== selectedAssetKey;
+    mcaAssetKeyRef.current = selectedAssetKey;
+    const latest = mcaAnalyses[0] ?? null;
+    const gwRow = latestMcaGroundwallRow;
+    if (!latest && assetChanged) {
+      setMcaRecord(EMPTY_MCA_SSOT);
+      return;
     }
+    if (!latest) return;
+    setMcaRecord((prev) =>
+      deepMergeMcaSsot(
+        assetChanged ? EMPTY_MCA_SSOT : prev,
+        mcaSsotFromSaved(latest, gwRow)
+      )
+    );
+  }, [mcaAnalyses, latestMcaGroundwallRow, selectedAssetKey]);
+
+  const ricData = mcaRecord.rotor_influence.series;
+  const surgeData = mcaRecord.surge.waveform;
+  const surgeTestVoltageV = mcaRecord.surge.test_voltage_v ?? null;
+
+  const mcaWindingParams = useMemo(() => {
+    const w = mcaWindingFromSsot(mcaRecord.phase_balance);
+    const fromDb = extractMcaWindingFromSaved(latestMca);
     return {
-      ...extracted,
-      fromPdf: false
+      ...w,
+      windingTempC: w.windingTempC ?? fromDb.windingTempC,
+      ratedHp: w.ratedHp ?? fromDb.ratedHp,
+      fromTelemetry:
+        hasMcaSsotPhaseBalance(mcaRecord) &&
+        (mcaRecord.meta.source === "telemetry" || fromDb.fromTelemetry),
+      fromPdf:
+        mcaRecord.meta.source === "pdf" || mcaRecord.meta.source === "vision"
     };
-  }, [latestMca, mcaPdfExtract]);
+  }, [mcaRecord, latestMca]);
   const mcaWindingResult = useMemo(
     () => calculateWindingBalance(mcaWindingParams),
     [mcaWindingParams]
@@ -1929,49 +1959,30 @@ export default function TrendAnalyzer({
     [mcaWindingParams, hasMcaWindingData]
   );
 
-  const mcaGwParams = useMemo(() => {
-    const fromDb = extractMcaGroundwallFromSaved(latestMcaGroundwallRow);
-    const pdfGw =
-      mcaPdfExtract != null
-        ? {
-            ir15sMOmega: mcaPdfExtract.ir15sMOmega,
-            ir30sMOmega: mcaPdfExtract.ir30sMOmega,
-            ir1mMOmega: mcaPdfExtract.ir1mMOmega,
-            ir10mMOmega: mcaPdfExtract.ir10mMOmega,
-            testVoltageV: mcaPdfExtract.testVoltageV,
-            windingTempC: mcaPdfExtract.windingTempC,
-            insulationClass: mcaPdfExtract.insulationClass,
-            reportPi: mcaPdfExtract.reportPi,
-            reportDar: mcaPdfExtract.reportDar
-          }
-        : null;
-    // Do not let PDF defaults of 0 wipe historical IR telemetry
-    return mergeGroundwallPreferPositive(pdfGw, {
-      ...MCA_GROUNDWALL_EMPTY,
-      ...fromDb
-    });
-  }, [mcaPdfExtract, latestMcaGroundwallRow]);
+  const mcaGwSnapshot = useMemo(
+    () => mcaGroundwallFromSsot(mcaRecord.groundwall),
+    [mcaRecord.groundwall]
+  );
 
   const mcaGwResult = useMemo(() => {
     const computed = calculateGroundwallInsulation({
-      ir15sMOmega: mcaGwParams.ir15sMOmega,
-      ir30sMOmega: mcaGwParams.ir30sMOmega,
-      ir1mMOmega: mcaGwParams.ir1mMOmega || 0,
-      ir10mMOmega: mcaGwParams.ir10mMOmega,
-      testVoltageV: mcaGwParams.testVoltageV || 0,
-      windingTempC: mcaGwParams.windingTempC,
-      insulationClass: mcaGwParams.insulationClass as InsulationClass
+      ir15sMOmega: mcaGwSnapshot.ir15sMOmega,
+      ir30sMOmega: mcaGwSnapshot.ir30sMOmega,
+      ir1mMOmega: mcaGwSnapshot.ir1mMOmega || 0,
+      ir10mMOmega: mcaGwSnapshot.ir10mMOmega,
+      testVoltageV: mcaGwSnapshot.testVoltageV || 0,
+      windingTempC: mcaGwSnapshot.windingTempC,
+      insulationClass: mcaGwSnapshot.insulationClass as InsulationClass
     });
-    // Prefer stored report PI/DAR when calculator lacks enough IR points
     const pi =
       computed.pi ??
-      (mcaGwParams.reportPi != null && mcaGwParams.reportPi > 0
-        ? mcaGwParams.reportPi
+      (mcaGwSnapshot.reportPi != null && mcaGwSnapshot.reportPi > 0
+        ? mcaGwSnapshot.reportPi
         : null);
     const dar =
       computed.dar ??
-      (mcaGwParams.reportDar != null && mcaGwParams.reportDar > 0
-        ? mcaGwParams.reportDar
+      (mcaGwSnapshot.reportDar != null && mcaGwSnapshot.reportDar > 0
+        ? mcaGwSnapshot.reportDar
         : null);
     return {
       ...computed,
@@ -1995,20 +2006,19 @@ export default function TrendAnalyzer({
           : computed.piStatus,
       hasData:
         computed.hasData ||
-        Boolean(mcaGwParams.fromTelemetry) ||
-        (mcaGwParams.reportPi != null && mcaGwParams.reportPi > 0) ||
-        (mcaGwParams.reportDar != null && mcaGwParams.reportDar > 0)
+        hasMcaSsotGroundwall(mcaRecord) ||
+        mcaRecord.meta.source === "manual"
     };
-  }, [mcaGwParams]);
+  }, [mcaGwSnapshot, mcaRecord]);
 
-  const hasMcaGwData =
-    mcaGwResult.hasData ||
-    (mcaGwParams.ir1mMOmega != null && mcaGwParams.ir1mMOmega > 0) ||
-    (mcaGwParams.ir30sMOmega != null && mcaGwParams.ir30sMOmega > 0) ||
-    (mcaGwParams.ir10mMOmega != null && mcaGwParams.ir10mMOmega > 0) ||
-    (mcaGwParams.ir15sMOmega != null && mcaGwParams.ir15sMOmega > 0) ||
-    (mcaGwParams.reportPi != null && mcaGwParams.reportPi > 0) ||
-    (mcaGwParams.reportDar != null && mcaGwParams.reportDar > 0);
+  const hasMcaGwData = hasMcaSsotGroundwall(mcaRecord) || mcaGwResult.hasData;
+
+  const mcaExtractLoaded =
+    mcaRecord.meta.source === "pdf" || mcaRecord.meta.source === "vision";
+  const mcaMetaSource = mcaRecord.meta.source;
+  const mcaExtractFormat = mcaRecord.meta.formatDetected ?? "UNKNOWN";
+  const mcaExtractConfidence = mcaRecord.meta.confidenceScore ?? 0;
+  const manualEar = mcaRecord.surge.ear ?? null;
 
   const mcaGwChartData = useMemo(
     () =>
@@ -2376,11 +2386,17 @@ export default function TrendAnalyzer({
     setMcaPdfError(null);
     try {
       const extracted = await extractMcaDataFromFile(file);
-      setMcaPdfExtract(extracted);
+      const patch = mcaSsotFromExtracted(extracted, {
+        source: isImage ? "vision" : "pdf",
+        fileName: file.name,
+        formatDetected: extracted.formatDetected,
+        confidenceScore: extracted.confidenceScore
+      });
+      const mergedRecord = deepMergeMcaSsot(mcaRecord, patch);
+      mergeMcaRecord(patch);
       setMcaPdfFileName(file.name);
       setMcaManualEdit(false);
       if (extracted.ricData && extracted.ricData.length > 0) {
-        setRicData(extracted.ricData);
         setRicPasteError(null);
       }
 
@@ -2391,10 +2407,16 @@ export default function TrendAnalyzer({
         mcaTripletHasData(extracted.phaseZ) ||
         mcaTripletHasData(extracted.phaseFi) ||
         mcaTripletHasData(extracted.phaseIF);
+      const hasRic = Boolean(extracted.ricData && extracted.ricData.length > 0);
+      const hasSurge = Boolean(
+        patch.surge?.waveform && patch.surge.waveform.length >= 2
+      );
 
-      if (isImage && !hasGw && !hasWinding) {
+      if (!hasGw && !hasWinding && !hasRic && !hasSurge) {
         setMcaPdfError(
-          "Image screenshots can’t be OCR’d here — export a text PDF from ALL-TEST / Megger / Baker for auto IR 30s / 1m / 10m / PI / DAR."
+          isImage
+            ? "Vision model found no MCA fields — try a clearer full-report PNG/JPEG or a text PDF export."
+            : "No winding, groundwall, or RIC values found in this file."
         );
         return;
       }
@@ -2439,11 +2461,10 @@ export default function TrendAnalyzer({
                 ? 45
                 : 70;
           const payload = mcaPayloadForSave(
-            {
-              ...extracted,
+            mcaSsotToOperatorSnapshot(mergedRecord, {
               reportPi: extracted.reportPi ?? gwResult.pi ?? undefined,
               reportDar: extracted.reportDar ?? gwResult.dar ?? undefined
-            },
+            }),
             {
               primaryFault,
               healthScore,
@@ -2556,7 +2577,10 @@ export default function TrendAnalyzer({
         );
         return;
       }
-      setRicData(parsed);
+      mergeMcaRecord({
+        rotor_influence: { series: parsed },
+        meta: { source: "manual" }
+      });
     } catch (err) {
       console.warn("[TrendAnalyzer] RIC clipboard paste failed:", err);
       setRicPasteError(
@@ -2570,14 +2594,17 @@ export default function TrendAnalyzer({
     key: keyof RicDataPoint,
     value: string
   ) => {
-    setRicData((prev) => {
-      const next = prev.map((p) => ({ ...p }));
+    setMcaRecord((prev) => {
+      const next = prev.rotor_influence.series.map((p) => ({ ...p }));
       const row = { ...next[index] };
       const n = Number(value);
       row[key] = Number.isFinite(n) ? n : 0;
       const clean = sanitizeRicPoint(row);
       next[index] = clean || row;
-      return next;
+      return deepMergeMcaSsot(prev, {
+        rotor_influence: { series: next },
+        meta: { source: "manual" }
+      });
     });
   };
 
@@ -2594,7 +2621,10 @@ export default function TrendAnalyzer({
       );
       return;
     }
-    setSurgeData(parsed);
+    mergeMcaRecord({
+      surge: { waveform: parsed },
+      meta: { source: "manual" }
+    });
     setSurgePasteError(null);
   };
 
@@ -2625,31 +2655,51 @@ export default function TrendAnalyzer({
     }
   };
 
+  const phaseKeyMap = {
+    phaseR: "resistance",
+    phaseL: "inductance",
+    phaseZ: "impedance",
+    phaseFi: "phase_angle",
+    phaseIF: "if_ratio"
+  } as const;
+
   const updateMcaPdfTriplet = (
     key: "phaseR" | "phaseL" | "phaseZ" | "phaseFi" | "phaseIF",
     index: 0 | 1 | 2,
     value: string
   ) => {
-    setMcaPdfExtract((prev) => {
-      const base =
-        prev ||
-        ({
-          phaseR: [...mcaWindingParams.phaseR] as [number, number, number],
-          phaseL: [...mcaWindingParams.phaseL] as [number, number, number],
-          phaseZ: [...mcaWindingParams.phaseZ] as [number, number, number],
-          phaseFi: [...mcaWindingParams.phaseFi] as [number, number, number],
-          phaseIF: [...mcaWindingParams.phaseIF] as [number, number, number],
-          windingTempC: mcaWindingParams.windingTempC,
-          ratedHp: mcaWindingParams.ratedHp,
-          rawText: "",
-          formatDetected: "UNKNOWN" as const,
-          confidenceScore: 0
-        } satisfies McaExtractedData);
-      const next = [...base[key]] as [number, number, number];
+    const domainKey = phaseKeyMap[key];
+    setMcaRecord((prev) => {
+      const triplet = [...prev.phase_balance[domainKey]] as [
+        number,
+        number,
+        number
+      ];
       const n = Number(value);
-      next[index] = Number.isFinite(n) ? n : 0;
-      return { ...base, [key]: next };
+      triplet[index] = Number.isFinite(n) ? n : 0;
+      return deepMergeMcaSsot(prev, {
+        phase_balance: {
+          ...prev.phase_balance,
+          [domainKey]: triplet
+        },
+        meta: { source: "manual" }
+      });
     });
+  };
+
+  const gwFieldToDomain: Record<
+    string,
+    keyof McaSsotRecord["groundwall"] | "insulation_class"
+  > = {
+    ir15sMOmega: "ir_15s",
+    ir30sMOmega: "ir_30s",
+    ir1mMOmega: "ir_1m",
+    ir10mMOmega: "ir_10m",
+    testVoltageV: "test_voltage",
+    windingTempC: "winding_temp_c",
+    insulationClass: "insulation_class",
+    reportPi: "pi",
+    reportDar: "dar"
   };
 
   const updateMcaGwField = (
@@ -2660,43 +2710,29 @@ export default function TrendAnalyzer({
       | "ir10mMOmega"
       | "testVoltageV"
       | "windingTempC"
-      | "insulationClass",
+      | "insulationClass"
+      | "reportPi"
+      | "reportDar",
     value: string
   ) => {
-    setMcaPdfExtract((prev) => {
-      const base =
-        prev ||
-        ({
-          phaseR: [...mcaWindingParams.phaseR] as [number, number, number],
-          phaseL: [...mcaWindingParams.phaseL] as [number, number, number],
-          phaseZ: [...mcaWindingParams.phaseZ] as [number, number, number],
-          phaseFi: [...mcaWindingParams.phaseFi] as [number, number, number],
-          phaseIF: [...mcaWindingParams.phaseIF] as [number, number, number],
-          windingTempC: mcaGwParams.windingTempC,
-          ratedHp: mcaWindingParams.ratedHp,
-          ir15sMOmega: mcaGwParams.ir15sMOmega,
-          ir30sMOmega: mcaGwParams.ir30sMOmega,
-          ir1mMOmega: mcaGwParams.ir1mMOmega,
-          ir10mMOmega: mcaGwParams.ir10mMOmega,
-          testVoltageV: mcaGwParams.testVoltageV,
-          insulationClass: mcaGwParams.insulationClass,
-          rawText: "",
-          formatDetected: "UNKNOWN" as const,
-          confidenceScore: 0
-        } satisfies McaExtractedData);
-      if (key === "insulationClass") {
-        const c = value.toUpperCase();
-        const insulationClass =
-          c === "A" || c === "B" || c === "F" || c === "H"
-            ? (c as InsulationClass)
-            : base.insulationClass || "F";
-        return { ...base, insulationClass };
-      }
-      const n = Number(value);
-      return {
-        ...base,
-        [key]: Number.isFinite(n) ? n : 0
-      };
+    const domainKey = gwFieldToDomain[key];
+    if (key === "insulationClass") {
+      const c = value.toUpperCase();
+      const insulation_class =
+        c === "A" || c === "B" || c === "F" || c === "H"
+          ? (c as InsulationClass)
+          : mcaRecord.groundwall.insulation_class || "F";
+      mergeMcaRecord({
+        groundwall: { insulation_class },
+        meta: { source: "manual" }
+      });
+      return;
+    }
+    const n = Number(value);
+    const num = Number.isFinite(n) ? n : 0;
+    mergeMcaRecord({
+      groundwall: { [domainKey]: num } as Partial<McaSsotRecord["groundwall"]>,
+      meta: { source: "manual" }
     });
   };
 
@@ -5945,6 +5981,46 @@ export default function TrendAnalyzer({
             </div>
           ) : mcaMode === "winding" ? (
             <>
+              {hasMcaWindingData && !mcaPdfParsing ? (
+                <div className="mb-6 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-emerald-200">
+                      {mcaExtractLoaded
+                        ? `Winding loaded from ${formatMcaPdfLabel(mcaExtractFormat)} extract`
+                        : mcaMetaSource === "telemetry"
+                          ? "Winding loaded from saved MCA telemetry"
+                          : "Winding data loaded"}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Phase balance R / L / Z / Fi / I-F
+                      {mcaExtractLoaded && mcaExtractConfidence > 0
+                        ? ` · Confidence ${mcaExtractConfidence}%`
+                        : ""}
+                      {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={mcaPdfInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        void handleMcaPdfFile(f);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => mcaPdfInputRef.current?.click()}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-600 bg-slate-900 text-slate-300 hover:border-cyan-400/50 hover:text-cyan-200 cursor-pointer"
+                    >
+                      Replace PDF / screenshot
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <div
                 className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
                   mcaPdfDragOver
@@ -5988,7 +6064,7 @@ export default function TrendAnalyzer({
                     <>
                       <Loader2 className="h-8 w-8 text-cyan-400 animate-spin" />
                       <p className="text-sm font-semibold text-cyan-300">
-                        Parsing MCA PDF…
+                        Parsing MCA report…
                       </p>
                     </>
                   ) : (
@@ -5997,28 +6073,20 @@ export default function TrendAnalyzer({
                         <Upload className="h-5 w-5" />
                       </div>
                       <p className="text-sm font-semibold text-slate-200">
-                        Upload MCA Test PDF (ALL-TEST Pro, Megger ADX, Baker AWA)
+                        Upload MCA Test PDF or screenshot (ALL-TEST / Megger / Baker)
                       </p>
                       <p className="text-xs text-slate-500 max-w-md">
-                        Drag and drop or click to browse — client-side extraction only
-                        (no upload to server).
+                        Text PDFs parse locally; PNG/JPEG screenshots use vision (GPT-4o / Qwen)
+                        to fill phase balance grids.
                       </p>
                     </>
                   )}
                 </div>
-                {mcaPdfExtract && !mcaPdfParsing && (
-                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
-                    <Check className="h-3.5 w-3.5 shrink-0" />
-                    Auto-Extracted from{" "}
-                    {formatMcaPdfLabel(mcaPdfExtract.formatDetected)} Report
-                    (Confidence: {mcaPdfExtract.confidenceScore}%)
-                    {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
-                  </div>
-                )}
                 {mcaPdfError && (
                   <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
                 )}
               </div>
+              )}
 
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <button
@@ -6032,18 +6100,27 @@ export default function TrendAnalyzer({
                 >
                   Manual Entry / Edit Values
                 </button>
-                {mcaPdfExtract && (
+                {mcaExtractLoaded && (
                   <button
                     type="button"
                     onClick={() => {
-                      setMcaPdfExtract(null);
+                      mergeMcaRecord({
+                        phase_balance: {
+                          resistance: [0, 0, 0],
+                          inductance: [0, 0, 0],
+                          impedance: [0, 0, 0],
+                          phase_angle: [0, 0, 0],
+                          if_ratio: [0, 0, 0]
+                        },
+                        meta: { source: "manual" }
+                      });
                       setMcaPdfFileName(null);
                       setMcaPdfError(null);
                       setMcaManualEdit(false);
                     }}
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer"
                   >
-                    Clear PDF Extract
+                    Clear Winding Data
                   </button>
                 )}
               </div>
@@ -6097,8 +6174,8 @@ export default function TrendAnalyzer({
                     Phase Input / Summary Grid
                   </p>
                   <p className="text-[10px] text-slate-500">
-                    {mcaPdfExtract
-                      ? `PDF · ${formatMcaPdfLabel(mcaPdfExtract.formatDetected)}`
+                    {mcaExtractLoaded
+                      ? `PDF · ${formatMcaPdfLabel(mcaExtractFormat)}`
                       : mcaWindingParams.fromTelemetry
                         ? "From saved MCA telemetry"
                         : "Awaiting Data · upload PDF or use Manual Entry"}
@@ -6370,80 +6447,120 @@ export default function TrendAnalyzer({
             </>
           ) : mcaMode === "insulation" ? (
             <>
-              <div
-                className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
-                  mcaPdfDragOver
-                    ? "border-amber-400 bg-amber-500/10"
-                    : "border-amber-500/30 hover:border-amber-400 bg-slate-900/50"
-                }`}
-                onClick={() => mcaPdfInputRef.current?.click()}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setMcaPdfDragOver(true);
-                }}
-                onDragLeave={() => setMcaPdfDragOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setMcaPdfDragOver(false);
-                  const f = e.dataTransfer.files?.[0];
-                  void handleMcaPdfFile(f);
-                }}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
+              {hasMcaGwData && !mcaPdfParsing ? (
+                <div className="mb-6 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-emerald-200">
+                      {mcaExtractLoaded
+                        ? `Groundwall loaded from ${formatMcaPdfLabel(mcaExtractFormat)} extract`
+                        : mcaMetaSource === "telemetry"
+                          ? "Groundwall loaded from saved MCA telemetry"
+                          : "Groundwall data loaded"}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      IR 30s / 1m / 10m
+                      {mcaGwSnapshot.testVoltageV > 0
+                        ? ` · ${mcaGwSnapshot.testVoltageV} V`
+                        : ""}
+                      {mcaGwSnapshot.insulationClass
+                        ? ` · Class ${mcaGwSnapshot.insulationClass}`
+                        : ""}
+                      {mcaGwSnapshot.reportPi != null
+                        ? ` · PI ${mcaGwSnapshot.reportPi}`
+                        : ""}
+                      {mcaGwSnapshot.reportDar != null
+                        ? ` · DAR ${mcaGwSnapshot.reportDar}`
+                        : ""}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={mcaPdfInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        void handleMcaPdfFile(f);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => mcaPdfInputRef.current?.click()}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-600 bg-slate-900 text-slate-300 hover:border-amber-400/50 hover:text-amber-200 cursor-pointer"
+                    >
+                      Replace PDF / screenshot
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
+                    mcaPdfDragOver
+                      ? "border-amber-400 bg-amber-500/10"
+                      : "border-amber-500/30 hover:border-amber-400 bg-slate-900/50"
+                  }`}
+                  onClick={() => mcaPdfInputRef.current?.click()}
+                  onDragOver={(e) => {
                     e.preventDefault();
-                    mcaPdfInputRef.current?.click();
-                  }
-                }}
-              >
-                <input
-                  ref={mcaPdfInputRef}
-                  type="file"
-                  accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    void handleMcaPdfFile(f);
-                    e.target.value = "";
+                    setMcaPdfDragOver(true);
                   }}
-                />
-                <div className="flex flex-col items-center gap-3">
-                  {mcaPdfParsing ? (
-                    <>
-                      <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
-                      <p className="text-sm font-semibold text-amber-300">
-                        Parsing MCA PDF…
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <div className="w-12 h-12 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-400 flex items-center justify-center">
-                        <Shield className="h-5 w-5" />
-                      </div>
-                      <p className="text-sm font-semibold text-slate-200">
-                        Upload MCA Test PDF (ALL-TEST Pro, Megger ADX, Baker AWA)
-                      </p>
-                      <p className="text-xs text-slate-500 max-w-md">
-                        Auto-extract IR 30s / 1m / 10m, PI, and DAR from ALL-TEST Pro,
-                        Megger, or Baker text PDFs — values save to history automatically.
-                      </p>
-                    </>
+                  onDragLeave={() => setMcaPdfDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setMcaPdfDragOver(false);
+                    const f = e.dataTransfer.files?.[0];
+                    void handleMcaPdfFile(f);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      mcaPdfInputRef.current?.click();
+                    }
+                  }}
+                >
+                  <input
+                    ref={mcaPdfInputRef}
+                    type="file"
+                    accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      void handleMcaPdfFile(f);
+                      e.target.value = "";
+                    }}
+                  />
+                  <div className="flex flex-col items-center gap-3">
+                    {mcaPdfParsing ? (
+                      <>
+                        <Loader2 className="h-8 w-8 text-amber-400 animate-spin" />
+                        <p className="text-sm font-semibold text-amber-300">
+                          Parsing MCA report…
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="w-12 h-12 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                          <Shield className="h-5 w-5" />
+                        </div>
+                        <p className="text-sm font-semibold text-slate-200">
+                          Upload MCA Test PDF or screenshot (ALL-TEST / Megger / Baker)
+                        </p>
+                        <p className="text-xs text-slate-500 max-w-md">
+                          Auto-extract IR 30s / 1m / 10m, PI, and DAR from text PDFs or
+                          PNG/JPEG screenshots via vision — values save to history automatically.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  {mcaPdfError && (
+                    <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
                   )}
                 </div>
-                {mcaPdfExtract && !mcaPdfParsing && (
-                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
-                    <Check className="h-3.5 w-3.5 shrink-0" />
-                    Auto-Extracted from{" "}
-                    {formatMcaPdfLabel(mcaPdfExtract.formatDetected)} Report
-                    (Confidence: {mcaPdfExtract.confidenceScore}%)
-                    {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
-                  </div>
-                )}
-                {mcaPdfError && (
-                  <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
-                )}
-              </div>
+              )}
 
               <div className={`${CARD} mb-6`}>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -6451,11 +6568,13 @@ export default function TrendAnalyzer({
                     Groundwall IR Input Grid
                   </p>
                   <p className="text-[10px] text-slate-500">
-                    {mcaPdfExtract
-                      ? `PDF · ${formatMcaPdfLabel(mcaPdfExtract.formatDetected)}`
-                      : mcaGwParams.fromTelemetry
+                    {mcaExtractLoaded
+                      ? `PDF · ${formatMcaPdfLabel(mcaExtractFormat)}`
+                      : mcaMetaSource === "telemetry"
                         ? "From saved MCA telemetry"
-                        : "Awaiting Data · upload PDF or enter IR readings"}
+                        : mcaMetaSource === "manual"
+                          ? "Manual entry"
+                          : "Awaiting Data · upload PDF or enter IR readings"}
                   </p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -6465,7 +6584,9 @@ export default function TrendAnalyzer({
                       ["ir1mMOmega", "IR 1m (MΩ)"],
                       ["ir10mMOmega", "IR 10m (MΩ)"],
                       ["testVoltageV", "Test Voltage (V DC)"],
-                      ["windingTempC", "Winding Temp (°C)"]
+                      ["windingTempC", "Winding Temp (°C)"],
+                      ["reportPi", "Report PI"],
+                      ["reportDar", "Report DAR"]
                     ] as const
                   ).map(([key, label]) => (
                     <label key={key} className="flex flex-col gap-1">
@@ -6477,9 +6598,9 @@ export default function TrendAnalyzer({
                         step="any"
                         placeholder="—"
                         value={
-                          mcaGwParams[key] == null || mcaGwParams[key] === 0
+                          mcaGwSnapshot[key] == null || mcaGwSnapshot[key] === 0
                             ? ""
-                            : mcaGwParams[key]
+                            : mcaGwSnapshot[key]
                         }
                         onChange={(e) => updateMcaGwField(key, e.target.value)}
                         className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-amber-500 outline-none font-mono"
@@ -6491,7 +6612,7 @@ export default function TrendAnalyzer({
                       Insulation Class
                     </span>
                     <select
-                      value={mcaGwParams.insulationClass}
+                      value={mcaGwSnapshot.insulationClass || "F"}
                       onChange={(e) =>
                         updateMcaGwField("insulationClass", e.target.value)
                       }
@@ -6508,11 +6629,11 @@ export default function TrendAnalyzer({
                   {hasMcaGwData
                     ? `IEEE 43-2013 · kT = ${mcaGwResult.kT.toFixed(3)} · IR corrected to 40°C baseline`
                     : "IEEE 43-2013 · Awaiting IR data"}
-                  {mcaGwParams.reportPi != null
-                    ? ` · Report PI ${mcaGwParams.reportPi}`
+                  {mcaGwSnapshot.reportPi != null
+                    ? ` · Report PI ${mcaGwSnapshot.reportPi}`
                     : ""}
-                  {mcaGwParams.reportDar != null
-                    ? ` · Report DAR ${mcaGwParams.reportDar}`
+                  {mcaGwSnapshot.reportDar != null
+                    ? ` · Report DAR ${mcaGwSnapshot.reportDar}`
                     : ""}
                 </p>
               </div>
@@ -6592,13 +6713,13 @@ export default function TrendAnalyzer({
                     Leakage Current
                   </p>
                   <p className="text-2xl font-bold text-amber-400 font-mono">
-                    {hasMcaGwData && mcaGwParams.testVoltageV > 0
+                    {hasMcaGwData && mcaGwSnapshot.testVoltageV > 0
                       ? `${mcaGwResult.leakageCurrentUA.toFixed(2)} μA`
                       : "---"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    {hasMcaGwData && mcaGwParams.testVoltageV > 0
-                      ? `@ ${mcaGwParams.testVoltageV} V DC · IR@40°C`
+                    {hasMcaGwData && mcaGwSnapshot.testVoltageV > 0
+                      ? `@ ${mcaGwSnapshot.testVoltageV} V DC · IR@40°C`
                       : "Awaiting Data"}
                   </p>
                 </div>
@@ -6694,6 +6815,43 @@ export default function TrendAnalyzer({
             </>
           ) : mcaMode === "rotor" ? (
             <>
+              {hasMcaSsotRotorInfluence(mcaRecord) && !mcaPdfParsing ? (
+                <div className="mb-6 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-emerald-200">
+                      {mcaExtractLoaded
+                        ? `RIC loaded from ${formatMcaPdfLabel(mcaExtractFormat)} extract`
+                        : mcaMetaSource === "telemetry"
+                          ? "RIC loaded from saved MCA telemetry"
+                          : "RIC data loaded"}
+                    </p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {ricData.length} RIC points
+                      {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={mcaPdfInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        void handleMcaPdfFile(f);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => mcaPdfInputRef.current?.click()}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-600 bg-slate-900 text-slate-300 hover:border-purple-400/50 hover:text-purple-200 cursor-pointer"
+                    >
+                      Replace PDF / screenshot
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <div
                 className={`mb-6 border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
                   mcaPdfDragOver
@@ -6737,7 +6895,7 @@ export default function TrendAnalyzer({
                     <>
                       <Loader2 className="h-8 w-8 text-purple-400 animate-spin" />
                       <p className="text-sm font-semibold text-purple-300">
-                        Parsing MCA PDF…
+                        Parsing MCA report…
                       </p>
                     </>
                   ) : (
@@ -6746,29 +6904,19 @@ export default function TrendAnalyzer({
                         <RotateCw className="h-5 w-5" />
                       </div>
                       <p className="text-sm font-semibold text-slate-200">
-                        Upload MCA Test PDF (RIC / Rotor Influence tables)
+                        Upload MCA PDF or screenshot (RIC / Rotor Influence)
                       </p>
                       <p className="text-xs text-slate-500 max-w-md">
-                        Auto-extract angle vs L12 / L23 / L31 — client-side only.
+                        Auto-extract angle vs L12 / L23 / L31 from text PDF or vision screenshot.
                       </p>
                     </>
                   )}
                 </div>
-                {mcaPdfExtract && !mcaPdfParsing && (
-                  <div className="mt-4 inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-xs font-semibold">
-                    <Check className="h-3.5 w-3.5 shrink-0" />
-                    Auto-Extracted from{" "}
-                    {formatMcaPdfLabel(mcaPdfExtract.formatDetected)} Report
-                    {mcaPdfExtract.ricData?.length
-                      ? ` · ${mcaPdfExtract.ricData.length} RIC points`
-                      : ""}
-                    {mcaPdfFileName ? ` · ${mcaPdfFileName}` : ""}
-                  </div>
-                )}
                 {mcaPdfError && (
                   <p className="mt-3 text-xs text-amber-400">{mcaPdfError}</p>
                 )}
               </div>
+              )}
 
               <div className="mb-4 flex flex-wrap items-center gap-2">
                 <button
@@ -6825,7 +6973,10 @@ export default function TrendAnalyzer({
                   <button
                     type="button"
                     onClick={() => {
-                      setRicData([]);
+                      mergeMcaRecord({
+                        rotor_influence: { series: [] },
+                        meta: { source: "manual" }
+                      });
                       setRicPasteError(null);
                     }}
                     className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer"
@@ -7163,11 +7314,15 @@ export default function TrendAnalyzer({
                       value={surgeTestVoltageV ?? ""}
                       onChange={(e) => {
                         const n = Number(e.target.value);
-                        setSurgeTestVoltageV(
-                          e.target.value === "" || !Number.isFinite(n)
-                            ? null
-                            : n
-                        );
+                        mergeMcaRecord({
+                          surge: {
+                            test_voltage_v:
+                              e.target.value === "" || !Number.isFinite(n)
+                                ? undefined
+                                : n
+                          },
+                          meta: { source: "manual" }
+                        });
                       }}
                       className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none font-mono"
                     />
@@ -7183,11 +7338,15 @@ export default function TrendAnalyzer({
                       value={manualEar ?? ""}
                       onChange={(e) => {
                         const n = Number(e.target.value);
-                        setManualEar(
-                          e.target.value === "" || !Number.isFinite(n)
-                            ? null
-                            : n
-                        );
+                        mergeMcaRecord({
+                          surge: {
+                            ear:
+                              e.target.value === "" || !Number.isFinite(n)
+                                ? undefined
+                                : n
+                          },
+                          meta: { source: "manual" }
+                        });
                       }}
                       className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-emerald-500 outline-none font-mono"
                     />
@@ -7227,9 +7386,14 @@ export default function TrendAnalyzer({
                     <button
                       type="button"
                       onClick={() => {
-                        setSurgeData([]);
-                        setManualEar(null);
-                        setSurgeTestVoltageV(null);
+                        mergeMcaRecord({
+                          surge: {
+                            waveform: [],
+                            ear: null,
+                            test_voltage_v: null
+                          },
+                          meta: { source: "manual" }
+                        });
                         setSurgePasteError(null);
                       }}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer"
@@ -7413,26 +7577,37 @@ export default function TrendAnalyzer({
       )}
 
       {/* ===== OIL ANALYSIS TECH CONTENT ===== */}
-      {trendTech === "oil" && (
-        <>
-          <div className="flex flex-wrap gap-2 mb-6">
-            {OIL_MODE_OPTIONS.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                onClick={() => setOilMode(mode.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
-                  oilMode === mode.id
-                    ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                    : "bg-slate-800 border-slate-700 text-slate-400"
-                }`}
-              >
-                {mode.label}
-              </button>
-            ))}
+      {trendTech === "oil_analysis" && (
+        <div className="mt-6">
+          <div className="flex flex-wrap gap-2 mb-4 border-b border-slate-700 pb-2">
+            {OIL_SUB_TABS.map((tab) => {
+              const isActive = activeOilSubTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  disabled={tab.disabled}
+                  onClick={() => {
+                    if (!tab.disabled) setActiveOilSubTab(tab.id);
+                  }}
+                  className={`px-4 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                    tab.disabled
+                      ? "bg-slate-800 text-slate-500 border-slate-700 opacity-50 cursor-not-allowed"
+                      : isActive
+                        ? "bg-cyan-600 text-white border-cyan-500"
+                        : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500 cursor-pointer"
+                  }`}
+                >
+                  {tab.label}
+                  {tab.comingSoon ? " (Coming Soon)" : ""}
+                </button>
+              );
+            })}
           </div>
 
-          {dbTrendLoading ? (
+          {activeOilSubTab === "wear_metals" ? (
+            <OilWearMetalsTab assetId={analysisAssetQueryKey ?? ""} />
+          ) : dbTrendLoading ? (
             <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
               <p className="text-sm font-semibold text-slate-200">Loading oil analysis trends…</p>
             </div>
@@ -7445,7 +7620,7 @@ export default function TrendAnalyzer({
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
                     Oil Analysis KPI
                     <span className="ml-2 text-slate-600 normal-case tracking-normal">
-                      · {OIL_MODE_OPTIONS.find((m) => m.id === oilMode)?.label}
+                      · {OIL_SUB_TABS.find((m) => m.id === activeOilSubTab)?.label}
                     </span>
                   </p>
                   <ul className="space-y-2.5">
@@ -7537,14 +7712,14 @@ export default function TrendAnalyzer({
               </div>
             </>
           )}
-        </>
+        </div>
       )}
 
       {trendTech !== "vibration" &&
         trendTech !== "thermography" &&
         trendTech !== "ultrasound" &&
         trendTech !== "mca" &&
-        trendTech !== "oil" && (
+        trendTech !== "oil_analysis" && (
         <div className={`${CARD} mb-6`}>
           <p className="text-sm text-slate-300">
             <span className="text-yellow-400 font-semibold capitalize">{trendTech}</span> trend

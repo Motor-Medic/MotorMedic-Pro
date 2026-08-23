@@ -17,6 +17,7 @@ export type McaPdfFormat =
   | "ALL_TEST_PRO"
   | "MEGGER_BAKER"
   | "GENERIC_TABULAR"
+  | "VISION_SCREENSHOT"
   | "UNKNOWN";
 
 export type McaInsulationClass = "A" | "B" | "F" | "H";
@@ -43,6 +44,13 @@ export interface McaExtractedData {
   reportPi?: number;
   /** Pre-calculated Dielectric Absorption Ratio from report. */
   reportDar?: number;
+  /** Snake-case / vision aliases (populated by vision mapper). */
+  ir_15s?: number;
+  ir_30s?: number;
+  ir_1m?: number;
+  ir_10m?: number;
+  pi?: number;
+  dar?: number;
   insulationClass?: McaInsulationClass;
   /** Rotor Influence Check inductance-vs-angle series. */
   ricData?: RicDataPoint[];
@@ -865,9 +873,7 @@ export async function extractMcaDataFromPdf(
 }
 
 /**
- * Unified entry: PDF (text extract) or image screenshot of a digital report.
- * Images without selectable text cannot be OCR'd client-side — returns empty
- * groundwall so the UI can prompt manual entry / PDF re-export.
+ * Unified entry: PDF (text extract) or PNG/JPEG screenshot via multimodal vision.
  */
 export async function extractMcaDataFromFile(
   file: File
@@ -878,20 +884,8 @@ export async function extractMcaDataFromFile(
     return extractMcaDataFromPdf(file);
   }
   if (/^image\//i.test(type) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(name)) {
-    // Prefer PDF exports for reliable IR tables; image screenshots need OCR.
-    console.warn(
-      "[mcaPdfExtractor] Image upload detected — use a text PDF export for auto IR/PI/DAR extraction."
-    );
-    return {
-      phaseR: ZERO,
-      phaseL: ZERO,
-      phaseZ: ZERO,
-      phaseFi: ZERO,
-      phaseIF: ZERO,
-      rawText: "",
-      formatDetected: "UNKNOWN",
-      confidenceScore: 0
-    };
+    const { extractMcaDataFromImage } = await import("./mcaVisionExtractor");
+    return extractMcaDataFromImage(file);
   }
   return extractMcaDataFromPdf(file);
 }
@@ -904,6 +898,8 @@ export function formatMcaPdfLabel(format: McaPdfFormat): string {
       return "Megger / Baker";
     case "GENERIC_TABULAR":
       return "Generic Tabular";
+    case "VISION_SCREENSHOT":
+      return "Vision Screenshot";
     default:
       return "Unknown";
   }
@@ -914,10 +910,16 @@ export function mcaExtractHasGroundwall(data: McaExtractedData | null | undefine
   if (!data) return false;
   return (
     (data.ir1mMOmega != null && data.ir1mMOmega > 0) ||
+    (data.ir_1m != null && data.ir_1m > 0) ||
     (data.ir30sMOmega != null && data.ir30sMOmega > 0) ||
+    (data.ir_30s != null && data.ir_30s > 0) ||
     (data.ir10mMOmega != null && data.ir10mMOmega > 0) ||
+    (data.ir_10m != null && data.ir_10m > 0) ||
     (data.ir15sMOmega != null && data.ir15sMOmega > 0) ||
+    (data.ir_15s != null && data.ir_15s > 0) ||
     (data.reportPi != null && data.reportPi > 0) ||
-    (data.reportDar != null && data.reportDar > 0)
+    (data.pi != null && data.pi > 0) ||
+    (data.reportDar != null && data.reportDar > 0) ||
+    (data.dar != null && data.dar > 0)
   );
 }

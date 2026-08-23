@@ -4,10 +4,19 @@ import {
   CheckCircle2,
   ChevronDown,
   Info,
+  Loader2,
   Power,
   RotateCcw,
   Upload
 } from "lucide-react";
+import {
+  extractMcaDataFromFile,
+  formatMcaPdfLabel,
+  mcaExtractHasGroundwall,
+  type McaExtractedData,
+  type RicDataPoint
+} from "../lib/mca/mcaPdfExtractor";
+import { mcaTripletHasData } from "../lib/mca/mcaPersistence";
 
 type McaAccordionSection = "fingerprint" | "config" | "phase" | "insulation";
 export type McaMode = "static" | "dynamic" | "online";
@@ -154,6 +163,15 @@ export interface McaOperatorSnapshot {
   reading1Min: number | null;
   reading10Min: number | null;
   megohms: number | null;
+  reportPi: number | null;
+  reportDar: number | null;
+  /** Rotor Influence Check series when extracted from PDF. */
+  ricData: RicDataPoint[] | null;
+  extractMeta?: {
+    fileName: string | null;
+    formatDetected: string | null;
+    confidenceScore: number | null;
+  } | null;
 }
 
 export interface McaInputAccordionsProps {
@@ -244,6 +262,18 @@ export default function McaInputAccordions({
   const [reading60s, setReading60s] = useState("");
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [extractParsing, setExtractParsing] = useState(false);
+  const [extractBanner, setExtractBanner] = useState<string | null>(null);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [ricData, setRicData] = useState<RicDataPoint[] | null>(null);
+  const [reportPi, setReportPi] = useState<number | null>(null);
+  const [reportDar, setReportDar] = useState<number | null>(null);
+  const [ir15s, setIr15s] = useState("");
+  const [extractMeta, setExtractMeta] = useState<{
+    fileName: string | null;
+    formatDetected: string | null;
+    confidenceScore: number | null;
+  } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const isOnline = mcaMode === "online";
@@ -267,15 +297,22 @@ export default function McaInputAccordions({
         vw: { ...phases.vw },
         wu: { ...phases.wu }
       },
-      ir15sMOmega: null,
+      ir15sMOmega: optionalNum(ir15s),
       ir30sMOmega: optionalNum(reading30s),
-      ir1mMOmega: optionalNum(reading1Min) ?? optionalNum(reading60s) ?? optionalNum(megohms),
+      ir1mMOmega:
+        optionalNum(reading1Min) ??
+        optionalNum(reading60s) ??
+        optionalNum(megohms),
       ir10mMOmega: optionalNum(reading10Min),
       reading30s: optionalNum(reading30s),
       reading60s: optionalNum(reading60s),
       reading1Min: optionalNum(reading1Min),
       reading10Min: optionalNum(reading10Min),
-      megohms: optionalNum(megohms)
+      megohms: optionalNum(megohms),
+      reportPi,
+      reportDar,
+      ricData: ricData && ricData.length > 0 ? ricData : null,
+      extractMeta
     });
   }, [
     onSnapshotChange,
@@ -288,11 +325,17 @@ export default function McaInputAccordions({
     insulationClass,
     testVoltage,
     phases,
+    // Groundwall / insulation IR timeline — any edit must re-emit snapshot
+    ir15s,
     reading30s,
     reading60s,
     reading1Min,
     reading10Min,
-    megohms
+    megohms,
+    reportPi,
+    reportDar,
+    ricData,
+    extractMeta
   ]);
 
   const ratedVoltageVolts = useMemo(() => {
@@ -343,22 +386,243 @@ export default function McaInputAccordions({
     }));
   };
 
-  const handleFile = (file?: File | null) => {
+  const fmtNum = (n: number | undefined | null, digits = 4): string => {
+    if (n == null || !Number.isFinite(n) || n === 0) return "";
+    const rounded = Number(n.toFixed(digits));
+    return String(rounded);
+  };
+
+  const applyExtractedToForm = (extracted: McaExtractedData, fileName: string) => {
+    const hasWinding =
+      mcaTripletHasData(extracted.phaseR) ||
+      mcaTripletHasData(extracted.phaseL) ||
+      mcaTripletHasData(extracted.phaseZ) ||
+      mcaTripletHasData(extracted.phaseFi) ||
+      mcaTripletHasData(extracted.phaseIF);
+    const hasGw = mcaExtractHasGroundwall(extracted);
+    const hasRic = Boolean(extracted.ricData && extracted.ricData.length > 0);
+
+    if (extracted.ratedHp != null && extracted.ratedHp > 0) {
+      setHpKw(String(extracted.ratedHp));
+    }
+    if (extracted.windingTempC != null && Number.isFinite(extracted.windingTempC)) {
+      setWindingTemp(String(extracted.windingTempC));
+    }
+    if (extracted.insulationClass) {
+      const map: Record<string, string> = {
+        A: "Class A 105°C",
+        B: "Class B 130°C",
+        F: "Class F 155°C",
+        H: "Class H 180°C"
+      };
+      setInsulationClass(map[extracted.insulationClass] || insulationClass);
+    }
+    if (extracted.testVoltageV != null && extracted.testVoltageV > 0) {
+      const v = Math.round(extracted.testVoltageV);
+      const match = MEGGER_VOLTAGES.find(
+        (opt) => parseFloat(opt) === v || opt === `${v}V`
+      );
+      setTestVoltage(match || `${v}V`);
+    }
+
+    if (hasWinding) {
+      setPhases({
+        uv: {
+          ...emptyPhase(),
+          resistance: fmtNum(extracted.phaseR[0], 4),
+          inductance: fmtNum(extracted.phaseL[0], 3),
+          impedance: fmtNum(extracted.phaseZ[0], 3),
+          phaseAngle: fmtNum(extracted.phaseFi[0], 2),
+          ifRatio: fmtNum(extracted.phaseIF[0], 3)
+        },
+        vw: {
+          ...emptyPhase(),
+          resistance: fmtNum(extracted.phaseR[1], 4),
+          inductance: fmtNum(extracted.phaseL[1], 3),
+          impedance: fmtNum(extracted.phaseZ[1], 3),
+          phaseAngle: fmtNum(extracted.phaseFi[1], 2),
+          ifRatio: fmtNum(extracted.phaseIF[1], 3)
+        },
+        wu: {
+          ...emptyPhase(),
+          resistance: fmtNum(extracted.phaseR[2], 4),
+          inductance: fmtNum(extracted.phaseL[2], 3),
+          impedance: fmtNum(extracted.phaseZ[2], 3),
+          phaseAngle: fmtNum(extracted.phaseFi[2], 2),
+          ifRatio: fmtNum(extracted.phaseIF[2], 3)
+        }
+      });
+    }
+
+    // Section 4 — Groundwall IR timeline (IR 30s / 1m / 10m / Report PI / DAR).
+    // Accept camelCase + snake_case mirrors from vision (ir_30s, ir_1m, pi, dar).
+    const ir15 =
+      extracted.ir15sMOmega ?? extracted.ir_15s ?? null;
+    const ir30 =
+      extracted.ir30sMOmega ?? extracted.ir_30s ?? null;
+    const ir1m =
+      extracted.ir1mMOmega ?? extracted.ir_1m ?? null;
+    const ir10 =
+      extracted.ir10mMOmega ?? extracted.ir_10m ?? null;
+    const piVal = extracted.reportPi ?? extracted.pi ?? null;
+    const darVal = extracted.reportDar ?? extracted.dar ?? null;
+
+    const hasGwFields =
+      hasGw ||
+      (ir15 != null && ir15 > 0) ||
+      (ir30 != null && ir30 > 0) ||
+      (ir1m != null && ir1m > 0) ||
+      (ir10 != null && ir10 > 0) ||
+      (piVal != null && piVal > 0) ||
+      (darVal != null && darVal > 0);
+
+    if (hasGwFields) {
+      if (ir15 != null && ir15 > 0) {
+        setIr15s(fmtNum(ir15, 3));
+      }
+      if (ir30 != null && ir30 > 0) {
+        setReading30s(fmtNum(ir30, 3));
+      }
+      if (ir1m != null && ir1m > 0) {
+        const v = fmtNum(ir1m, 3);
+        setReading1Min(v);
+        setReading60s(v);
+        setMegohms(v);
+      }
+      if (ir10 != null && ir10 > 0) {
+        setReading10Min(fmtNum(ir10, 3));
+      }
+      if (piVal != null && piVal > 0) {
+        setReportPi(piVal);
+      } else if (ir10 != null && ir1m != null && ir1m > 0) {
+        const derived = ir10 / ir1m;
+        if (derived > 0 && derived < 50) {
+          setReportPi(Math.round(derived * 1000) / 1000);
+        }
+      }
+      if (darVal != null && darVal > 0) {
+        setReportDar(darVal);
+      } else if (ir1m != null && ir30 != null && ir30 > 0) {
+        const derived = ir1m / ir30;
+        if (derived > 0 && derived < 50) {
+          setReportDar(Math.round(derived * 1000) / 1000);
+        }
+      }
+      // Prefer PI mode when 10m present; else DAR when 30s present
+      if (ir10 != null && ir10 > 0) {
+        setInsulationTestType("PI");
+      } else if (ir30 != null && ir30 > 0) {
+        setInsulationTestType("DAR");
+      }
+    }
+
+    if (hasRic && extracted.ricData) {
+      setRicData(extracted.ricData);
+      setMcaMode("dynamic");
+    }
+
+    setExtractMeta({
+      fileName,
+      formatDetected: extracted.formatDetected,
+      confidenceScore: extracted.confidenceScore
+    });
+
+    // Open sections that received data so the operator can verify visually
+    const nextOpen: McaAccordionSection[] = [];
+    if (hasWinding) {
+      nextOpen.push("fingerprint", "config", "phase");
+    }
+    if (hasGwFields) nextOpen.push("insulation");
+    if (nextOpen.length) {
+      setOpenSections((prev) => Array.from(new Set([...prev, ...nextOpen])));
+    }
+
+    const parts: string[] = [];
+    if (hasWinding) parts.push("Winding / phase balance");
+    if (hasGwFields) parts.push("Groundwall IR / PI / DAR");
+    if (hasRic) parts.push(`RIC (${extracted.ricData!.length} pts)`);
+    setExtractBanner(
+      parts.length
+        ? `Auto-filled from ${formatMcaPdfLabel(extracted.formatDetected)} · ${parts.join(" · ")} (confidence ${extracted.confidenceScore}%)`
+        : null
+    );
+  };
+
+  const handleFile = async (file?: File | null) => {
     if (!file) return;
-    if (
-      !/\.(jpe?g|png|gif|webp)$/i.test(file.name) &&
-      !file.type.startsWith("image/")
-    ) {
-      onToast?.("Upload an image (.jpg / .png / .webp).", "warning");
+    const isPdf =
+      /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+    const isImage =
+      /^image\//i.test(file.type) ||
+      /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
+    if (!isPdf && !isImage) {
+      onToast?.(
+        "Upload an MCA report PDF or analyzer screenshot (.pdf / .png / .jpg).",
+        "warning"
+      );
       return;
     }
-    const preview = URL.createObjectURL(file);
-    setUploadPreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return preview;
-    });
+
+    setExtractError(null);
+    setExtractBanner(null);
+
+    if (isImage) {
+      const preview = URL.createObjectURL(file);
+      setUploadPreview((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return preview;
+      });
+    } else {
+      setUploadPreview((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    }
     setUploadName(file.name);
-    onToast?.(`MCA image ready: ${file.name}`, "success");
+
+    setExtractParsing(true);
+    try {
+      const extracted = await extractMcaDataFromFile(file);
+      const hasWinding =
+        mcaTripletHasData(extracted.phaseR) ||
+        mcaTripletHasData(extracted.phaseL) ||
+        mcaTripletHasData(extracted.phaseZ) ||
+        mcaTripletHasData(extracted.phaseFi) ||
+        mcaTripletHasData(extracted.phaseIF);
+      const hasGw = mcaExtractHasGroundwall(extracted);
+      const hasRic = Boolean(extracted.ricData && extracted.ricData.length > 0);
+
+      if (!hasWinding && !hasGw && !hasRic) {
+        setExtractError(
+          isImage
+            ? "Vision model found no winding, groundwall, or RIC values — try a sharper full-screen PNG/JPEG or enter values manually."
+            : "No winding, groundwall, or RIC values found — check the PDF or enter values manually."
+        );
+        onToast?.(
+          isImage
+            ? "MCA vision extract found no measurable fields."
+            : "MCA extract found no measurable fields.",
+          "warning"
+        );
+        return;
+      }
+
+      applyExtractedToForm(extracted, file.name);
+      onToast?.(
+        isImage
+          ? `MCA screenshot read by vision — form fields updated for review before Run.`
+          : `MCA report parsed — form fields updated for review before Run.`,
+        "success"
+      );
+    } catch (err) {
+      console.warn("[McaInputAccordions] extract failed:", err);
+      setExtractError(
+        err instanceof Error ? err.message : "Failed to parse MCA report."
+      );
+      onToast?.("MCA extract failed.", "error");
+    } finally {
+      setExtractParsing(false);
+    }
   };
 
   const clearUploadPreview = () => {
@@ -367,6 +631,9 @@ export default function McaInputAccordions({
       return null;
     });
     setUploadName(null);
+    setExtractBanner(null);
+    setExtractError(null);
+    setExtractMeta(null);
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -394,17 +661,20 @@ export default function McaInputAccordions({
               Data Ingestion
             </p>
             <h3 className="text-sm font-bold text-white mt-1">
-              Analyzer Chart / Image Upload
+              MCA Report PDF / Analyzer Image Upload
             </h3>
             <p className="text-[11px] text-slate-500 mt-1">
-              Always visible — photo or screenshot for MCA AI analysis
+              Auto-extracts winding, groundwall IR (30s / 1m / 10m), PI / DAR, and RIC —
+              PDF text parse or vision (PNG/JPEG) fills fields below for review before Run
             </p>
           </div>
           <Upload className="h-5 w-5 text-amber-400 shrink-0" aria-hidden />
         </div>
 
         <div className="space-y-4">
-          <span className={fieldLabel}>Analyzer Chart / Image Upload (AI Vision)</span>
+          <span className={fieldLabel}>
+            Analyzer Report Upload (PDF preferred · ALL-TEST / Megger / Baker)
+          </span>
           {!hasUploadPreview ? (
             <button
               type="button"
@@ -412,42 +682,66 @@ export default function McaInputAccordions({
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                handleFile(e.dataTransfer.files?.[0] ?? null);
+                void handleFile(e.dataTransfer.files?.[0] ?? null);
               }}
               className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
             >
               <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
               <p className="text-sm font-bold text-white">
-                Drop analyzer chart image here
+                Drop MCA PDF or analyzer screenshot here
               </p>
               <p className="text-xs text-slate-500 mt-1">
-                .png, .jpg, .webp — photo or screenshot of MCA / analyzer screen
+                .pdf · .png / .jpg — text PDF or vision screenshot (GPT-4o / Qwen VL)
               </p>
             </button>
           ) : (
             <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
               <div className="flex flex-col sm:flex-row gap-4 items-start">
                 <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner">
-                  {uploadPreview ? (
+                  {extractParsing ? (
+                    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-amber-300">
+                      <Loader2 className="h-6 w-6 animate-spin" />
+                    <span className="text-[10px] font-bold">
+                      {/\.(png|jpe?g|webp|gif)$/i.test(uploadName || "")
+                        ? "Vision…"
+                        : "Parsing…"}
+                    </span>
+                    </div>
+                  ) : uploadPreview ? (
                     <img
                       src={uploadPreview}
                       alt={uploadName || "MCA preview"}
                       className="w-full h-full object-cover object-left-top"
                     />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold">
-                      Preview
+                    <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold px-2 text-center">
+                      PDF · {uploadName || "report.pdf"}
                     </div>
                   )}
                 </div>
                 <div className="flex-1 min-w-0 space-y-2">
                   <div className="inline-flex flex-wrap items-center gap-1.5 rounded-lg border border-cyan-400/35 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
-                    <span className="truncate max-w-[180px] text-white">
-                      {uploadName || "mca.png"}
+                    <span className="truncate max-w-[220px] text-white">
+                      {uploadName || "mca-report.pdf"}
                     </span>
                     <span className="text-slate-500">|</span>
-                    <span className="text-amber-300">AI Vision Ready</span>
+                    <span className="text-amber-300">
+                      {extractParsing
+                        ? "Extracting…"
+                        : extractBanner
+                          ? "Fields auto-filled"
+                          : "Ready"}
+                    </span>
                   </div>
+                  {extractBanner && (
+                    <p className="text-[11px] text-emerald-300/90 flex items-start gap-1.5">
+                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                      {extractBanner}
+                    </p>
+                  )}
+                  {extractError && (
+                    <p className="text-[11px] text-amber-400">{extractError}</p>
+                  )}
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
@@ -459,9 +753,10 @@ export default function McaInputAccordions({
                     <button
                       type="button"
                       onClick={() => fileRef.current?.click()}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                      disabled={extractParsing}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors disabled:opacity-50"
                     >
-                      Replace image
+                      Replace file
                     </button>
                   </div>
                 </div>
@@ -471,14 +766,31 @@ export default function McaInputAccordions({
           <input
             ref={fileRef}
             type="file"
-            accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.gif"
+            accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp,.gif"
             className="hidden"
             onChange={(e) => {
-              handleFile(e.target.files?.[0] ?? null);
+              void handleFile(e.target.files?.[0] ?? null);
               e.target.value = "";
             }}
           />
         </div>
+
+        {ricData && ricData.length > 0 && (
+          <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 px-4 py-3">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-purple-300 mb-1">
+              Rotor Influence Check — extracted
+            </p>
+            <p className="text-sm text-slate-200">
+              {ricData.length} angle / inductance points loaded (L12 / L23 / L31).
+              Dynamic mode enabled — values are included in the save payload.
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1 font-mono">
+              First: {ricData[0].angle}° → L12 {ricData[0].l12} · Last:{" "}
+              {ricData[ricData.length - 1].angle}° → L12{" "}
+              {ricData[ricData.length - 1].l12}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* SECTION 1 — Motor Electromagnetic Fingerprint */}
@@ -1095,6 +1407,91 @@ export default function McaInputAccordions({
 
         <div>
           <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
+            Groundwall IR timeline (verify before Run)
+          </p>
+          <p className="text-[11px] text-slate-500 mb-3">
+            Auto-extracted IR 15s / 30s / 1m / 10m and report PI / DAR appear here for visual check.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+            <label className="block min-w-0">
+              <span className={fieldLabel}>IR 15s (MΩ)</span>
+              <input
+                type="number"
+                step="any"
+                value={ir15s}
+                onChange={(e) => setIr15s(e.target.value)}
+                placeholder="—"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>IR 30s (MΩ)</span>
+              <input
+                type="number"
+                step="any"
+                value={reading30s}
+                onChange={(e) => setReading30s(e.target.value)}
+                placeholder="—"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>IR 1m / 60s (MΩ)</span>
+              <input
+                type="number"
+                step="any"
+                value={reading1Min}
+                onChange={(e) => {
+                  setReading1Min(e.target.value);
+                  setReading60s(e.target.value);
+                  if (!megohms) setMegohms(e.target.value);
+                }}
+                placeholder="—"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>IR 10m (MΩ)</span>
+              <input
+                type="number"
+                step="any"
+                value={reading10Min}
+                onChange={(e) => setReading10Min(e.target.value)}
+                placeholder="—"
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Report PI</span>
+              <input
+                type="number"
+                step="any"
+                value={reportPi != null ? String(reportPi) : ""}
+                onChange={(e) => {
+                  const n = optionalNum(e.target.value);
+                  setReportPi(n);
+                }}
+                placeholder={piRatio ?? "—"}
+                className={inputCls}
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Report DAR</span>
+              <input
+                type="number"
+                step="any"
+                value={reportDar != null ? String(reportDar) : ""}
+                onChange={(e) => {
+                  const n = optionalNum(e.target.value);
+                  setReportDar(n);
+                }}
+                placeholder={darRatio ?? "—"}
+                className={inputCls}
+              />
+            </label>
+          </div>
+
+          <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
             Dielectric Absorption / Polarization Index
           </p>
           <div className="mb-4">
@@ -1125,54 +1522,42 @@ export default function McaInputAccordions({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 min-h-[76px]">
-            <label className="block min-w-0">
-              <span className={fieldLabel}>
-                {insulationTestType === "PI"
-                  ? "1-Minute Reading (MΩ)"
-                  : "30-Second Reading (MΩ)"}
+          <div className="flex flex-wrap gap-3">
+            <div className="min-h-[56px] rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 inline-flex items-baseline gap-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Calc PI
               </span>
-              <input
-                type="number"
-                step="any"
-                value={insulationTestType === "PI" ? reading1Min : reading30s}
-                onChange={(e) =>
-                  insulationTestType === "PI"
-                    ? setReading1Min(e.target.value)
-                    : setReading30s(e.target.value)
-                }
-                className={inputCls}
-              />
-            </label>
-            <label className="block min-w-0">
-              <span className={fieldLabel}>
-                {insulationTestType === "PI"
-                  ? "10-Minute Reading (MΩ)"
-                  : "60-Second Reading (MΩ)"}
+              <span className="text-xl font-black text-yellow-400 tabular-nums">
+                {piRatio ?? "—"}
               </span>
-              <input
-                type="number"
-                step="any"
-                value={insulationTestType === "PI" ? reading10Min : reading60s}
-                onChange={(e) =>
-                  insulationTestType === "PI"
-                    ? setReading10Min(e.target.value)
-                    : setReading60s(e.target.value)
-                }
-                className={inputCls}
-              />
-            </label>
-          </div>
-          <div className="mt-3 min-h-[56px] rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 inline-flex items-baseline gap-3">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              {insulationTestType === "PI" ? "PI Ratio" : "DAR Ratio"}
-            </span>
-            <span className="text-xl font-black text-yellow-400 tabular-nums">
-              {insulationTestType === "PI" ? (piRatio ?? "—") : (darRatio ?? "—")}
-            </span>
-            <span className="text-[11px] text-slate-500">
-              {insulationTestType === "PI" ? "10-min ÷ 1-min" : "60s ÷ 30s"}
-            </span>
+              <span className="text-[11px] text-slate-500">10m ÷ 1m</span>
+            </div>
+            <div className="min-h-[56px] rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-4 py-3 inline-flex items-baseline gap-3">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Calc DAR
+              </span>
+              <span className="text-xl font-black text-cyan-300 tabular-nums">
+                {darRatio ?? "—"}
+              </span>
+              <span className="text-[11px] text-slate-500">60s ÷ 30s</span>
+            </div>
+            {(reportPi != null || reportDar != null) && (
+              <div className="min-h-[56px] rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 inline-flex flex-wrap items-baseline gap-3">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                  From report
+                </span>
+                {reportPi != null && (
+                  <span className="text-sm font-bold text-emerald-300 tabular-nums">
+                    PI {reportPi}
+                  </span>
+                )}
+                {reportDar != null && (
+                  <span className="text-sm font-bold text-emerald-300 tabular-nums">
+                    DAR {reportDar}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </AccordionShell>

@@ -129,6 +129,7 @@ import {
   mcaTripletHasData,
   normalizeMcaOperatorSnapshot
 } from "../lib/mca/mcaPersistence";
+import { mergeMcaOperatorSnapshots } from "../lib/mca/mcaSsot";
 import McaResultsDashboard from "./McaResultsDashboard";
 import OilInputAccordions from "./OilInputAccordions";
 import OilResultsDashboard from "./OilResultsDashboard";
@@ -3163,11 +3164,15 @@ export default function Diagnose({
         const hasGw =
           (groundwall.ir1mMOmega != null && groundwall.ir1mMOmega > 0) ||
           (groundwall.ir30sMOmega != null && groundwall.ir30sMOmega > 0) ||
-          (groundwall.ir10mMOmega != null && groundwall.ir10mMOmega > 0);
+          (groundwall.ir10mMOmega != null && groundwall.ir10mMOmega > 0) ||
+          (groundwall.ir15sMOmega != null && groundwall.ir15sMOmega > 0);
+        const hasRic = Boolean(
+          mcaSnapshot?.ricData && mcaSnapshot.ricData.length > 0
+        );
 
-        if (!hasWinding && !hasGw) {
+        if (!hasWinding && !hasGw && !hasRic) {
           throw new Error(
-            "Enter MCA phase (R/L/Z/Fi/I-F) or insulation readings before running Advanced Diagnostic."
+            "Enter MCA phase (R/L/Z/Fi/I-F), insulation readings, or upload a report with RIC before running Advanced Diagnostic."
           );
         }
 
@@ -3184,15 +3189,21 @@ export default function Diagnose({
 
         const primaryFault = hasWinding
           ? windingResult.fault
-          : gwResult.fault;
+          : hasGw
+            ? gwResult.fault
+            : "Rotor Influence Check (RIC) data captured";
         const severityRaw = hasWinding
           ? windingResult.severity
-          : gwResult.severity;
+          : hasGw
+            ? gwResult.severity
+            : "NORMAL";
         const healthScore = hasWinding
           ? windingResult.healthScore
-          : gwResult.irIeeePass
-            ? 85
-            : 40;
+          : hasGw
+            ? gwResult.irIeeePass
+              ? 85
+              : 40
+            : 75;
         const apiSeverity =
           severityRaw === "CRITICAL"
             ? "CRITICAL"
@@ -3200,11 +3211,26 @@ export default function Diagnose({
               ? "ANOMALY"
               : "NORMAL";
 
+        const reportPi =
+          (typeof gwResult.pi === "number" && gwResult.pi > 0
+            ? gwResult.pi
+            : null) ??
+          groundwall.reportPi ??
+          mcaSnapshot?.reportPi ??
+          null;
+        const reportDar =
+          (typeof gwResult.dar === "number" && gwResult.dar > 0
+            ? gwResult.dar
+            : null) ??
+          groundwall.reportDar ??
+          mcaSnapshot?.reportDar ??
+          null;
+
         const payload = mcaPayloadForSave(
           {
             ...(mcaSnapshot || {}),
-            reportPi: gwResult.pi,
-            reportDar: gwResult.dar
+            reportPi,
+            reportDar
           },
           {
             primaryFault,
@@ -3229,18 +3255,22 @@ export default function Diagnose({
           severity: apiSeverity,
           summary: hasWinding
             ? `${windingResult.fault} — max R/L unbalance ${windingResult.maxUnbalanceRL.toFixed(2)}%. ${windingResult.recommendation}`
-            : `${gwResult.fault} — IR@40°C ${gwResult.ir40MOmega} MΩ. ${gwResult.recommendation}`,
+            : hasGw
+              ? `${gwResult.fault} — IR@40°C ${gwResult.ir40MOmega} MΩ. ${gwResult.recommendation}`
+              : `RIC series saved (${mcaSnapshot?.ricData?.length ?? 0} points) — verify Trend Analyzer Rotor Influence tab.`,
           primaryFault: {
             title: primaryFault,
             frequencyHz: 0,
-            confidencePercent: hasWinding || hasGw ? 90 : 50,
+            confidencePercent: hasWinding || hasGw || hasRic ? 90 : 50,
             severity: apiSeverity,
             actionWindow: hasWinding
               ? windingResult.recommendation
-              : gwResult.recommendation
+              : hasGw
+                ? gwResult.recommendation
+                : "Review RIC inductance variation vs baseline in Trend Analyzer."
           },
           identifiedFaults:
-            primaryFault && !/healthy|normal|good/i.test(primaryFault)
+            primaryFault && !/healthy|normal|good|captured/i.test(primaryFault)
               ? [
                   {
                     title: primaryFault,
@@ -3249,7 +3279,9 @@ export default function Diagnose({
                     severity: apiSeverity,
                     description: hasWinding
                       ? windingResult.recommendation
-                      : gwResult.recommendation
+                      : hasGw
+                        ? gwResult.recommendation
+                        : "Rotor Influence Check data archived with this MCA run."
                   }
                 ]
               : [],
@@ -3261,18 +3293,23 @@ export default function Diagnose({
           repairRecommendations: [
             hasWinding
               ? windingResult.recommendation
-              : gwResult.recommendation,
+              : hasGw
+                ? gwResult.recommendation
+                : "Archive RIC fingerprint and compare on next outage.",
             "Archive this MCA fingerprint for Trend Analyzer phase balance / groundwall trending."
           ],
           consensusDetails: {
             modelA_Hypothesis: hasWinding
               ? `Winding unbalance R ${windingResult.unbalanceR.toFixed(2)}% · L ${windingResult.unbalanceL.toFixed(2)}%`
-              : `Groundwall IR@40 ${gwResult.ir40MOmega} MΩ · PI ${gwResult.pi ?? "n/a"}`,
+              : hasGw
+                ? `Groundwall IR@40 ${gwResult.ir40MOmega} MΩ · PI ${reportPi ?? "n/a"}`
+                : `RIC points ${mcaSnapshot?.ricData?.length ?? 0}`,
             modelB_Hypothesis: `MCA operator inputs · HP ${winding.ratedHp ?? "—"} · T ${winding.windingTempC ?? "—"}°C`,
             refereeDebateSummary: JSON.stringify({
               pipeline: "mcaOperatorInputs",
               winding: payload.telemetry_data.winding,
               groundwall: payload.telemetry_data.groundwall,
+              ricData: payload.telemetry_data.ricData ?? null,
               unbalance: hasWinding
                 ? {
                     R: windingResult.unbalanceR,
@@ -4279,7 +4316,9 @@ export default function Diagnose({
           ) : activeTech === "mca" ? (
             <McaInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
-              onSnapshotChange={setMcaSnapshot}
+              onSnapshotChange={(snap) =>
+                setMcaSnapshot((prev) => mergeMcaOperatorSnapshots(prev, snap))
+              }
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
