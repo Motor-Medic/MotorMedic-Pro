@@ -1793,7 +1793,10 @@ app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
       aluminum,
       silicon,
       tin,
-      nickel
+      nickel,
+      viscosity40C,
+      viscosity100C,
+      acidNumber
     } = req.body || {};
 
     if (!assetId || !sampleDate || operatingHours == null) {
@@ -1811,7 +1814,17 @@ app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
       aluminum,
       silicon,
       tin,
-      nickel
+      nickel,
+      viscosity40C:
+        viscosity40C != null && viscosity40C !== ""
+          ? Number(viscosity40C)
+          : null,
+      viscosity100C:
+        viscosity100C != null && viscosity100C !== ""
+          ? Number(viscosity100C)
+          : null,
+      acidNumber:
+        acidNumber != null && acidNumber !== "" ? Number(acidNumber) : null
     });
 
     if ("error" in result) {
@@ -11923,6 +11936,12 @@ async function initializeDatabase() {
     `);
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_oil_analysis_asset ON oil_analysis(asset_id);
+    `);
+    await pool.query(`
+      ALTER TABLE oil_samples
+        ADD COLUMN IF NOT EXISTS viscosity_40c DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS viscosity_100c DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS acid_number DECIMAL(10, 3);
     `);
 
     console.log(

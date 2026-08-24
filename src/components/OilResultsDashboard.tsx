@@ -12,15 +12,6 @@ import {
 } from "recharts";
 import CmmsDataBridge from "./CmmsDataBridge";
 
-const VISCOSITY_TAN_TREND = [
-  { sample: "S1", date: "Jan", viscosity: 44.2, tan: 0.8 },
-  { sample: "S2", date: "Mar", viscosity: 45.1, tan: 1.1 },
-  { sample: "S3", date: "May", viscosity: 46.0, tan: 1.4 },
-  { sample: "S4", date: "Jul", viscosity: 47.2, tan: 1.9 },
-  { sample: "S5", date: "Sep", viscosity: 48.5, tan: 2.5 },
-  { sample: "S6", date: "Nov", viscosity: 49.8, tan: 3.2 }
-];
-
 /** Si / Fe / Al abrasive wear correlation — last 6 samples */
 const ELEMENTAL_TREND = [
   { sample: "S1", date: "Jan", si: 18, fe: 35, al: 12 },
@@ -140,112 +131,37 @@ export default function OilResultsDashboard({
         </p>
       </div>
 
-      {/* 1 — Wear Particle Matrix */}
+      {/* 1 — Wear Particle Matrix (snapshot only — trends live in Trend Analyzer) */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-5">Wear Particle Matrix Visuals</h3>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            <h4 className="text-sm font-bold text-white mb-3">
-              ISO 4406:2021 Contamination Grid
-            </h4>
-            <div className="h-64 bg-slate-950 rounded-lg relative border border-slate-800 overflow-hidden">
-              <div className="absolute inset-0 grid grid-cols-3 grid-rows-3" aria-hidden>
-                {Array.from({ length: 9 }).map((_, i) => (
-                  <div key={i} className="border border-slate-800/80" />
-                ))}
-              </div>
-              <span className="absolute left-2 bottom-2 text-[9px] text-slate-600 font-mono">
-                Cleaner →
-              </span>
-              <span className="absolute left-2 top-2 text-[9px] text-slate-600 font-mono rotate-0">
-                ↑ Contaminated
-              </span>
-              <div
-                className="w-4 h-4 bg-red-500 rounded-full absolute shadow-[0_0_10px_rgba(239,68,68,0.8)]"
-                style={{ top: "18%", right: "18%" }}
-                title="ISO 19/17/14"
-              />
-              <span className="absolute top-[14%] right-[28%] text-[10px] font-bold text-red-400">
-                19/17/14
-              </span>
+        <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0 max-w-xl">
+          <h4 className="text-sm font-bold text-white mb-3">
+            ISO 4406:2021 Contamination Grid
+          </h4>
+          <div className="h-64 bg-slate-950 rounded-lg relative border border-slate-800 overflow-hidden">
+            <div className="absolute inset-0 grid grid-cols-3 grid-rows-3" aria-hidden>
+              {Array.from({ length: 9 }).map((_, i) => (
+                <div key={i} className="border border-slate-800/80" />
+              ))}
             </div>
-            <p className="text-sm text-red-400 font-semibold mt-3">
-              Current Code: 19/17/14 (CRITICAL – Target: 15/13/10)
-            </p>
+            <span className="absolute left-2 bottom-2 text-[9px] text-slate-600 font-mono">
+              Cleaner →
+            </span>
+            <span className="absolute left-2 top-2 text-[9px] text-slate-600 font-mono rotate-0">
+              ↑ Contaminated
+            </span>
+            <div
+              className="w-4 h-4 bg-red-500 rounded-full absolute shadow-[0_0_10px_rgba(239,68,68,0.8)]"
+              style={{ top: "18%", right: "18%" }}
+              title="ISO 19/17/14"
+            />
+            <span className="absolute top-[14%] right-[28%] text-[10px] font-bold text-red-400">
+              19/17/14
+            </span>
           </div>
-
-          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            <h4 className="text-sm font-bold text-white mb-3">
-              Viscosity vs. TAN Trend (Last 6 Samples)
-            </h4>
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={VISCOSITY_TAN_TREND}
-                  margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
-                >
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    yAxisId="left"
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    width={36}
-                    axisLine={false}
-                    tickLine={false}
-                    unit=" cSt"
-                  />
-                  <YAxis
-                    yAxisId="right"
-                    orientation="right"
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    width={36}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: 8,
-                      fontSize: 12
-                    }}
-                  />
-                  <Legend
-                    verticalAlign="bottom"
-                    wrapperStyle={{ fontSize: 11, color: "#94a3b8", paddingTop: 8 }}
-                  />
-                  <Line
-                    yAxisId="left"
-                    type="monotone"
-                    dataKey="viscosity"
-                    name="Viscosity @40°C"
-                    stroke="#eab308"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#eab308" }}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    yAxisId="right"
-                    type="monotone"
-                    dataKey="tan"
-                    name="TAN"
-                    stroke="#ef4444"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#ef4444" }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <p className="text-[11px] text-slate-500 mt-2">
-              Viscosity creep + sharp TAN rise — oxidation / contamination accelerating.
-            </p>
-          </div>
+          <p className="text-sm text-red-400 font-semibold mt-3">
+            Current Code: 19/17/14 (CRITICAL – Target: 15/13/10)
+          </p>
         </div>
       </section>
 

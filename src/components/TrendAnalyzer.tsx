@@ -39,6 +39,7 @@ import {
   FileText,
   Loader2,
   Mail,
+  Plus,
   Printer,
   RotateCw,
   Search,
@@ -134,6 +135,7 @@ import {
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
+import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
 import {
   getEquipmentData,
   getFlatEquipment,
@@ -1504,6 +1506,8 @@ export default function TrendAnalyzer({
   const [surgePasteError, setSurgePasteError] = useState<string | null>(null);
   const surgeCsvInputRef = useRef<HTMLInputElement>(null);
   const [activeOilSubTab, setActiveOilSubTab] = useState<OilSubTab>("wear_metals");
+  const [addOilSampleOpen, setAddOilSampleOpen] = useState(false);
+  const [oilSampleRefreshKey, setOilSampleRefreshKey] = useState(0);
   const [timeRange, setTimeRange] = useState<TimeRange>("30D");
   const [runningOnly, setRunningOnly] = useState(true);
   const [overlayParam, setOverlayParam] = useState<OverlayParam>(null);
@@ -7579,34 +7583,55 @@ export default function TrendAnalyzer({
       {/* ===== OIL ANALYSIS TECH CONTENT ===== */}
       {trendTech === "oil_analysis" && (
         <div className="mt-6">
-          <div className="flex flex-wrap gap-2 mb-4 border-b border-slate-700 pb-2">
-            {OIL_SUB_TABS.map((tab) => {
-              const isActive = activeOilSubTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  disabled={tab.disabled}
-                  onClick={() => {
-                    if (!tab.disabled) setActiveOilSubTab(tab.id);
-                  }}
-                  className={`px-4 py-2 rounded-lg text-xs font-semibold border transition-colors ${
-                    tab.disabled
-                      ? "bg-slate-800 text-slate-500 border-slate-700 opacity-50 cursor-not-allowed"
-                      : isActive
-                        ? "bg-cyan-600 text-white border-cyan-500"
-                        : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500 cursor-pointer"
-                  }`}
-                >
-                  {tab.label}
-                  {tab.comingSoon ? " (Coming Soon)" : ""}
-                </button>
-              );
-            })}
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4 border-b border-slate-700 pb-2">
+            <div className="flex flex-wrap gap-2">
+              {OIL_SUB_TABS.map((tab) => {
+                const isActive = activeOilSubTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    disabled={tab.disabled}
+                    onClick={() => {
+                      if (!tab.disabled) setActiveOilSubTab(tab.id);
+                    }}
+                    className={`px-4 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                      tab.disabled
+                        ? "bg-slate-800 text-slate-500 border-slate-700 opacity-50 cursor-not-allowed"
+                        : isActive
+                          ? "bg-cyan-600 text-white border-cyan-500"
+                          : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500 cursor-pointer"
+                    }`}
+                  >
+                    {tab.label}
+                    {tab.comingSoon ? " (Coming Soon)" : ""}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              disabled={!analysisAssetQueryKey}
+              onClick={() => setAddOilSampleOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold border border-cyan-500/40 bg-cyan-600/20 text-cyan-300 hover:bg-cyan-600/30 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Add Sample
+            </button>
           </div>
 
+          <AddOilSampleModal
+            isOpen={addOilSampleOpen}
+            onClose={() => setAddOilSampleOpen(false)}
+            assetId={analysisAssetQueryKey ?? ""}
+            onSampleSaved={() => setOilSampleRefreshKey((k) => k + 1)}
+          />
+
           {activeOilSubTab === "wear_metals" ? (
-            <OilWearMetalsTab assetId={analysisAssetQueryKey ?? ""} />
+            <OilWearMetalsTab
+              assetId={analysisAssetQueryKey ?? ""}
+              refreshKey={oilSampleRefreshKey}
+            />
           ) : dbTrendLoading ? (
             <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
               <p className="text-sm font-semibold text-slate-200">Loading oil analysis trends…</p>

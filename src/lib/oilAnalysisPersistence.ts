@@ -19,6 +19,9 @@ export type SaveOilSampleInput = {
   silicon?: number;
   tin?: number;
   nickel?: number;
+  viscosity40C?: number | null;
+  viscosity100C?: number | null;
+  acidNumber?: number | null;
 };
 
 async function findOilAnalysisId(assetId: string): Promise<string | null> {
@@ -72,7 +75,10 @@ export async function saveOilSample(input: SaveOilSampleInput) {
     aluminum = 0,
     silicon = 0,
     tin = 0,
-    nickel = 0
+    nickel = 0,
+    viscosity40C = null,
+    viscosity100C = null,
+    acidNumber = null
   } = input;
 
   const analysisId = await getOrCreateOilAnalysisId(assetId);
@@ -99,6 +105,9 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       silicon,
       tin,
       nickel,
+      viscosity_40c,
+      viscosity_100c,
+      acid_number,
       baseline_iron,
       baseline_copper,
       baseline_chromium,
@@ -113,8 +122,9 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       silicon_alarm_limit
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-      $12, $13, $14, $15, $16, $17,
-      $18, $19, $20, $21, $22, $23
+      $12, $13, $14,
+      $15, $16, $17, $18, $19, $20,
+      $21, $22, $23, $24, $25, $26
     )
     RETURNING *`,
     [
@@ -129,6 +139,9 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       silicon,
       tin,
       nickel,
+      viscosity40C,
+      viscosity100C,
+      acidNumber,
       isFirstSample ? iron : null,
       isFirstSample ? copper : null,
       isFirstSample ? chromium : null,

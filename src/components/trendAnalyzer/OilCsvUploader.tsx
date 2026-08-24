@@ -36,6 +36,26 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
   const leadRaw = pick("lead", "Lead", "Pb");
   const aluminumRaw = pick("aluminum", "Aluminum", "Al");
   const siliconRaw = pick("silicon", "Silicon", "Si");
+  const viscosity40Raw = pick(
+    "viscosity40C",
+    "viscosity_40c",
+    "visc40",
+    "Viscosity40",
+    "Viscosity @40C"
+  );
+  const viscosity100Raw = pick(
+    "viscosity100C",
+    "viscosity_100c",
+    "visc100",
+    "Viscosity100"
+  );
+  const acidRaw = pick(
+    "acidNumber",
+    "acid_number",
+    "tan",
+    "TAN",
+    "Acid Number"
+  );
 
   if (!sampleDate || !operatingHoursRaw) return null;
 
@@ -57,6 +77,14 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
     return null;
   }
 
+  const viscosity40C = viscosity40Raw
+    ? Number.parseFloat(viscosity40Raw)
+    : undefined;
+  const viscosity100C = viscosity100Raw
+    ? Number.parseFloat(viscosity100Raw)
+    : undefined;
+  const acidNumber = acidRaw ? Number.parseFloat(acidRaw) : undefined;
+
   return {
     sampleDate,
     operatingHours,
@@ -65,7 +93,10 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
     chromium,
     lead,
     aluminum,
-    silicon
+    silicon,
+    ...(Number.isFinite(viscosity40C) ? { viscosity40C } : {}),
+    ...(Number.isFinite(viscosity100C) ? { viscosity100C } : {}),
+    ...(Number.isFinite(acidNumber) ? { acidNumber } : {})
   };
 }
 
@@ -177,7 +208,14 @@ export function OilCsvUploader({
             chromium: row.chromium,
             lead: row.lead,
             aluminum: row.aluminum,
-            silicon: row.silicon
+            silicon: row.silicon,
+            ...(row.viscosity40C != null
+              ? { viscosity40C: row.viscosity40C }
+              : {}),
+            ...(row.viscosity100C != null
+              ? { viscosity100C: row.viscosity100C }
+              : {}),
+            ...(row.acidNumber != null ? { acidNumber: row.acidNumber } : {})
           })
         });
 
@@ -215,7 +253,7 @@ export function OilCsvUploader({
         Format:{" "}
         <code className="bg-slate-900 px-1 rounded text-cyan-300">
           sampleDate, operatingHours, iron, copper, chromium, lead, aluminum,
-          silicon
+          silicon[, viscosity40C, acidNumber]
         </code>
       </p>
 

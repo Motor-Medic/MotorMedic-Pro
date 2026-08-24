@@ -17,6 +17,11 @@ export interface OilSample {
   tin?: number;
   nickel?: number;
 
+  // Fluid chemistry (optional — from vision / CSV)
+  viscosity40C?: number;
+  viscosity100C?: number;
+  acidNumber?: number; // TAN mg KOH/g
+
   // Baseline values (from new oil or first sample)
   baselineIron?: number;
   baselineCopper?: number;
@@ -85,6 +90,9 @@ export interface OilSampleCSVRow {
   lead: number;
   aluminum: number;
   silicon: number;
+  viscosity40C?: number;
+  viscosity100C?: number;
+  acidNumber?: number;
 }
 
 /**
