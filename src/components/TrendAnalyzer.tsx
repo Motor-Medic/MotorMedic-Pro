@@ -135,6 +135,7 @@ import {
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
+import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
 import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
 import {
   getEquipmentData,
@@ -1286,7 +1287,7 @@ const OIL_SUB_TABS: {
   comingSoon?: boolean;
 }[] = [
   { id: "wear_metals", label: "Wear Metals & Debris" },
-  { id: "chemistry", label: "Fluid Chemistry", disabled: true, comingSoon: true },
+  { id: "chemistry", label: "Fluid Chemistry" },
   { id: "cleanliness", label: "Cleanliness", disabled: true, comingSoon: true },
   { id: "ferrography", label: "Ferrography & Varnish", disabled: true, comingSoon: true }
 ];
@@ -7629,6 +7630,11 @@ export default function TrendAnalyzer({
 
           {activeOilSubTab === "wear_metals" ? (
             <OilWearMetalsTab
+              assetId={analysisAssetQueryKey ?? ""}
+              refreshKey={oilSampleRefreshKey}
+            />
+          ) : activeOilSubTab === "chemistry" ? (
+            <OilFluidChemistryTab
               assetId={analysisAssetQueryKey ?? ""}
               refreshKey={oilSampleRefreshKey}
             />

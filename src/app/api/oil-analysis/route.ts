@@ -5,9 +5,9 @@
 
 import {
   OIL_ANALYSIS_API_PATH,
+  coerceSaveOilSampleInput,
   fetchOilSamplesForAsset,
-  saveOilSample,
-  type SaveOilSampleInput
+  saveOilSample
 } from "../../../lib/oilAnalysisPersistence";
 import { isDbConfigured } from "../../../lib/db";
 
@@ -59,42 +59,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    const body = (await request.json()) as SaveOilSampleInput;
-    const {
-      assetId,
-      sampleDate,
-      operatingHours,
-      iron,
-      copper,
-      chromium,
-      lead,
-      aluminum,
-      silicon,
-      tin,
-      nickel
-    } = body;
+    const body = (await request.json()) as Record<string, unknown>;
+    const input = coerceSaveOilSampleInput(body);
 
-    if (!assetId || !sampleDate || operatingHours == null) {
-      return jsonResponse({ error: "Missing required fields" }, 400);
+    if ("error" in input) {
+      return jsonResponse({ error: input.error }, 400);
     }
 
-    const result = await saveOilSample({
-      assetId,
-      sampleDate,
-      operatingHours,
-      iron,
-      copper,
-      chromium,
-      lead,
-      aluminum,
-      silicon,
-      tin,
-      nickel
-    });
-
-    if ("error" in result) {
-      return jsonResponse({ error: result.error }, result.status);
-    }
+    const result = await saveOilSample(input);
 
     return jsonResponse({
       success: true,

@@ -61,6 +61,7 @@ import {
 } from "./src/lib/extractThermalMetadata";
 import {
   OIL_ANALYSIS_API_PATH,
+  coerceSaveOilSampleInput,
   fetchOilSamplesForAsset,
   saveOilSample
 } from "./src/lib/oilAnalysisPersistence";
@@ -1782,50 +1783,13 @@ app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
   try {
-    const {
-      assetId,
-      sampleDate,
-      operatingHours,
-      iron,
-      copper,
-      chromium,
-      lead,
-      aluminum,
-      silicon,
-      tin,
-      nickel,
-      viscosity40C,
-      viscosity100C,
-      acidNumber
-    } = req.body || {};
+    const input = coerceSaveOilSampleInput(req.body || {});
 
-    if (!assetId || !sampleDate || operatingHours == null) {
-      return res.status(400).json({ error: "Missing required fields" });
+    if ("error" in input) {
+      return res.status(400).json({ error: input.error });
     }
 
-    const result = await saveOilSample({
-      assetId: String(assetId),
-      sampleDate: String(sampleDate),
-      operatingHours: Number(operatingHours),
-      iron,
-      copper,
-      chromium,
-      lead,
-      aluminum,
-      silicon,
-      tin,
-      nickel,
-      viscosity40C:
-        viscosity40C != null && viscosity40C !== ""
-          ? Number(viscosity40C)
-          : null,
-      viscosity100C:
-        viscosity100C != null && viscosity100C !== ""
-          ? Number(viscosity100C)
-          : null,
-      acidNumber:
-        acidNumber != null && acidNumber !== "" ? Number(acidNumber) : null
-    });
+    const result = await saveOilSample(input);
 
     if ("error" in result) {
       return res.status(result.status).json({ error: result.error });
@@ -11942,6 +11906,19 @@ async function initializeDatabase() {
         ADD COLUMN IF NOT EXISTS viscosity_40c DECIMAL(10, 2),
         ADD COLUMN IF NOT EXISTS viscosity_100c DECIMAL(10, 2),
         ADD COLUMN IF NOT EXISTS acid_number DECIMAL(10, 3);
+    `);
+    // migrations/009 — contamination & chemistry. Viscosity/TAN reuse the
+    // columns added above rather than getting duplicate viscosity_40 / tan.
+    await pool.query(`
+      ALTER TABLE oil_samples
+        ADD COLUMN IF NOT EXISTS viscosity_index DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS tbn DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS water_ppm DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS oxidation DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS nitration DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS iso_4um INTEGER,
+        ADD COLUMN IF NOT EXISTS iso_6um INTEGER,
+        ADD COLUMN IF NOT EXISTS iso_14um INTEGER;
     `);
 
     console.log(

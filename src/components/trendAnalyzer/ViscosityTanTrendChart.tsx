@@ -13,6 +13,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
+import { formatSampleDate } from "../../lib/oilAnalysisMetrics";
 
 export type ViscosityTanSamplePoint = {
   sampleDate: string;
@@ -38,7 +39,7 @@ export function ViscosityTanTrendChart({
     )
     .slice(-maxPoints)
     .map((s) => ({
-      date: new Date(s.sampleDate).toLocaleDateString(undefined, {
+      date: formatSampleDate(s.sampleDate, {
         month: "short",
         day: "numeric",
         year: "2-digit"

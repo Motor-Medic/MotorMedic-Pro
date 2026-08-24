@@ -4,6 +4,7 @@
 
 import { useRef, useState, type ChangeEvent } from "react";
 import Papa from "papaparse";
+import { parseIsoCode } from "../../lib/oilAnalysisMetrics";
 import type { OilSampleCSVRow } from "../../types/oilAnalysis";
 
 /** Keep this constant local — do not import oilAnalysisPersistence (pulls pg into the browser). */
@@ -56,6 +57,26 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
     "TAN",
     "Acid Number"
   );
+  const viscosityIndexRaw = pick(
+    "viscosityIndex",
+    "viscosity_index",
+    "VI",
+    "Viscosity Index"
+  );
+  const tbnRaw = pick("tbn", "TBN", "baseNumber", "base_number", "Base Number");
+  const waterRaw = pick("waterPpm", "water_ppm", "water", "Water", "Water PPM");
+  const oxidationRaw = pick("oxidation", "Oxidation", "ox");
+  const nitrationRaw = pick("nitration", "Nitration");
+  const isoCodeRaw = pick(
+    "isoCode",
+    "iso_code",
+    "iso4406",
+    "ISO 4406",
+    "particleCountIso4406"
+  );
+  const iso4Raw = pick("iso4um", "iso_4um", "ISO4");
+  const iso6Raw = pick("iso6um", "iso_6um", "ISO6");
+  const iso14Raw = pick("iso14um", "iso_14um", "ISO14");
 
   if (!sampleDate || !operatingHoursRaw) return null;
 
@@ -85,6 +106,18 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
     : undefined;
   const acidNumber = acidRaw ? Number.parseFloat(acidRaw) : undefined;
 
+  const optional = (raw: string): number | undefined => {
+    if (!raw) return undefined;
+    const n = Number.parseFloat(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
+  // A combined "18/16/13" column wins; per-channel columns are the fallback.
+  const combinedIso = parseIsoCode(isoCodeRaw);
+  const iso4um = combinedIso?.[0] ?? optional(iso4Raw);
+  const iso6um = combinedIso?.[1] ?? optional(iso6Raw);
+  const iso14um = combinedIso?.[2] ?? optional(iso14Raw);
+
   return {
     sampleDate,
     operatingHours,
@@ -96,7 +129,21 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
     silicon,
     ...(Number.isFinite(viscosity40C) ? { viscosity40C } : {}),
     ...(Number.isFinite(viscosity100C) ? { viscosity100C } : {}),
-    ...(Number.isFinite(acidNumber) ? { acidNumber } : {})
+    ...(Number.isFinite(acidNumber) ? { acidNumber } : {}),
+    ...(optional(viscosityIndexRaw) != null
+      ? { viscosityIndex: optional(viscosityIndexRaw) }
+      : {}),
+    ...(optional(tbnRaw) != null ? { tbn: optional(tbnRaw) } : {}),
+    ...(optional(waterRaw) != null ? { waterPpm: optional(waterRaw) } : {}),
+    ...(optional(oxidationRaw) != null
+      ? { oxidation: optional(oxidationRaw) }
+      : {}),
+    ...(optional(nitrationRaw) != null
+      ? { nitration: optional(nitrationRaw) }
+      : {}),
+    ...(iso4um != null ? { iso4um } : {}),
+    ...(iso6um != null ? { iso6um } : {}),
+    ...(iso14um != null ? { iso14um } : {})
   };
 }
 
@@ -199,24 +246,8 @@ export function OilCsvUploader({
         const res = await fetch(OIL_ANALYSIS_API_PATH, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            assetId,
-            sampleDate: row.sampleDate,
-            operatingHours: row.operatingHours,
-            iron: row.iron,
-            copper: row.copper,
-            chromium: row.chromium,
-            lead: row.lead,
-            aluminum: row.aluminum,
-            silicon: row.silicon,
-            ...(row.viscosity40C != null
-              ? { viscosity40C: row.viscosity40C }
-              : {}),
-            ...(row.viscosity100C != null
-              ? { viscosity100C: row.viscosity100C }
-              : {}),
-            ...(row.acidNumber != null ? { acidNumber: row.acidNumber } : {})
-          })
+          // OilSampleCSVRow keys match the API contract 1:1.
+          body: JSON.stringify({ assetId, ...row })
         });
 
         if (res.ok) {
@@ -250,10 +281,17 @@ export function OilCsvUploader({
         Upload Lab Report (CSV)
       </h3>
       <p className="text-sm text-slate-400 mb-4">
-        Format:{" "}
+        Required:{" "}
         <code className="bg-slate-900 px-1 rounded text-cyan-300">
           sampleDate, operatingHours, iron, copper, chromium, lead, aluminum,
-          silicon[, viscosity40C, acidNumber]
+          silicon
+        </code>
+      </p>
+      <p className="text-xs text-slate-500 mb-4">
+        Optional fluid chemistry:{" "}
+        <code className="bg-slate-900 px-1 rounded text-cyan-300">
+          viscosity40C, viscosity100C, viscosityIndex, tan, tbn, waterPpm,
+          oxidation, nitration, isoCode (e.g. 18/16/13)
         </code>
       </p>
 

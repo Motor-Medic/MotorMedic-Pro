@@ -21,8 +21,72 @@ export type SaveOilSampleInput = {
   nickel?: number;
   viscosity40C?: number | null;
   viscosity100C?: number | null;
+  viscosityIndex?: number | null;
   acidNumber?: number | null;
+  tbn?: number | null;
+  waterPpm?: number | null;
+  oxidation?: number | null;
+  nitration?: number | null;
+  iso4um?: number | null;
+  iso6um?: number | null;
+  iso14um?: number | null;
 };
+
+/** Parse an optional numeric body field; blank/garbage becomes null. */
+function optNumeric(raw: unknown): number | null {
+  if (raw == null || raw === "") return null;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Parse an optional integer body field (ISO 4406 codes). */
+function optInt(raw: unknown): number | null {
+  const n = optNumeric(raw);
+  return n == null ? null : Math.round(n);
+}
+
+/**
+ * Build a SaveOilSampleInput from an untrusted request body.
+ * Shared by the App Router route and the Express handler so the two paths
+ * can never drift on which fields they accept.
+ */
+export function coerceSaveOilSampleInput(
+  body: Record<string, unknown>
+): SaveOilSampleInput | { error: string } {
+  const assetId = body.assetId != null ? String(body.assetId).trim() : "";
+  const sampleDate =
+    body.sampleDate != null ? String(body.sampleDate).trim() : "";
+  const operatingHours = optNumeric(body.operatingHours);
+
+  if (!assetId || !sampleDate || operatingHours == null) {
+    return { error: "Missing required fields" };
+  }
+
+  return {
+    assetId,
+    sampleDate,
+    operatingHours,
+    iron: optNumeric(body.iron) ?? 0,
+    copper: optNumeric(body.copper) ?? 0,
+    chromium: optNumeric(body.chromium) ?? 0,
+    lead: optNumeric(body.lead) ?? 0,
+    aluminum: optNumeric(body.aluminum) ?? 0,
+    silicon: optNumeric(body.silicon) ?? 0,
+    tin: optNumeric(body.tin) ?? 0,
+    nickel: optNumeric(body.nickel) ?? 0,
+    viscosity40C: optNumeric(body.viscosity40C),
+    viscosity100C: optNumeric(body.viscosity100C),
+    viscosityIndex: optNumeric(body.viscosityIndex),
+    acidNumber: optNumeric(body.acidNumber),
+    tbn: optNumeric(body.tbn),
+    waterPpm: optNumeric(body.waterPpm),
+    oxidation: optNumeric(body.oxidation),
+    nitration: optNumeric(body.nitration),
+    iso4um: optInt(body.iso4um),
+    iso6um: optInt(body.iso6um),
+    iso14um: optInt(body.iso14um)
+  };
+}
 
 async function findOilAnalysisId(assetId: string): Promise<string | null> {
   const result = await query(
@@ -78,7 +142,15 @@ export async function saveOilSample(input: SaveOilSampleInput) {
     nickel = 0,
     viscosity40C = null,
     viscosity100C = null,
-    acidNumber = null
+    viscosityIndex = null,
+    acidNumber = null,
+    tbn = null,
+    waterPpm = null,
+    oxidation = null,
+    nitration = null,
+    iso4um = null,
+    iso6um = null,
+    iso14um = null
   } = input;
 
   const analysisId = await getOrCreateOilAnalysisId(assetId);
@@ -107,7 +179,15 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       nickel,
       viscosity_40c,
       viscosity_100c,
+      viscosity_index,
       acid_number,
+      tbn,
+      water_ppm,
+      oxidation,
+      nitration,
+      iso_4um,
+      iso_6um,
+      iso_14um,
       baseline_iron,
       baseline_copper,
       baseline_chromium,
@@ -122,9 +202,9 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       silicon_alarm_limit
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-      $12, $13, $14,
-      $15, $16, $17, $18, $19, $20,
-      $21, $22, $23, $24, $25, $26
+      $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+      $23, $24, $25, $26, $27, $28,
+      $29, $30, $31, $32, $33, $34
     )
     RETURNING *`,
     [
@@ -141,7 +221,15 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       nickel,
       viscosity40C,
       viscosity100C,
+      viscosityIndex,
       acidNumber,
+      tbn,
+      waterPpm,
+      oxidation,
+      nitration,
+      iso4um,
+      iso6um,
+      iso14um,
       isFirstSample ? iron : null,
       isFirstSample ? copper : null,
       isFirstSample ? chromium : null,

@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
+import { parseIsoCode } from "../../lib/oilAnalysisMetrics";
 import type { OilReportData } from "../../types/oilVision";
 import OilCsvUploader from "./OilCsvUploader";
 import OilVisionDropzone from "./OilVisionDropzone";
@@ -18,6 +19,40 @@ export interface AddOilSampleModalProps {
   onSampleSaved: () => void;
 }
 
+type IngestMode = "upload" | "manual";
+
+const MANUAL_FIELDS = [
+  { key: "iron", label: "Iron (Fe)", unit: "ppm" },
+  { key: "copper", label: "Copper (Cu)", unit: "ppm" },
+  { key: "chromium", label: "Chromium (Cr)", unit: "ppm" },
+  { key: "lead", label: "Lead (Pb)", unit: "ppm" },
+  { key: "aluminum", label: "Aluminum (Al)", unit: "ppm" },
+  { key: "silicon", label: "Silicon (Si)", unit: "ppm" },
+  { key: "tin", label: "Tin (Sn)", unit: "ppm" },
+  { key: "nickel", label: "Nickel (Ni)", unit: "ppm" },
+  { key: "viscosity40C", label: "Viscosity @40°C", unit: "cSt" },
+  { key: "viscosity100C", label: "Viscosity @100°C", unit: "cSt" },
+  { key: "viscosityIndex", label: "Viscosity Index", unit: "VI" },
+  { key: "acidNumber", label: "TAN", unit: "mg KOH/g" },
+  { key: "tbn", label: "TBN", unit: "mg KOH/g" },
+  { key: "waterPpm", label: "Water", unit: "ppm" },
+  { key: "oxidation", label: "Oxidation", unit: "Abs/cm" },
+  { key: "nitration", label: "Nitration", unit: "Abs/cm" },
+  { key: "iso4um", label: "ISO >4µm", unit: "code" },
+  { key: "iso6um", label: "ISO >6µm", unit: "code" },
+  { key: "iso14um", label: "ISO >14µm", unit: "code" }
+] as const;
+
+type ManualFieldKey = (typeof MANUAL_FIELDS)[number]["key"];
+type ManualForm = Record<ManualFieldKey | "sampleDate" | "operatingHours", string>;
+
+const EMPTY_MANUAL_FORM = (): ManualForm =>
+  ({
+    sampleDate: new Date().toISOString().slice(0, 10),
+    operatingHours: "",
+    ...Object.fromEntries(MANUAL_FIELDS.map((f) => [f.key, ""]))
+  }) as ManualForm;
+
 export function AddOilSampleModal({
   isOpen,
   onClose,
@@ -26,11 +61,15 @@ export function AddOilSampleModal({
 }: AddOilSampleModalProps) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [mode, setMode] = useState<IngestMode>("upload");
+  const [manualForm, setManualForm] = useState<ManualForm>(EMPTY_MANUAL_FORM);
 
   useEffect(() => {
     if (!isOpen) {
       setStatusMsg(null);
       setSaving(false);
+      setMode("upload");
+      setManualForm(EMPTY_MANUAL_FORM());
     }
   }, [isOpen]);
 
@@ -58,12 +97,21 @@ export function AddOilSampleModal({
         data.header.sampleDate || new Date().toISOString().slice(0, 10);
       const operatingHours = o.operatingHours ?? 0;
 
+      const iso = parseIsoCode(f.particleCountIso4406);
+
       const hasMetals =
         m.iron != null ||
         m.copper != null ||
         m.chromium != null ||
         m.silicon != null;
-      const hasFluid = f.viscosity40C != null || f.acidNumber != null;
+      const hasFluid =
+        f.viscosity40C != null ||
+        f.acidNumber != null ||
+        f.baseNumber != null ||
+        f.waterPpm != null ||
+        f.oxidation != null ||
+        f.nitration != null ||
+        iso != null;
 
       if (!hasMetals && !hasFluid) {
         setStatusMsg(
@@ -92,7 +140,15 @@ export function AddOilSampleModal({
             nickel: m.nickel ?? undefined,
             viscosity40C: f.viscosity40C ?? undefined,
             viscosity100C: f.viscosity100C ?? undefined,
-            acidNumber: f.acidNumber ?? undefined
+            viscosityIndex: f.viscosityIndex ?? undefined,
+            acidNumber: f.acidNumber ?? undefined,
+            tbn: f.baseNumber ?? undefined,
+            waterPpm: f.waterPpm ?? undefined,
+            oxidation: f.oxidation ?? undefined,
+            nitration: f.nitration ?? undefined,
+            iso4um: iso?.[0],
+            iso6um: iso?.[1],
+            iso14um: iso?.[2]
           })
         });
         if (!res.ok) throw new Error("Failed to save vision sample");
@@ -110,6 +166,74 @@ export function AddOilSampleModal({
     },
     [assetId, finishSaved]
   );
+
+  const saveManualSample = useCallback(async () => {
+    if (!assetId) return;
+
+    const numeric = (raw: string): number | undefined => {
+      const trimmed = raw.trim();
+      if (trimmed === "") return undefined;
+      const n = Number(trimmed);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
+    if (!manualForm.sampleDate) {
+      setStatusMsg("Sample date is required.");
+      return;
+    }
+
+    const hasAnyValue = MANUAL_FIELDS.some(
+      (f) => numeric(manualForm[f.key]) != null
+    );
+    if (!hasAnyValue) {
+      setStatusMsg("Enter at least one wear metal or fluid property value.");
+      return;
+    }
+
+    setSaving(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch(OIL_ANALYSIS_API_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assetId,
+          sampleDate: manualForm.sampleDate,
+          operatingHours: numeric(manualForm.operatingHours) ?? 0,
+          iron: numeric(manualForm.iron) ?? 0,
+          copper: numeric(manualForm.copper) ?? 0,
+          chromium: numeric(manualForm.chromium) ?? 0,
+          lead: numeric(manualForm.lead) ?? 0,
+          aluminum: numeric(manualForm.aluminum) ?? 0,
+          silicon: numeric(manualForm.silicon) ?? 0,
+          tin: numeric(manualForm.tin),
+          nickel: numeric(manualForm.nickel),
+          viscosity40C: numeric(manualForm.viscosity40C),
+          viscosity100C: numeric(manualForm.viscosity100C),
+          viscosityIndex: numeric(manualForm.viscosityIndex),
+          acidNumber: numeric(manualForm.acidNumber),
+          tbn: numeric(manualForm.tbn),
+          waterPpm: numeric(manualForm.waterPpm),
+          oxidation: numeric(manualForm.oxidation),
+          nitration: numeric(manualForm.nitration),
+          iso4um: numeric(manualForm.iso4um),
+          iso6um: numeric(manualForm.iso6um),
+          iso14um: numeric(manualForm.iso14um)
+        })
+      });
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(payload?.error || "Failed to save sample");
+      }
+      finishSaved();
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : "Failed to save sample");
+    } finally {
+      setSaving(false);
+    }
+  }, [assetId, manualForm, finishSaved]);
 
   if (!isOpen) return null;
 
@@ -137,8 +261,8 @@ export function AddOilSampleModal({
               Add Oil Sample
             </h2>
             <p className="text-xs text-slate-500 mt-1">
-              Upload a lab report image (vision) or CSV — fields save to history
-              automatically
+              Upload a lab report image (vision) or CSV, or key in values
+              manually — everything saves to sample history
             </p>
           </div>
           <button
@@ -158,15 +282,120 @@ export function AddOilSampleModal({
             </p>
           ) : (
             <>
-              <OilVisionDropzone
-                disabled={!assetId || saving}
-                onExtracted={(data) => void saveVisionSample(data)}
-                onError={(msg) => setStatusMsg(msg)}
-              />
-              <OilCsvUploader
-                assetId={assetId}
-                onUploadComplete={finishSaved}
-              />
+              <div className="flex gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1">
+                {(
+                  [
+                    ["upload", "Upload (Image / CSV)"],
+                    ["manual", "Manual Entry"]
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => {
+                      setMode(value);
+                      setStatusMsg(null);
+                    }}
+                    className={`flex-1 rounded-md px-3 py-2 text-xs font-semibold cursor-pointer transition-colors ${
+                      mode === value
+                        ? "bg-cyan-500/15 text-cyan-300 border border-cyan-500/30"
+                        : "text-slate-400 hover:text-slate-200 border border-transparent"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {mode === "upload" ? (
+                <>
+                  <OilVisionDropzone
+                    disabled={!assetId || saving}
+                    onExtracted={(data) => void saveVisionSample(data)}
+                    onError={(msg) => setStatusMsg(msg)}
+                  />
+                  <OilCsvUploader
+                    assetId={assetId}
+                    onUploadComplete={finishSaved}
+                  />
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Sample Date
+                      </span>
+                      <input
+                        type="date"
+                        value={manualForm.sampleDate}
+                        onChange={(e) =>
+                          setManualForm((prev) => ({
+                            ...prev,
+                            sampleDate: e.target.value
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:border-cyan-500 focus:outline-none"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        Operating Hours
+                      </span>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        value={manualForm.operatingHours}
+                        onChange={(e) =>
+                          setManualForm((prev) => ({
+                            ...prev,
+                            operatingHours: e.target.value
+                          }))
+                        }
+                        placeholder="0"
+                        className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:border-cyan-500 focus:outline-none"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {MANUAL_FIELDS.map((field) => (
+                      <label key={field.key} className="block">
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          {field.label}
+                        </span>
+                        <div className="relative mt-1">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            step="any"
+                            value={manualForm[field.key]}
+                            onChange={(e) =>
+                              setManualForm((prev) => ({
+                                ...prev,
+                                [field.key]: e.target.value
+                              }))
+                            }
+                            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 pr-14 text-sm text-white focus:border-cyan-500 focus:outline-none"
+                          />
+                          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-500">
+                            {field.unit}
+                          </span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => void saveManualSample()}
+                    className="w-full rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-bold text-slate-950 hover:bg-cyan-400 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                  >
+                    {saving ? "Saving…" : "Save Sample"}
+                  </button>
+                </div>
+              )}
             </>
           )}
           {statusMsg && (

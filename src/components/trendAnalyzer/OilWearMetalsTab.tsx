@@ -17,17 +17,14 @@ import {
 import {
   calculateBaselineDelta,
   calculateWearRate,
+  formatSampleDate,
   getThresholdStatus,
-  interpretWearPattern
+  interpretWearPattern,
+  sampleAgeInDays
 } from "../../lib/oilAnalysisMetrics";
-import {
-  DEFAULT_ALARM_LIMITS,
-  type OilSample,
-  type ThresholdStatus
-} from "../../types/oilAnalysis";
+import { fetchOilSamples } from "../../lib/oilSampleRow";
+import type { OilSample, ThresholdStatus } from "../../types/oilAnalysis";
 import ViscosityTanTrendChart from "./ViscosityTanTrendChart";
-
-const OIL_ANALYSIS_API_PATH = "/api/oil-analysis";
 
 export interface OilWearMetalsTabProps {
   assetId: string;
@@ -40,85 +37,6 @@ const STATUS_STYLES: Record<ThresholdStatus, string> = {
   warning: "text-yellow-400 bg-yellow-400/10 border-yellow-400/20",
   critical: "text-red-400 bg-red-400/10 border-red-400/20"
 };
-
-type OilSampleDbRow = {
-  id?: string;
-  asset_id?: string;
-  sample_date: string;
-  operating_hours: number | string;
-  iron?: number | string | null;
-  copper?: number | string | null;
-  chromium?: number | string | null;
-  lead?: number | string | null;
-  aluminum?: number | string | null;
-  silicon?: number | string | null;
-  tin?: number | string | null;
-  nickel?: number | string | null;
-  viscosity_40c?: number | string | null;
-  viscosity_100c?: number | string | null;
-  acid_number?: number | string | null;
-  baseline_iron?: number | string | null;
-  baseline_copper?: number | string | null;
-  baseline_chromium?: number | string | null;
-  iron_alarm_limit?: number | string | null;
-  copper_alarm_limit?: number | string | null;
-  chromium_alarm_limit?: number | string | null;
-  lead_alarm_limit?: number | string | null;
-  aluminum_alarm_limit?: number | string | null;
-  silicon_alarm_limit?: number | string | null;
-};
-
-function num(raw: unknown, fallback = 0): number {
-  const n = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function optNum(raw: unknown): number | undefined {
-  if (raw == null || raw === "") return undefined;
-  const n = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function mapSample(row: OilSampleDbRow, assetId: string): OilSample {
-  return {
-    id: row.id,
-    assetId: row.asset_id || assetId,
-    sampleDate: row.sample_date,
-    operatingHours: num(row.operating_hours),
-    iron: num(row.iron),
-    copper: num(row.copper),
-    chromium: num(row.chromium),
-    lead: num(row.lead),
-    aluminum: num(row.aluminum),
-    silicon: num(row.silicon),
-    tin: row.tin != null ? num(row.tin) : undefined,
-    nickel: row.nickel != null ? num(row.nickel) : undefined,
-    viscosity40C: optNum(row.viscosity_40c),
-    viscosity100C: optNum(row.viscosity_100c),
-    acidNumber: optNum(row.acid_number),
-    baselineIron:
-      row.baseline_iron != null ? num(row.baseline_iron) : undefined,
-    baselineCopper:
-      row.baseline_copper != null ? num(row.baseline_copper) : undefined,
-    baselineChromium:
-      row.baseline_chromium != null ? num(row.baseline_chromium) : undefined,
-    ironAlarmLimit: num(row.iron_alarm_limit, DEFAULT_ALARM_LIMITS.iron),
-    copperAlarmLimit: num(row.copper_alarm_limit, DEFAULT_ALARM_LIMITS.copper),
-    chromiumAlarmLimit: num(
-      row.chromium_alarm_limit,
-      DEFAULT_ALARM_LIMITS.chromium
-    ),
-    leadAlarmLimit: num(row.lead_alarm_limit, DEFAULT_ALARM_LIMITS.lead),
-    aluminumAlarmLimit: num(
-      row.aluminum_alarm_limit,
-      DEFAULT_ALARM_LIMITS.aluminum
-    ),
-    siliconAlarmLimit: num(
-      row.silicon_alarm_limit,
-      DEFAULT_ALARM_LIMITS.silicon
-    )
-  };
-}
 
 export function OilWearMetalsTab({
   assetId,
@@ -140,12 +58,7 @@ export function OilWearMetalsTab({
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(
-        `${OIL_ANALYSIS_API_PATH}?assetId=${encodeURIComponent(assetId)}`
-      );
-      if (!res.ok) throw new Error("Failed to fetch oil analysis history");
-      const data = (await res.json()) as { samples?: OilSampleDbRow[] };
-      setSamples((data.samples || []).map((row) => mapSample(row, assetId)));
+      setSamples(await fetchOilSamples(assetId));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
       setSamples([]);
@@ -198,18 +111,27 @@ export function OilWearMetalsTab({
   const latest = samples[samples.length - 1];
   const baseline = samples[0];
 
-  const filtered = samples.filter((s) => {
-    const days =
-      (Date.now() - new Date(s.sampleDate).getTime()) / 86400000;
-    if (timeRange === "7D") return days <= 7;
-    if (timeRange === "30D") return days <= 30;
-    if (timeRange === "90D") return days <= 90;
-    return days <= 365;
-  });
+  // Stored baseline_* columns are written on whichever row is inserted first,
+  // which is not necessarily the oldest sample. Anchor to the chronologically
+  // first sample so deltas stay correct for back-dated uploads.
+  const baselineFor = (
+    stored: number | undefined,
+    measured: number
+  ): number | undefined => (samples.length > 1 ? (stored ?? measured) : undefined);
+
+  const RANGE_DAYS: Record<typeof timeRange, number> = {
+    "7D": 7,
+    "30D": 30,
+    "90D": 90,
+    "1Y": 365
+  };
+  const filtered = samples.filter(
+    (s) => sampleAgeInDays(s.sampleDate) <= RANGE_DAYS[timeRange]
+  );
   const chartSamples = filtered.length > 0 ? filtered : samples;
 
   const chartData = chartSamples.map((s) => ({
-    date: new Date(s.sampleDate).toLocaleDateString(),
+    date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
     Iron: s.iron,
     Copper: s.copper,
     Chromium: s.chromium,
@@ -285,19 +207,19 @@ export function OilWearMetalsTab({
           "Iron (Fe)",
           latest.iron,
           latest.ironAlarmLimit,
-          latest.baselineIron ?? baseline.iron
+          baselineFor(baseline.baselineIron, baseline.iron)
         )}
         {renderCard(
           "Copper (Cu)",
           latest.copper,
           latest.copperAlarmLimit,
-          latest.baselineCopper ?? baseline.copper
+          baselineFor(baseline.baselineCopper, baseline.copper)
         )}
         {renderCard(
           "Chromium (Cr)",
           latest.chromium,
           latest.chromiumAlarmLimit,
-          latest.baselineChromium ?? baseline.chromium
+          baselineFor(baseline.baselineChromium, baseline.chromium)
         )}
         {renderCard(
           "Silicon (Si)",
@@ -382,9 +304,7 @@ export function OilWearMetalsTab({
                 key={s.id ?? `${s.sampleDate}-${idx}`}
                 className="border-b border-slate-700 hover:bg-slate-800/50"
               >
-                <td className="px-4 py-3">
-                  {new Date(s.sampleDate).toLocaleDateString()}
-                </td>
+                <td className="px-4 py-3">{formatSampleDate(s.sampleDate)}</td>
                 <td className="px-4 py-3">{s.operatingHours}</td>
                 <td className="px-4 py-3 font-mono">{s.iron}</td>
                 <td className="px-4 py-3 font-mono">{s.copper}</td>

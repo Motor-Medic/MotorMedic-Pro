@@ -18,9 +18,19 @@ export interface OilSample {
   nickel?: number;
 
   // Fluid chemistry (optional — from vision / CSV)
-  viscosity40C?: number;
-  viscosity100C?: number;
+  viscosity40C?: number; // cSt @ 40°C
+  viscosity100C?: number; // cSt @ 100°C
+  viscosityIndex?: number;
   acidNumber?: number; // TAN mg KOH/g
+  tbn?: number; // Base number mg KOH/g
+  waterPpm?: number;
+  oxidation?: number; // Abs/cm
+  nitration?: number; // Abs/cm
+
+  // ISO 4406 particle counts (code per >4µm / >6µm / >14µm channel)
+  iso4um?: number;
+  iso6um?: number;
+  iso14um?: number;
 
   // Baseline values (from new oil or first sample)
   baselineIron?: number;
@@ -92,8 +102,24 @@ export interface OilSampleCSVRow {
   silicon: number;
   viscosity40C?: number;
   viscosity100C?: number;
+  viscosityIndex?: number;
   acidNumber?: number;
+  tbn?: number;
+  waterPpm?: number;
+  oxidation?: number;
+  nitration?: number;
+  iso4um?: number;
+  iso6um?: number;
+  iso14um?: number;
 }
+
+/**
+ * Noria-recommended ISO 4406 cleanliness target for general industrial
+ * bearing/gear service, expressed as >4µm / >6µm / >14µm codes.
+ */
+export const ISO_CLEANLINESS_TARGET: readonly [number, number, number] = [
+  15, 13, 10
+] as const;
 
 /**
  * Default alarm limits based on ISO 4406 and industry standards
