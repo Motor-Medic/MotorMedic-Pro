@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import {
   CartesianGrid,
@@ -15,7 +15,9 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import CmmsDataBridge from "./CmmsDataBridge";
+import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
+import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
+import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 
 const FAULT_ZONE_DATA = [
   { subject: "Power Quality", A: 85, fullMark: 100 },
@@ -129,14 +131,39 @@ function StaticActionBar({
 export interface McaResultsDashboardProps {
   assetLabel: string;
   componentLabel?: string;
+  /** Asset key used to look up saved records; matches the persistence key. */
+  assetId: string;
+  /** Short asset tag for CMMS payloads. */
+  assetTag?: string;
+  /** Active diagnosis text; empty when no analysis has been run. */
+  primaryFault?: string;
+  severity?: string | null;
+  confidencePercent?: number | null;
+  healthScore?: number | null;
+  recommendations?: string[];
+  /** Saved analysis_results id; null until the analysis is persisted. */
+  savedAnalysisId?: string | null;
+  /** Logged-in user, pre-fills the sign-off name field. */
+  engineerName?: string;
   onNewAnalysis: () => void;
   onSaveWorkOrder: () => void;
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
 }
 
+const NO_RECOMMENDATIONS: string[] = [];
+
 export default function McaResultsDashboard({
   assetLabel,
   componentLabel,
+  assetId,
+  assetTag,
+  primaryFault = "",
+  severity = null,
+  confidencePercent = null,
+  healthScore = null,
+  recommendations = NO_RECOMMENDATIONS,
+  savedAnalysisId = null,
+  engineerName,
   onNewAnalysis,
   onToast
 }: McaResultsDashboardProps) {
@@ -145,6 +172,23 @@ export default function McaResultsDashboard({
 
   /** Mock primary fault flag — insulation drives left-column chart selection */
   const isInsulationFault = true;
+
+  // Load saved records for fusion, prognosis, sign-off and CMMS context
+  const {
+    loading: intelLoading,
+    error: intelError,
+    cmmsContext
+  } = useDiagnosticsIntelligence({
+    assetId,
+    assetTag: assetTag || assetLabel,
+    component: componentLabel || "",
+    primaryFault,
+    severity,
+    confidencePercent,
+    healthScore,
+    recommendations,
+    savedAnalysisId
+  });
 
   const handleExportPdf = () => {
     onToast?.("Generating MCA PDF report…", "info") ?? alert("Generating MCA PDF report…");
@@ -603,13 +647,19 @@ export default function McaResultsDashboard({
         </div>
       </section>
 
-      {/* 6 — Universal CMMS Data Bridge (last content section) */}
-      <CmmsDataBridge
-        domain="mca"
-        assetLabel={assetLabel}
-        componentLabel={componentLabel || "Stator / Winding"}
-        onToast={onToast}
-      />
+      {/* 6 — CMMS Work Order Bridge (last content section) */}
+      {!intelLoading && !intelError && (
+        <CmmsPayloadBridge
+          context={cmmsContext}
+          sectionId="mca-cmms-data-bridge"
+          onToast={onToast}
+        />
+      )}
+      {intelError && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+          Could not load CMMS context: {intelError}
+        </div>
+      )}
 
       <StaticActionBar
         position="bottom"

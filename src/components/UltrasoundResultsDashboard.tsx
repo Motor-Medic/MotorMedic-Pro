@@ -19,7 +19,8 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import CmmsDataBridge from "./CmmsDataBridge";
+import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
+import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 
 const PLAYBACK_SPEEDS = [0.5, 1.0, 2.0] as const;
@@ -117,6 +118,20 @@ function StaticActionBar({
 export interface UltrasoundResultsDashboardProps {
   assetLabel: string;
   componentLabel?: string;
+  /** Asset key used to look up saved records; matches the persistence key. */
+  assetId: string;
+  /** Short asset tag for CMMS payloads. */
+  assetTag?: string;
+  /** Active diagnosis text; empty when no analysis has been run. */
+  primaryFault?: string;
+  severity?: string | null;
+  confidencePercent?: number | null;
+  healthScore?: number | null;
+  recommendations?: string[];
+  /** Saved analysis_results id; null until the analysis is persisted. */
+  savedAnalysisId?: string | null;
+  /** Logged-in user, pre-fills the sign-off name field. */
+  engineerName?: string;
   analysis?: VibrationAnalysisResult | null;
   gaugeScore?: number;
   ultrasoundPeaks?: UltrasoundPeaksLite | null;
@@ -127,9 +142,20 @@ export interface UltrasoundResultsDashboardProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
 }
 
+const NO_RECOMMENDATIONS: string[] = [];
+
 export default function UltrasoundResultsDashboard({
   assetLabel,
   componentLabel,
+  assetId,
+  assetTag,
+  primaryFault = "",
+  severity = null,
+  confidencePercent = null,
+  healthScore = null,
+  recommendations = NO_RECOMMENDATIONS,
+  savedAnalysisId = null,
+  engineerName,
   analysis,
   gaugeScore,
   ultrasoundPeaks,
@@ -148,6 +174,23 @@ export default function UltrasoundResultsDashboard({
   const [cmmsClipboardFormat, setCmmsClipboardFormat] =
     useState<(typeof CMMS_CLIPBOARD_FORMATS)[number]>("IBM Maximo");
 
+  // Load saved records for fusion, prognosis, sign-off and CMMS context
+  const {
+    loading: intelLoading,
+    error: intelError,
+    cmmsContext
+  } = useDiagnosticsIntelligence({
+    assetId,
+    assetTag: assetTag || assetLabel,
+    component: componentLabel || "",
+    primaryFault,
+    severity,
+    confidencePercent,
+    healthScore,
+    recommendations,
+    savedAnalysisId
+  });
+
   const baselineDb = ultrasoundPeaks?.baseline_dbmv ?? 28;
   const currentDb = ultrasoundPeaks?.peak_dbmv ?? 44;
   const deltaDb =
@@ -159,7 +202,7 @@ export default function UltrasoundResultsDashboard({
       : analysis?.overallHealthScore != null
         ? analysis.overallHealthScore
         : null;
-  const primaryFault =
+  const primaryFaultTitle =
     analysis?.primaryFault?.title || analysis?.summary || null;
 
   const bearingBarPct = useMemo(
@@ -197,7 +240,7 @@ export default function UltrasoundResultsDashboard({
           <p className="text-sm text-slate-500 mt-1">
             Psychoacoustic analytics · Heterodyne UE · ISO 29821
           </p>
-          {(primaryFault || healthDisplay != null) && (
+          {(primaryFaultTitle || healthDisplay != null) && (
             <div className="mt-4 flex flex-wrap gap-3 text-sm">
               {healthDisplay != null && (
                 <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
@@ -205,10 +248,10 @@ export default function UltrasoundResultsDashboard({
                   <span className="font-bold text-yellow-400">{healthDisplay}</span>
                 </span>
               )}
-              {primaryFault && (
+              {primaryFaultTitle && (
                 <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
                   Primary:{" "}
-                  <span className="font-bold text-sky-400">{primaryFault}</span>
+                  <span className="font-bold text-sky-400">{primaryFaultTitle}</span>
                 </span>
               )}
               <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
@@ -829,14 +872,19 @@ export default function UltrasoundResultsDashboard({
         </section>
       )}
 
-      {/* 6 — Universal CMMS Data Bridge + static footer (no Page 1 artifacts) */}
-      <CmmsDataBridge
-        domain="ultrasound"
-        assetLabel={assetLabel}
-        componentLabel={componentLabel || "Leak Point"}
-        sectionId="ue-cmms-data-bridge"
-        onToast={onToast}
-      />
+      {/* 6 — CMMS Work Order Bridge + static footer (no Page 1 artifacts) */}
+      {!intelLoading && !intelError && (
+        <CmmsPayloadBridge
+          context={cmmsContext}
+          sectionId="ue-cmms-data-bridge"
+          onToast={onToast}
+        />
+      )}
+      {intelError && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+          Could not load CMMS context: {intelError}
+        </div>
+      )}
 
       <StaticActionBar
         position="bottom"

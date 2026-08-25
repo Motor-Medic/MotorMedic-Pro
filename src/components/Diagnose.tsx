@@ -133,8 +133,9 @@ import { mergeMcaOperatorSnapshots } from "../lib/mca/mcaSsot";
 import McaResultsDashboard from "./McaResultsDashboard";
 import OilInputAccordions from "./OilInputAccordions";
 import OilResultsDashboard from "./OilResultsDashboard";
-import CmmsDataBridge from "./CmmsDataBridge";
+import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
+import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 
 /* ========================================================================== */
 /* Props (keep App.tsx contract)                                              */
@@ -6336,39 +6337,58 @@ export default function Diagnose({
             fallback values used by the cards above.
           */}
           {analysisResult && (
-            <DiagnosticsIntelligencePanel
-              assetId={resolveVibrationAssetKey()}
-              assetTag={
-                browseAssetTag || reportAsset.tag || reportAsset.label
-              }
-              component={browseComponent || ""}
-              primaryFault={
-                analysisResult.primaryFault?.title ||
-                analysisResult.summary ||
-                "Unclassified finding"
-              }
-              severity={analysisResult.severity}
-              confidencePercent={
-                analysisResult.primaryFault?.confidencePercent ?? null
-              }
-              healthScore={analysisResult.overallHealthScore ?? null}
-              recommendations={analysisResult.repairRecommendations ?? []}
-              savedAnalysisId={savedAnalysisId}
-              engineerName={signOffEngineerName}
-              onToast={(msg, type) => toast(msg, type ?? "info")}
-              onDispatchWorkOrder={() => saveAndCreateWorkOrder()}
-            />
+            <>
+              <DiagnosticsIntelligencePanel
+                assetId={resolveVibrationAssetKey()}
+                assetTag={
+                  browseAssetTag || reportAsset.tag || reportAsset.label
+                }
+                component={browseComponent || ""}
+                primaryFault={
+                  analysisResult.primaryFault?.title ||
+                  analysisResult.summary ||
+                  "Unclassified finding"
+                }
+                severity={analysisResult.severity}
+                confidencePercent={
+                  analysisResult.primaryFault?.confidencePercent ?? null
+                }
+                healthScore={analysisResult.overallHealthScore ?? null}
+                recommendations={analysisResult.repairRecommendations ?? []}
+                savedAnalysisId={savedAnalysisId}
+                engineerName={signOffEngineerName}
+                onToast={(msg, type) => toast(msg, type ?? "info")}
+                onDispatchWorkOrder={() => saveAndCreateWorkOrder()}
+              />
+              <CmmsPayloadBridge
+                context={{
+                  assetTag: browseAssetTag || reportAsset.tag || reportAsset.label,
+                  component: browseComponent || "Motor DE",
+                  faultTitle:
+                    analysisResult.primaryFault?.title ||
+                    analysisResult.summary ||
+                    "Unclassified finding",
+                  severity: analysisResult.severity,
+                  confidencePercent:
+                    analysisResult.primaryFault?.confidencePercent ?? null,
+                  healthScore: analysisResult.overallHealthScore ?? null,
+                  horizonHours: null,
+                  horizonDriver: null,
+                  horizonBasis: null,
+                  corroborationPercent: null,
+                  technologiesWithData: ["Vibration"],
+                  signOffStatus: "pending",
+                  signOffEngineer: null,
+                  signOffAt: null,
+                  recommendations: analysisResult.repairRecommendations ?? [],
+                  diagnosisId: savedAnalysisId,
+                  diagnosisAt: analysisStartedAtRef.current
+                }}
+                sectionId="cmms-data-bridge"
+                onToast={(msg, type) => toast(msg, type ?? "info")}
+              />
+            </>
           )}
-
-          <CmmsDataBridge
-            domain="vibration"
-            assetLabel={reportAsset.label}
-            componentLabel={browseComponent || "Motor NDE"}
-            bearing={bearingType || reportAsset.bearing}
-            rpm={String(vibRpm || reportAsset.rpm)}
-            sectionId="cmms-data-bridge"
-            onToast={(msg, type) => toast(msg, type ?? "info")}
-          />
 
           <div className="flex justify-between items-center py-4 mt-6 border-t border-slate-800 gap-3 flex-wrap">
             <button
@@ -6406,6 +6426,15 @@ export default function Diagnose({
           <ThermographyResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
+            assetId={resolveVibrationAssetKey()}
+            assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
+            primaryFault={analysisResult.primaryFault?.title ?? ""}
+            severity={analysisResult.severity ?? null}
+            confidencePercent={analysisResult.primaryFault?.confidencePercent ?? null}
+            healthScore={analysisResult.overallHealthScore ?? null}
+            recommendations={analysisResult.repairRecommendations ?? []}
+            savedAnalysisId={savedAnalysisId}
+            engineerName={signOffEngineerName}
             analysis={analysisResult}
             gaugeScore={gaugeScore}
             thermalImageUrl={thermalUpload?.preview || null}
@@ -6428,6 +6457,15 @@ export default function Diagnose({
           <UltrasoundResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
+            assetId={resolveVibrationAssetKey()}
+            assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
+            primaryFault={analysisResult.primaryFault?.title ?? ""}
+            severity={analysisResult.severity ?? null}
+            confidencePercent={analysisResult.primaryFault?.confidencePercent ?? null}
+            healthScore={analysisResult.overallHealthScore ?? null}
+            recommendations={analysisResult.repairRecommendations ?? []}
+            savedAnalysisId={savedAnalysisId}
+            engineerName={signOffEngineerName}
             analysis={analysisResult}
             gaugeScore={gaugeScore}
             ultrasoundPeaks={ultrasoundPeaks}
@@ -6444,11 +6482,20 @@ export default function Diagnose({
       )}
 
       {/* RESULTS — MCA */}
-      {selectedTech === "mca" && showResults && (
+      {selectedTech === "mca" && showResults && analysisResult && (
         <div ref={resultsRef}>
           <McaResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
+            assetId={resolveVibrationAssetKey()}
+            assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
+            primaryFault={analysisResult.primaryFault?.title ?? ""}
+            severity={analysisResult.severity ?? null}
+            confidencePercent={analysisResult.primaryFault?.confidencePercent ?? null}
+            healthScore={analysisResult.overallHealthScore ?? null}
+            recommendations={analysisResult.repairRecommendations ?? []}
+            savedAnalysisId={savedAnalysisId}
+            engineerName={signOffEngineerName}
             onNewAnalysis={() => setShowResults(false)}
             onSaveWorkOrder={saveAndCreateWorkOrder}
             onToast={(msg, type) => toast(msg, type ?? "info")}

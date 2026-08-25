@@ -6,7 +6,8 @@ import {
   Thermometer,
   Zap
 } from "lucide-react";
-import CmmsDataBridge from "./CmmsDataBridge";
+import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
+import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 
 const PALETTES = ["Ironbow", "Grayscale", "Rainbow"] as const;
@@ -453,6 +454,20 @@ function StaticActionBar({
 export interface ThermographyResultsDashboardProps {
   assetLabel: string;
   componentLabel?: string;
+  /** Asset key used to look up saved records; matches the persistence key. */
+  assetId: string;
+  /** Short asset tag for CMMS payloads. */
+  assetTag?: string;
+  /** Active diagnosis text; empty when no analysis has been run. */
+  primaryFault?: string;
+  severity?: string | null;
+  confidencePercent?: number | null;
+  healthScore?: number | null;
+  recommendations?: string[];
+  /** Saved analysis_results id; null until the analysis is persisted. */
+  savedAnalysisId?: string | null;
+  /** Logged-in user, pre-fills the sign-off name field. */
+  engineerName?: string;
   analysis: VibrationAnalysisResult;
   gaugeScore?: number;
   /** Blob/object URL of the uploaded thermal image */
@@ -466,9 +481,20 @@ export interface ThermographyResultsDashboardProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
 }
 
+const NO_RECOMMENDATIONS: string[] = [];
+
 export default function ThermographyResultsDashboard({
   assetLabel,
   componentLabel,
+  assetId,
+  assetTag,
+  primaryFault = "",
+  severity = null,
+  confidencePercent = null,
+  healthScore = null,
+  recommendations = NO_RECOMMENDATIONS,
+  savedAnalysisId = null,
+  engineerName,
   analysis,
   gaugeScore,
   thermalImageUrl,
@@ -498,12 +524,29 @@ export default function ThermographyResultsDashboard({
     setIsotherm(defaultIsotherm);
   }, [defaultIsotherm]);
 
-  const healthScore = gaugeScore ?? analysis.overallHealthScore;
-  const severity = String(analysis.severity || "CRITICAL").toUpperCase();
+  // Load saved records for fusion, prognosis, sign-off and CMMS context
+  const {
+    loading: intelLoading,
+    error: intelError,
+    cmmsContext
+  } = useDiagnosticsIntelligence({
+    assetId,
+    assetTag: assetTag || assetLabel,
+    component: componentLabel || "",
+    primaryFault,
+    severity,
+    confidencePercent,
+    healthScore,
+    recommendations,
+    savedAnalysisId
+  });
+
+  const derivedHealthScore = gaugeScore ?? analysis.overallHealthScore;
+  const derivedSeverity = String(analysis.severity || "CRITICAL").toUpperCase();
   const primary = analysis.primaryFault;
   const faults = analysis.identifiedFaults || [];
   const hasDetectedFaults = faults.length > 0;
-  const primaryUiSeverity = mapSeverityToUi(primary?.severity ?? severity);
+  const primaryUiSeverity = mapSeverityToUi(primary?.severity ?? derivedSeverity);
 
   const preventiveCost = Number(analysis.financialImpact?.preventiveRepairCost) || 0;
   const failureCost = Number(analysis.financialImpact?.failureCostIfDelayed) || 0;
@@ -526,7 +569,7 @@ export default function ThermographyResultsDashboard({
   );
 
   const nfpaLevel =
-    severity === "CRITICAL" ? 4 : severity === "ANOMALY" ? 3 : 1;
+    derivedSeverity === "CRITICAL" ? 4 : derivedSeverity === "ANOMALY" ? 3 : 1;
 
   const deltaDisplay = peaks.delta_t > 0 ? `${peaks.delta_t}${tempUnit}` : "—";
   const riseOverAmbient =
@@ -580,9 +623,9 @@ export default function ThermographyResultsDashboard({
                 <svg
                   viewBox="0 0 36 36"
                   className={`h-full w-full -rotate-90 ${
-                    severity === "NORMAL"
+                    derivedSeverity === "NORMAL"
                       ? "drop-shadow-[0_0_16px_rgba(16,185,129,0.35)]"
-                      : severity === "ANOMALY"
+                      : derivedSeverity === "ANOMALY"
                         ? "drop-shadow-[0_0_16px_rgba(245,158,11,0.35)]"
                         : "drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
                   }`}
@@ -592,9 +635,9 @@ export default function ThermographyResultsDashboard({
                       <stop
                         offset="0%"
                         stopColor={
-                          severity === "NORMAL"
+                          derivedSeverity === "NORMAL"
                             ? "#34d399"
-                            : severity === "ANOMALY"
+                            : derivedSeverity === "ANOMALY"
                               ? "#fbbf24"
                               : "#f87171"
                         }
@@ -602,9 +645,9 @@ export default function ThermographyResultsDashboard({
                       <stop
                         offset="100%"
                         stopColor={
-                          severity === "NORMAL"
+                          derivedSeverity === "NORMAL"
                             ? "#059669"
-                            : severity === "ANOMALY"
+                            : derivedSeverity === "ANOMALY"
                               ? "#d97706"
                               : "#dc2626"
                         }
@@ -627,12 +670,12 @@ export default function ThermographyResultsDashboard({
                     stroke="url(#irHealthGrad)"
                     strokeWidth="3"
                     strokeLinecap="round"
-                    strokeDasharray={`${(Math.max(0, Math.min(100, healthScore)) / 100) * 97.4} 97.4`}
+                    strokeDasharray={`${(Math.max(0, Math.min(100, derivedHealthScore)) / 100) * 97.4} 97.4`}
                   />
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-2xl font-black text-white tabular-nums leading-none">
-                    {Math.round(healthScore)}
+                    {Math.round(derivedHealthScore)}
                   </span>
                   <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mt-0.5">
                     / 100
@@ -642,18 +685,18 @@ export default function ThermographyResultsDashboard({
               <div className="min-w-0">
                 <p
                   className={`text-sm font-bold ${
-                    severity === "NORMAL"
+                    derivedSeverity === "NORMAL"
                       ? "text-emerald-400"
-                      : severity === "ANOMALY"
+                      : derivedSeverity === "ANOMALY"
                         ? "text-amber-400"
                         : "text-red-400"
                   }`}
                 >
-                  {severity === "NORMAL"
-                    ? "Healthy"
-                    : severity === "ANOMALY"
-                      ? "Anomaly"
-                      : "Critical"}
+{derivedSeverity === "NORMAL"
+                      ? "Healthy"
+                      : derivedSeverity === "ANOMALY"
+                        ? "Anomaly"
+                        : "Critical"}
                 </p>
                 <p className="text-xs text-slate-500 mt-1 leading-snug">
                   Based on ΔT class and thermal pattern confidence.
@@ -836,9 +879,9 @@ export default function ThermographyResultsDashboard({
                 Critical Calculation
               </p>
               <p className="text-xl sm:text-2xl font-black text-red-500 leading-snug">
-                {severity === "CRITICAL"
+                {derivedSeverity === "CRITICAL"
                   ? `Elevated ΔT ${deltaDisplay} — Class 4 priority`
-                  : severity === "ANOMALY"
+                  : derivedSeverity === "ANOMALY"
                     ? `Developing ΔT ${deltaDisplay} — schedule repair`
                     : `Stable thermal profile · ΔT ${deltaDisplay}`}
               </p>
@@ -851,9 +894,9 @@ export default function ThermographyResultsDashboard({
               Severity Level {nfpaLevel}
             </span>
             <p className="text-xl sm:text-2xl font-black text-red-400 leading-tight">
-              {severity === "CRITICAL"
+              {derivedSeverity === "CRITICAL"
                 ? "Immediate Action Required"
-                : severity === "ANOMALY"
+                : derivedSeverity === "ANOMALY"
                   ? "Schedule Inspection"
                   : "Continue Monitoring"}
             </p>
@@ -911,13 +954,18 @@ export default function ThermographyResultsDashboard({
       </section>
 
       <section className="mb-6 space-y-4">
-        <CmmsDataBridge
-          domain="thermography"
-          assetLabel={assetLabel}
-          componentLabel={componentLabel || "Component"}
-          sectionId="ir-cmms-data-bridge"
-          onToast={onToast}
-        />
+        {!intelLoading && !intelError && (
+          <CmmsPayloadBridge
+            context={cmmsContext}
+            sectionId="ir-cmms-data-bridge"
+            onToast={onToast}
+          />
+        )}
+        {intelError && (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+            Could not load CMMS context: {intelError}
+          </div>
+        )}
         <button
           type="button"
           onClick={onSaveWorkOrder}
