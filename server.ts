@@ -1898,6 +1898,96 @@ app.post("/api/analysis-results/:id/baseline", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Certified engineer sign-off on a saved diagnosis (analysis_results.id)
+// ---------------------------------------------------------------------------
+
+const SIGN_OFF_STATUSES = ["pending", "approved", "modified"] as const;
+type SignOffStatusValue = (typeof SIGN_OFF_STATUSES)[number];
+
+app.get("/api/diagnosis-sign-off", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  const diagnosisId = String(req.query.diagnosisId || "").trim();
+  if (!diagnosisId) {
+    return res.status(400).json({ error: "diagnosisId is required." });
+  }
+  try {
+    const result = await pool.query(
+      `SELECT * FROM diagnosis_sign_off WHERE diagnosis_id = $1`,
+      [diagnosisId]
+    );
+    // No row is not an error: it means the diagnosis is still pending.
+    return res.json({ success: true, signOff: result.rows[0] ?? null });
+  } catch (error: any) {
+    return res
+      .status(500)
+      .json({ error: error?.message || "Failed to load sign-off." });
+  }
+});
+
+app.post("/api/diagnosis-sign-off", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  const body = req.body ?? {};
+  const diagnosisId = String(body.diagnosisId || "").trim();
+  const status = String(body.status || "").trim() as SignOffStatusValue;
+  const engineerName = String(body.engineerName || "").trim();
+  const overrideNote = String(body.overrideNote ?? "").trim();
+
+  if (!diagnosisId) {
+    return res.status(400).json({ error: "diagnosisId is required." });
+  }
+  if (!SIGN_OFF_STATUSES.includes(status)) {
+    return res.status(400).json({
+      error: `status must be one of: ${SIGN_OFF_STATUSES.join(", ")}.`
+    });
+  }
+  if (status !== "pending" && !engineerName) {
+    return res
+      .status(400)
+      .json({ error: "engineerName is required to approve or modify." });
+  }
+  // A modification that does not say what changed is not an audit trail.
+  if (status === "modified" && !overrideNote) {
+    return res
+      .status(400)
+      .json({ error: "overrideNote is required when modifying a diagnosis." });
+  }
+
+  try {
+    const exists = await pool.query(
+      `SELECT id FROM analysis_results WHERE id = $1`,
+      [diagnosisId]
+    );
+    if (!exists.rows.length) {
+      return res
+        .status(404)
+        .json({ error: "Diagnosis not found — save the analysis first." });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO diagnosis_sign_off
+         (diagnosis_id, status, engineer_name, override_note)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (diagnosis_id) DO UPDATE SET
+         status = EXCLUDED.status,
+         engineer_name = EXCLUDED.engineer_name,
+         override_note = EXCLUDED.override_note,
+         updated_at = NOW()
+       RETURNING *`,
+      [diagnosisId, status, engineerName || null, overrideNote || null]
+    );
+    return res.json({ success: true, signOff: result.rows[0] });
+  } catch (error: any) {
+    return res
+      .status(500)
+      .json({ error: error?.message || "Failed to save sign-off." });
+  }
+});
+
 app.get("/api/alerts", async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
@@ -11856,6 +11946,26 @@ async function initializeDatabase() {
       ALTER TABLE work_orders ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
     `);
 
+    // migrations/012 — certified engineer sign-off. Absence of a row means
+    // 'pending'; we never pre-seed pending rows.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS diagnosis_sign_off (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        diagnosis_id UUID NOT NULL UNIQUE
+          REFERENCES analysis_results(id) ON DELETE CASCADE,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'approved', 'modified')),
+        engineer_name TEXT,
+        override_note TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_diagnosis_sign_off_diagnosis_id
+        ON diagnosis_sign_off (diagnosis_id);
+    `);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS oil_analysis (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -11919,6 +12029,33 @@ async function initializeDatabase() {
         ADD COLUMN IF NOT EXISTS iso_4um INTEGER,
         ADD COLUMN IF NOT EXISTS iso_6um INTEGER,
         ADD COLUMN IF NOT EXISTS iso_14um INTEGER;
+    `);
+    // migrations/010 — raw particle counts per mL. NAS/SAE classes are derived
+    // on read, never stored.
+    await pool.query(`
+      ALTER TABLE oil_samples
+        ADD COLUMN IF NOT EXISTS particles_4um DECIMAL(12, 2),
+        ADD COLUMN IF NOT EXISTS particles_6um DECIMAL(12, 2),
+        ADD COLUMN IF NOT EXISTS particles_14um DECIMAL(12, 2);
+    `);
+    // migrations/011 — ferrography, varnish and wear morphology. WPC/WSI/PLP
+    // are derived from dr_large / dr_small on read, never stored.
+    await pool.query(`
+      ALTER TABLE oil_samples
+        ADD COLUMN IF NOT EXISTS dr_large DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS dr_small DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS mpc_delta_e DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS ruler_percent DECIMAL(10, 2),
+        ADD COLUMN IF NOT EXISTS uc_rating INTEGER,
+        ADD COLUMN IF NOT EXISTS morph_rubbing VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_cutting VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_spherical VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_fatigue_chunk VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_severe_sliding VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_corrosive VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_nonmetallic VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS morph_fibers VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS ferrograph_image_url TEXT;
     `);
 
     console.log(

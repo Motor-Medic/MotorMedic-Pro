@@ -77,6 +77,9 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
   const iso4Raw = pick("iso4um", "iso_4um", "ISO4");
   const iso6Raw = pick("iso6um", "iso_6um", "ISO6");
   const iso14Raw = pick("iso14um", "iso_14um", "ISO14");
+  const particles4Raw = pick("particles4um", "particles_4um", "count4um");
+  const particles6Raw = pick("particles6um", "particles_6um", "count6um");
+  const particles14Raw = pick("particles14um", "particles_14um", "count14um");
 
   if (!sampleDate || !operatingHoursRaw) return null;
 
@@ -143,7 +146,16 @@ function parseCsvRow(raw: Record<string, string>): OilSampleCSVRow | null {
       : {}),
     ...(iso4um != null ? { iso4um } : {}),
     ...(iso6um != null ? { iso6um } : {}),
-    ...(iso14um != null ? { iso14um } : {})
+    ...(iso14um != null ? { iso14um } : {}),
+    ...(optional(particles4Raw) != null
+      ? { particles4um: optional(particles4Raw) }
+      : {}),
+    ...(optional(particles6Raw) != null
+      ? { particles6um: optional(particles6Raw) }
+      : {}),
+    ...(optional(particles14Raw) != null
+      ? { particles14um: optional(particles14Raw) }
+      : {})
   };
 }
 
@@ -291,7 +303,8 @@ export function OilCsvUploader({
         Optional fluid chemistry:{" "}
         <code className="bg-slate-900 px-1 rounded text-cyan-300">
           viscosity40C, viscosity100C, viscosityIndex, tan, tbn, waterPpm,
-          oxidation, nitration, isoCode (e.g. 18/16/13)
+          oxidation, nitration, isoCode (e.g. 18/16/13), particles4um,
+          particles6um, particles14um
         </code>
       </p>
 

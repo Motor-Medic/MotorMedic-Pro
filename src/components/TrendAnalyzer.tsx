@@ -136,6 +136,8 @@ import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFre
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
 import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
+import OilCleanlinessTab from "./trendAnalyzer/OilCleanlinessTab";
+import OilFerrographyVarnishTab from "./trendAnalyzer/OilFerrographyVarnishTab";
 import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
 import {
   getEquipmentData,
@@ -1288,8 +1290,8 @@ const OIL_SUB_TABS: {
 }[] = [
   { id: "wear_metals", label: "Wear Metals & Debris" },
   { id: "chemistry", label: "Fluid Chemistry" },
-  { id: "cleanliness", label: "Cleanliness", disabled: true, comingSoon: true },
-  { id: "ferrography", label: "Ferrography & Varnish", disabled: true, comingSoon: true }
+  { id: "cleanliness", label: "Cleanliness" },
+  { id: "ferrography", label: "Ferrography & Varnish" }
 ];
 
 function buildRulCone(speedFactor: number) {
@@ -7635,6 +7637,16 @@ export default function TrendAnalyzer({
             />
           ) : activeOilSubTab === "chemistry" ? (
             <OilFluidChemistryTab
+              assetId={analysisAssetQueryKey ?? ""}
+              refreshKey={oilSampleRefreshKey}
+            />
+          ) : activeOilSubTab === "cleanliness" ? (
+            <OilCleanlinessTab
+              assetId={analysisAssetQueryKey ?? ""}
+              refreshKey={oilSampleRefreshKey}
+            />
+          ) : activeOilSubTab === "ferrography" ? (
+            <OilFerrographyVarnishTab
               assetId={analysisAssetQueryKey ?? ""}
               refreshKey={oilSampleRefreshKey}
             />

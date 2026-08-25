@@ -432,7 +432,7 @@ export function OilFluidChemistryTab({
             >
               {formatIsoCode(currentIso)}
             </div>
-            <div className="text-xs text-slate-500">&gt;4µm / &gt;6µm / &gt;14µm</div>
+            <div className="text-xs text-slate-500">&gt;4μm / &gt;6μm / &gt;14μm</div>
           </div>
           <div className={CARD_BASE}>
             <div className="text-xs uppercase tracking-wide text-slate-500">

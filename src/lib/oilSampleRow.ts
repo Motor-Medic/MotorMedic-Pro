@@ -6,7 +6,15 @@
  * (DECIMAL is not auto-parsed), so everything goes through coercion.
  */
 
-import { DEFAULT_ALARM_LIMITS, type OilSample } from "../types/oilAnalysis";
+import {
+  DEFAULT_ALARM_LIMITS,
+  MORPH_CATEGORIES,
+  MORPH_COLUMN,
+  MORPH_SEVERITIES,
+  type MorphSeverity,
+  type MorphologyMap,
+  type OilSample
+} from "../types/oilAnalysis";
 import { toSampleDateKey } from "./oilAnalysisMetrics";
 
 export const OIL_ANALYSIS_API_PATH = "/api/oil-analysis";
@@ -35,6 +43,23 @@ export type OilSampleDbRow = {
   iso_4um?: number | string | null;
   iso_6um?: number | string | null;
   iso_14um?: number | string | null;
+  particles_4um?: number | string | null;
+  particles_6um?: number | string | null;
+  particles_14um?: number | string | null;
+  dr_large?: number | string | null;
+  dr_small?: number | string | null;
+  mpc_delta_e?: number | string | null;
+  ruler_percent?: number | string | null;
+  uc_rating?: number | string | null;
+  morph_rubbing?: string | null;
+  morph_cutting?: string | null;
+  morph_spherical?: string | null;
+  morph_fatigue_chunk?: string | null;
+  morph_severe_sliding?: string | null;
+  morph_corrosive?: string | null;
+  morph_nonmetallic?: string | null;
+  morph_fibers?: string | null;
+  ferrograph_image_url?: string | null;
   baseline_iron?: number | string | null;
   baseline_copper?: number | string | null;
   baseline_chromium?: number | string | null;
@@ -55,6 +80,33 @@ function optNum(raw: unknown): number | undefined {
   if (raw == null || raw === "") return undefined;
   const n = typeof raw === "number" ? raw : Number(raw);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function optStr(raw: unknown): string | undefined {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  return s === "" ? undefined : s;
+}
+
+/** Only recognized severities survive; legacy/garbage values are dropped. */
+function optSeverity(raw: unknown): MorphSeverity | undefined {
+  const s = optStr(raw)?.toLowerCase().replace(/[\s-]+/g, "_");
+  if (!s) return undefined;
+  return (MORPH_SEVERITIES as readonly string[]).includes(s)
+    ? (s as MorphSeverity)
+    : undefined;
+}
+
+/** Collapse the eight morph_* columns into a map, or undefined if all null. */
+function readMorphology(
+  row: Record<string, unknown>
+): MorphologyMap | undefined {
+  const map: MorphologyMap = {};
+  for (const cat of MORPH_CATEGORIES) {
+    const severity = optSeverity(row[MORPH_COLUMN[cat.key]]);
+    if (severity) map[cat.key] = severity;
+  }
+  return Object.keys(map).length > 0 ? map : undefined;
 }
 
 export function mapOilSampleRow(
@@ -87,6 +139,17 @@ export function mapOilSampleRow(
     iso4um: optNum(row.iso_4um),
     iso6um: optNum(row.iso_6um),
     iso14um: optNum(row.iso_14um),
+    particles4um: optNum(row.particles_4um),
+    particles6um: optNum(row.particles_6um),
+    particles14um: optNum(row.particles_14um),
+
+    drLarge: optNum(row.dr_large),
+    drSmall: optNum(row.dr_small),
+    mpcDeltaE: optNum(row.mpc_delta_e),
+    rulerPercent: optNum(row.ruler_percent),
+    ucRating: optNum(row.uc_rating),
+    morphology: readMorphology(row as unknown as Record<string, unknown>),
+    ferrographImageUrl: optStr(row.ferrograph_image_url),
 
     baselineIron: optNum(row.baseline_iron),
     baselineCopper: optNum(row.baseline_copper),

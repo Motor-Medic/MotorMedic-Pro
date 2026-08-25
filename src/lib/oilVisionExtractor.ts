@@ -96,6 +96,9 @@ REQUIRED JSON (no markdown, no commentary):
     "sootPercent": <% or null>,
     "flashPointC": <°C or null>,
     "particleCountIso4406": <"XX/YY/ZZ" or null>,
+    "particles4um": <raw particles per mL >4µm, ONLY if the report prints a raw count; never derive from the ISO code, else null>,
+    "particles6um": <raw particles per mL >6µm, same rule, else null>,
+    "particles14um": <raw particles per mL >14µm, same rule, else null>,
     "pqIndex": <number or null>
   },
   "operatingParams": {
@@ -232,6 +235,9 @@ function emptyFluid(): OilReportFluidProperties {
     sootPercent: null,
     flashPointC: null,
     particleCountIso4406: null,
+    particles4um: null,
+    particles6um: null,
+    particles14um: null,
     pqIndex: null
   };
 }
@@ -311,6 +317,11 @@ function mapFluid(raw: unknown): OilReportFluidProperties {
     flashPointC: finiteNum(f.flashPointC ?? f.flash_point_c),
     particleCountIso4406: strOrNull(
       f.particleCountIso4406 ?? f.particle_count_iso4406 ?? f.iso4406
+    ),
+    particles4um: finiteNum(f.particles4um ?? f.particles_4um ?? f.count4um),
+    particles6um: finiteNum(f.particles6um ?? f.particles_6um ?? f.count6um),
+    particles14um: finiteNum(
+      f.particles14um ?? f.particles_14um ?? f.count14um
     ),
     pqIndex: finiteNum(f.pqIndex ?? f.pq_index ?? f.pq)
   };

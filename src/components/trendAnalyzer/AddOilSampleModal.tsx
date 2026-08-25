@@ -6,6 +6,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { parseIsoCode } from "../../lib/oilAnalysisMetrics";
+import {
+  MORPH_CATEGORIES,
+  MORPH_SEVERITIES,
+  type MorphCategoryKey,
+  type MorphSeverity
+} from "../../types/oilAnalysis";
 import type { OilReportData } from "../../types/oilVision";
 import OilCsvUploader from "./OilCsvUploader";
 import OilVisionDropzone from "./OilVisionDropzone";
@@ -38,20 +44,35 @@ const MANUAL_FIELDS = [
   { key: "waterPpm", label: "Water", unit: "ppm" },
   { key: "oxidation", label: "Oxidation", unit: "Abs/cm" },
   { key: "nitration", label: "Nitration", unit: "Abs/cm" },
-  { key: "iso4um", label: "ISO >4µm", unit: "code" },
-  { key: "iso6um", label: "ISO >6µm", unit: "code" },
-  { key: "iso14um", label: "ISO >14µm", unit: "code" }
+  { key: "iso4um", label: "ISO >4μm", unit: "code" },
+  { key: "iso6um", label: "ISO >6μm", unit: "code" },
+  { key: "iso14um", label: "ISO >14μm", unit: "code" },
+  { key: "particles4um", label: "Particles >4μm", unit: "/mL" },
+  { key: "particles6um", label: "Particles >6μm", unit: "/mL" },
+  { key: "particles14um", label: "Particles >14μm", unit: "/mL" },
+  { key: "drLarge", label: "DR Large (DL)", unit: "" },
+  { key: "drSmall", label: "DR Small (DS)", unit: "" },
+  { key: "mpcDeltaE", label: "MPC ΔE", unit: "ΔE" },
+  { key: "rulerPercent", label: "RULER", unit: "%" },
+  { key: "ucRating", label: "UC Rating", unit: "0-8 scale" }
 ] as const;
 
 type ManualFieldKey = (typeof MANUAL_FIELDS)[number]["key"];
-type ManualForm = Record<ManualFieldKey | "sampleDate" | "operatingHours", string>;
+type ManualTextKey = "sampleDate" | "operatingHours" | "ferrographImageUrl";
+type ManualForm = Record<ManualFieldKey | ManualTextKey, string>;
 
 const EMPTY_MANUAL_FORM = (): ManualForm =>
   ({
     sampleDate: new Date().toISOString().slice(0, 10),
     operatingHours: "",
+    ferrographImageUrl: "",
     ...Object.fromEntries(MANUAL_FIELDS.map((f) => [f.key, ""]))
   }) as ManualForm;
+
+const EMPTY_MORPHOLOGY = (): Record<MorphCategoryKey, MorphSeverity> =>
+  Object.fromEntries(
+    MORPH_CATEGORIES.map((c) => [c.key, "not_detected"])
+  ) as Record<MorphCategoryKey, MorphSeverity>;
 
 export function AddOilSampleModal({
   isOpen,
@@ -63,6 +84,7 @@ export function AddOilSampleModal({
   const [saving, setSaving] = useState(false);
   const [mode, setMode] = useState<IngestMode>("upload");
   const [manualForm, setManualForm] = useState<ManualForm>(EMPTY_MANUAL_FORM);
+  const [manualMorphology, setManualMorphology] = useState(EMPTY_MORPHOLOGY);
 
   useEffect(() => {
     if (!isOpen) {
@@ -70,6 +92,7 @@ export function AddOilSampleModal({
       setSaving(false);
       setMode("upload");
       setManualForm(EMPTY_MANUAL_FORM());
+      setManualMorphology(EMPTY_MORPHOLOGY());
     }
   }, [isOpen]);
 
@@ -111,6 +134,9 @@ export function AddOilSampleModal({
         f.waterPpm != null ||
         f.oxidation != null ||
         f.nitration != null ||
+        f.particles4um != null ||
+        f.particles6um != null ||
+        f.particles14um != null ||
         iso != null;
 
       if (!hasMetals && !hasFluid) {
@@ -148,7 +174,10 @@ export function AddOilSampleModal({
             nitration: f.nitration ?? undefined,
             iso4um: iso?.[0],
             iso6um: iso?.[1],
-            iso14um: iso?.[2]
+            iso14um: iso?.[2],
+            particles4um: f.particles4um ?? undefined,
+            particles6um: f.particles6um ?? undefined,
+            particles14um: f.particles14um ?? undefined
           })
         });
         if (!res.ok) throw new Error("Failed to save vision sample");
@@ -182,11 +211,18 @@ export function AddOilSampleModal({
       return;
     }
 
-    const hasAnyValue = MANUAL_FIELDS.some(
-      (f) => numeric(manualForm[f.key]) != null
+    const morphology = Object.fromEntries(
+      Object.entries(manualMorphology).filter(
+        ([, severity]) => severity !== "not_detected"
+      )
     );
+
+    const hasAnyValue =
+      MANUAL_FIELDS.some((f) => numeric(manualForm[f.key]) != null) ||
+      Object.keys(morphology).length > 0 ||
+      manualForm.ferrographImageUrl.trim() !== "";
     if (!hasAnyValue) {
-      setStatusMsg("Enter at least one wear metal or fluid property value.");
+      setStatusMsg("Enter at least one measured value before saving.");
       return;
     }
 
@@ -218,7 +254,18 @@ export function AddOilSampleModal({
           nitration: numeric(manualForm.nitration),
           iso4um: numeric(manualForm.iso4um),
           iso6um: numeric(manualForm.iso6um),
-          iso14um: numeric(manualForm.iso14um)
+          iso14um: numeric(manualForm.iso14um),
+          particles4um: numeric(manualForm.particles4um),
+          particles6um: numeric(manualForm.particles6um),
+          particles14um: numeric(manualForm.particles14um),
+          drLarge: numeric(manualForm.drLarge),
+          drSmall: numeric(manualForm.drSmall),
+          mpcDeltaE: numeric(manualForm.mpcDeltaE),
+          rulerPercent: numeric(manualForm.rulerPercent),
+          ucRating: numeric(manualForm.ucRating),
+          morphology,
+          ferrographImageUrl:
+            manualForm.ferrographImageUrl.trim() || undefined
         })
       });
       if (!res.ok) {
@@ -233,7 +280,7 @@ export function AddOilSampleModal({
     } finally {
       setSaving(false);
     }
-  }, [assetId, manualForm, finishSaved]);
+  }, [assetId, manualForm, manualMorphology, finishSaved]);
 
   if (!isOpen) return null;
 
@@ -361,7 +408,8 @@ export function AddOilSampleModal({
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                     {MANUAL_FIELDS.map((field) => (
                       <label key={field.key} className="block">
-                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        {/* normal-case: uppercase mangles the µm unit symbol */}
+                        <span className="text-[11px] font-semibold normal-case tracking-wide text-slate-500">
                           {field.label}
                         </span>
                         <div className="relative mt-1">
@@ -385,6 +433,56 @@ export function AddOilSampleModal({
                       </label>
                     ))}
                   </div>
+
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                      Wear Particle Morphology
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {MORPH_CATEGORIES.map((cat) => (
+                        <label key={cat.key} className="block">
+                          <span className="text-[11px] font-semibold normal-case tracking-wide text-slate-500">
+                            {cat.label}
+                          </span>
+                          <select
+                            value={manualMorphology[cat.key]}
+                            onChange={(e) =>
+                              setManualMorphology((prev) => ({
+                                ...prev,
+                                [cat.key as MorphCategoryKey]: e.target
+                                  .value as MorphSeverity
+                              }))
+                            }
+                            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:border-cyan-500 focus:outline-none cursor-pointer"
+                          >
+                            {MORPH_SEVERITIES.map((sev) => (
+                              <option key={sev} value={sev}>
+                                {sev.replace(/_/g, " ")}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <label className="block">
+                    <span className="text-[11px] font-semibold normal-case tracking-wide text-slate-500">
+                      Ferrogram Image URL
+                    </span>
+                    <input
+                      type="url"
+                      value={manualForm.ferrographImageUrl}
+                      onChange={(e) =>
+                        setManualForm((prev) => ({
+                          ...prev,
+                          ferrographImageUrl: e.target.value
+                        }))
+                      }
+                      placeholder="https://…"
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:border-cyan-500 focus:outline-none"
+                    />
+                  </label>
 
                   <button
                     type="button"

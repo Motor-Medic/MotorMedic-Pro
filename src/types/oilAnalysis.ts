@@ -1,3 +1,82 @@
+/** Wear particle morphology severity, ordered least to most severe. */
+export type MorphSeverity =
+  | "not_detected"
+  | "trace"
+  | "mild"
+  | "moderate"
+  | "severe";
+
+export const MORPH_SEVERITIES: readonly MorphSeverity[] = [
+  "not_detected",
+  "trace",
+  "mild",
+  "moderate",
+  "severe"
+] as const;
+
+/**
+ * The eight wear particle morphologies read off a ferrogram, with what each
+ * one implies about the failure mode in progress.
+ */
+export const MORPH_CATEGORIES = [
+  {
+    key: "rubbing",
+    label: "Rubbing Wear",
+    meaning: "Normal boundary lubrication wear"
+  },
+  {
+    key: "cutting",
+    label: "Cutting Wear",
+    meaning: "Abrasive particle contamination"
+  },
+  {
+    key: "spherical",
+    label: "Spherical Debris",
+    meaning: "Bearing micro-spalling / fatigue"
+  },
+  {
+    key: "fatigue_chunk",
+    label: "Fatigue Chunks",
+    meaning: "Macro spalling / gear surface fatigue"
+  },
+  {
+    key: "severe_sliding",
+    label: "Severe Sliding",
+    meaning: "Adhesive wear / scuffing"
+  },
+  {
+    key: "corrosive",
+    label: "Corrosive Wear",
+    meaning: "Acid or water chemical attack"
+  },
+  {
+    key: "nonmetallic",
+    label: "Non-Metallic Ingress",
+    meaning: "Environmental dirt / sand ingress"
+  },
+  {
+    key: "fibers",
+    label: "Fibers",
+    meaning: "Filter media degradation / cloth fibers"
+  }
+] as const;
+
+export type MorphCategoryKey = (typeof MORPH_CATEGORIES)[number]["key"];
+
+export type MorphologyMap = Partial<Record<MorphCategoryKey, MorphSeverity>>;
+
+/** DB column name for a morphology category. */
+export const MORPH_COLUMN: Record<MorphCategoryKey, string> = {
+  rubbing: "morph_rubbing",
+  cutting: "morph_cutting",
+  spherical: "morph_spherical",
+  fatigue_chunk: "morph_fatigue_chunk",
+  severe_sliding: "morph_severe_sliding",
+  corrosive: "morph_corrosive",
+  nonmetallic: "morph_nonmetallic",
+  fibers: "morph_fibers"
+};
+
 /**
  * Represents a single oil sample from a laboratory analysis
  */
@@ -31,6 +110,22 @@ export interface OilSample {
   iso4um?: number;
   iso6um?: number;
   iso14um?: number;
+
+  // Raw particle counts per mL, when the lab reports them alongside the codes.
+  // Never back-calculated from the ISO codes.
+  particles4um?: number;
+  particles6um?: number;
+  particles14um?: number;
+
+  // Ferrography & varnish. WPC / WSI / PLP / DL:DS are derived from
+  // drLarge + drSmall at read time, never stored.
+  drLarge?: number;
+  drSmall?: number;
+  mpcDeltaE?: number; // ASTM D7843 membrane patch colorimetry
+  rulerPercent?: number; // ASTM D6971 remaining antioxidant
+  ucRating?: number; // Ultra-Centrifuge rating, 0–8
+  morphology?: MorphologyMap;
+  ferrographImageUrl?: string;
 
   // Baseline values (from new oil or first sample)
   baselineIron?: number;
@@ -111,6 +206,9 @@ export interface OilSampleCSVRow {
   iso4um?: number;
   iso6um?: number;
   iso14um?: number;
+  particles4um?: number;
+  particles6um?: number;
+  particles14um?: number;
 }
 
 /**

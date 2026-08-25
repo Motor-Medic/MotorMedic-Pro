@@ -53,6 +53,10 @@ export interface OilReportFluidProperties {
   sootPercent: number | null;
   flashPointC: number | null;
   particleCountIso4406: string | null; // e.g. "18/16/13"
+  /** Raw counts per mL — only when the report prints them explicitly. */
+  particles4um: number | null;
+  particles6um: number | null;
+  particles14um: number | null;
   pqIndex: number | null; // Particle Quantifier
 }
 

@@ -1,26 +1,241 @@
-import React, { useState } from "react";
-import { Check, X } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { Check } from "lucide-react";
 import {
+  Bar,
+  BarChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis
 } from "recharts";
-import CmmsDataBridge from "./CmmsDataBridge";
+import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
+import type { DiagnosisSignOff } from "../lib/diagnostics/signOff";
+import { oilExceedances } from "../lib/diagnostics/sensorFusion";
+import { classifyFaultFamily, familiesCorroborate } from "../lib/diagnostics/faultFamily";
+import {
+  DEFAULT_ALARM_LIMITS,
+  ISO_CLEANLINESS_TARGET,
+  type OilSample,
+  type WearMetalKey
+} from "../types/oilAnalysis";
+import { formatSampleDate } from "../lib/oilAnalysisMetrics";
+import SensorFusionMatrix from "./diagnostics/SensorFusionMatrix";
+import PrognosisPanel from "./diagnostics/PrognosisPanel";
+import EngineerSignOff from "./diagnostics/EngineerSignOff";
+import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 
-/** Si / Fe / Al abrasive wear correlation — last 6 samples */
-const ELEMENTAL_TREND = [
-  { sample: "S1", date: "Jan", si: 18, fe: 35, al: 12 },
-  { sample: "S2", date: "Mar", si: 22, fe: 48, al: 15 },
-  { sample: "S3", date: "May", si: 28, fe: 62, al: 18 },
-  { sample: "S4", date: "Jul", si: 34, fe: 80, al: 22 },
-  { sample: "S5", date: "Sep", si: 40, fe: 98, al: 26 },
-  { sample: "S6", date: "Nov", si: 45, fe: 120, al: 30 }
+/** One saved fault hypothesis from the diagnosis. */
+export interface IdentifiedFault {
+  title: string;
+  confidencePercent?: number | null;
+  severity?: string | null;
+  description?: string | null;
+}
+
+const WEAR_METALS: { key: WearMetalKey; label: string }[] = [
+  { key: "iron", label: "Fe" },
+  { key: "copper", label: "Cu" },
+  { key: "chromium", label: "Cr" },
+  { key: "lead", label: "Pb" },
+  { key: "aluminum", label: "Al" },
+  { key: "silicon", label: "Si" }
 ];
+
+const PANEL =
+  "rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0 flex flex-col";
+
+/** Plot range for the contamination grid; ISO 4406 codes in practice sit here. */
+const ISO_PLOT_MIN = 8;
+const ISO_PLOT_MAX = 25;
+
+function isoPercent(code: number): number {
+  const span = ISO_PLOT_MAX - ISO_PLOT_MIN;
+  return Math.max(0, Math.min(100, ((code - ISO_PLOT_MIN) / span) * 100));
+}
+
+/** ISO 4406 code of the latest sample, plotted against the cleanliness target. */
+function IsoContaminationGrid({ sample }: { sample: OilSample | null }) {
+  const iso =
+    sample?.iso4um != null && sample.iso6um != null && sample.iso14um != null
+      ? ([sample.iso4um, sample.iso6um, sample.iso14um] as const)
+      : null;
+
+  if (!iso) {
+    return (
+      <div className={`${PANEL} justify-center items-center text-center`}>
+        <h4 className="text-sm font-bold text-white mb-2">
+          ISO 4406:2021 Contamination Grid
+        </h4>
+        <p className="text-sm font-semibold text-slate-300">
+          {sample ? "No ISO code in the latest sample" : "No oil sample on file"}
+        </p>
+        <p className="mt-2 max-w-xs text-xs leading-relaxed text-slate-500">
+          A full 4/6/14 µm code is needed to place this sample on the grid.
+        </p>
+      </div>
+    );
+  }
+
+  const over = iso.some((code, i) => code > ISO_CLEANLINESS_TARGET[i]);
+  // x = 4 µm channel, y = 14 µm channel (inverted: dirtier plots higher).
+  const left = isoPercent(iso[0]);
+  const bottom = isoPercent(iso[2]);
+  const targetLeft = isoPercent(ISO_CLEANLINESS_TARGET[0]);
+  const targetBottom = isoPercent(ISO_CLEANLINESS_TARGET[2]);
+
+  return (
+    <div className={PANEL}>
+      <h4 className="text-sm font-bold text-white mb-1">
+        ISO 4406:2021 Contamination Grid
+      </h4>
+      <p className="text-[11px] text-slate-500 mb-3">
+        Sampled {formatSampleDate(sample.sampleDate)} · codes {ISO_PLOT_MIN}–
+        {ISO_PLOT_MAX} plotted
+      </p>
+      <div className="h-64 bg-slate-950 rounded-lg relative border border-slate-800 overflow-hidden">
+        <div className="absolute inset-0 grid grid-cols-3 grid-rows-3" aria-hidden>
+          {Array.from({ length: 9 }).map((_, i) => (
+            <div key={i} className="border border-slate-800/80" />
+          ))}
+        </div>
+        <span className="absolute left-2 bottom-2 text-[9px] text-slate-600 font-mono">
+          4 µm code →
+        </span>
+        <span className="absolute left-2 top-2 text-[9px] text-slate-600 font-mono">
+          ↑ 14 µm code
+        </span>
+
+        <div
+          className="absolute h-3 w-3 -translate-x-1/2 translate-y-1/2 rounded-full border-2 border-emerald-400"
+          style={{ left: `${targetLeft}%`, bottom: `${targetBottom}%` }}
+          title={`Target ISO ${ISO_CLEANLINESS_TARGET.join("/")}`}
+        />
+        <div
+          className={`absolute h-4 w-4 -translate-x-1/2 translate-y-1/2 rounded-full ${
+            over
+              ? "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]"
+              : "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
+          }`}
+          style={{ left: `${left}%`, bottom: `${bottom}%` }}
+          title={`ISO ${iso.join("/")}`}
+        />
+      </div>
+      <p
+        className={`text-sm font-semibold mt-3 ${over ? "text-red-400" : "text-emerald-400"}`}
+      >
+        Current Code: {iso.join("/")} ({over ? "above" : "within"} target{" "}
+        {ISO_CLEANLINESS_TARGET.join("/")})
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Latest measured wear metals against their alarm limits. Snapshot only —
+ * sample-over-sample history lives in Trend Analyzer by design.
+ */
+function WearMetalsSnapshot({ sample }: { sample: OilSample | null }) {
+  const data = useMemo(() => {
+    if (!sample) return [];
+    return WEAR_METALS.filter((m) => sample[m.key] != null).map((m) => ({
+      metal: m.label,
+      measured: sample[m.key] as number,
+      limit: DEFAULT_ALARM_LIMITS[m.key]
+    }));
+  }, [sample]);
+
+  if (!sample || data.length === 0) {
+    return (
+      <div className={`${PANEL} justify-center items-center text-center`}>
+        <h4 className="text-sm font-bold text-white mb-2">
+          Latest Sample — Wear Metals vs Alarm Limits
+        </h4>
+        <p className="text-sm font-semibold text-slate-300">
+          {sample ? "No wear metals in the latest sample" : "No oil sample on file"}
+        </p>
+        <p className="mt-2 max-w-xs text-xs leading-relaxed text-slate-500">
+          {sample
+            ? "The most recent sample was saved without any of Fe, Cu, Cr, Pb, Al or Si, so there is nothing to plot against alarm limits."
+            : "Add a sample in Trend Analyzer to plot measured wear metals against their alarm limits."}
+        </p>
+      </div>
+    );
+  }
+
+  const overLimit = data.filter((d) => d.measured > d.limit);
+
+  return (
+    <div className={PANEL}>
+      <h4 className="text-sm font-bold text-white mb-1">
+        Latest Sample — Wear Metals vs Alarm Limits
+      </h4>
+      <p className="text-[11px] text-slate-500 mb-3">
+        Sampled {formatSampleDate(sample.sampleDate)}
+        {sample.operatingHours != null
+          ? ` · ${sample.operatingHours.toLocaleString()} operating hours`
+          : ""}
+      </p>
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            data={data}
+            layout="vertical"
+            margin={{ top: 4, right: 16, left: 0, bottom: 4 }}
+            barGap={2}
+          >
+            <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" horizontal={false} />
+            <XAxis
+              type="number"
+              tick={{ fill: "#64748b", fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              unit=" ppm"
+            />
+            <YAxis
+              type="category"
+              dataKey="metal"
+              tick={{ fill: "#94a3b8", fontSize: 11 }}
+              width={34}
+              axisLine={false}
+              tickLine={false}
+            />
+            <Tooltip
+              cursor={{ fill: "rgba(148,163,184,0.08)" }}
+              contentStyle={{
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: 8,
+                fontSize: 12
+              }}
+              formatter={(value: number | string, name: string) => [
+                `${value} ppm`,
+                name === "measured" ? "Measured" : "Alarm limit"
+              ]}
+            />
+            <Legend
+              verticalAlign="bottom"
+              wrapperStyle={{ fontSize: 11, color: "#94a3b8", paddingTop: 4 }}
+              formatter={(name) => (name === "measured" ? "Measured" : "Alarm limit")}
+            />
+            <Bar dataKey="limit" fill="#334155" radius={[0, 3, 3, 0]} isAnimationActive={false} />
+            <Bar dataKey="measured" fill="#eab308" radius={[0, 3, 3, 0]} isAnimationActive={false} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <p
+        className={`mt-3 text-sm font-semibold ${
+          overLimit.length > 0 ? "text-red-400" : "text-emerald-400"
+        }`}
+      >
+        {overLimit.length > 0
+          ? `Over limit: ${overLimit.map((d) => `${d.metal} ${d.measured}/${d.limit} ppm`).join(", ")}`
+          : "All measured wear metals within alarm limits"}
+      </p>
+    </div>
+  );
+}
 
 const ACTION_ITEMS = [
   "Change out system filter element immediately; upgrade to a high-efficiency 3-micron absolute (β₃ ≥ 1000) element to aggressively target the 4μm and 6μm particle spikes.",
@@ -84,16 +299,125 @@ export interface OilResultsDashboardProps {
   onNewAnalysis: () => void;
   onSaveWorkOrder: () => void;
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
+  /** Asset key used to look up saved records; matches the persistence key. */
+  assetId: string;
+  /** Short asset tag for CMMS payloads. */
+  assetTag?: string;
+  /** Active diagnosis text; empty when no analysis has been run. */
+  primaryFault?: string;
+  severity?: string | null;
+  confidencePercent?: number | null;
+  healthScore?: number | null;
+  recommendations?: string[];
+  /** Saved analysis_results id; null until the analysis is persisted. */
+  savedAnalysisId?: string | null;
+  /** Logged-in user, pre-fills the sign-off name field. */
+  engineerName?: string;
+  /** Saved fault hypotheses; root-cause cards render from these alone. */
+  identifiedFaults?: IdentifiedFault[];
 }
+
+const NO_RECOMMENDATIONS: string[] = [];
+const NO_FAULTS: IdentifiedFault[] = [];
 
 export default function OilResultsDashboard({
   assetLabel,
   componentLabel,
   onNewAnalysis,
-  onToast
+  onSaveWorkOrder,
+  onToast,
+  assetId,
+  assetTag,
+  primaryFault = "",
+  severity = null,
+  confidencePercent = null,
+  healthScore = null,
+  recommendations = NO_RECOMMENDATIONS,
+  savedAnalysisId = null,
+  engineerName,
+  identifiedFaults = NO_FAULTS
 }: OilResultsDashboardProps) {
   const [checked, setChecked] = useState<Record<number, boolean>>({});
-  const [showElementTrend, setShowElementTrend] = useState(false);
+
+  // One fetch feeds the fusion matrix, the RUL panel and the CMMS payload.
+  const {
+    loading: intelLoading,
+    error: intelError,
+    fusion,
+    prognosis,
+    signOff,
+    setSignOff,
+    cmmsContext,
+    latestOilSample
+  } = useDiagnosticsIntelligence({
+    assetId,
+    assetTag: assetTag || assetLabel,
+    component: componentLabel || "",
+    primaryFault,
+    severity,
+    confidencePercent,
+    healthScore,
+    recommendations,
+    savedAnalysisId
+  });
+
+  const dispatchWorkOrder = (_signOff: DiagnosisSignOff) => onSaveWorkOrder();
+
+  const latestIsoCode =
+    latestOilSample?.iso4um != null &&
+    latestOilSample.iso6um != null &&
+    latestOilSample.iso14um != null
+      ? `${latestOilSample.iso4um}/${latestOilSample.iso6um}/${latestOilSample.iso14um}`
+      : null;
+
+  // The exact strings the fusion matrix quotes, so the two can never disagree.
+  const exceedances = useMemo(
+    () => (latestOilSample ? oilExceedances(latestOilSample) : []),
+    [latestOilSample]
+  );
+
+  /**
+   * Confidence priority: a stored per-fault figure wins; failing that, only the
+   * primary hypothesis may inherit the fusion aggregate; otherwise we say the
+   * cross-validation is pending rather than printing a bare number.
+   */
+  const hypotheses = useMemo(
+    () =>
+      identifiedFaults.map((fault, index) => {
+        const stored =
+          typeof fault.confidencePercent === "number" &&
+          Number.isFinite(fault.confidencePercent)
+            ? Math.round(fault.confidencePercent)
+            : null;
+
+        let confidenceLabel: string;
+        let confidenceKind: "ai" | "fusion" | "none";
+        if (stored != null) {
+          confidenceLabel = `${stored}% AI confidence`;
+          confidenceKind = "ai";
+        } else if (index === 0 && fusion.aggregate != null) {
+          confidenceLabel = `${fusion.aggregate}% Multi-domain confidence`;
+          confidenceKind = "fusion";
+        } else {
+          confidenceLabel = "Cross-validation pending";
+          confidenceKind = "none";
+        }
+
+        const family = classifyFaultFamily(fault.title);
+        const evidence = exceedances
+          .filter((e) => familiesCorroborate(e.family, family))
+          .map((e) => e.text);
+
+        return {
+          title: fault.title,
+          confidenceLabel,
+          confidenceKind,
+          evidence,
+          rationale: fault.description?.trim() || null
+        };
+      }),
+    [identifiedFaults, fusion.aggregate, exceedances]
+  );
 
   const toggleCheck = (i: number) => {
     setChecked((prev) => ({ ...prev, [i]: !prev[i] }));
@@ -131,102 +455,124 @@ export default function OilResultsDashboard({
         </p>
       </div>
 
+      {intelError && (
+        <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-300">
+          Could not load saved analysis records: {intelError}
+        </div>
+      )}
+
+      {/* Sign-off sits with the asset title so its status is visible up front. */}
+      <EngineerSignOff
+        diagnosisId={savedAnalysisId}
+        signOff={signOff}
+        defaultEngineerName={engineerName}
+        onSaved={setSignOff}
+        onToast={onToast}
+        onDispatchWorkOrder={dispatchWorkOrder}
+      />
+
       {/* 1 — Wear Particle Matrix (snapshot only — trends live in Trend Analyzer) */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-5">Wear Particle Matrix Visuals</h3>
-        <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0 max-w-xl">
-          <h4 className="text-sm font-bold text-white mb-3">
-            ISO 4406:2021 Contamination Grid
-          </h4>
-          <div className="h-64 bg-slate-950 rounded-lg relative border border-slate-800 overflow-hidden">
-            <div className="absolute inset-0 grid grid-cols-3 grid-rows-3" aria-hidden>
-              {Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="border border-slate-800/80" />
-              ))}
-            </div>
-            <span className="absolute left-2 bottom-2 text-[9px] text-slate-600 font-mono">
-              Cleaner →
-            </span>
-            <span className="absolute left-2 top-2 text-[9px] text-slate-600 font-mono rotate-0">
-              ↑ Contaminated
-            </span>
-            <div
-              className="w-4 h-4 bg-red-500 rounded-full absolute shadow-[0_0_10px_rgba(239,68,68,0.8)]"
-              style={{ top: "18%", right: "18%" }}
-              title="ISO 19/17/14"
-            />
-            <span className="absolute top-[14%] right-[28%] text-[10px] font-bold text-red-400">
-              19/17/14
-            </span>
-          </div>
-          <p className="text-sm text-red-400 font-semibold mt-3">
-            Current Code: 19/17/14 (CRITICAL – Target: 15/13/10)
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+          <IsoContaminationGrid sample={latestOilSample} />
+          <WearMetalsSnapshot sample={latestOilSample} />
+        </div>
+      </section>
+
+      {/* 2 — Cross-technology corroboration, ahead of the root-cause call */}
+      {intelLoading ? (
+        <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+          <p className="text-sm text-slate-400">
+            Loading saved records for {assetTag || assetLabel}…
           </p>
-        </div>
-      </section>
+        </section>
+      ) : (
+        <SensorFusionMatrix fusion={fusion} diagnosisLabel={primaryFault} />
+      )}
 
-      {/* 2 — Automated Root-Cause Analysis */}
+      {/* 3 — Automated Root-Cause Analysis, from the saved diagnosis only */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-        <h3 className="text-lg font-bold text-white mb-5">Automated Root-Cause Analysis</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <button
-            type="button"
-            onClick={() => setShowElementTrend(true)}
-            className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3 text-left cursor-pointer hover:bg-slate-800/50 transition-colors w-full"
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Abrasive Wear Detected
-              </p>
-              <span className="text-xs bg-red-500/10 text-red-400 px-2 py-0.5 rounded border border-red-500/30">
-                94% Confidence
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed font-mono">
-              Si (45ppm) + Fe (120ppm) + Al (30ppm)
-            </p>
-            <p className="text-sm font-bold text-red-400">
-              Atmospheric dirt bypassing breathers. Grinding internal gears.
-            </p>
-          </button>
+        <h3 className="text-lg font-bold text-white mb-1">
+          Automated Root-Cause Analysis
+        </h3>
+        <p className="text-sm text-slate-500 mb-5">
+          Hypotheses as saved with the diagnosis, evidenced against the latest
+          oil sample
+        </p>
 
-          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3 cursor-pointer hover:bg-slate-800/50 transition-colors">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Journal Bearing Degradation
-              </p>
-              <span className="text-xs bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/30">
-                45% Confidence
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed font-mono">
-              Cu (85ppm) + Pb (40ppm) elevated together.
-            </p>
-            <p className="text-sm font-bold text-yellow-400">
-              High friction on copper-alloy thrust plates.
-            </p>
-          </div>
+        {hypotheses.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {hypotheses.map((h) => (
+              <div
+                key={h.title}
+                className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    {h.title}
+                  </p>
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded border ${
+                      h.confidenceKind === "none"
+                        ? "bg-slate-500/10 text-slate-400 border-slate-500/30"
+                        : "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                    }`}
+                  >
+                    {h.confidenceLabel}
+                  </span>
+                </div>
 
-          <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3 cursor-pointer hover:bg-slate-800/50 transition-colors">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Coolant Ingress
-              </p>
-              <span className="text-xs bg-slate-500/10 text-slate-400 px-2 py-0.5 rounded border border-slate-500/30">
-                12% Confidence
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed font-mono">
-              Na/K spike + Water &gt; 500 PPM.
-            </p>
-            <p className="text-sm font-bold text-cyan-400">
-              Inspect heat exchanger/head gasket immediately.
-            </p>
+                {h.evidence.length > 0 ? (
+                  <ul className="space-y-1">
+                    {h.evidence.map((line) => (
+                      <li
+                        key={line}
+                        className="text-[11px] text-slate-400 leading-relaxed font-mono"
+                      >
+                        {line}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    No oil-sample exceedance links to this hypothesis.
+                  </p>
+                )}
+
+                {h.rationale && (
+                  <p className="text-sm text-slate-300 leading-relaxed">
+                    {h.rationale}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
-        </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-slate-700 p-6 text-center">
+            <p className="text-sm font-semibold text-slate-300">
+              No saved fault hypotheses for this asset
+            </p>
+            <p className="mx-auto mt-2 max-w-lg text-xs leading-relaxed text-slate-500">
+              Root-cause cards are rendered from the diagnosis record; none has
+              been saved yet, so nothing is inferred here.
+              {exceedances.length > 0 &&
+                " The latest oil sample does show measured exceedances:"}
+            </p>
+            {exceedances.length > 0 && (
+              <ul className="mx-auto mt-3 max-w-lg space-y-1 text-left">
+                {exceedances.map((e) => (
+                  <li key={e.text} className="font-mono text-[11px] text-slate-400">
+                    {e.text}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
       </section>
 
-      {/* 3 — Financial Sump Optimization */}
+      {/* 4 — Financial Sump Optimization */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-5">Financial Sump Optimization</h3>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -268,7 +614,10 @@ export default function OilResultsDashboard({
         </div>
       </section>
 
-      {/* 4 — Field Technician Action Plan */}
+      {/* 5 — Computed prognosis, directly below the financial case */}
+      {!intelLoading && <PrognosisPanel prognosis={prognosis} />}
+
+      {/* 6 — Field Technician Action Plan */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-2">Field Technician Action Plan</h3>
         <p className="text-sm text-slate-500 mb-5">
@@ -308,10 +657,10 @@ export default function OilResultsDashboard({
                     >
                       {item}
                     </p>
-                    {i === 0 && (
+                    {i === 0 && latestIsoCode && (
                       <p className="mt-2 text-xs text-red-400 font-medium leading-relaxed">
                         ⚠️ A standard 10-micron nominal filter cannot capture the microscopic
-                        particles causing this ISO 19/17/14 contamination.
+                        particles causing this ISO {latestIsoCode} contamination.
                       </p>
                     )}
                   </span>
@@ -335,7 +684,7 @@ export default function OilResultsDashboard({
         </ul>
       </section>
 
-      {/* 5 — AI Procurement & BOM */}
+      {/* 7 — AI Procurement & BOM */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white">AI Procurement &amp; Bill of Materials (BOM)</h3>
         <p className="text-sm text-slate-500 mt-0.5 mb-5">
@@ -385,13 +734,14 @@ export default function OilResultsDashboard({
         </div>
       </section>
 
-      {/* 6 — Universal CMMS Data Bridge */}
-      <CmmsDataBridge
-        domain="oil"
-        assetLabel={assetLabel}
-        componentLabel={componentLabel || "Motor DE / Sump"}
-        onToast={onToast}
-      />
+      {/*
+        8 — CMMS bridge. Replaces the legacy Universal CMMS Data Bridge, whose
+        oil payload was a fixed demo string; this one is built from the live
+        diagnosis, prognosis and sign-off state.
+      */}
+      {!intelLoading && (
+        <CmmsPayloadBridge context={cmmsContext} onToast={onToast} />
+      )}
 
       <StaticActionBar
         position="bottom"
@@ -400,102 +750,6 @@ export default function OilResultsDashboard({
         onManagerReport={handleManagerReport}
       />
 
-      {/* Elemental trend modal (dialog overlay — not an action bar) */}
-      {showElementTrend && (
-        <div
-          className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="elemental-trend-title"
-          onClick={() => setShowElementTrend(false)}
-        >
-          <div
-            className="relative w-full max-w-2xl bg-slate-900 border border-white/10 rounded-xl p-6 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              type="button"
-              onClick={() => setShowElementTrend(false)}
-              className="absolute top-4 right-4 text-white hover:text-yellow-400 cursor-pointer transition-colors p-1"
-              aria-label="Close"
-            >
-              <X className="h-5 w-5" />
-            </button>
-            <h4
-              id="elemental-trend-title"
-              className="text-lg font-bold text-white pr-10 mb-1"
-            >
-              Elemental Trend: Si, Fe, Al (Last 6 Samples)
-            </h4>
-            <p className="text-xs text-slate-500 mb-4">
-              Rising Si + Fe + Al correlation confirms abrasive dirt ingress.
-            </p>
-            <div className="h-64 w-full max-w-2xl">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={ELEMENTAL_TREND}
-                  margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
-                >
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    width={36}
-                    axisLine={false}
-                    tickLine={false}
-                    unit=" ppm"
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: 8,
-                      fontSize: 12
-                    }}
-                    formatter={(value: number | string) => [`${value} ppm`, ""]}
-                  />
-                  <Legend
-                    verticalAlign="bottom"
-                    wrapperStyle={{ fontSize: 11, color: "#94a3b8", paddingTop: 8 }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="si"
-                    name="Silicon (Si)"
-                    stroke="#ef4444"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#ef4444" }}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="fe"
-                    name="Iron (Fe)"
-                    stroke="#eab308"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#eab308" }}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="al"
-                    name="Aluminum (Al)"
-                    stroke="#22d3ee"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#22d3ee" }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

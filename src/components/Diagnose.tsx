@@ -134,6 +134,7 @@ import McaResultsDashboard from "./McaResultsDashboard";
 import OilInputAccordions from "./OilInputAccordions";
 import OilResultsDashboard from "./OilResultsDashboard";
 import CmmsDataBridge from "./CmmsDataBridge";
+import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
 
 /* ========================================================================== */
 /* Props (keep App.tsx contract)                                              */
@@ -1560,7 +1561,6 @@ export default function Diagnose({
   subscriptionPlan,
   onNavigateToCalendar
 }: DiagnoseProps) {
-  void user;
   void selectedCompanyId;
   void subscriptionPlan;
 
@@ -3673,6 +3673,13 @@ export default function Diagnose({
       setChartRegionDetection(null);
     }
   };
+
+  /** Logged-in user, used only to pre-fill the sign-off name field. */
+  const signOffEngineerName =
+    (user?.full_name as string) ||
+    (user?.name as string) ||
+    (user?.username as string) ||
+    "";
 
   const resolveVibrationAssetKey = () =>
     (browseAssetTag && String(browseAssetTag).trim()) ||
@@ -6323,6 +6330,36 @@ export default function Diagnose({
             </div>
           </section>
 
+          {/*
+            Fusion / prognosis / sign-off / CMMS run off saved records only, so
+            they render exclusively for a real analysis — never for the demo
+            fallback values used by the cards above.
+          */}
+          {analysisResult && (
+            <DiagnosticsIntelligencePanel
+              assetId={resolveVibrationAssetKey()}
+              assetTag={
+                browseAssetTag || reportAsset.tag || reportAsset.label
+              }
+              component={browseComponent || ""}
+              primaryFault={
+                analysisResult.primaryFault?.title ||
+                analysisResult.summary ||
+                "Unclassified finding"
+              }
+              severity={analysisResult.severity}
+              confidencePercent={
+                analysisResult.primaryFault?.confidencePercent ?? null
+              }
+              healthScore={analysisResult.overallHealthScore ?? null}
+              recommendations={analysisResult.repairRecommendations ?? []}
+              savedAnalysisId={savedAnalysisId}
+              engineerName={signOffEngineerName}
+              onToast={(msg, type) => toast(msg, type ?? "info")}
+              onDispatchWorkOrder={() => saveAndCreateWorkOrder()}
+            />
+          )}
+
           <CmmsDataBridge
             domain="vibration"
             assetLabel={reportAsset.label}
@@ -6428,6 +6465,18 @@ export default function Diagnose({
             onNewAnalysis={() => setShowResults(false)}
             onSaveWorkOrder={saveAndCreateWorkOrder}
             onToast={(msg, type) => toast(msg, type ?? "info")}
+            assetId={resolveVibrationAssetKey()}
+            assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
+            primaryFault={analysisResult?.primaryFault?.title ?? ""}
+            severity={analysisResult?.severity ?? null}
+            confidencePercent={
+              analysisResult?.primaryFault?.confidencePercent ?? null
+            }
+            healthScore={analysisResult?.overallHealthScore ?? null}
+            recommendations={analysisResult?.repairRecommendations}
+            savedAnalysisId={savedAnalysisId}
+            engineerName={signOffEngineerName}
+            identifiedFaults={analysisResult?.identifiedFaults}
           />
         </div>
       )}
