@@ -12098,6 +12098,341 @@ async function initializeDatabase() {
   }
 }
 
+/* ========================================================================== */
+/* Custom CMMS Templates API                                                  */
+/* ========================================================================== */
+
+// Helper: sanitize and validate custom CMMS field schema
+function sanitizeCustomCmmsSchema(schema: unknown): {
+  fields: Array<{
+    key: string;
+    label: string;
+    sourcePath: string;
+    multiline?: boolean;
+    staticValue?: string;
+  }>;
+  priorityMapping: Record<string, string>;
+  workTypeMapping: Record<string, string>;
+} | null {
+  if (!schema || typeof schema !== "object") return null;
+  const s = schema as Record<string, unknown>;
+
+  // Validate fields array
+  const rawFields = Array.isArray(s.fields) ? s.fields : [];
+  const fields = rawFields
+    .filter((f): f is Record<string, unknown> => {
+      return f && typeof f === "object" &&
+        typeof f.key === "string" && f.key.trim() &&
+        typeof f.label === "string" && f.label.trim() &&
+        typeof f.sourcePath === "string";
+    })
+    .map((f) => ({
+      key: String(f.key).slice(0, 100),
+      label: String(f.label).slice(0, 100),
+      sourcePath: String(f.sourcePath).slice(0, 200),
+      multiline: Boolean(f.multiline),
+      staticValue: f.staticValue != null ? String(f.staticValue).slice(0, 500) : undefined
+    }))
+    .slice(0, 50); // Cap at 50 fields
+
+  // Validate priorityMapping
+  const validSeverities = ["CRITICAL", "ANOMALY", "NORMAL"];
+  const rawPriority = s.priorityMapping && typeof s.priorityMapping === "object"
+    ? (s.priorityMapping as Record<string, unknown>)
+    : {};
+  const priorityMapping: Record<string, string> = {};
+  for (const sev of validSeverities) {
+    priorityMapping[sev] = typeof rawPriority[sev] === "string"
+      ? String(rawPriority[sev]).slice(0, 50)
+      : sev === "CRITICAL" ? "High" : sev === "ANOMALY" ? "Medium" : "Low";
+  }
+
+  // Validate workTypeMapping
+  const rawWorkType = s.workTypeMapping && typeof s.workTypeMapping === "object"
+    ? (s.workTypeMapping as Record<string, unknown>)
+    : {};
+  const workTypeMapping: Record<string, string> = {};
+  for (const sev of validSeverities) {
+    workTypeMapping[sev] = typeof rawWorkType[sev] === "string"
+      ? String(rawWorkType[sev]).slice(0, 50)
+      : sev === "CRITICAL" ? "Corrective" : sev === "ANOMALY" ? "Corrective" : "Preventive";
+  }
+
+  return { fields, priorityMapping, workTypeMapping };
+}
+
+// GET /api/cmms/templates?query={name}
+// Fuzzy search for custom CMMS templates using pg_trgm
+app.get("/api/cmms/templates", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database not configured" });
+  }
+  try {
+    const query = (req.query.query as string || "").trim();
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+
+    let sql: string;
+    let params: unknown[];
+
+    if (query) {
+      // Use pg_trgm similarity for fuzzy matching
+      sql = `
+        SELECT id, program_name, field_schema, created_by_tenant, created_at, updated_at,
+               similarity(program_name, $1) AS sim
+        FROM custom_cmms_templates
+        WHERE program_name % $1
+        ORDER BY sim DESC, updated_at DESC
+        LIMIT $2
+      `;
+      params = [query, limit];
+    } else {
+      sql = `
+        SELECT id, program_name, field_schema, created_by_tenant, created_at, updated_at
+        FROM custom_cmms_templates
+        ORDER BY updated_at DESC
+        LIMIT $1
+      `;
+      params = [limit];
+    }
+
+    const result = await pool.query(sql, params);
+    return res.json({ templates: result.rows });
+  } catch (err: any) {
+    console.error("[GET /api/cmms/templates] Error:", err);
+    return res.status(500).json({ error: err?.message || "Search failed" });
+  }
+});
+
+// POST /api/cmms/parse-screenshot
+// Parse CMMS work order screenshot using existing OpenRouter vision provider
+app.post("/api/cmms/parse-screenshot", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database not configured" });
+  }
+  try {
+    const { imageBase64, context } = req.body || {};
+    if (!imageBase64 || typeof imageBase64 !== "string") {
+      return res.status(400).json({ error: "imageBase64 is required" });
+    }
+
+    const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+    if (!openRouterKey) {
+      return res.status(503).json({
+        error: "OPENROUTER_API_KEY not configured",
+        message: "Vision provider unavailable. Set OPENROUTER_API_KEY in .env"
+      });
+    }
+
+    // Build context-aware prompt for CMMS screenshot parsing
+    const contextInfo = context ? `
+Asset: ${context.assetTag || "Unknown"}
+Component: ${context.component || "Unknown"}
+Fault: ${context.faultTitle || "Unknown"}
+Severity: ${context.severity || "Unknown"}
+Confidence: ${context.confidencePercent ?? "N/A"}%
+Health Score: ${context.healthScore ?? "N/A"}
+Recommendations: ${Array.isArray(context.recommendations) ? context.recommendations.join("; ") : "None"}
+` : "No diagnosis context provided.";
+
+    const prompt = `
+You are an expert at reading CMMS/EAM work order screenshots. Extract the field structure from this screenshot and map it to a JSON schema that can be used to auto-populate work orders from condition monitoring diagnostics.
+
+${contextInfo}
+
+Return ONLY valid JSON matching this exact structure:
+{
+  "fields": [
+    {"key": "FIELD_KEY", "label": "Display Label", "sourcePath": "context.property.path", "multiline": false, "staticValue": "optional static value"},
+    ...
+  ],
+  "priorityMapping": {"CRITICAL": "High", "ANOMALY": "Medium", "NORMAL": "Low"},
+  "workTypeMapping": {"CRITICAL": "Corrective", "ANOMALY": "Corrective", "NORMAL": "Preventive"}
+}
+
+Rules:
+1. Identify ALL visible fields in the work order form (text inputs, textareas, dropdowns, etc.)
+2. For each field, determine the best matching diagnosis context property using dot-notation paths:
+   - assetTag, component, faultTitle, severity, confidencePercent, healthScore
+   - horizonHours, horizonDriver, horizonBasis
+   - corroborationPercent, technologiesWithData
+   - signOffStatus, signOffEngineer, signOffAt
+   - recommendations[0], recommendations[1], etc.
+   - diagnosisId, diagnosisAt
+   - requiredParts (array joined with " | ")
+3. Use "staticValue" for fields that don't map to diagnosis data (e.g., "Work Center", "Reported By")
+4. Set multiline=true for textareas/long text fields
+4. Priority mapping: map CMMS-specific priority codes to our CRITICAL/ANOMALY/NORMAL
+5. Work type mapping: map CMMS-specific work order types to our CRITICAL/ANOMALY/NORMAL
+6. Field keys should be uppercase with underscores (e.g., "WO_NUMBER", "ASSET_ID")
+7. Labels should be human-readable (e.g., "Work Order Number", "Asset ID")
+8. Maximum 50 fields
+`.trim();
+
+    const modelsToTry = [
+      "openai/gpt-4o",
+      "openai/gpt-4o-mini",
+      "anthropic/claude-3.5-sonnet",
+      "google/gemini-pro-1.5"
+    ];
+
+    let parsedSchema: unknown = null;
+    let lastError: unknown = null;
+
+    for (const model of modelsToTry) {
+      try {
+        const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${openRouterKey}`,
+            "HTTP-Referer": "https://motormedic.app",
+            "X-Title": "MotorMedic CMMS Parser"
+          },
+          signal: AbortSignal.timeout(60_000),
+          body: JSON.stringify({
+            model,
+            max_tokens: 4000,
+            temperature: 0.1,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
+                  { type: "text", text: prompt }
+                ]
+              }
+            ]
+          })
+        });
+
+        const upstreamJson = await upstream.json().catch(() => ({})) as Record<string, unknown>;
+
+        if (!upstream.ok) {
+          lastError = new Error(`Vision provider HTTP ${upstream.status} (${model})`);
+          console.warn(`[cmms/parse-screenshot] Model ${model} failed:`, upstream.status);
+          continue;
+        }
+
+        const choices = upstreamJson.choices;
+        const first = Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+          ? (choices[0] as { message?: { content?: string } })
+          : null;
+        const content = first?.message?.content;
+
+        if (!content || typeof content !== "string") {
+          lastError = new Error("Vision model returned no text content");
+          continue;
+        }
+
+        // Extract JSON from response (may be wrapped in markdown)
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const jsonStr = jsonMatch ? jsonMatch[0] : content;
+        parsedSchema = JSON.parse(jsonStr);
+        console.log(`[cmms/parse-screenshot] Successfully parsed with ${model}`);
+        break;
+      } catch (err) {
+        lastError = err;
+        console.warn(`[cmms/parse-screenshot] Model ${model} error:`, err);
+      }
+    }
+
+    if (!parsedSchema) {
+      throw lastError || new Error("All vision models failed to parse screenshot");
+    }
+
+    // Sanitize and validate schema
+    const sanitized = sanitizeCustomCmmsSchema(parsedSchema);
+    if (!sanitized) {
+      return res.status(422).json({
+        error: "Invalid schema returned by vision model",
+        message: "The AI returned a schema that failed validation. Try a clearer screenshot."
+      });
+    }
+
+    // Generate preview fields with live diagnosis data
+    const previewFields = {
+      fieldSchema: sanitized,
+      rawResponse: JSON.stringify(parsedSchema, null, 2)
+    };
+
+    return res.json(previewFields);
+  } catch (err: any) {
+    console.error("[POST /api/cmms/parse-screenshot] Error:", err);
+    const timedOut =
+      err?.name === "TimeoutError" ||
+      err?.name === "AbortError" ||
+      /timeout|timed out|aborted/i.test(String(err?.message || ""));
+    return res.status(timedOut ? 504 : 500).json({
+      error: timedOut ? "Screenshot analysis timed out" : err?.message || "Failed to parse screenshot",
+      message: timedOut
+        ? "Vision analysis timed out after 60 seconds. Try a clearer, smaller image."
+        : "Vision extraction failed. Verify OPENROUTER_API_KEY and credits at https://openrouter.ai"
+    });
+  }
+});
+
+// POST /api/cmms/templates
+// Save a custom CMMS template (only stores schema, never screenshot)
+app.post("/api/cmms/templates", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database not configured" });
+  }
+  try {
+    const { program_name, field_schema } = req.body || {};
+    if (!program_name || typeof program_name !== "string" || !program_name.trim()) {
+      return res.status(400).json({ error: "program_name is required" });
+    }
+    if (!field_schema || typeof field_schema !== "object") {
+      return res.status(400).json({ error: "field_schema is required" });
+    }
+
+    const sanitized = sanitizeCustomCmmsSchema(field_schema);
+    if (!sanitized || !sanitized.fields.length) {
+      return res.status(400).json({ error: "field_schema must contain at least one valid field" });
+    }
+
+    // Use a tenant identifier (could be from auth, for now use a default)
+    const tenantId = "default_tenant"; // In production, extract from auth/session
+
+    const insert = await pool.query(
+      `INSERT INTO custom_cmms_templates (program_name, field_schema, created_by_tenant)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (program_name, created_by_tenant) DO UPDATE SET
+         field_schema = EXCLUDED.field_schema,
+         updated_at = NOW()
+       RETURNING id, program_name, field_schema, created_by_tenant, created_at, updated_at`,
+      [program_name.trim(), JSON.stringify(sanitized), tenantId]
+    );
+
+    return res.json(insert.rows[0]);
+  } catch (err: any) {
+    console.error("[POST /api/cmms/templates] Error:", err);
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "Template name already exists for this tenant" });
+    }
+    return res.status(500).json({ error: err?.message || "Failed to save template" });
+  }
+});
+
+// DELETE /api/cmms/templates/:id
+// Delete a custom CMMS template
+app.delete("/api/cmms/templates/:id", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database not configured" });
+  }
+  try {
+    const { id } = req.params;
+    await pool.query(
+      `DELETE FROM custom_cmms_templates WHERE id = $1`,
+      [id]
+    );
+    return res.json({ success: true });
+  } catch (err: any) {
+    console.error("[DELETE /api/cmms/templates/:id] Error:", err);
+    return res.status(500).json({ error: err?.message || "Failed to delete template" });
+  }
+});
+
 // Global error-handling middleware to prevent Express from crashing and return uniform JSON responses
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error("🔥 Unhandled exception caught by global Express middleware:", err);

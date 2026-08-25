@@ -17,14 +17,16 @@ export type CmmsTargetId =
   | "maximo"
   | "maintainx"
   | "fiix"
-  | "oracle_eam";
+  | "oracle_eam"
+  | "custom";
 
 export const CMMS_TARGETS: { id: CmmsTargetId; label: string }[] = [
   { id: "sap", label: "SAP PM / S4HANA" },
   { id: "maximo", label: "IBM Maximo" },
   { id: "maintainx", label: "MaintainX" },
   { id: "fiix", label: "Fiix CMMS" },
-  { id: "oracle_eam", label: "Oracle EAM" }
+  { id: "oracle_eam", label: "Oracle EAM" },
+  { id: "custom", label: "Other (Custom CMMS...)" }
 ];
 
 /** Normalized severity the priority tables key off. */
@@ -55,6 +57,41 @@ export interface CmmsPayloadContext {
 }
 
 /**
+ * Custom CMMS template schema stored in the database.
+ */
+export interface CustomCmmsTemplate {
+  id: string;
+  program_name: string;
+  field_schema: CustomCmmsFieldSchema;
+  created_by_tenant: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Field schema for a custom CMMS template.
+ */
+export interface CustomCmmsFieldSchema {
+  fields: CustomCmmsField[];
+  priorityMapping: Record<DiagnosisSeverity, string>;
+  workTypeMapping: Record<DiagnosisSeverity, string>;
+}
+
+/**
+ * A single field in a custom CMMS template.
+ */
+export interface CustomCmmsField {
+  key: string;
+  label: string;
+  /** The diagnosis context property this field maps to. */
+  sourcePath: string;
+  /** Whether this field is a textarea (multiline). */
+  multiline?: boolean;
+  /** Optional static value (for fields that don't map to diagnosis data). */
+  staticValue?: string;
+}
+
+/**
  * One work-order field: the system's own key, a human label for the field card,
  * and the value from the diagnosis.
  */
@@ -75,7 +112,9 @@ const PRIORITY: Record<CmmsTargetId, Record<DiagnosisSeverity, string>> = {
   maintainx: { CRITICAL: "High", ANOMALY: "Medium", NORMAL: "Low" },
   fiix: { CRITICAL: "Critical", ANOMALY: "Medium", NORMAL: "Low" },
   // Oracle EAM priority: 1 = emergency … 5 = routine
-  oracle_eam: { CRITICAL: "1", ANOMALY: "3", NORMAL: "5" }
+  oracle_eam: { CRITICAL: "1", ANOMALY: "3", NORMAL: "5" },
+  // Custom CMMS uses generic text priorities
+  custom: { CRITICAL: "High", ANOMALY: "Medium", NORMAL: "Low" }
 };
 
 /** Work order type / order type per system. */
@@ -84,7 +123,8 @@ const WORK_TYPE: Record<CmmsTargetId, Record<DiagnosisSeverity, string>> = {
   maximo: { CRITICAL: "EM", ANOMALY: "CM", NORMAL: "PM" },
   maintainx: { CRITICAL: "Reactive", ANOMALY: "Corrective", NORMAL: "Preventive" },
   fiix: { CRITICAL: "Emergency", ANOMALY: "Corrective", NORMAL: "Preventive" },
-  oracle_eam: { CRITICAL: "Emergency", ANOMALY: "Corrective", NORMAL: "Routine" }
+  oracle_eam: { CRITICAL: "Emergency", ANOMALY: "Corrective", NORMAL: "Routine" },
+  custom: { CRITICAL: "Corrective", ANOMALY: "Corrective", NORMAL: "Preventive" }
 };
 
 export function normalizeSeverity(raw?: string | null): DiagnosisSeverity {
@@ -281,6 +321,9 @@ export function buildCmmsFieldList(
         ["DESCRIPTION", "Description", description, true],
         ["OPERATION_STEPS", "Operation Steps", steps, true]
       ]);
+
+    case "custom":
+      return buildCustomCmmsFields(ctx);
   }
 }
 
@@ -294,4 +337,118 @@ export function buildCmmsPayload(
     out[field.key] = field.value;
   }
   return out;
+}
+
+/**
+ * Build CMMS fields from a custom template schema.
+ * Used when target === "custom" and a template has been loaded.
+ */
+export function buildCustomCmmsFields(
+  ctx: CmmsPayloadContext,
+  template?: CustomCmmsFieldSchema
+): CmmsField[] {
+  if (!template || !template.fields.length) {
+    // Fallback to default generic fields if no template loaded
+    return buildDefaultCustomFields(ctx);
+  }
+
+  const priority = template.priorityMapping?.[ctx.severity] ?? "Medium";
+  const workType = template.workTypeMapping?.[ctx.severity] ?? "Corrective";
+  const description = `${ctx.faultTitle} detected on ${ctx.assetTag} ${ctx.component}`.trim();
+  const horizon = horizonText(ctx);
+  const confidence = ctx.confidencePercent != null ? `${ctx.confidencePercent}%` : null;
+  const started = malfunctionStart(ctx);
+  const parts = (ctx.requiredParts ?? []).join(" | ");
+  const steps = ctx.recommendations.join(" | ");
+
+  const out: CmmsField[] = [];
+
+  for (const field of template.fields) {
+    let value = getValueFromContext(ctx, field.sourcePath);
+    if (value == null && field.staticValue != null) {
+      value = field.staticValue;
+    }
+    if (value == null) continue;
+
+    // Replace common placeholder tokens
+    let finalValue = String(value);
+    finalValue = finalValue.replace(/\{priority\}/g, priority);
+    finalValue = finalValue.replace(/\{workType\}/g, workType);
+    finalValue = finalValue.replace(/\{description\}/g, description);
+    finalValue = finalValue.replace(/\{horizon\}/g, horizon ?? "");
+    finalValue = finalValue.replace(/\{confidence\}/g, confidence ?? "");
+    finalValue = finalValue.replace(/\{started\}/g, started ?? "");
+    finalValue = finalValue.replace(/\{parts\}/g, parts);
+    finalValue = finalValue.replace(/\{steps\}/g, steps);
+
+    out.push({
+      key: field.key,
+      label: field.label,
+      value: finalValue,
+      multiline: field.multiline
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Default custom CMMS fields when no template is loaded.
+ */
+function buildDefaultCustomFields(ctx: CmmsPayloadContext): CmmsField[] {
+  const priority = PRIORITY.custom[ctx.severity];
+  const workType = WORK_TYPE.custom[ctx.severity];
+  const description = `${ctx.faultTitle} detected on ${ctx.assetTag} ${ctx.component}`.trim();
+  const horizon = horizonText(ctx);
+  const confidence = ctx.confidencePercent != null ? `${ctx.confidencePercent}%` : null;
+  const started = malfunctionStart(ctx);
+  const parts = (ctx.requiredParts ?? []).join(" | ");
+  const steps = ctx.recommendations.join(" | ");
+
+  return fields([
+    ["WORK_ORDER_TYPE", "Work Order Type", workType],
+    ["ASSET_ID", "Asset ID", ctx.assetTag],
+    ["COMPONENT", "Component", ctx.component],
+    ["REPORTED_DATE", "Reported Date", started],
+    ["PRIORITY", "Priority", priority],
+    ["FAULT_TITLE", "Fault Title", ctx.faultTitle],
+    ["HEALTH_SCORE", "Health Score", ctx.healthScore],
+    ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
+    ["FAILURE_HORIZON", "Failure Horizon", horizon],
+    ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
+    ["EXTERNAL_REF", "External Reference", ctx.diagnosisId],
+    ["REQUIRED_PARTS", "Required Parts", parts],
+    ["DESCRIPTION", "Description", description, true],
+    ["WORK_STEPS", "Work Steps", steps, true]
+  ]);
+}
+
+/**
+ * Get a value from the CmmsPayloadContext using a dot-notation path.
+ * e.g., "assetTag", "faultTitle", "severity", "recommendations[0]"
+ */
+function getValueFromContext(ctx: CmmsPayloadContext, path: string): unknown {
+  const parts = path.split(".");
+  let current: unknown = ctx;
+
+  for (const part of parts) {
+    if (current == null) return null;
+
+    // Handle array access like "recommendations[0]"
+    const arrayMatch = part.match(/^(.+)\[(\d+)\]$/);
+    if (arrayMatch) {
+      const prop = arrayMatch[1];
+      const index = parseInt(arrayMatch[2], 10);
+      current = (current as Record<string, unknown>)[prop];
+      if (Array.isArray(current)) {
+        current = current[index];
+      } else {
+        return null;
+      }
+    } else {
+      current = (current as Record<string, unknown>)[part];
+    }
+  }
+
+  return current;
 }
