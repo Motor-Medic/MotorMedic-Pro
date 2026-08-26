@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { useToast } from "./Toast";
 import { formatUsd } from "./PartsInventory";
+import { NO_FINDINGS_TEXT } from "../lib/diagnostics/workOrderText";
 
 export type WorkOrderPriority = "Critical" | "High" | "Medium" | "Low";
 
@@ -185,18 +186,26 @@ export default function WorkOrderGenerator({
       ? "Medium"
       : "Low";
 
-  const [title, setTitle] = useState(`${faultCode} correction — ${assetName}`);
+  const [title, setTitle] = useState(
+    faultCode.trim()
+      ? `${faultCode} correction — ${assetName}`
+      : `Condition-monitoring follow-up — ${assetName}`
+  );
   const [assignedTo, setAssignedTo] = useState(TECHNICIANS[0]);
   const [priority, setPriority] = useState<WorkOrderPriority>(seededPriority);
   const [dueDate, setDueDate] = useState(isoDatePlusDays(DUE_DAYS[seededPriority]));
   const [laborHours, setLaborHours] = useState(String(estimatedHours));
   const [description, setDescription] = useState(() => {
+    const finding = faultCode.trim()
+      ? `Vibration analysis of ${assetName} (${tagId}) returned fault code ${faultCode} at ${faultSeverity.toLowerCase()} severity.`
+      : NO_FINDINGS_TEXT;
     const actions = recommendations.length
-      ? recommendations.map((r) => `- [${r.priority}] ${r.text}`).join("\n")
-      : "- No automated recommendations were returned for this analysis.";
+      ? `\n\nRecommended actions:\n${recommendations
+          .map((r) => `- [${r.priority}] ${r.text}`)
+          .join("\n")}`
+      : "";
     return (
-      `Vibration analysis of ${assetName} (${tagId}) returned fault code ${faultCode} at ${faultSeverity.toLowerCase()} severity.\n\n` +
-      `Recommended actions:\n${actions}\n\n` +
+      `${finding}${actions}\n\n` +
       `Complete the documented repair procedure, then re-measure overall velocity to confirm the unit has returned inside ISO 10816 Zone A.`
     );
   });
@@ -386,11 +395,6 @@ export default function WorkOrderGenerator({
     toast(`${number} created and saved.`, "success");
   };
 
-  const handleEmail = () => {
-    if (!validate()) return;
-    toast(`Work order emailed to ${assignedTo.split(" — ")[0]}.`, "success");
-  };
-
   const handlePrint = () => {
     if (!validate()) return;
     toast("Preparing printable work order...", "info");
@@ -453,16 +457,18 @@ export default function WorkOrderGenerator({
             <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => toast(`Opening ${workOrderNumber} in the maintenance queue.`, "info")}
-                className="flex items-center gap-1.5 px-4 py-2 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                disabled
+                title="Maintenance queue view is not built yet"
+                className="flex items-center gap-1.5 px-4 py-2 bg-slate-800 border border-slate-700 text-slate-500 text-xs font-bold rounded-lg cursor-not-allowed transition-colors"
               >
                 <ClipboardCheck className="h-3.5 w-3.5" />
                 <span>View Work Order</span>
               </button>
               <button
                 type="button"
-                onClick={handleEmail}
-                className="flex items-center gap-1.5 px-4 py-2 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                disabled
+                title="Email delivery pending — no work order mailing endpoint is connected"
+                className="flex items-center gap-1.5 px-4 py-2 bg-slate-950 border border-slate-800 text-slate-500 text-xs font-bold rounded-lg cursor-not-allowed transition-colors"
               >
                 <Mail className="h-3.5 w-3.5" />
                 <span>Email to Technician</span>
@@ -922,8 +928,9 @@ export default function WorkOrderGenerator({
               </button>
               <button
                 type="button"
-                onClick={handleEmail}
-                className="flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-xs font-bold rounded-lg cursor-pointer transition-colors"
+                disabled
+                title="Email delivery pending — no work order mailing endpoint is connected"
+                className="flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 text-slate-500 text-xs font-bold rounded-lg cursor-not-allowed transition-colors"
               >
                 <Mail className="h-3.5 w-3.5" />
                 <span>Email to Technician</span>

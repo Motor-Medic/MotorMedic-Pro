@@ -684,7 +684,7 @@ export default function CreateComponentModal({
     const base = BASE_COMPONENT_TYPES.filter((t) => t !== "Other");
     const extras =
       initialData?.componentType &&
-      !base.includes(initialData.componentType as (typeof BASE_COMPONENT_TYPES)[number]) &&
+      !base.some((t) => t === initialData.componentType) &&
       initialData.componentType !== "Other" &&
       !customNames.includes(initialData.componentType)
         ? [initialData.componentType]
@@ -1097,15 +1097,19 @@ export default function CreateComponentModal({
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       {fields.map((field) => (
-                        <SpecField
-                          key={field.key}
-                          field={field}
-                          value={specs[field.key] ?? ""}
-                          onChange={(v) => {
-                            patch(field.key, v);
-                            setError("");
-                          }}
-                        />
+                        // The key sits on the Fragment because @types/react is
+                        // not installed, so the JSX namespace that normally
+                        // permits `key` on a locally typed component is absent.
+                        <React.Fragment key={field.key}>
+                          <SpecField
+                            field={field}
+                            value={specs[field.key] ?? ""}
+                            onChange={(v) => {
+                              patch(field.key, v);
+                              setError("");
+                            }}
+                          />
+                        </React.Fragment>
                       ))}
                     </div>
                   </div>

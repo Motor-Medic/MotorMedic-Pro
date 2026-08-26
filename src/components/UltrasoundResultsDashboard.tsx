@@ -35,7 +35,23 @@ export type UltrasoundPeaksLite = {
   delta_db?: number;
   crest_factor?: number;
   mode?: string;
+  /**
+   * Quantified leak rate in CFM. Only present once an analyst has measured
+   * one — the financial panel stays blank without it rather than assuming a
+   * leak size.
+   */
+  leak_cfm?: number;
 };
+
+// --- Compressed-air leak costing --------------------------------------------
+// Standard compressed-air rule of thumb: a continuous 1 CFM demand at 100 PSI
+// draws roughly 0.25 kW at the compressor. Every input is surfaced in the
+// footnote so a site can re-derive the number against its own tariff.
+const LEAK_KW_PER_CFM = 0.25;
+const LEAK_ENERGY_COST_PER_KWH = 0.12;
+const LEAK_ANNUAL_RUN_HOURS = 8760;
+const LEAK_COST_PER_CFM_YEAR =
+  LEAK_KW_PER_CFM * LEAK_ANNUAL_RUN_HOURS * LEAK_ENERGY_COST_PER_KWH;
 
 /** Sharp impact spikes — mechanical / bearing signature */
 const TWF_IMPACT_DATA = Array.from({ length: 80 }, (_, i) => {
@@ -173,6 +189,16 @@ export default function UltrasoundResultsDashboard({
     useState<(typeof UE_DEMO_MODES)[number]>("leak");
   const [cmmsClipboardFormat, setCmmsClipboardFormat] =
     useState<(typeof CMMS_CLIPBOARD_FORMATS)[number]>("IBM Maximo");
+
+  // Leak economics are derived only from a measured rate; absent one the
+  // financial panel says so rather than assuming an orifice size.
+  const leakCfm =
+    ultrasoundPeaks?.leak_cfm != null && Number.isFinite(ultrasoundPeaks.leak_cfm)
+      ? ultrasoundPeaks.leak_cfm
+      : null;
+  const leakKwhPerYear =
+    leakCfm != null ? leakCfm * LEAK_KW_PER_CFM * LEAK_ANNUAL_RUN_HOURS : null;
+  const leakAnnualCost = leakCfm != null ? leakCfm * LEAK_COST_PER_CFM_YEAR : null;
 
   // Load saved records for fusion, prognosis, sign-off and CMMS context
   const {
@@ -547,15 +573,18 @@ export default function UltrasoundResultsDashboard({
                 The Math
               </p>
               <p className="text-sm text-slate-300">
-                Estimated Leak Size:{" "}
-                <span className="text-white font-bold">1/8 inch equivalent orifice</span>
+                Measured Leak Rate:{" "}
+                <span className="text-cyan-400 font-bold">
+                  {leakCfm != null ? `${leakCfm} CFM continuous` : "—"}
+                </span>
               </p>
               <p className="text-sm text-slate-300">
-                System Pressure: <span className="text-white font-bold">100 PSI</span>
-              </p>
-              <p className="text-sm text-slate-300">
-                Flow Rate Loss:{" "}
-                <span className="text-cyan-400 font-bold">~38 CFM continuous</span>
+                Annual Energy Waste:{" "}
+                <span className="text-white font-bold">
+                  {leakKwhPerYear != null
+                    ? `${Math.round(leakKwhPerYear).toLocaleString()} kWh`
+                    : "—"}
+                </span>
               </p>
               <p className="text-[11px] text-slate-500">
                 Clipboard format:{" "}
@@ -564,17 +593,28 @@ export default function UltrasoundResultsDashboard({
             </div>
 
             <div className="rounded-xl border border-yellow-500/30 bg-yellow-500/5 p-5 flex flex-col justify-center gap-2">
-              <p className="text-sm text-slate-300">
-                Annual Energy Waste:{" "}
-                <span className="text-white font-bold">132,000 kWh</span>
-              </p>
-              <p className="text-[10px] font-bold uppercase tracking-wider text-yellow-500/80 mt-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-yellow-500/80">
                 Total Annual Cost
               </p>
               <p className="text-4xl sm:text-5xl font-black text-yellow-400 tracking-tight">
-                $15,840
+                {leakAnnualCost != null
+                  ? `$${Math.round(leakAnnualCost).toLocaleString()}`
+                  : "—"}
               </p>
-              <p className="text-sm text-slate-400">Based on $0.12/kWh and 24/7 operation.</p>
+              {leakCfm != null ? (
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  {leakCfm} CFM × {LEAK_KW_PER_CFM} kW/CFM ×{" "}
+                  {LEAK_ANNUAL_RUN_HOURS.toLocaleString()} h × $
+                  {LEAK_ENERGY_COST_PER_KWH}/kWh = $
+                  {Math.round(LEAK_COST_PER_CFM_YEAR).toLocaleString()} per CFM per
+                  year.
+                </p>
+              ) : (
+                <p className="text-sm text-slate-400">
+                  Awaiting leak quantification — no leak rate has been measured for
+                  this record, so no cost can be derived.
+                </p>
+              )}
             </div>
           </div>
         </section>
@@ -617,7 +657,10 @@ export default function UltrasoundResultsDashboard({
             </div>
             <button
               type="button"
-              onClick={() => alert("Lubrication job plan copied to clipboard!")}
+              onClick={() => {
+                const plan = "Lubrication job plan for asset";
+                navigator.clipboard.writeText(plan).catch(() => {});
+              }}
               className="px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-xs text-cyan-400 flex items-center gap-1 border border-cyan-500/30 cursor-pointer transition-colors shrink-0"
             >
               📋 Copy Maintenance Action to CMMS
@@ -752,9 +795,6 @@ export default function UltrasoundResultsDashboard({
                   type="button"
                   onClick={() => {
                     setLubeFeedback("rising");
-                    alert(
-                      "Over-lubrication detected. Bearing seals may be at risk. Do not add more grease."
-                    );
                     onToast?.("Over-lubrication — stop pumping. Seals may be at risk.", "error");
                   }}
                   className={`w-full min-h-[48px] px-4 rounded-xl text-sm font-bold border cursor-pointer inline-flex items-center justify-center gap-2 transition-all ${
@@ -813,19 +853,17 @@ export default function UltrasoundResultsDashboard({
                 <div className="flex flex-col justify-center">
                   <button
                     type="button"
-                    onClick={() =>
-                      onToast?.("Fitting kit queued for purchase…", "success")
-                    }
-                    className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-2 rounded-lg text-sm mb-2 cursor-pointer transition-colors"
+                    disabled
+                    title="Procurement integration pending — purchase endpoint not connected"
+                    className="w-full bg-slate-800 border border-slate-700 text-slate-400 py-2 rounded-lg text-sm font-bold mb-2 cursor-not-allowed transition-colors"
                   >
-                    🛒 Purchase Fitting Kit - $18
+                    🛒 Purchase Fitting Kit
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      onToast?.("Parts pull request sent to stock room…", "info")
-                    }
-                    className="w-full border border-slate-700 text-white hover:bg-slate-800 py-2 rounded-lg text-sm cursor-pointer transition-colors"
+                    disabled
+                    title="Stock room integration pending — stock room endpoint not connected"
+                    className="w-full border border-slate-700 text-slate-400 py-2 rounded-lg text-sm cursor-not-allowed transition-colors"
                   >
                     📦 Pull from On-Site Stock Room
                   </button>
@@ -849,19 +887,17 @@ export default function UltrasoundResultsDashboard({
                 <div className="flex flex-col justify-center">
                   <button
                     type="button"
-                    onClick={() =>
-                      onToast?.("Grease cartridge order queued…", "success")
-                    }
-                    className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-2 rounded-lg text-sm mb-2 cursor-pointer transition-colors"
+                    disabled
+                    title="Procurement integration pending — order endpoint not connected"
+                    className="w-full bg-slate-800 border border-slate-700 text-slate-400 py-2 rounded-lg text-sm font-bold mb-2 cursor-not-allowed transition-colors"
                   >
-                    🛒 Order Grease Cartridge - $22
+                    🛒 Order Grease Cartridge
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      onToast?.("Tool crib picking ticket sent to printer…", "info")
-                    }
-                    className="w-full border border-slate-700 text-white hover:bg-slate-800 py-2 rounded-lg text-sm cursor-pointer transition-colors"
+                    disabled
+                    title="No inventory record backs this consumable, so a picking ticket cannot state real stock or supplier"
+                    className="w-full border border-slate-700 text-slate-400 py-2 rounded-lg text-sm cursor-not-allowed transition-colors"
                   >
                     📋 Print Tool Crib Picking Ticket
                   </button>

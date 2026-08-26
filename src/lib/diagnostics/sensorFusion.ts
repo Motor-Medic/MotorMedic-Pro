@@ -138,7 +138,7 @@ function num(raw: unknown): number | null {
 }
 
 /** Find the peaks entry a technology wrote, e.g. `{ type: "ultrasound", … }`. */
-function peakOfType(
+export function peakOfType(
   record: SavedAnalysisResult,
   type: string
 ): Record<string, unknown> | null {

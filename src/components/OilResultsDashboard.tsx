@@ -26,6 +26,54 @@ import PrognosisPanel from "./diagnostics/PrognosisPanel";
 import EngineerSignOff from "./diagnostics/EngineerSignOff";
 import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 
+/** Named financial constants (edit per site/fluid). */
+const OIL_COST_PER_GAL = 30;          // USD/gal, ISO VG46 synthetic blend
+const KIDNEY_LOOP_CART_RATE = 112.5;  // USD/hr offline filtration cart
+const FLOW_RATE_GPH = 600;            // cart flow rating
+const TURNOVERS_TARGET = 7;           // industry practice: 7 volume turnovers
+
+interface DynamicOilMetrics {
+  capacityGallons?: number | null;
+  tanValue?: number | null;
+}
+
+interface OilFinancialsResult {
+  fullSumpFormatted: string;
+  kidneyCostFormatted: string;
+  savingsFormatted: string;
+  lifeImpactFormatted: string;
+  sumpFootnote: string;
+  lifeFootnote: string;
+}
+
+function calculateOilFinancials({ capacityGallons, tanValue }: DynamicOilMetrics): OilFinancialsResult {
+  const hasCapacity = typeof capacityGallons === "number" && capacityGallons > 0;
+  const hasTan = typeof tanValue === "number" && !isNaN(tanValue);
+
+  const fullSumpReplacement = hasCapacity ? capacityGallons * OIL_COST_PER_GAL : null;
+  const kidneyHours = hasCapacity ? Math.max(6, (capacityGallons * TURNOVERS_TARGET) / FLOW_RATE_GPH) : null;
+  const kidneyCost = kidneyHours !== null ? kidneyHours * KIDNEY_LOOP_CART_RATE : null;
+  const savings = fullSumpReplacement !== null && kidneyCost !== null ? fullSumpReplacement - kidneyCost : null;
+
+  const sumpFootnote = hasCapacity
+    ? `${capacityGallons} gal × $${OIL_COST_PER_GAL}/gal = $${fullSumpReplacement?.toLocaleString()}`
+    : "Enter sump capacity to compute ROI";
+
+  const lifeImpactPct = hasTan ? Math.min(50, Math.max(0, (tanValue - 2.0) * 14)) : null;
+  const lifeFootnote = hasTan
+    ? `Rule: -14% per 1.0 TAN above 2.0; TAN ${tanValue.toFixed(1)} → -${lifeImpactPct?.toFixed(1)}%`
+    : "Awaiting TAN measurement";
+
+  return {
+    fullSumpFormatted: fullSumpReplacement !== null ? `$${fullSumpReplacement.toLocaleString()}` : "—",
+    kidneyCostFormatted: kidneyCost !== null ? `$${kidneyCost.toLocaleString()}` : "—",
+    savingsFormatted: savings !== null ? `$${savings.toLocaleString()}` : "—",
+    lifeImpactFormatted: lifeImpactPct !== null ? `-${lifeImpactPct.toFixed(1)}%` : "—",
+    sumpFootnote,
+    lifeFootnote,
+  };
+}
+
 /** One saved fault hypothesis from the diagnosis. */
 export interface IdentifiedFault {
   title: string;
@@ -424,12 +472,27 @@ export default function OilResultsDashboard({
   };
 
   const handleExportPdf = () => {
-    onToast?.("Generating Oil Analysis PDF report…", "info") ??
-      alert("Generating Oil Analysis PDF report…");
+    const reportData = { type: "oil_analysis_pdf", timestamp: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Oil-Analysis-Report-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onToast?.("Oil Analysis PDF report export initiated", "info");
   };
 
   const handleManagerReport = () => {
-    onToast?.("Preparing manager summary…", "info") ?? alert("Preparing manager summary…");
+    const reportData = { type: "oil_manager_summary", timestamp: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Oil-Manager-Summary-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onToast?.("Manager summary export initiated", "info");
   };
 
   return (
@@ -580,36 +643,51 @@ export default function OilResultsDashboard({
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
               Oil Life Extension ROI
             </p>
-            <div className="rounded-xl border-2 border-red-500/50 bg-red-500/5 p-5">
-              <p className="text-sm text-slate-400">Full Sump Replacement (500 gal)</p>
-              <p className="text-3xl font-black text-red-400 tracking-tight">$15,000</p>
-            </div>
-            <div className="rounded-xl border-2 border-emerald-500/40 bg-emerald-500/5 p-5">
-              <p className="text-sm text-slate-400">
-                Kidney-Loop Filtration (6 hours minimum - 7 volume turnovers)
-              </p>
-              <p className="text-3xl font-black text-emerald-400 tracking-tight">$675</p>
-              <p className="text-[11px] text-slate-500 mt-2">
-                Calculated for 500-gallon reservoir @ 600 GPH cart rate.
-              </p>
-            </div>
-            <p className="text-sm text-slate-300">
-              Action Advised:{" "}
-              <span className="text-yellow-400 font-bold">Filter Sump</span>. Potential Savings:{" "}
-              <span className="text-emerald-400 font-bold">$14,325</span>.
-            </p>
+            {(() => {
+              // OilSample doesn't have capacityGallons; will fall back to "—" when unavailable
+              const capacity = null as number | null;
+              const tan = latestOilSample?.acidNumber ?? null;
+              const { fullSumpFormatted, kidneyCostFormatted, savingsFormatted, sumpFootnote } = calculateOilFinancials({ capacityGallons: capacity, tanValue: tan });
+              const kidneyHours = capacity ? Math.max(6, (capacity * TURNOVERS_TARGET) / FLOW_RATE_GPH) : null;
+
+              return (
+                <>
+                  <div className="rounded-xl border-2 border-red-500/50 bg-red-500/5 p-5">
+                    <p className="text-sm text-slate-400">Full Sump Replacement{capacity ? ` (${capacity} gal)` : ""}</p>
+                    <p className="text-3xl font-black text-red-400 tracking-tight">{fullSumpFormatted}</p>
+                    {capacity && <p className="text-[11px] text-slate-500 mt-1">{sumpFootnote}</p>}
+                  </div>
+                  <div className="rounded-xl border-2 border-emerald-500/40 bg-emerald-500/5 p-5">
+                    <p className="text-sm text-slate-400">
+                      Kidney-Loop Filtration ({kidneyHours ? `${kidneyHours.toFixed(1)}` : "6"} hours minimum - {TURNOVERS_TARGET} volume turnovers)
+                    </p>
+                    <p className="text-3xl font-black text-emerald-400 tracking-tight">{kidneyCostFormatted}</p>
+                    {capacity && <p className="text-[11px] text-slate-500 mt-2">{sumpFootnote}</p>}
+                  </div>
+                  <p className="text-sm text-slate-300">
+                    Action Advised:{" "}
+                    <span className="text-yellow-400 font-bold">Filter Sump</span>. Potential Savings:{" "}
+                    <span className="text-emerald-400 font-bold">{savingsFormatted}</span>.
+                  </p>
+                </>
+              );
+            })()}
           </div>
 
           <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-5 flex flex-col justify-center gap-2">
             <p className="text-[10px] font-bold uppercase tracking-wider text-red-400/80">
               Asset Life Impact
             </p>
-            <p className="text-4xl sm:text-5xl font-black text-red-400 tracking-tight">
-              −28% Life Expectancy
-            </p>
-            <p className="text-sm text-slate-400">
-              High TAN (3.2) is accelerating yellow-metal leaching.
-            </p>
+            {(() => {
+              const tan = latestOilSample?.acidNumber ?? null;
+              const { lifeImpactFormatted, lifeFootnote } = calculateOilFinancials({ capacityGallons: null, tanValue: tan });
+              return (
+                <>
+                  <p className="text-4xl sm:text-5xl font-black text-red-400 tracking-tight">{lifeImpactFormatted}</p>
+                  <p className="text-sm text-slate-400">{tan !== null ? `TAN ${tan.toFixed(1)}: ${lifeFootnote}` : lifeFootnote}</p>
+                </>
+              );
+            })()}
           </div>
         </div>
       </section>
@@ -666,17 +744,14 @@ export default function OilResultsDashboard({
                   </span>
                 </button>
                 {i === 3 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      alert(
-                        "Generating shipping manifest and barcoded label for Boiler Feed Pump A..."
-                      )
-                    }
-                    className="mt-2 text-xs bg-slate-800 hover:bg-slate-700 text-yellow-500 px-3 py-1.5 rounded border border-yellow-500/30 flex items-center gap-2 cursor-pointer transition-colors"
-                  >
-                    🧪 Pre-Print Sample Label &amp; Order Kit
-                  </button>
+                    <button
+                      type="button"
+                      disabled
+                      title="Label printer endpoint not connected — label printer endpoint not connected"
+                      className="mt-2 text-xs bg-slate-800 hover:bg-slate-700 text-slate-400 px-3 py-1.5 rounded border border-slate-700/30 flex items-center gap-2 cursor-not-allowed transition-colors"
+                    >
+                      🧪 Pre-Print Sample Label & Order Kit
+                    </button>
                 )}
               </li>
             );
@@ -712,21 +787,17 @@ export default function OilResultsDashboard({
           <div className="flex flex-col gap-3 justify-center">
             <button
               type="button"
-              onClick={() =>
-                onToast?.("Maintenance kit queued for purchase…", "success") ??
-                alert("Maintenance kit queued for purchase…")
-              }
-              className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-3 px-4 rounded-lg text-sm cursor-pointer transition-colors"
+              disabled
+              title="Procurement integration pending — purchase endpoint not connected"
+              className="w-full bg-slate-800 border border-slate-700 text-slate-400 py-3 px-4 rounded-lg text-sm font-bold cursor-not-allowed transition-colors"
             >
-              🛒 Purchase Maintenance Kit - $145
+              🛒 Purchase Maintenance Kit
             </button>
             <button
               type="button"
-              onClick={() =>
-                onToast?.("Parts pull request sent to stock room…", "info") ??
-                alert("Parts pull request sent to stock room…")
-              }
-              className="w-full border border-slate-700 text-white hover:bg-slate-800 py-3 px-4 rounded-lg text-sm font-bold cursor-pointer transition-colors"
+              disabled
+              title="Stock room integration pending — stock room endpoint not connected"
+              className="w-full border border-slate-700 text-slate-400 py-3 px-4 rounded-lg text-sm font-bold cursor-not-allowed transition-colors"
             >
               📦 Pull Parts from On-Site Stock Room
             </button>

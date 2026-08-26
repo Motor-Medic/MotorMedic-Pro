@@ -1988,6 +1988,180 @@ app.post("/api/diagnosis-sign-off", async (req, res) => {
   }
 });
 
+/** Severities a report may carry, worst first. */
+const REPORT_SEVERITIES = ["CRITICAL", "ANOMALY", "NORMAL", "NO_DATA"] as const;
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A mistyped id is a missing report, not a server fault. Screening the shape
+ * here keeps Postgres from raising a uuid cast error that would surface as a
+ * 500 and make a bad deep link look like an outage.
+ */
+function isReportId(raw: string): boolean {
+  return UUID_RE.test(raw.trim());
+}
+
+app.get("/api/reports", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  try {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    const push = (sql: string, val: unknown) => {
+      params.push(val);
+      clauses.push(`${sql} $${params.length}`);
+    };
+
+    const assetId = req.query.asset_id != null ? String(req.query.asset_id).trim() : "";
+    if (assetId) push("asset_id =", assetId);
+
+    const companyId = req.query.company_id != null ? String(req.query.company_id).trim() : "";
+    if (companyId) {
+      const parsed = parseInt(companyId, 10);
+      if (Number.isFinite(parsed)) push("company_id =", parsed);
+    }
+
+    const limit = Math.min(
+      200,
+      Math.max(1, parseInt(String(req.query.limit || "50"), 10) || 50)
+    );
+    params.push(limit);
+
+    const result = await pool.query(
+      `SELECT * FROM reports
+       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY created_at DESC
+       LIMIT $${params.length}`,
+      params
+    );
+    return res.json({ success: true, reports: result.rows });
+  } catch (error: any) {
+    console.error("[reports] GET error:", error);
+    return res
+      .status(500)
+      .json({ error: error?.message || "Failed to load reports." });
+  }
+});
+
+app.get("/api/reports/:id", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  if (!isReportId(req.params.id)) {
+    return res.status(404).json({ error: "Report not found." });
+  }
+  try {
+    const result = await pool.query(`SELECT * FROM reports WHERE id = $1`, [
+      req.params.id
+    ]);
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Report not found." });
+    }
+    return res.json({ success: true, report: result.rows[0] });
+  } catch (error: any) {
+    console.error("[reports] GET by id error:", error);
+    return res
+      .status(500)
+      .json({ error: error?.message || "Failed to load report." });
+  }
+});
+
+app.post("/api/reports", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+
+  const body = req.body || {};
+  const assetId = String(body.assetId ?? body.asset_id ?? "").trim();
+  if (!assetId) {
+    return res.status(400).json({ error: "assetId is required." });
+  }
+
+  const severity = String(
+    body.overallSeverity ?? body.overall_severity ?? "NORMAL"
+  ).toUpperCase();
+  if (!REPORT_SEVERITIES.includes(severity as (typeof REPORT_SEVERITIES)[number])) {
+    return res.status(400).json({
+      error: `overallSeverity must be one of ${REPORT_SEVERITIES.join(", ")}.`
+    });
+  }
+
+  // The summary is the report. Refusing an empty one keeps rows that cannot
+  // rehydrate into anything out of the history list.
+  const summary = body.technologySummary ?? body.technology_summary;
+  if (summary == null || typeof summary !== "object" || Array.isArray(summary)) {
+    return res
+      .status(400)
+      .json({ error: "technologySummary must be an object keyed by technology." });
+  }
+
+  const companyIdRaw = body.companyId ?? body.company_id;
+  const companyId =
+    companyIdRaw == null || companyIdRaw === ""
+      ? null
+      : Number.isFinite(Number(companyIdRaw))
+        ? Number(companyIdRaw)
+        : null;
+
+  const asArray = (v: unknown) => (Array.isArray(v) ? v : []);
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO reports
+         (asset_id, company_id, title, technology_summary, overall_severity,
+          fault_diagnoses, recommendations, technologies_with_data, generated_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        assetId,
+        companyId,
+        body.title ? String(body.title) : null,
+        JSON.stringify(summary),
+        severity,
+        JSON.stringify(asArray(body.faultDiagnoses ?? body.fault_diagnoses)),
+        JSON.stringify(asArray(body.recommendations)),
+        JSON.stringify(
+          asArray(body.technologiesWithData ?? body.technologies_with_data)
+        ),
+        body.generatedBy ? String(body.generatedBy) : null
+      ]
+    );
+    return res.json({ success: true, report: result.rows[0] });
+  } catch (error: any) {
+    console.error("[reports] POST error:", error);
+    return res
+      .status(500)
+      .json({ error: error?.message || "Failed to save report." });
+  }
+});
+
+app.delete("/api/reports/:id", async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
+  }
+  if (!isReportId(req.params.id)) {
+    return res.status(404).json({ error: "Report not found." });
+  }
+  try {
+    const result = await pool.query(
+      `DELETE FROM reports WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "Report not found." });
+    }
+    return res.json({ success: true, id: result.rows[0].id });
+  } catch (error: any) {
+    console.error("[reports] DELETE error:", error);
+    return res
+      .status(500)
+      .json({ error: error?.message || "Failed to delete report." });
+  }
+});
+
 app.get("/api/alerts", async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
@@ -6772,6 +6946,238 @@ function getNextId() {
   return nextId++;
 }
 
+/**
+ * Compute health score for a single technology's reading
+ * @param tech - technology type
+ * @param data - diagnostic data from analysis_results or similar
+ * @returns health score (0-100) or null if no data
+ */
+function computeTechHealthScore(
+  tech: "vibration" | "oil" | "thermography" | "ultrasound",
+  data: any
+): number | null {
+  switch (tech) {
+    case "vibration":
+      // Vibration: use stored health_score (0-100) if available
+      if (data.health_score != null && Number.isFinite(Number(data.health_score))) {
+        return Math.max(0, Math.min(100, Math.round(Number(data.health_score))));
+      }
+      // Fallback: infer from severity
+      const sev = String(data.severity || "").toUpperCase();
+      if (sev === "CRITICAL" || sev === "HIGH") return 30;
+      if (sev === "ANOMALY" || sev === "MEDIUM" || sev === "WARNING") return 60;
+      if (sev === "NORMAL" || sev === "LOW") return 90;
+      return null;
+
+    case "oil":
+      // Oil: derive from latest oil sample bands
+      // 100 if all tracked metrics normal, 70 if any in warning band, 40 if any critical
+      // We'll check alarm limits from the oil sample data
+      if (!data) return null;
+      // Check ISO codes if available
+      const isoCodes = data.iso4um != null && data.iso6um != null && data.iso14um != null;
+      // Three bands, matching the 100 / 70 / 40 scores below. Warning is
+      // "above the 15/13/10 cleanliness target but not yet critical" — without
+      // it the 70 score was unreachable from ISO codes alone.
+      const isoStatus = !isoCodes
+        ? null
+        : data.iso4um > 18 || data.iso6um > 16 || data.iso14um > 13
+          ? "critical"
+          : data.iso4um > 15 || data.iso6um > 13 || data.iso14um > 10
+            ? "warning"
+            : "normal";
+      // Check wear metals against alarm limits
+      const metals = [
+        { val: data.iron, lim: data.ironAlarmLimit },
+        { val: data.copper, lim: data.copperAlarmLimit },
+        { val: data.chromium, lim: data.chromiumAlarmLimit },
+        { val: data.lead, lim: data.leadAlarmLimit },
+        { val: data.aluminum, lim: data.aluminumAlarmLimit },
+        { val: data.silicon, lim: data.siliconAlarmLimit },
+      ].filter((m) => m.val != null && m.lim != null);
+      let metalStatus = "normal";
+      for (const m of metals) {
+        const ratio = Number(m.val) / Number(m.lim);
+        if (ratio >= 0.75) metalStatus = "critical";
+        else if (ratio >= 0.5 && metalStatus !== "critical") metalStatus = "warning";
+      }
+      if (isoStatus === "critical" || metalStatus === "critical") return 40;
+      if (isoStatus === "warning" || metalStatus === "warning") return 70;
+      return 100;
+
+    case "thermography":
+      // Thermography: map stored severity
+      const thSev = String(data.severity || data.severity_class || "").toUpperCase();
+      if (thSev === "CRITICAL" || thSev === "CLASS 4" || thSev === "CLASS 3") return 30;
+      if (thSev === "ANOMALY" || thSev === "HIGH" || thSev === "CLASS 2") return 60;
+      if (thSev === "NORMAL" || thSev === "CLASS 1" || thSev === "LOW") return 90;
+      // Fallback: delta-T if available
+      if (data.delta_t != null) {
+        const dt = Number(data.delta_t);
+        if (dt > 40) return 30;
+        if (dt > 15) return 60;
+        if (dt > 4) return 80;
+        return 90;
+      }
+      return null;
+
+    case "ultrasound":
+      // Ultrasound: dB-over-baseline map
+      const baseline = Number(data.baseline_dbmv);
+      const peak = Number(data.peak_dbmv);
+      const delta = data.delta_db != null ? Number(data.delta_db) : (peak && baseline ? peak - baseline : null);
+      if (delta == null) return null;
+      if (delta > 12) return 40;
+      if (delta > 8) return 70;
+      if (delta > 4) return 80;
+      return 100;
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Compute per-asset health score from available technology readings
+ * Equal weighting across available technologies
+ * Returns { score: number|null, components: string[] }
+ */
+async function computeAssetHealthScore(
+  assetId: string,
+  pool: any,
+  companyId?: number
+): Promise<{ score: number | null; components: string }> {
+  if (!pool) return { score: null, components: "No database connection" };
+
+  const scores: number[] = [];
+  const components: string[] = [];
+
+  // Fetch latest analysis per technology for this asset
+  // Vibration analysis (from analysis_results where analysis_type='vibration' or default)
+  try {
+    const vibRes = await pool.query(
+      `SELECT health_score, severity, primary_fault
+       FROM analysis_results
+       WHERE LOWER(TRIM(asset_id)) = LOWER(TRIM($1))
+         AND (analysis_type = 'vibration' OR analysis_type IS NULL OR analysis_type = '')
+       ORDER BY timestamp DESC NULLS LAST, created_at DESC
+       LIMIT 1`,
+      [assetId]
+    );
+    if (vibRes.rows.length > 0) {
+      const score = computeTechHealthScore("vibration", vibRes.rows[0]);
+      if (score != null) {
+        scores.push(score);
+        components.push(`vib ${score}`);
+      }
+    }
+  } catch (err) {
+    console.error("[computeAssetHealthScore] vibration query failed:", err);
+  }
+
+  // Oil analysis (from oil_samples table)
+  try {
+    const oilRes = await pool.query(
+      `SELECT iron, copper, chromium, lead, aluminum, silicon,
+              ironAlarmLimit, copperAlarmLimit, chromiumAlarmLimit,
+              leadAlarmLimit, aluminumAlarmLimit, siliconAlarmLimit,
+              iso4um, iso6um, iso14um
+       FROM oil_samples
+       WHERE asset_id = $1
+       ORDER BY sample_date DESC NULLS LAST
+       LIMIT 1`,
+      [assetId]
+    );
+    if (oilRes.rows.length > 0) {
+      const score = computeTechHealthScore("oil", oilRes.rows[0]);
+      if (score != null) {
+        scores.push(score);
+        components.push(`oil ${score}`);
+      }
+    }
+  } catch (err) {
+    console.error("[computeAssetHealthScore] oil query failed:", err);
+  }
+
+  // Thermography (from analysis_results where analysis_type='thermography')
+  try {
+    const thermoRes = await pool.query(
+      `SELECT severity, severity_class, delta_t, peak_dbmv
+       FROM analysis_results
+       WHERE LOWER(TRIM(asset_id)) = LOWER(TRIM($1))
+         AND analysis_type = 'thermography'
+       ORDER BY timestamp DESC NULLS LAST, created_at DESC
+       LIMIT 1`,
+      [assetId]
+    );
+    if (thermoRes.rows.length > 0) {
+      const score = computeTechHealthScore("thermography", thermoRes.rows[0]);
+      if (score != null) {
+        scores.push(score);
+        components.push(`therm ${score}`);
+      }
+    }
+  } catch (err) {
+    console.error("[computeAssetHealthScore] thermography query failed:", err);
+  }
+
+  // Ultrasound (from analysis_results where analysis_type='ultrasound')
+  try {
+    const usRes = await pool.query(
+      `SELECT peak_dbmv, baseline_dbmv, delta_db
+       FROM analysis_results
+       WHERE LOWER(TRIM(asset_id)) = LOWER(TRIM($1))
+         AND analysis_type = 'ultrasound'
+       ORDER BY timestamp DESC NULLS LAST, created_at DESC
+       LIMIT 1`,
+      [assetId]
+    );
+    if (usRes.rows.length > 0) {
+      const score = computeTechHealthScore("ultrasound", usRes.rows[0]);
+      if (score != null) {
+        scores.push(score);
+        components.push(`us ${score}`);
+      }
+    }
+  } catch (err) {
+    console.error("[computeAssetHealthScore] ultrasound query failed:", err);
+  }
+
+  if (scores.length === 0) {
+    return { score: null, components: "No diagnostic readings available" };
+  }
+
+  // Equal weighting across available technologies
+  const avgScore = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+  return { score: avgScore, components: components.join(" + ") };
+}
+
+/**
+ * Compute fleet aggregates from per-asset scores
+ */
+function computeFleetAggregates(assets: Array<{ assetId: string; healthScore: number | null }>) {
+  const CRITICAL_THRESHOLD = 50;
+  const WARNING_THRESHOLD = 75;
+
+  const assetsWithScores = assets.filter((a) => a.healthScore != null);
+  const totalAssets = assets.length;
+  const criticalCount = assets.filter((a) => a.healthScore != null && a.healthScore < 50).length;
+  const warningCount = assets.filter((a) => a.healthScore != null && a.healthScore >= 50 && a.healthScore < 75).length;
+  const healthyCount = assets.filter((a) => a.healthScore != null && a.healthScore >= 75).length;
+  const avgHealthIndex = assetsWithScores.length > 0
+    ? Math.round(assetsWithScores.reduce((sum, a) => sum + (a.healthScore || 0), 0) / assetsWithScores.length)
+    : null;
+
+  return {
+    totalAssets,
+    criticalCount,
+    warningCount,
+    healthyCount,
+    avgHealthIndex,
+    assetsWithScoresCount: assetsWithScores.length
+  };
+}
+
 // Helper to get assets with their latest diagnostic status (for both postgres and fallback memory)
 async function getAssetsWithStatus(companyId?: number) {
   if (pool) {
@@ -6977,6 +7383,9 @@ app.get("/api/dashboard", async (req, res) => {
       });
     }
 
+    // Extract companyId from query params
+    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
+
     // 3) Plant name
     let plantName: string | null = null;
     try {
@@ -6995,14 +7404,52 @@ app.get("/api/dashboard", async (req, res) => {
       console.error("[dashboard] assets count failed:", err);
     }
 
-    // 4) Fleet Health Score — AVG(health_score) from analysis_results
-    let fleetHealthScore: number | null = null;
+    // Fetch all assets for the company (needed for per-asset health scores)
+    let allAssets: any[] = [];
     try {
-      const avgRes = await pool.query(
-        `SELECT AVG(health_score)::float AS avg FROM analysis_results WHERE health_score IS NOT NULL`
-      );
-      const avg = Number(avgRes.rows[0]?.avg);
-      fleetHealthScore = Number.isFinite(avg) ? Math.round(avg) : null;
+      let assetsQuery = `
+        SELECT ast.id, ast.name, ast.tag, ast.tag_number, ast.type, ast.route_id
+        FROM assets ast
+        JOIN routes rt ON ast.route_id = rt.id
+        JOIN plants pl ON rt.plant_id = pl.id
+      `;
+      const params: any[] = [];
+      if (companyId) {
+        assetsQuery += " WHERE pl.company_id = $1";
+        params.push(companyId);
+      }
+      const assetsRes = await pool.query(assetsQuery, params);
+      allAssets = assetsRes.rows;
+    } catch (err) {
+      console.error("[dashboard] assets query failed:", err);
+    }
+
+    // Compute per-asset health scores
+    const assetHealthScores: Array<{ assetId: string; assetName: string; healthScore: number | null; scoreComponents: string }> = [];
+    for (const asset of allAssets) {
+      const { score, components } = await computeAssetHealthScore(asset.id, pool, companyId);
+      assetHealthScores.push({
+        assetId: asset.id,
+        assetName: asset.name || asset.tag || asset.id,
+        healthScore: score,
+        scoreComponents: components
+      });
+    }
+
+    // Compute fleet aggregates
+    const fleetAggregates = computeFleetAggregates(assetHealthScores);
+
+    // Fleet Health Score — computed from per-asset health scores (fallback to analysis_results avg)
+    let fleetHealthScore = fleetAggregates.avgHealthIndex ?? null;
+    try {
+      // Fallback: AVG from analysis_results if no asset scores available
+      if (fleetHealthScore == null) {
+        const avgRes = await pool.query(
+          `SELECT AVG(health_score)::float AS avg FROM analysis_results WHERE health_score IS NOT NULL`
+        );
+        const avg = Number(avgRes.rows[0]?.avg);
+        fleetHealthScore = Number.isFinite(avg) ? Math.round(avg) : null;
+      }
     } catch (err) {
       console.error("[dashboard] fleet health avg failed:", err);
     }
@@ -7305,7 +7752,9 @@ app.get("/api/dashboard", async (req, res) => {
       liveAlarms,
       healthZones,
       recentAnalyses,
-      correlationData: []
+      correlationData: [],
+      assetHealthScores,
+      fleetAggregates
     });
   } catch (error: any) {
     console.error("❌ GET /api/dashboard failed:", error);
@@ -11964,6 +12413,36 @@ async function initializeDatabase() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_diagnosis_sign_off_diagnosis_id
         ON diagnosis_sign_off (diagnosis_id);
+    `);
+
+    // migrations/014 — persisted multi-technology assessment reports. The
+    // measured values are stored on the row rather than referenced, so
+    // reopening an old report shows what was true when it was saved.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reports (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        asset_id TEXT NOT NULL,
+        company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+        title TEXT,
+        technology_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+        overall_severity VARCHAR(16) NOT NULL DEFAULT 'NORMAL'
+          CHECK (overall_severity IN ('CRITICAL', 'ANOMALY', 'NORMAL', 'NO_DATA')),
+        fault_diagnoses JSONB NOT NULL DEFAULT '[]'::jsonb,
+        recommendations JSONB NOT NULL DEFAULT '[]'::jsonb,
+        technologies_with_data JSONB NOT NULL DEFAULT '[]'::jsonb,
+        generated_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_reports_asset_id ON reports (asset_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_reports_company_id ON reports (company_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_reports_created_at ON reports (created_at DESC);
     `);
 
     await pool.query(`

@@ -165,6 +165,26 @@ export async function fetchAnalysisResults(params?: {
   return Array.isArray(data?.results) ? data.results : [];
 }
 
+/**
+ * Fetch the latest MCA analysis result for a specific asset.
+ * Returns the most recent analysis_results row where analysis_type = 'mca'.
+ */
+export async function fetchLatestMcaAnalysis(assetId: string): Promise<SavedAnalysisResult | null> {
+  const q = new URLSearchParams();
+  q.set("asset_id", assetId);
+  q.set("analysis_type", "mca");
+  q.set("limit", "1");
+  const res = await fetch(
+    `${ANALYSIS_RESULTS_PATH}${q.toString() ? `?${q}` : ""}`
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || `Failed to load MCA analysis`);
+  }
+  const results = Array.isArray(data?.results) ? data.results : [];
+  return results.length > 0 ? results[0] : null;
+}
+
 export async function fetchAlerts(params?: {
   asset_id?: string;
   acknowledged?: boolean;

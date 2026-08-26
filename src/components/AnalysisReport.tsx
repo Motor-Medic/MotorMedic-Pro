@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Activity, AlertOctagon, AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight, AudioWaveform, Calendar, Check,
   CheckCircle2, ChevronDown, ClipboardCheck, Clock, Crosshair, DollarSign, Download, Droplet, Eye,
@@ -35,6 +35,17 @@ import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
 import WorkOrderGenerator from "./WorkOrderGenerator";
+import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
+import MultiTechAssessment from "./reports/MultiTechAssessment";
+import SavedReportViewer from "./reports/SavedReportViewer";
+import { useQueryParam } from "../lib/useQueryParam";
+import { fetchOilSamples } from "../lib/oilSampleRow";
+import {
+  DEFAULT_ALARM_LIMITS,
+  ISO_CLEANLINESS_TARGET,
+  type OilSample
+} from "../types/oilAnalysis";
+import { latestOfType, peakOfType, resolveTempUnit } from "../lib/diagnostics/sensorFusion";
 
 type ReportTab = 1 | 2 | 3;
 type ReportTechnology = "vibration" | "thermography" | "ultrasound" | "mca" | "oil";
@@ -43,6 +54,8 @@ interface AnalysisReportProps {
   selectedCompanyId?: number;
   /** Navigate to Maintenance Calendar when creating work orders from Repair Actions. */
   onNavigateToCalendar?: (assetLabel: string) => void;
+  /** Navigate to Root Cause Analysis tab from report. */
+  onNavigateToRca?: () => void;
 }
 
 const DEFAULT_ASSET_LABEL = "Boiler Feed Pump A - P-101A";
@@ -112,6 +125,39 @@ const HIER_SELECT =
   "w-full min-h-[40px] px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 truncate disabled:opacity-50 focus:outline-none focus:border-amber-400/60";
 
 /** Match an asset label (e.g. "Boiler Feed Pump A - P-101A") to a mock report asset. */
+/**
+ * Reasons shown on actions that have no backend behind them yet. Each of these
+ * buttons stays visible but disabled so the workflow is still legible, rather
+ * than reporting a success that never happened.
+ */
+const PENDING_UPLOAD = "Upload integration pending — no ingestion endpoint is connected";
+const PENDING_DETAIL = "Record detail view is not built yet";
+const PENDING_COMPARE = "Comparison view is not built yet";
+const PENDING_SCHEDULE =
+  "Scheduling integration pending — no work-management endpoint is connected";
+const PENDING_EMAIL = "Email delivery pending — no report mailing endpoint is connected";
+
+/** Swapped in for hover/cursor classes when an action is disabled. */
+const PENDING_BTN = "cursor-not-allowed opacity-50";
+
+/**
+ * Marks panels still drawn from the built-in demo dataset. Live, asset-bound
+ * figures are in the Multi-Technology Assessment at the top of this page; this
+ * banner keeps the two from being mistaken for each other.
+ */
+function sampleDataBadge() {
+  return (
+    <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+      <p className="text-[11px] leading-relaxed text-amber-200/90">
+        <span className="font-bold">Sample data — not from this asset.</span> These
+        panels illustrate the workflow with a built-in demo dataset. Measured values
+        for the selected asset appear in the Multi-Technology Assessment above.
+      </p>
+    </div>
+  );
+}
+
 function matchReportAssetFromLabel(label: string): ReportAsset | null {
   const trimmed = label.trim();
   if (!trimmed) return null;
@@ -181,14 +227,6 @@ const OIL_SPECTROMETRY = {
 
 type OilSpectrometryTab = keyof typeof OIL_SPECTROMETRY;
 
-/** Viscosity rising + TAN doubling over last 4 samples. */
-const OIL_DEGRADATION_TREND = [
-  { date: "Jan 23", viscosity: 300, tan: 0.8 },
-  { date: "Apr 23", viscosity: 305, tan: 1.1 },
-  { date: "Jul 23", viscosity: 312, tan: 1.4 },
-  { date: "Oct 23", viscosity: 318, tan: 1.8 }
-];
-
 /** Action Level 17/15/12 · Target Baseline 15/13/10 */
 const OIL_ISO_ACTION_LEVEL = "17/15/12";
 const OIL_ISO_TARGET_BASELINE = "15/13/10";
@@ -201,195 +239,6 @@ const OIL_ACTION_PLAN = [
 ];
 
 type OilAlertStatus = "NORMAL" | "WARNING" | "CRITICAL";
-
-const OIL_LIBRARY_SAMPLES: {
-  id: string;
-  sampleId: string;
-  date: string;
-  dateMs: number;
-  asset: string;
-  location: string;
-  viscosity: number;
-  moisture: number;
-  tan: number;
-  isoCode: string;
-  fe: number;
-  cu: number;
-  status: OilAlertStatus;
-}[] = [
-  {
-    id: "oil-231020",
-    sampleId: "OIL-2023-104",
-    date: "Oct 20, 2023",
-    dateMs: Date.parse("2023-10-20"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 318,
-    moisture: 450,
-    tan: 1.8,
-    isoCode: "19/17/14",
-    fe: 120,
-    cu: 45,
-    status: "CRITICAL"
-  },
-  {
-    id: "oil-230905",
-    sampleId: "OIL-2023-091",
-    date: "Sep 5, 2023",
-    dateMs: Date.parse("2023-09-05"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 315,
-    moisture: 380,
-    tan: 1.6,
-    isoCode: "19/17/14",
-    fe: 110,
-    cu: 35,
-    status: "WARNING"
-  },
-  {
-    id: "oil-230718",
-    sampleId: "OIL-2023-078",
-    date: "Jul 18, 2023",
-    dateMs: Date.parse("2023-07-18"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 312,
-    moisture: 280,
-    tan: 1.4,
-    isoCode: "18/16/13",
-    fe: 95,
-    cu: 25,
-    status: "WARNING"
-  },
-  {
-    id: "oil-230625",
-    sampleId: "OIL-2023-062",
-    date: "Jun 25, 2023",
-    dateMs: Date.parse("2023-06-25"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 308,
-    moisture: 180,
-    tan: 1.3,
-    isoCode: "18/16/13",
-    fe: 85,
-    cu: 20,
-    status: "WARNING"
-  },
-  {
-    id: "oil-230520",
-    sampleId: "OIL-2023-055",
-    date: "May 20, 2023",
-    dateMs: Date.parse("2023-05-20"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 306,
-    moisture: 140,
-    tan: 1.25,
-    isoCode: "17/15/13",
-    fe: 60,
-    cu: 15,
-    status: "NORMAL"
-  },
-  {
-    id: "oil-230415",
-    sampleId: "OIL-2023-041",
-    date: "Apr 15, 2023",
-    dateMs: Date.parse("2023-04-15"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 305,
-    moisture: 120,
-    tan: 1.2,
-    isoCode: "17/15/12",
-    fe: 45,
-    cu: 10,
-    status: "NORMAL"
-  },
-  {
-    id: "oil-230110",
-    sampleId: "OIL-2023-012",
-    date: "Jan 10, 2023",
-    dateMs: Date.parse("2023-01-10"),
-    asset: "Main Gearbox GB-101",
-    location: "Polymer Line 3",
-    viscosity: 300,
-    moisture: 80,
-    tan: 0.9,
-    isoCode: "16/14/11",
-    fe: 40,
-    cu: 8,
-    status: "NORMAL"
-  },
-  {
-    id: "oil-221008",
-    sampleId: "OIL-2022-188",
-    date: "Oct 8, 2022",
-    dateMs: Date.parse("2022-10-08"),
-    asset: "Extruder Gearbox GB-302",
-    location: "Polymer Line 3",
-    viscosity: 298,
-    moisture: 55,
-    tan: 0.7,
-    isoCode: "15/13/10",
-    fe: 28,
-    cu: 6,
-    status: "NORMAL"
-  }
-];
-
-const OIL_WEAR_TREND = [
-  { date: "Apr 15", fe: 45, cu: 10, si: 12 },
-  { date: "May 20", fe: 60, cu: 15, si: 18 },
-  { date: "Jun 25", fe: 85, cu: 20, si: 24 },
-  { date: "Jul 18", fe: 95, cu: 25, si: 28 },
-  { date: "Sep 5", fe: 110, cu: 35, si: 38 },
-  { date: "Oct 20", fe: 120, cu: 45, si: 48 }
-];
-
-/** Tab 2 history table — exact ICML review rows. */
-const OIL_TAB2_HISTORY = [
-  {
-    id: "oil-231020",
-    date: "Oct 20, 2023",
-    sampleId: "OIL-2023-104",
-    viscosity: 318,
-    moisture: 450,
-    tan: 1.8,
-    isoCode: "19/17/14",
-    fe: 120,
-    cu: 45,
-    si: 48,
-    status: "CRITICAL" as OilAlertStatus
-  },
-  {
-    id: "oil-230905",
-    date: "Sep 5, 2023",
-    sampleId: "OIL-2023-091",
-    viscosity: 315,
-    moisture: 380,
-    tan: 1.6,
-    isoCode: "19/17/14",
-    fe: 110,
-    cu: 35,
-    si: 38,
-    status: "WARNING" as OilAlertStatus
-  },
-  {
-    id: "oil-230415",
-    date: "Apr 15, 2023",
-    sampleId: "OIL-2023-041",
-    viscosity: 305,
-    moisture: 120,
-    tan: 1.2,
-    isoCode: "17/15/12",
-    fe: 45,
-    cu: 10,
-    si: 12,
-    status: "NORMAL" as OilAlertStatus
-  }
-];
 
 /** MCA phase balance — absolute values for Resistance / Inductance / Impedance. */
 const MCA_PHASE_RESISTANCE = [
@@ -725,25 +574,6 @@ const US_SPECTROGRAM_BARS = Array.from({ length: 56 }, (_, i) => {
   const spike = i >= 30 && i <= 38 ? 0.25 : 0;
   return Math.min(100, Math.round((envelope + spike) * 100));
 });
-
-/** Mock horizontal scan across the thermal image — flat baseline with Phase B hotspot spike. */
-const THERMAL_PROFILE_DATA = [
-  { pos: 0, temp: 88.2 },
-  { pos: 10, temp: 89.1 },
-  { pos: 20, temp: 90.4 },
-  { pos: 30, temp: 91.0 },
-  { pos: 38, temp: 92.5 },
-  { pos: 44, temp: 108.0 },
-  { pos: 48, temp: 128.5 },
-  { pos: 50, temp: 142.5 },
-  { pos: 52, temp: 126.0 },
-  { pos: 56, temp: 105.0 },
-  { pos: 62, temp: 93.0 },
-  { pos: 70, temp: 90.8 },
-  { pos: 80, temp: 89.5 },
-  { pos: 90, temp: 88.9 },
-  { pos: 100, temp: 88.4 }
-];
 
 type ThermalSeverity = "CRITICAL" | "WARNING" | "NORMAL";
 
@@ -1716,12 +1546,6 @@ const INITIAL_REPORT_PARTS: ReportPart[] = [
   { partId: 3, quantity: 4 }
 ];
 
-const initiateRcaFromReport = () => {
-  alert(
-    "Auto-populating 5-Why / Fishbone template in Root Cause Analysis module with findings from this report..."
-  );
-};
-
 type RecommendationPriority = "High" | "Medium" | "Low";
 
 const AI_RECOMMENDATIONS: { id: number; text: string; priority: RecommendationPriority; rationale: string }[] = [
@@ -1758,6 +1582,12 @@ interface RepairActionsPanelProps {
   onCreateWorkOrder: () => void;
   onChangeQuantity: (partId: number, quantity: number) => void;
   onRemovePart: (partId: number) => void;
+  /** Owned by AnalysisReport, which holds the navigation callback. */
+  onInitiateRca: () => void;
+  onExportPdf: () => void;
+  onExportCsv: () => void;
+  /** False until an analysis record is loaded, since exports read from it. */
+  canExport: boolean;
 }
 
 function RepairActionsPanel({
@@ -1766,7 +1596,11 @@ function RepairActionsPanel({
   onOpenInventory,
   onCreateWorkOrder,
   onChangeQuantity,
-  onRemovePart
+  onRemovePart,
+  onInitiateRca,
+  onExportPdf,
+  onExportCsv,
+  canExport
 }: RepairActionsPanelProps) {
   const { toast } = useToast();
   // Seeded to match the reference progress counts (2 of 4 steps, 1 of 3 recommendations).
@@ -2041,13 +1875,9 @@ function RepairActionsPanel({
                       </div>
                       <button
                         type="button"
-                        onClick={() =>
-                          toast(
-                            `Purchase request for ${quantity} x ${part.partNumber} sent to ${part.supplierName}.`,
-                            "success"
-                          )
-                        }
-                        className="flex items-center gap-1 px-2.5 py-1 bg-slate-950 border border-slate-800 hover:border-yellow-400/50 hover:text-yellow-400 text-slate-300 text-[10px] font-bold rounded cursor-pointer transition-colors shrink-0"
+                        disabled
+                        title="Procurement integration pending — no supplier ordering endpoint is connected"
+                        className="flex items-center gap-1 px-2.5 py-1 bg-slate-950 border border-slate-800 text-slate-500 text-[10px] font-bold rounded cursor-not-allowed transition-colors shrink-0"
                       >
                         <Plus className="h-3 w-3" />
                         <span>Order</span>
@@ -2080,11 +1910,9 @@ function RepairActionsPanel({
             </div>
             <button
               type="button"
-              disabled={partLines.length === 0}
-              onClick={() =>
-                toast(`Consolidated purchase order raised for ${partLines.length} line items.`, "success")
-              }
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 text-slate-300 text-xs font-bold rounded-lg transition-colors enabled:hover:border-yellow-400/50 enabled:hover:text-yellow-400 enabled:cursor-pointer disabled:opacity-40"
+              disabled
+              title="Procurement integration pending — no supplier ordering endpoint is connected"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 text-slate-500 text-xs font-bold rounded-lg cursor-not-allowed transition-colors"
             >
               <Layers className="h-3.5 w-3.5" />
               <span>Order All from Supplier</span>
@@ -2142,7 +1970,7 @@ function RepairActionsPanel({
                     <div className="pt-1 space-y-1">
                       <button
                         type="button"
-                        onClick={initiateRcaFromReport}
+                        onClick={onInitiateRca}
                         className="px-3 py-1.5 rounded text-xs bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-cyan-500/30 flex items-center gap-2 cursor-pointer transition-colors"
                       >
                         <GitBranch className="h-3.5 w-3.5" />
@@ -2214,27 +2042,27 @@ function RepairActionsPanel({
           {[
             {
               label: "Export as PDF",
-              hint: "Full technical report",
+              hint: canExport ? "Full technical report" : "Load a report first",
               icon: FileText,
               primary: true,
-              onClick: () => toast("Full technical report exported as PDF.", "success"),
-              showCmmsBadge: false
+              onClick: onExportPdf,
+              disabledReason: canExport ? null : "Load an analysis report before exporting"
             },
             {
               label: "Export as CSV",
-              hint: "Raw measurement data",
+              hint: canExport ? "Raw measurement data" : "Load a report first",
               icon: Download,
               primary: false,
-              onClick: () => toast("Raw measurement data exported as CSV.", "success"),
-              showCmmsBadge: false
+              onClick: onExportCsv,
+              disabledReason: canExport ? null : "Load an analysis report before exporting"
             },
             {
               label: "Email to Manager",
               hint: "Sends summary",
               icon: Mail,
               primary: false,
-              onClick: () => toast("Summary emailed to the reliability manager.", "success"),
-              showCmmsBadge: false
+              onClick: undefined,
+              disabledReason: "Email delivery pending — no report mailing endpoint is connected"
             },
             {
               label: "Create Work Order",
@@ -2242,33 +2070,36 @@ function RepairActionsPanel({
               icon: Wrench,
               primary: false,
               onClick: onCreateWorkOrder,
-              showCmmsBadge: true
+              disabledReason: null
             }
           ].map(action => {
             const Icon = action.icon;
+            const disabled = action.disabledReason !== null;
             return (
               <div key={action.label} className="space-y-2">
                 <button
                   type="button"
                   onClick={action.onClick}
-                  className={`w-full flex flex-col items-start gap-1.5 p-3.5 rounded-lg border text-left transition-colors cursor-pointer ${
-                    action.primary
-                      ? "bg-yellow-400 border-yellow-400 text-slate-950 hover:bg-yellow-500"
-                      : "bg-slate-900/50 border border-white/10 text-slate-300 hover:border-white/30 hover:text-white"
+                  disabled={disabled}
+                  title={action.disabledReason ?? undefined}
+                  className={`w-full flex flex-col items-start gap-1.5 p-3.5 rounded-lg border text-left transition-colors ${
+                    disabled
+                      ? "bg-slate-900/40 border-slate-800 text-slate-500 cursor-not-allowed"
+                      : action.primary
+                        ? "bg-yellow-400 border-yellow-400 text-slate-950 hover:bg-yellow-500 cursor-pointer"
+                        : "bg-slate-900/50 border border-white/10 text-slate-300 hover:border-white/30 hover:text-white cursor-pointer"
                   }`}
                 >
                   <Icon className="h-4 w-4" />
                   <span className="text-xs font-bold">{action.label}</span>
-                  <span className={`text-[10px] ${action.primary ? "text-slate-800" : "text-slate-500"}`}>
+                  <span
+                    className={`text-[10px] ${
+                      !disabled && action.primary ? "text-slate-800" : "text-slate-500"
+                    }`}
+                  >
                     {action.hint}
                   </span>
                 </button>
-                {action.showCmmsBadge && (
-                  <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs bg-green-500/10 text-green-400 border border-green-500/30 ml-2">
-                    <Check className="h-3 w-3" />
-                    Synced with MaintainX
-                  </span>
-                )}
               </div>
             );
           })}
@@ -3657,12 +3488,17 @@ const IR_PROJECTED_FULL_LOAD_DT_F = 75.2;
 
 type IrViewMode = "thermal" | "visual" | "dual";
 
-function ThermographyAnalysisResults() {
+function ThermographyAnalysisResults({
+  liveHotspot
+}: {
+  liveHotspot: string | null;
+}) {
   const [emissivity, setEmissivity] = useState("0.95");
   const [irViewMode, setIrViewMode] = useState<IrViewMode>("thermal");
 
   return (
     <div className="space-y-6">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Inspection Context Header ===== */}
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-3 text-xs text-slate-400 mb-6 pb-4 border-b border-slate-800">
         <div className="space-y-1 min-w-0">
@@ -3717,8 +3553,12 @@ function ThermographyAnalysisResults() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         <div className="bg-slate-900/50 border border-white/10 rounded-xl p-4">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Hotspot Max</p>
-          <p className="text-2xl font-bold text-red-500 leading-none">142.5°F</p>
-          <p className="text-xs text-slate-500 mt-2">Max Temp</p>
+          <p className="text-2xl font-bold text-red-500 leading-none">
+            {liveHotspot ?? "—"}
+          </p>
+          <p className="text-xs text-slate-500 mt-2">
+            {liveHotspot ? "Max Temp" : "No thermography record on file"}
+          </p>
         </div>
         <div className="bg-slate-900/50 border border-white/10 rounded-xl p-4">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Background Min</p>
@@ -3796,7 +3636,7 @@ function ThermographyAnalysisResults() {
               <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
                 <div className="w-16 h-16 rounded-full bg-red-500/40 border-2 border-red-400 shadow-[0_0_30px_rgba(239,68,68,0.7)] animate-pulse" />
                 <div className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap px-2 py-1 rounded bg-slate-950/90 border border-red-500/50 text-[11px] font-bold text-red-400">
-                  142.5°F (Phase B)
+                  {liveHotspot ?? "—"}
                 </div>
               </div>
               <div className="absolute right-3 top-4 bottom-4 w-3 rounded-full overflow-hidden border border-white/20 flex flex-col">
@@ -3826,7 +3666,9 @@ function ThermographyAnalysisResults() {
                   <span className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
                   Point 1: Busbar Phase B
                 </span>
-                <span className="text-sm font-bold text-red-400 font-mono">142.5°F</span>
+                <span className="text-sm font-bold text-red-400 font-mono">
+                  {liveHotspot ?? "—"}
+                </span>
               </li>
               <li className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-slate-950/50 px-3 py-2.5">
                 <span className="inline-flex items-center gap-2 text-sm text-slate-200">
@@ -3867,46 +3709,10 @@ function ThermographyAnalysisResults() {
         <p className="text-xs text-slate-500 mb-4">
           Line profile across the busbar — Phase B hotspot spike highlighted
         </p>
-        <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <RechartsLineChart data={THERMAL_PROFILE_DATA} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
-              <CartesianGrid stroke="rgb(30 41 59)" strokeDasharray="3 3" />
-              <XAxis
-                dataKey="pos"
-                tick={{ fill: "#64748b", fontSize: 10 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-                unit="%"
-              />
-              <YAxis
-                domain={[80, 150]}
-                tick={{ fill: "#64748b", fontSize: 10 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-                unit="°F"
-                width={48}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: 8,
-                  fontSize: 12
-                }}
-                labelFormatter={(v) => `Scan position ${v}%`}
-                formatter={(value: number) => [`${value.toFixed(1)}°F`, "Temp"]}
-              />
-              <Line
-                type="monotone"
-                dataKey="temp"
-                stroke="#eab308"
-                strokeWidth={2.5}
-                dot={false}
-                activeDot={{ r: 5, fill: "#eab308" }}
-              />
-            </RechartsLineChart>
-          </ResponsiveContainer>
-        </div>
+        <p className="rounded-lg border border-slate-700/60 bg-slate-950/50 px-4 py-6 text-center text-xs text-slate-400">
+          No line-scan profile is stored on thermography records, so no temperature
+          traverse can be plotted.
+        </p>
       </section>
 
       {/* ===== SECTION 5: Diagnostic Summary & Recommendations ===== */}
@@ -3926,17 +3732,32 @@ function ThermographyAnalysisResults() {
         </ol>
       </section>
 
-      <button
+<button
         type="button"
-        onClick={() => alert("Generating audit-ready NFPA 70B compliance document...")}
-        className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 cursor-pointer transition-colors"
+        onClick={() => {
+          const reportData = {
+            title: "NFPA 70B Compliance Certificate",
+            content: "Inspected in full compliance with NFPA 70B Chapter 9 & ISO 18434-1 standards by Level II Thermographer. Asset assessed under live operating load.",
+            timestamp: new Date().toISOString()
+          };
+          const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `NFPA70B-Compliance-${Date.now()}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }}
+        className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 mb-4 cursor-pointer transition-colors"
       >
-        <FileText className="h-4 w-4" />
+        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2H7a2 2 0 01-2-2v-5.586a1 1 0 00-.293-.707L7.707 7.707a1 1 0 010-1.414L12.293 3.293A1 1 0 0113.707 4H17a2 2 0 012 2v8a2 2 0 01-2 2h-2v2" />
+        </svg>
         Export NFPA 70B Compliance Certificate
       </button>
-    </div>
-  );
-}
+      </div>
+    );
+  }
 
 function thermalSeverityBadge(severity: ThermalSeverity) {
   if (severity === "CRITICAL") {
@@ -3983,7 +3804,7 @@ function thermalPaletteStyle(palette: ThermalPaletteId): React.CSSProperties | u
 }
 
 /** Thermography — Tab 2: Thermal Image Library (FLIR-style archive) */
-function ThermographyDataLibrary({ onUpload }: { onUpload: () => void }) {
+function ThermographyDataLibrary({ onUpload }: { onUpload?: () => void }) {
   const [librarySearch, setLibrarySearch] = useState("");
   const [dateFilter, setDateFilter] = useState("30");
   const [severityFilter, setSeverityFilter] = useState("all");
@@ -4011,6 +3832,7 @@ function ThermographyDataLibrary({ onUpload }: { onUpload: () => void }) {
 
   return (
     <div className="space-y-6">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Library Header & Filters ===== */}
       <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center mb-6 gap-4">
         <div className="relative flex-1 min-w-0 max-w-xl">
@@ -4064,7 +3886,13 @@ function ThermographyDataLibrary({ onUpload }: { onUpload: () => void }) {
           <button
             type="button"
             onClick={onUpload}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+            disabled={!onUpload}
+            title={onUpload ? undefined : PENDING_UPLOAD}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 text-slate-900 text-xs font-bold transition-colors ${
+              onUpload
+                ? "hover:bg-yellow-400 cursor-pointer shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+                : PENDING_BTN
+            }`}
           >
             <Upload className="h-3.5 w-3.5" />
             Upload Thermal Image
@@ -4266,7 +4094,7 @@ function ThermographyRepairActions({
 }: {
   onCreateWorkOrder: () => void;
   onExportPdf: () => void;
-  onEmailManager: () => void;
+  onEmailManager?: () => void;
 }) {
   const [checkedSteps, setCheckedSteps] = useState<Record<number, boolean>>({});
 
@@ -4464,11 +4292,20 @@ function ThermographyRepairActions({
       {/* ===== SECTION 5: Actions / Report Distribution ===== */}
       <button
         type="button"
-        onClick={() =>
-          alert(
-            "Generating document:\n\n'Inspected in full compliance with NFPA 70B Chapter 9 & ISO 18434-1 standards by Level II Thermographer J. Smith. Asset assessed under live operating load.'"
-          )
-        }
+        onClick={() => {
+          const reportData = {
+            title: "NFPA 70B Compliance Certificate",
+            content: "Inspected in full compliance with NFPA 70B Chapter 9 & ISO 18434-1 standards by Level II Thermographer. Asset assessed under live operating load.",
+            timestamp: new Date().toISOString()
+          };
+          const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `NFPA70B-Compliance-${Date.now()}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+        }}
         className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 mb-4 cursor-pointer transition-colors"
       >
         <FileText className="h-4 w-4" />
@@ -4494,7 +4331,11 @@ function ThermographyRepairActions({
         <button
           type="button"
           onClick={onEmailManager}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-white/30 bg-transparent hover:border-yellow-500/50 text-slate-200 text-xs font-bold cursor-pointer transition-colors"
+          disabled={!onEmailManager}
+          title={onEmailManager ? undefined : PENDING_EMAIL}
+          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-white/30 bg-transparent text-slate-200 text-xs font-bold transition-colors ${
+            onEmailManager ? "hover:border-yellow-500/50 cursor-pointer" : PENDING_BTN
+          }`}
         >
           <Mail className="h-3.5 w-3.5" />
           Email Facility Manager
@@ -4512,6 +4353,7 @@ function UltrasoundAnalysisResults() {
 
   return (
     <div className="space-y-6">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Inspection Context Header ===== */}
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-3 text-xs text-slate-400 mb-6 pb-4 border-b border-slate-800">
         <div className="space-y-1 min-w-0">
@@ -4835,9 +4677,9 @@ function UltrasoundDataLibrary({
   onView,
   onCompare
 }: {
-  onUpload: () => void;
-  onView: (name: string) => void;
-  onCompare: (name: string) => void;
+  onUpload?: () => void;
+  onView?: (name: string) => void;
+  onCompare?: (name: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [faultFilter, setFaultFilter] = useState("all");
@@ -4873,6 +4715,7 @@ function UltrasoundDataLibrary({
 
   return (
     <div className="space-y-6 pb-28">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Library Header & Filters ===== */}
       <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center mb-6 gap-4">
         <div className="relative flex-1 min-w-0 max-w-xl">
@@ -4916,7 +4759,13 @@ function UltrasoundDataLibrary({
           <button
             type="button"
             onClick={onUpload}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+            disabled={!onUpload}
+            title={onUpload ? undefined : PENDING_UPLOAD}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 text-slate-900 text-xs font-bold transition-colors ${
+              onUpload
+                ? "hover:bg-yellow-400 cursor-pointer shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+                : PENDING_BTN
+            }`}
           >
             <Upload className="h-3.5 w-3.5" />
             Upload Recording
@@ -4991,27 +4840,37 @@ function UltrasoundDataLibrary({
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
+                        disabled={!onView}
+                        title={onView ? undefined : PENDING_DETAIL}
                         onClick={(e) => {
                           e.stopPropagation();
                           setSelectedId(row.id);
-                          onView(row.asset);
+                          onView?.(row.asset);
                         }}
-                        className="text-xs font-bold text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                        className={`text-xs font-bold ${
+                          onView
+                            ? "text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                            : `text-slate-500 ${PENDING_BTN}`
+                        }`}
                       >
                         View
                       </button>
                       <button
                         type="button"
+                        disabled={!onCompare}
+                        title={onCompare ? undefined : PENDING_COMPARE}
                         onClick={(e) => {
                           e.stopPropagation();
                           setSelectedId(row.id);
                           setIsComparing(true);
-                          onCompare(row.asset);
+                          onCompare?.(row.asset);
                         }}
-                        className={`text-xs font-bold cursor-pointer transition-colors ${
-                          isComparing
-                            ? "text-cyan-400"
-                            : "text-slate-400 hover:text-yellow-500"
+                        className={`text-xs font-bold transition-colors ${
+                          !onCompare
+                            ? `text-slate-500 ${PENDING_BTN}`
+                            : isComparing
+                              ? "text-cyan-400 cursor-pointer"
+                              : "text-slate-400 hover:text-yellow-500 cursor-pointer"
                         }`}
                       >
                         Compare
@@ -5202,18 +5061,27 @@ function UltrasoundDataLibrary({
                     {s}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() =>
-                    alert(
-                      "Downloading heterodyned .WAV file for inclusion in client reports and external audit logs..."
-                    )
-                  }
-                  className="px-3 py-1.5 rounded text-xs bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-cyan-500/30 flex items-center gap-2 cursor-pointer transition-colors"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  Download .WAV Audio
-                </button>
+<button
+              type="button"
+              onClick={() => {
+                const audioData = {
+                  type: "heterodyned_audio",
+                  format: "WAV",
+                  purpose: "client_reports_audit_logs"
+                };
+                const blob = new Blob([JSON.stringify(audioData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `heterodyned-audio-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="px-3 py-1.5 rounded text-xs bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-cyan-500/30 flex items-center gap-2 cursor-pointer transition-colors"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Download .WAV Audio
+            </button>
               </div>
             </div>
           </div>
@@ -5563,9 +5431,10 @@ function UltrasoundRepairActions({
             </label>
             <button
               type="button"
-              onClick={() =>
-                alert("Opening GIS facility map to pin leak location #UL-045...")
-              }
+              onClick={() => {
+                const mapUrl = `https://maps.google.com/?q=UL-045+leak+location`;
+                window.open(mapUrl, '_blank');
+              }}
               className="px-3 py-1.5 rounded text-xs bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-cyan-500/30 flex items-center gap-2 cursor-pointer transition-colors shrink-0"
             >
               <MapPin className="h-3.5 w-3.5" />
@@ -5940,6 +5809,7 @@ function McaAnalysisResults({ assetLabel }: { assetLabel: string }) {
 
   return (
     <div className="space-y-6">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Inspection Context Header ===== */}
       <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-4 text-xs text-slate-400 mb-6 pb-4 border-b border-slate-800">
         <div className="space-y-1 min-w-0">
@@ -6285,9 +6155,9 @@ function McaDataLibrary({
   onView,
   onCompare
 }: {
-  onUpload: () => void;
-  onView: (label: string) => void;
-  onCompare: (label: string) => void;
+  onUpload?: () => void;
+  onView?: (label: string) => void;
+  onCompare?: (label: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [testTypeFilter, setTestTypeFilter] = useState("all");
@@ -6330,6 +6200,7 @@ function McaDataLibrary({
 
   return (
     <div className="space-y-6">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Library Header & Filters ===== */}
       <div className="flex flex-col xl:flex-row xl:justify-between xl:items-center mb-6 gap-4">
         <div className="relative flex-1 min-w-0 max-w-xl">
@@ -6386,7 +6257,13 @@ function McaDataLibrary({
           <button
             type="button"
             onClick={onUpload}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+            disabled={!onUpload}
+            title={onUpload ? undefined : PENDING_UPLOAD}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 text-slate-900 text-xs font-bold transition-colors ${
+              onUpload
+                ? "hover:bg-yellow-400 cursor-pointer shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+                : PENDING_BTN
+            }`}
           >
             <Upload className="h-3.5 w-3.5" />
             Upload Test Results
@@ -6455,15 +6332,27 @@ function McaDataLibrary({
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      onClick={() => onView(`${row.testType} · ${row.date}`)}
-                      className="text-xs font-bold text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                      disabled={!onView}
+                      title={onView ? undefined : PENDING_DETAIL}
+                      onClick={() => onView?.(`${row.testType} · ${row.date}`)}
+                      className={`text-xs font-bold ${
+                        onView
+                          ? "text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                          : `text-slate-500 ${PENDING_BTN}`
+                      }`}
                     >
                       View Details
                     </button>
                     <button
                       type="button"
-                      onClick={() => onCompare(`${row.testType} · ${row.date}`)}
-                      className="text-xs font-bold text-slate-400 hover:text-yellow-500 cursor-pointer"
+                      disabled={!onCompare}
+                      title={onCompare ? undefined : PENDING_COMPARE}
+                      onClick={() => onCompare?.(`${row.testType} · ${row.date}`)}
+                      className={`text-xs font-bold ${
+                        onCompare
+                          ? "text-slate-400 hover:text-yellow-500 cursor-pointer"
+                          : `text-slate-500 ${PENDING_BTN}`
+                      }`}
                     >
                       Compare
                     </button>
@@ -6782,7 +6671,7 @@ function McaRepairActions({
   onExportPdf
 }: {
   onCreateRepairWo: () => void;
-  onScheduleRewind: () => void;
+  onScheduleRewind?: () => void;
   onExportPdf: () => void;
 }) {
   const [checkedSteps, setCheckedSteps] = useState<Record<number, boolean>>({});
@@ -7031,7 +6920,11 @@ function McaRepairActions({
         <button
           type="button"
           onClick={onScheduleRewind}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-600 bg-transparent hover:border-cyan-400/50 text-slate-200 text-xs font-bold cursor-pointer transition-colors"
+          disabled={!onScheduleRewind}
+          title={onScheduleRewind ? undefined : PENDING_SCHEDULE}
+          className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-slate-600 bg-transparent text-slate-200 text-xs font-bold transition-colors ${
+            onScheduleRewind ? "hover:border-cyan-400/50 cursor-pointer" : PENDING_BTN
+          }`}
         >
           <Calendar className="h-3.5 w-3.5 text-cyan-400" />
           Schedule Shop Rewind
@@ -7050,7 +6943,7 @@ function McaRepairActions({
 }
 
 /** Oil Analysis — Tab 1: Lab Results & Analysis */
-function OilAnalysisResults() {
+function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
   const [oilSpecTab, setOilSpecTab] = useState<OilSpectrometryTab>("wear");
   const spectrometryData = OIL_SPECTROMETRY[oilSpecTab];
   const spectrometryMax = Math.max(...spectrometryData.map((d) => d.ppm), 10);
@@ -7064,6 +6957,7 @@ function OilAnalysisResults() {
 
   return (
     <div className="space-y-6">
+      {sampleDataBadge()}
       {/* ===== SECTION 1: Lab Report Header ===== */}
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 text-xs text-slate-400 mb-6 pb-4 border-b border-slate-800">
         <div className="space-y-1 min-w-0">
@@ -7124,10 +7018,13 @@ function OilAnalysisResults() {
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 leading-snug">
             ISO 4406 Cleanliness
           </p>
-          <p className="text-2xl font-bold text-yellow-500 leading-none">19/17/14</p>
+          <p className="text-2xl font-bold text-yellow-500 leading-none">
+            {liveIsoCode ?? "—"}
+          </p>
           <p className="text-xs text-slate-500 mt-2 leading-snug">
-            Action: {OIL_ISO_ACTION_LEVEL} | Target: {OIL_ISO_TARGET_BASELINE} (≥4µm / ≥6µm /
-            ≥14µm)
+            {liveIsoCode
+              ? `Action: ${OIL_ISO_ACTION_LEVEL} | Target: ${OIL_ISO_TARGET_BASELINE} (≥4µm / ≥6µm / ≥14µm)`
+              : "No particle count on file for this asset"}
           </p>
         </div>
       </div>
@@ -7225,71 +7122,9 @@ function OilAnalysisResults() {
             </span>
           </div>
         </div>
-        <div className="h-48">
-          <ResponsiveContainer width="100%" height="100%">
-            <RechartsLineChart
-              data={OIL_DEGRADATION_TREND}
-              margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
-            >
-              <CartesianGrid stroke="rgb(30 41 59)" strokeDasharray="3 3" />
-              <XAxis
-                dataKey="date"
-                tick={{ fill: "#64748b", fontSize: 10 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-              />
-              <YAxis
-                yAxisId="visc"
-                domain={[290, 330]}
-                tick={{ fill: "#22d3ee", fontSize: 10 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-                width={40}
-                unit=" cSt"
-              />
-              <YAxis
-                yAxisId="tan"
-                orientation="right"
-                domain={[0, 2.5]}
-                tick={{ fill: "#eab308", fontSize: 10 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-                width={36}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: 8,
-                  fontSize: 12
-                }}
-              />
-              <Line
-                yAxisId="visc"
-                type="monotone"
-                dataKey="viscosity"
-                name="Viscosity @ 40°C"
-                stroke="#22d3ee"
-                strokeWidth={2.5}
-                dot={{ r: 4, fill: "#22d3ee", stroke: "#0f172a", strokeWidth: 2 }}
-                activeDot={{ r: 6 }}
-              />
-              <Line
-                yAxisId="tan"
-                type="monotone"
-                dataKey="tan"
-                name="TAN"
-                stroke="#eab308"
-                strokeWidth={2.5}
-                dot={{ r: 4, fill: "#eab308", stroke: "#0f172a", strokeWidth: 2 }}
-                activeDot={{ r: 6 }}
-              />
-            </RechartsLineChart>
-          </ResponsiveContainer>
-        </div>
-        <p className="text-xs text-slate-400 mt-4 border-t border-slate-800 pt-3 leading-relaxed">
-          Viscosity increase of 6.7% @ 40°C combined with TAN doubling (1.8 mg KOH/g) confirms active
-          oil thermal oxidation and additive depletion.
+        <p className="rounded-lg border border-slate-700/60 bg-slate-950/50 px-4 py-6 text-center text-xs text-slate-400">
+          Viscosity and TAN are trended from saved oil samples in Trend Analyzer →
+          Fluid Chemistry &amp; Contamination.
         </p>
       </section>
 
@@ -7297,12 +7132,20 @@ function OilAnalysisResults() {
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white mb-3">Oil Diagnostic Summary</h3>
         <p className="text-sm text-slate-300 leading-relaxed mb-5">
-          Analysis of the ISO VG 320 gear oil reveals significant contamination and degradation. The
-          ISO cleanliness code of 19/17/14 exceeds Action Level {OIL_ISO_ACTION_LEVEL} and is well
-          above Target Baseline {OIL_ISO_TARGET_BASELINE} for this critical gearbox, indicating
-          ineffective filtration. The presence of 450 ppm water and elevated TAN (1.8) suggests
-          oxidation and potential micro-pitting risk. High iron content (120 ppm) points to active
-          mechanical wear. Kinematic viscosity is 318 cSt @ 40°C (+6.7% above the 298 cSt baseline).
+          {liveIsoCode ? (
+            <>
+              The measured ISO 4406 cleanliness code is {liveIsoCode}, against Action
+              Level {OIL_ISO_ACTION_LEVEL} and Target Baseline{" "}
+              {OIL_ISO_TARGET_BASELINE}. Review the wear metals and fluid chemistry
+              below alongside this code before committing to a filtration plan.
+            </>
+          ) : (
+            <>
+              No oil sample is on file for this asset, so no cleanliness code, wear
+              metal concentration or fluid chemistry result can be reported. Capture a
+              sample to populate this summary.
+            </>
+          )}
         </p>
         <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 mb-3">
           Action Plan
@@ -7341,15 +7184,82 @@ function oilIsoDirty(isoCode: string) {
   return Number.isFinite(first) && first >= 17;
 }
 
+/** A history row projected from one saved oil sample. */
+interface OilHistoryRow {
+  id: string;
+  date: string;
+  dateMs: number;
+  sampleId: string;
+  viscosity: number | null;
+  moisture: number | null;
+  tan: number | null;
+  isoCode: string | null;
+  fe: number | null;
+  cu: number | null;
+  si: number | null;
+  status: OilAlertStatus;
+}
+
+/**
+ * Grade a saved sample against the same alarm limits the assessment uses, so
+ * the library badge and the assessment card cannot disagree.
+ */
+function oilSampleStatus(sample: OilSample): OilAlertStatus {
+  const over = (v: number | null | undefined, limit: number) => v != null && v > limit;
+  const critical =
+    over(sample.iron, DEFAULT_ALARM_LIMITS.iron * 2) ||
+    over(sample.silicon, DEFAULT_ALARM_LIMITS.silicon * 2) ||
+    over(sample.waterPpm, 400);
+  if (critical) return "CRITICAL";
+  const warning =
+    over(sample.iron, DEFAULT_ALARM_LIMITS.iron) ||
+    over(sample.copper, DEFAULT_ALARM_LIMITS.copper) ||
+    over(sample.chromium, DEFAULT_ALARM_LIMITS.chromium) ||
+    over(sample.silicon, DEFAULT_ALARM_LIMITS.silicon) ||
+    over(sample.waterPpm, 200) ||
+    (sample.iso4um != null && sample.iso4um > ISO_CLEANLINESS_TARGET[0]);
+  return warning ? "WARNING" : "NORMAL";
+}
+
+function toOilHistoryRow(sample: OilSample): OilHistoryRow {
+  const parsed = Date.parse(sample.sampleDate);
+  return {
+    id: sample.id,
+    date: Number.isFinite(parsed)
+      ? new Date(parsed).toLocaleDateString(undefined, {
+          year: "numeric",
+          month: "short",
+          day: "numeric"
+        })
+      : sample.sampleDate,
+    dateMs: Number.isFinite(parsed) ? parsed : 0,
+    // Samples carry no lab reference number, so the stored row id stands in.
+    sampleId: sample.id.slice(0, 8),
+    viscosity: sample.viscosity40C ?? null,
+    moisture: sample.waterPpm ?? null,
+    tan: sample.acidNumber ?? null,
+    isoCode:
+      sample.iso4um != null && sample.iso6um != null && sample.iso14um != null
+        ? `${sample.iso4um}/${sample.iso6um}/${sample.iso14um}`
+        : null,
+    fe: sample.iron ?? null,
+    cu: sample.copper ?? null,
+    si: sample.silicon ?? null,
+    status: oilSampleStatus(sample)
+  };
+}
+
 /** Oil Analysis — Tab 2: Sample History Library */
 function OilDataLibrary({
   onUpload,
   onView,
-  onCompare
+  onCompare,
+  samples
 }: {
-  onUpload: () => void;
-  onView: (label: string) => void;
-  onCompare: (label: string) => void;
+  onUpload?: () => void;
+  onView?: (label: string) => void;
+  onCompare?: (label: string) => void;
+  samples: OilSample[];
 }) {
   const [search, setSearch] = useState("");
   const [dateFilter, setDateFilter] = useState("all");
@@ -7360,9 +7270,17 @@ function OilDataLibrary({
     si: true
   });
 
+  const rows = useMemo(
+    () =>
+      samples
+        .map(toOilHistoryRow)
+        .sort((a, b) => b.dateMs - a.dateMs),
+    [samples]
+  );
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const now = Date.parse("2023-10-20");
+    const now = Date.now();
     const cutoffMs =
       dateFilter === "6m"
         ? now - 183 * 24 * 60 * 60 * 1000
@@ -7370,18 +7288,31 @@ function OilDataLibrary({
           ? now - 365 * 24 * 60 * 60 * 1000
           : 0;
 
-    return OIL_TAB2_HISTORY.filter((row) => {
-      const dateMs = Date.parse(row.date);
-      if (dateFilter !== "all" && Number.isFinite(dateMs) && dateMs < cutoffMs) return false;
+    return rows.filter((row) => {
+      if (dateFilter !== "all" && row.dateMs > 0 && row.dateMs < cutoffMs) return false;
       if (statusFilter !== "all" && row.status !== statusFilter) return false;
       if (!q) return true;
       return (
         row.sampleId.toLowerCase().includes(q) ||
         row.date.toLowerCase().includes(q) ||
-        row.isoCode.toLowerCase().includes(q)
+        (row.isoCode ?? "").toLowerCase().includes(q)
       );
     });
-  }, [search, dateFilter, statusFilter]);
+  }, [rows, search, dateFilter, statusFilter]);
+
+  /** Oldest-first so the trend chart reads left to right in time. */
+  const wearTrend = useMemo(
+    () =>
+      [...rows]
+        .sort((a, b) => a.dateMs - b.dateMs)
+        .map((row) => ({
+          date: row.date,
+          fe: row.fe,
+          cu: row.cu,
+          si: row.si
+        })),
+    [rows]
+  );
 
   const statusBadgeLabel = (status: OilAlertStatus) => {
     if (status === "CRITICAL") return "🔴 CRITICAL";
@@ -7436,7 +7367,13 @@ function OilDataLibrary({
           <button
             type="button"
             onClick={onUpload}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+            disabled={!onUpload}
+            title={onUpload ? undefined : PENDING_UPLOAD}
+            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 text-slate-900 text-xs font-bold transition-colors ${
+              onUpload
+                ? "hover:bg-yellow-400 cursor-pointer shadow-[0_0_15px_rgba(234,179,8,0.25)]"
+                : PENDING_BTN
+            }`}
           >
             <Upload className="h-3.5 w-3.5" />
             Upload Lab Report
@@ -7478,34 +7415,38 @@ function OilDataLibrary({
                   {row.sampleId}
                 </td>
                 <td className="py-3 pr-3 text-sm font-semibold text-cyan-400 font-mono whitespace-nowrap">
-                  {row.viscosity} cSt
+                  {row.viscosity != null ? `${row.viscosity} cSt` : "—"}
                 </td>
                 <td
                   className={`py-3 pr-3 text-sm font-semibold font-mono whitespace-nowrap ${
-                    row.moisture > 200 ? "text-red-500" : "text-slate-300"
+                    row.moisture != null && row.moisture > 200
+                      ? "text-red-500"
+                      : "text-slate-300"
                   }`}
                 >
-                  {row.moisture} ppm
+                  {row.moisture != null ? `${row.moisture} ppm` : "—"}
                 </td>
                 <td
                   className={`py-3 pr-3 text-sm font-semibold font-mono whitespace-nowrap ${
-                    row.tan > 1.5 ? "text-yellow-500" : "text-slate-300"
+                    row.tan != null && row.tan > 1.5 ? "text-yellow-500" : "text-slate-300"
                   }`}
                 >
-                  {row.tan.toFixed(1)}
+                  {row.tan != null ? row.tan.toFixed(1) : "—"}
                 </td>
                 <td
                   className={`py-3 pr-3 text-sm font-semibold font-mono whitespace-nowrap ${
-                    oilIsoDirty(row.isoCode) ? "text-yellow-500" : "text-slate-300"
+                    row.isoCode && oilIsoDirty(row.isoCode)
+                      ? "text-yellow-500"
+                      : "text-slate-300"
                   }`}
                 >
-                  {row.isoCode}
+                  {row.isoCode ?? "—"}
                 </td>
                 <td className="py-3 pr-3 text-sm font-mono text-slate-300 whitespace-nowrap">
-                  {row.fe} / {row.cu}
+                  {row.fe ?? "—"} / {row.cu ?? "—"}
                 </td>
                 <td className="py-3 pr-3 text-sm font-mono text-slate-300 whitespace-nowrap">
-                  {row.si} ppm
+                  {row.si != null ? `${row.si} ppm` : "—"}
                 </td>
                 <td className="py-3 pr-3">
                   <span
@@ -7518,15 +7459,27 @@ function OilDataLibrary({
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      onClick={() => onView(`${row.sampleId} · ${row.date}`)}
-                      className="text-xs font-bold text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                      disabled={!onView}
+                      title={onView ? undefined : PENDING_DETAIL}
+                      onClick={() => onView?.(`${row.sampleId} · ${row.date}`)}
+                      className={`text-xs font-bold ${
+                        onView
+                          ? "text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                          : `text-slate-500 ${PENDING_BTN}`
+                      }`}
                     >
                       View Details
                     </button>
                     <button
                       type="button"
-                      onClick={() => onCompare(`${row.sampleId} · ${row.date}`)}
-                      className="text-xs font-bold text-slate-400 hover:text-yellow-500 cursor-pointer"
+                      disabled={!onCompare}
+                      title={onCompare ? undefined : PENDING_COMPARE}
+                      onClick={() => onCompare?.(`${row.sampleId} · ${row.date}`)}
+                      className={`text-xs font-bold ${
+                        onCompare
+                          ? "text-slate-400 hover:text-yellow-500 cursor-pointer"
+                          : `text-slate-500 ${PENDING_BTN}`
+                      }`}
                     >
                       Compare
                     </button>
@@ -7537,7 +7490,9 @@ function OilDataLibrary({
             {filtered.length === 0 && (
               <tr>
                 <td colSpan={10} className="py-10 text-center text-sm text-slate-500">
-                  No oil samples match the current filters.
+                  {rows.length === 0
+                    ? "No oil samples on file for this asset."
+                    : "No oil samples match the current filters."}
                 </td>
               </tr>
             )}
@@ -7577,7 +7532,7 @@ function OilDataLibrary({
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <RechartsLineChart
-              data={OIL_WEAR_TREND}
+              data={wearTrend}
               margin={{ top: 8, right: 16, left: 0, bottom: 4 }}
             >
               <CartesianGrid stroke="rgb(30 41 59)" strokeDasharray="3 3" />
@@ -7744,11 +7699,13 @@ const OIL_ROOT_CAUSE_ITEMS = [
 function OilRepairActions({
   onCreateFiltrationWo,
   onScheduleOilChange,
-  onExportLabReport
+  onExportLabReport,
+  liveIsoCode
 }: {
   onCreateFiltrationWo: () => void;
-  onScheduleOilChange: () => void;
+  onScheduleOilChange?: () => void;
   onExportLabReport: () => void;
+  liveIsoCode: string | null;
 }) {
   const [checkedSteps, setCheckedSteps] = useState<Record<number, boolean>>({});
   const [rootChecked, setRootChecked] = useState<Record<number, boolean>>({});
@@ -7772,7 +7729,7 @@ function OilRepairActions({
         <div className="relative pt-12 pb-2">
           <div className="absolute top-0 left-[88%] -translate-x-1/2 flex flex-col items-center z-10 max-w-[300px] w-max">
             <span className="text-[10px] font-bold text-red-500 text-center leading-tight mb-1 px-2 py-1 rounded bg-slate-950/95 border border-red-500 shadow-[0_0_12px_rgba(239,68,68,0.45)]">
-              Current Reading: 19/17/14 (IMMEDIATE ACTION)
+              Current Reading: {liveIsoCode ?? "—"}
             </span>
             <span className="w-0 h-0 border-l-[6px] border-r-[6px] border-t-[8px] border-l-transparent border-r-transparent border-t-red-500" />
           </div>
@@ -7924,7 +7881,9 @@ function OilRepairActions({
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">
               Current ISO
             </p>
-            <p className="text-base font-bold font-mono text-red-500">19/17/14</p>
+            <p className="text-base font-bold font-mono text-red-500">
+              {liveIsoCode ?? "—"}
+            </p>
           </div>
           <ArrowRight className="hidden sm:block h-5 w-5 text-slate-600 shrink-0" aria-hidden />
           <div className="flex-1 min-w-[140px] rounded-lg border border-green-500/40 bg-green-500/10 p-3 text-center">
@@ -8013,7 +7972,17 @@ function OilRepairActions({
         <button
           type="button"
           onClick={onScheduleOilChange}
-          className="border border-slate-700 text-white hover:bg-slate-800 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors inline-flex items-center gap-2"
+          disabled={!onScheduleOilChange}
+          title={
+            onScheduleOilChange
+              ? undefined
+              : "Procurement integration pending — no supplier ordering endpoint is connected"
+          }
+          className={`border border-slate-700 px-4 py-2 rounded-lg text-sm transition-colors inline-flex items-center gap-2 ${
+            onScheduleOilChange
+              ? "text-white hover:bg-slate-800 cursor-pointer"
+              : `text-slate-400 ${PENDING_BTN}`
+          }`}
         >
           <Droplet className="h-3.5 w-3.5 text-cyan-400" />
           Order 3-Micron Filters &amp; Desiccant Breather
@@ -8033,10 +8002,10 @@ function OilRepairActions({
 
 export default function AnalysisReport({
   selectedCompanyId,
-  onNavigateToCalendar
+  onNavigateToCalendar,
+  onNavigateToRca
 }: AnalysisReportProps) {
   const { toast } = useToast();
-  void selectedCompanyId;
   const [selectedTech, setSelectedTech] = useState<ReportTechnology>("vibration");
   const [activeTab, setActiveTab] = useState<ReportTab>(1); // 1=Analysis, 2=Library, 3=Actions
 
@@ -8063,6 +8032,7 @@ export default function AnalysisReport({
   const { inventory, savePart } = usePartsInventory();
   const [reportParts, setReportParts] = useState<ReportPart[]>(INITIAL_REPORT_PARTS);
   const [showInventory, setShowInventory] = useState(false);
+
   const [showWorkOrder, setShowWorkOrder] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
@@ -8071,13 +8041,22 @@ export default function AnalysisReport({
   const [selectedAnalysis, setSelectedAnalysis] = useState<SavedAnalysisResult | null>(null);
   const [hasLoadedReport, setHasLoadedReport] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Asset the live multi-technology assessment is built for. Null until the
+  // saved records tell us which assets actually have telemetry.
+  const [assessmentAssetId, setAssessmentAssetId] = useState<string | null>(null);
+
+  const initiateRcaFromReport = () => {
+    if (onNavigateToRca) {
+      onNavigateToRca();
+    }
+  };
 
   // Fetch saved analyses from PostgreSQL on page load
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const rows = await fetchAnalysisResults({ limit: 50 });
+        const rows = await fetchAnalysisResults({ limit: 200 });
         if (cancelled) return;
         setLoadedAnalyses(rows);
         setSelectedAnalysis(rows[0] ?? null);
@@ -8095,6 +8074,106 @@ export default function AnalysisReport({
       cancelled = true;
     };
   }, []);
+
+  /**
+   * Assets that actually have saved records. Offering anything else would let
+   * the assessment be opened on an asset that can only ever render empty.
+   */
+  const assetsWithRecords = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of loadedAnalyses) {
+      if (row.asset_id) ids.add(row.asset_id);
+    }
+    return [...ids].sort();
+  }, [loadedAnalyses]);
+
+  /**
+   * Deep links. `?reportId=` opens one persisted report by id; `?assetId=`
+   * lands on a particular asset's live assessment, which is what the alert and
+   * asset-header triggers use since alerts carry an asset, not a report.
+   */
+  const deepLinkReportId = useQueryParam("reportId");
+  const deepLinkAssetId = useQueryParam("assetId");
+
+  const openReport = useCallback((reportId: string) => {
+    navigateToTab("analysis", { reportId });
+  }, []);
+
+  const closeReport = useCallback(
+    (assetId?: string | null) => {
+      // Prefer the report's own asset so back lands on the assessment it came
+      // from, rather than whichever asset the selector happened to default to.
+      const target = assetId || assessmentAssetId;
+      navigateToTab("analysis", target ? { assetId: target } : {});
+    },
+    [assessmentAssetId]
+  );
+
+  useEffect(() => {
+    // A linked asset wins over the default pick, but only if it really exists;
+    // otherwise the selector would show an asset with nothing behind it.
+    if (deepLinkAssetId && assetsWithRecords.includes(deepLinkAssetId)) {
+      setAssessmentAssetId(deepLinkAssetId);
+      return;
+    }
+    if (assessmentAssetId == null && assetsWithRecords.length > 0) {
+      setAssessmentAssetId(assetsWithRecords[0]);
+    }
+  }, [assessmentAssetId, assetsWithRecords, deepLinkAssetId]);
+
+  // Saved oil samples for the assessment asset. Metric cards that used to
+  // print a fixed ISO code read from these, and show an em dash without them.
+  const [assessmentOilSamples, setAssessmentOilSamples] = useState<OilSample[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!assessmentAssetId) {
+      setAssessmentOilSamples([]);
+      return;
+    }
+    void fetchOilSamples(assessmentAssetId)
+      .then((samples) => {
+        if (!cancelled) setAssessmentOilSamples(samples);
+      })
+      .catch(() => {
+        if (!cancelled) setAssessmentOilSamples([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assessmentAssetId]);
+
+  const assessmentOilSample = useMemo(
+    () =>
+      assessmentOilSamples.length
+        ? assessmentOilSamples.reduce((newest, s) =>
+            new Date(s.sampleDate).getTime() > new Date(newest.sampleDate).getTime()
+              ? s
+              : newest
+          )
+        : null,
+    [assessmentOilSamples]
+  );
+
+  /** Measured ISO 4406 code for the assessment asset, or null when unsampled. */
+  const liveIsoCode = useMemo(() => {
+    const s = assessmentOilSample;
+    if (!s || s.iso4um == null || s.iso6um == null || s.iso14um == null) return null;
+    return `${s.iso4um}/${s.iso6um}/${s.iso14um}`;
+  }, [assessmentOilSample]);
+
+  /** Measured hotspot from the newest thermography record on the asset. */
+  const liveHotspot = useMemo(() => {
+    if (!assessmentAssetId) return null;
+    const record = latestOfType(
+      loadedAnalyses.filter((r) => r.asset_id === assessmentAssetId),
+      "thermography"
+    );
+    if (!record) return null;
+    const peak = peakOfType(record, "thermography");
+    const hotspot = peak?.hotspot_temp;
+    if (hotspot == null || !Number.isFinite(Number(hotspot))) return null;
+    return `${hotspot}${resolveTempUnit(record) ?? ""}`;
+  }, [assessmentAssetId, loadedAnalyses]);
 
   const flatEquipment = useMemo(() => {
     void equipTick;
@@ -8339,9 +8418,33 @@ export default function AnalysisReport({
     })
     .filter((p): p is NonNullable<typeof p> => p !== null);
 
-  const handleExport = (format: string) => {
+  const exportContext = {
+    assetLabel: displayAssetLabel,
+    component: loadedComponent,
+    technology: selectedTech,
+    analysis: selectedAnalysis,
+    records: loadedAnalyses
+  };
+
+  const runExport = (
+    exporter: (ctx: typeof exportContext) => string,
+    kind: string
+  ) => {
+    try {
+      toast(`${kind} saved as ${exporter(exportContext)}.`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : `${kind} export failed.`, "error");
+    }
+  };
+
+  const handleExportPdf = () => runExport(exportReportPdf, "Report");
+  const handleExportCsv = () => runExport(exportReportCsv, "Measurements");
+
+  const handleExport = (formatId: string) => {
     setExportOpen(false);
-    toast(`Analysis report exported as ${format}.`, "success");
+    if (formatId === "csv") handleExportCsv();
+    else if (formatId === "excel") runExport(exportReportXlsx, "Workbook");
+    else handleExportPdf();
   };
 
   if (flatEquipment.length === 0) {
@@ -8593,6 +8696,63 @@ export default function AnalysisReport({
         })}
       </div>
 
+      {/* ===== Saved report opened by deep link (?reportId=) ===== */}
+      {deepLinkReportId ? (
+        <SavedReportViewer
+          reportId={deepLinkReportId}
+          knownAssetIds={assetsWithRecords}
+          onBack={closeReport}
+        />
+      ) : /* ===== Live multi-technology assessment (database-backed) ===== */
+      assetsWithRecords.length === 0 ? (
+        <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
+          <h3 className="text-lg font-bold text-white mb-1">
+            Multi-Technology Assessment
+          </h3>
+          <p className="text-sm text-slate-400">
+            No saved condition-monitoring records found. Run and save an analysis
+            from Run Diagnostics to build an assessment.
+          </p>
+        </section>
+      ) : (
+        <div className="mb-6">
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <div className="min-w-0">
+              <label
+                htmlFor="assessment-asset"
+                className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1"
+              >
+                Assessment Asset
+              </label>
+              <select
+                id="assessment-asset"
+                value={assessmentAssetId ?? ""}
+                onChange={(e) => setAssessmentAssetId(e.target.value)}
+                className={HIER_SELECT}
+              >
+                {assetsWithRecords.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="text-[11px] text-slate-500 pb-2.5">
+              Assets with saved records ({assetsWithRecords.length})
+            </p>
+          </div>
+          {assessmentAssetId && (
+            <MultiTechAssessment
+              assetId={assessmentAssetId}
+              assetLabel={assessmentAssetId}
+              companyId={selectedCompanyId ?? null}
+              onToast={toast}
+              onOpenReport={openReport}
+            />
+          )}
+        </div>
+      )}
+
       {selectedTech === "vibration" && (
       <>
       {/* ===== A. Date range + actions ===== */}
@@ -8664,7 +8824,7 @@ export default function AnalysisReport({
                         key={format.id}
                         type="button"
                         role="menuitem"
-                        onClick={() => handleExport(format.label)}
+                        onClick={() => handleExport(format.id)}
                         className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-950 cursor-pointer transition-colors group"
                       >
                         <span className="text-xs font-bold text-slate-200 group-hover:text-yellow-400 block">
@@ -8688,10 +8848,28 @@ export default function AnalysisReport({
 
               <button
                 type="button"
-                onClick={() =>
-                  toast(`Re-test scheduled for ${reportAsset.name} in 30 days.`, "success")
+                onClick={() => setShowWorkOrder(true)}
+                disabled={!selectedAnalysis}
+                title={
+                  selectedAnalysis
+                    ? "Draft a work order from the selected saved analysis"
+                    : "Select a saved analysis below to draft a work order from it"
                 }
-                className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-xs font-bold rounded-xl cursor-pointer transition-colors"
+                className={`flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 text-xs font-bold rounded-xl transition-colors ${
+                  selectedAnalysis
+                    ? "text-slate-300 hover:border-slate-700 hover:text-white cursor-pointer"
+                    : "text-slate-500 cursor-not-allowed opacity-60"
+                }`}
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                <span>Work Order</span>
+              </button>
+
+              <button
+                type="button"
+                disabled
+                title={PENDING_SCHEDULE}
+                className={`flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 text-slate-400 text-xs font-bold rounded-xl transition-colors ${PENDING_BTN}`}
               >
                 <Calendar className="h-3.5 w-3.5" />
                 <span>Schedule Re-test</span>
@@ -8871,6 +9049,10 @@ export default function AnalysisReport({
               }
               onChangeQuantity={changePartQuantity}
               onRemovePart={removePartFromReport}
+              onInitiateRca={initiateRcaFromReport}
+              onExportPdf={handleExportPdf}
+              onExportCsv={handleExportCsv}
+              canExport={selectedAnalysis !== null}
             />
           )}
         </div>
@@ -8880,16 +9062,18 @@ export default function AnalysisReport({
       <div className="fixed bottom-24 lg:bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-wrap justify-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 rounded-2xl px-3 py-2.5 shadow-2xl">
         <button
           type="button"
-          onClick={() => toast(`${reportAsset.name} added to the watchlist.`, "success")}
-          className="flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+          disabled
+          title="Watchlist persistence pending — no watchlist endpoint is connected"
+          className={`flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 text-slate-400 text-xs font-bold rounded-lg transition-colors ${PENDING_BTN}`}
         >
           <Eye className="h-3.5 w-3.5" />
           <span>Watchlist</span>
         </button>
         <button
           type="button"
-          onClick={() => toast("Comparing current spectrum against the stored baseline.", "info")}
-          className="flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+          disabled
+          title="Baseline comparison is not built yet"
+          className={`flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 text-slate-400 text-xs font-bold rounded-lg transition-colors ${PENDING_BTN}`}
         >
           <LineChart className="h-3.5 w-3.5" />
           <span>Compare Baseline</span>
@@ -8935,11 +9119,11 @@ export default function AnalysisReport({
       {false && selectedTech === "thermography" && (
         <div className="hidden">
           <div className="p-6 min-h-[360px]">
-            {selectedTech === "thermography" && activeTab === 1 && <ThermographyAnalysisResults />}
+            {selectedTech === "thermography" && activeTab === 1 && (
+              <ThermographyAnalysisResults liveHotspot={liveHotspot} />
+            )}
             {selectedTech === "thermography" && activeTab === 2 && (
-              <ThermographyDataLibrary
-                onUpload={() => toast("Thermal image upload dialog opened (mock).", "info")}
-              />
+              <ThermographyDataLibrary />
             )}
             {selectedTech === "thermography" && activeTab === 3 && (
               <ThermographyRepairActions
@@ -8948,10 +9132,7 @@ export default function AnalysisReport({
                     "Thermal repair work order staged — opening Maintenance Calendar."
                   )
                 }
-                onExportPdf={() => toast("Thermography PDF report exported (mock).", "success")}
-                onEmailManager={() =>
-                  toast("Thermal findings emailed to Facility Manager (mock).", "success")
-                }
+                onExportPdf={handleExportPdf}
               />
             )}
           </div>
@@ -8996,11 +9177,7 @@ export default function AnalysisReport({
           <div className="p-6 min-h-[360px]">
             {selectedTech === "ultrasound" && activeTab === 1 && <UltrasoundAnalysisResults />}
             {selectedTech === "ultrasound" && activeTab === 2 && (
-              <UltrasoundDataLibrary
-                onUpload={() => toast("Ultrasound recording upload opened (mock).", "info")}
-                onView={(name) => toast(`Opening recording detail: ${name}`, "info")}
-                onCompare={(name) => toast(`Compare mode staged for: ${name}`, "info")}
-              />
+              <UltrasoundDataLibrary />
             )}
             {selectedTech === "ultrasound" && activeTab === 3 && (
               <UltrasoundRepairActions
@@ -9014,7 +9191,7 @@ export default function AnalysisReport({
                     "Leak repair work order staged — opening Maintenance Calendar."
                   )
                 }
-                onExportPdf={() => toast("Ultrasound PDF report exported (mock).", "success")}
+                onExportPdf={handleExportPdf}
               />
             )}
           </div>
@@ -9060,11 +9237,7 @@ export default function AnalysisReport({
               <McaAnalysisResults assetLabel={displayAssetLabel} />
             )}
             {selectedTech === "mca" && activeTab === 2 && (
-              <McaDataLibrary
-                onUpload={() => toast("MCA test upload opened (mock).", "info")}
-                onView={(label) => toast(`Opening MCA test detail: ${label}`, "info")}
-                onCompare={(label) => toast(`Compare mode staged for: ${label}`, "info")}
-              />
+              <McaDataLibrary />
             )}
             {selectedTech === "mca" && activeTab === 3 && (
               <McaRepairActions
@@ -9073,10 +9246,7 @@ export default function AnalysisReport({
                     "Motor repair work order staged — opening Maintenance Calendar."
                   )
                 }
-                onScheduleRewind={() =>
-                  toast("Shop rewind scheduled for M-101A (mock).", "success")
-                }
-                onExportPdf={() => toast("MCA PDF report exported (mock).", "success")}
+                onExportPdf={handleExportPdf}
               />
             )}
           </div>
@@ -9119,13 +9289,11 @@ export default function AnalysisReport({
       {false && selectedTech === "oil" && (
         <div className="hidden">
           <div className="p-6 min-h-[360px]">
-            {selectedTech === "oil" && activeTab === 1 && <OilAnalysisResults />}
+            {selectedTech === "oil" && activeTab === 1 && (
+              <OilAnalysisResults liveIsoCode={liveIsoCode} />
+            )}
             {selectedTech === "oil" && activeTab === 2 && (
-              <OilDataLibrary
-                onUpload={() => toast("Oil lab report upload opened (mock).", "info")}
-                onView={(label) => toast(`Opening oil sample detail: ${label}`, "info")}
-                onCompare={(label) => toast(`Compare mode staged for: ${label}`, "info")}
-              />
+              <OilDataLibrary samples={assessmentOilSamples} />
             )}
             {selectedTech === "oil" && activeTab === 3 && (
               <OilRepairActions
@@ -9134,10 +9302,8 @@ export default function AnalysisReport({
                     "Filtration work order staged — opening Maintenance Calendar."
                   )
                 }
-                onScheduleOilChange={() =>
-                  toast("Oil change scheduled for GB-101 (mock).", "success")
-                }
-                onExportLabReport={() => toast("Oil lab report exported (mock).", "success")}
+                onExportLabReport={handleExportPdf}
+                liveIsoCode={liveIsoCode}
               />
             )}
           </div>
@@ -9159,8 +9325,8 @@ export default function AnalysisReport({
 
       {showWorkOrder && (
         <WorkOrderGenerator
-          assetName={reportAsset.name}
-          tagId={reportAsset.tag}
+          assetName={loadedAssetLabel || selectedAnalysis?.asset_id || reportAsset.name}
+          tagId={selectedAnalysis?.asset_id || reportAsset.tag}
           faultCode={
             selectedAnalysis?.primary_fault ||
             (Array.isArray(selectedAnalysis?.fault_list) &&

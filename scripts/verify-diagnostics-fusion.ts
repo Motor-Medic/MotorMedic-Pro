@@ -31,6 +31,7 @@ import {
   normalizeSeverity,
   type CmmsPayloadContext
 } from "../src/lib/diagnostics/cmmsPayload";
+import { composeWorkOrderDescription } from "../src/lib/diagnostics/workOrderText";
 import type { SavedAnalysisResult } from "../src/lib/analysisPersistence";
 import type { OilSample } from "../src/types/oilAnalysis";
 
@@ -310,13 +311,28 @@ check("severity normalize HIGH", normalizeSeverity("HIGH"), "CRITICAL");
 check("severity normalize ANOMALY", normalizeSeverity("ANOMALY"), "ANOMALY");
 check("severity normalize unknown -> NORMAL", normalizeSeverity(null), "NORMAL");
 
-check("sap priority for critical", (buildCmmsPayload("sap", ctx) as any).PRIORITY, "1");
 check("sap uses EQUNR key", (buildCmmsPayload("sap", ctx) as any).EQUNR, "PMP030");
 check("maximo uses ASSETNUM key", (buildCmmsPayload("maximo", ctx) as any).ASSETNUM, "PMP030");
 check("maximo approved -> APPR", (buildCmmsPayload("maximo", ctx) as any).STATUS, "APPR");
-check("maintainx priority is a word", (buildCmmsPayload("maintainx", ctx) as any).priority, "High");
 check("fiix uses hungarian keys", (buildCmmsPayload("fiix", ctx) as any).strAssetCode, "PMP030");
 check("oracle uses ASSET_NUMBER key", (buildCmmsPayload("oracle_eam", ctx) as any).ASSET_NUMBER, "PMP030");
+
+// --- Priority renders as code + label + reason ------------------------------
+check(
+  "sap critical priority carries code, label and reason",
+  (buildCmmsPayload("sap", ctx) as any).PRIORITY,
+  "1 - Very High (critical severity recorded, expedite ahead of routine work)"
+);
+check(
+  "sap anomaly priority carries the anomaly reason",
+  (buildCmmsPayload("sap", { ...ctx, severity: "ANOMALY" }) as any).PRIORITY,
+  "2 - High (anomaly recorded, plan into the next maintenance window)"
+);
+check(
+  "word-based systems do not repeat the code as the label",
+  (buildCmmsPayload("maintainx", ctx) as any).priority,
+  "High (critical severity recorded, expedite ahead of routine work)"
+);
 check(
   "switching system changes priority vocabulary",
   [
@@ -325,8 +341,17 @@ check(
     (buildCmmsPayload("maintainx", ctx) as any).priority,
     (buildCmmsPayload("fiix", ctx) as any).strPriority,
     (buildCmmsPayload("oracle_eam", ctx) as any).PRIORITY_CODE
-  ],
-  ["1", "1", "High", "Critical", "1"]
+  ].map((v) => String(v).split(" (")[0]),
+  ["1 - Very High", "1 - Highest", "High", "Critical", "1 - Emergency"]
+);
+check(
+  "every system states a reason alongside the priority",
+  ["sap", "maximo", "maintainx", "fiix", "oracle_eam"].every((t) =>
+    buildCmmsFieldList(t as any, ctx).some(
+      (f) => f.label.includes("Priority") && f.value.includes("(critical severity recorded")
+    )
+  ),
+  true
 );
 
 const pendingCtx: CmmsPayloadContext = {
@@ -339,8 +364,131 @@ const pendingPayload = buildCmmsPayload("sap", pendingCtx) as any;
 check("pending sign-off surfaces in payload", String(pendingPayload.SIGN_OFF).startsWith("PENDING"), true);
 check("single-domain surfaces in payload", String(pendingPayload.CORROBORATION).includes("Single-domain"), true);
 check("null horizon omits the key entirely", "FAILURE_HORIZON" in pendingPayload, false);
-check("null confidence omits the key entirely", "DIAGNOSIS_CONFIDENCE" in pendingPayload, false);
 check("maximo pending -> WAPPR", (buildCmmsPayload("maximo", pendingCtx) as any).STATUS, "WAPPR");
+
+// --- Confidence never appears as a bare percentage --------------------------
+check(
+  "stored per-fault confidence is labelled as AI confidence",
+  (buildCmmsPayload("sap", ctx) as any).DIAGNOSIS_CONFIDENCE,
+  "91% (AI confidence)"
+);
+check(
+  "no stored confidence falls back to the fusion aggregate",
+  (buildCmmsPayload("sap", { ...ctx, confidencePercent: null }) as any)
+    .DIAGNOSIS_CONFIDENCE,
+  "83% (multi-domain corroboration)"
+);
+check(
+  "neither source available -> cross-validation pending",
+  String(pendingPayload.DIAGNOSIS_CONFIDENCE),
+  "Cross-validation pending"
+);
+check(
+  "confidence is never a bare percentage in any system",
+  ["sap", "maximo", "maintainx", "fiix", "oracle_eam"].every((t) =>
+    buildCmmsFieldList(t as any, ctx)
+      .filter((f) => f.label === "Diagnosis Confidence")
+      .every((f) => !/^\d+%?$/.test(f.value))
+  ),
+  true
+);
+
+// --- Tiered description composition -----------------------------------------
+const oilEvidence = [
+  { label: "Oil Analysis", details: ["Fe 108 ppm > 100 ppm limit", "ISO 22/20/16 above target 15/13/10"] },
+  { label: "Vibration", details: ["Primary fault: Unbalance", "Severity: ANOMALY"] }
+];
+
+check(
+  "tier 1 - saved diagnosis drives the description",
+  composeWorkOrderDescription({
+    assetTag: "PMP030", component: "Motor DE",
+    faultTitle: "Outer Race Bearing Defect (BPFO)", severity: "CRITICAL",
+    rationale: "Envelope spectrum shows BPFO with three harmonics.",
+    evidence: oilEvidence
+  }),
+  {
+    tier: "diagnosis",
+    text:
+      "Outer Race Bearing Defect (BPFO) detected on PMP030 Motor DE. Severity recorded as Critical." +
+      "\n\nEnvelope spectrum shows BPFO with three harmonics."
+  }
+);
+check(
+  "tier 1 with no stored rationale appends nothing",
+  composeWorkOrderDescription({
+    assetTag: "PMP030", component: "Motor DE", faultTitle: "Dirt ingress",
+    severity: "ANOMALY", rationale: null
+  }).text.includes("\n"),
+  false
+);
+const tier2 = composeWorkOrderDescription({
+  assetTag: "PMP030", component: "Motor DE", faultTitle: "", severity: "ANOMALY",
+  evidence: oilEvidence
+});
+check("tier 2 - no diagnosis composes from readings", tier2.tier, "measurements");
+check(
+  "tier 2 quotes the fusion evidence strings verbatim",
+  oilEvidence.every((g) => g.details.every((d) => tier2.text.includes(d))),
+  true
+);
+check(
+  "tier 2 never claims a diagnosis",
+  tier2.text.startsWith("No saved diagnosis for PMP030 Motor DE."),
+  true
+);
+check(
+  "tier 3 - nothing on file",
+  composeWorkOrderDescription({
+    assetTag: "PMP030", component: "Motor DE", faultTitle: "", severity: "NORMAL",
+    evidence: []
+  }),
+  { tier: "none", text: "No diagnostic findings recorded." }
+);
+check(
+  "empty evidence groups are dropped rather than printed",
+  composeWorkOrderDescription({
+    assetTag: "PMP030", component: "Motor DE", faultTitle: "", severity: "NORMAL",
+    evidence: [{ label: "Oil Analysis", details: ["", "  "] }]
+  }).tier,
+  "none"
+);
+
+// The composed description must reach the CMMS long-text field itself.
+const tier2Ctx: CmmsPayloadContext = {
+  ...pendingCtx, faultTitle: "", rationale: null, evidence: oilEvidence
+};
+check(
+  "tier 2 description reaches the SAP long text",
+  String((buildCmmsPayload("sap", tier2Ctx) as any).LONG_TEXT).includes(
+    "Fe 108 ppm > 100 ppm limit"
+  ),
+  true
+);
+check(
+  "no data at all -> long text states no findings",
+  (buildCmmsPayload("sap", { ...pendingCtx, faultTitle: "", rationale: null, evidence: [] }) as any)
+    .LONG_TEXT,
+  "No diagnostic findings recorded."
+);
+check(
+  "short text truncates on a word boundary, not mid-measurement",
+  String((buildCmmsPayload("sap", tier2Ctx) as any).SHORT_TEXT).length <= 41,
+  true
+);
+
+// --- No synthetic payload strings survive anywhere ---------------------------
+const BANNED = ["Fe 120", "Cu 85", "Confidence 94", "Lorem", "19/17/14", "$15,840"];
+check(
+  "no hardcoded mock text in any system payload",
+  ["sap", "maximo", "maintainx", "fiix", "oracle_eam", "custom"].flatMap((t) =>
+    buildCmmsFieldList(t as any, tier2Ctx)
+      .concat(buildCmmsFieldList(t as any, ctx))
+      .filter((f) => BANNED.some((b) => f.value.includes(b)))
+      .map((f) => `${t}.${f.key}`)
+  ),
+  []
+);
 
 // --- CMMS field cards -------------------------------------------------------
 const sapFields = buildCmmsFieldList("sap", ctx);

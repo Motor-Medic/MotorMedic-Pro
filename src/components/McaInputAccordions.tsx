@@ -16,7 +16,7 @@ import {
   type McaExtractedData,
   type RicDataPoint
 } from "../lib/mca/mcaPdfExtractor";
-import { mcaTripletHasData } from "../lib/mca/mcaPersistence";
+import { mcaTripletHasData, type McaOperatorSnapshot } from "../lib/mca/mcaPersistence";
 
 type McaAccordionSection = "fingerprint" | "config" | "phase" | "insulation";
 export type McaMode = "static" | "dynamic" | "online";
@@ -140,39 +140,7 @@ function AccordionShell({
   );
 }
 
-export interface McaOperatorSnapshot {
-  mode: string;
-  windingConfig: string;
-  ratedHp: number | null;
-  ratedVoltage: string | null;
-  windingTempC: number | null;
-  ambientTempC: number | null;
-  insulationClass: string | null;
-  testVoltageV: number | null;
-  phases: {
-    uv: PhaseMetrics;
-    vw: PhaseMetrics;
-    wu: PhaseMetrics;
-  };
-  ir15sMOmega: number | null;
-  ir30sMOmega: number | null;
-  ir1mMOmega: number | null;
-  ir10mMOmega: number | null;
-  reading30s: number | null;
-  reading60s: number | null;
-  reading1Min: number | null;
-  reading10Min: number | null;
-  megohms: number | null;
-  reportPi: number | null;
-  reportDar: number | null;
-  /** Rotor Influence Check series when extracted from PDF. */
-  ricData: RicDataPoint[] | null;
-  extractMeta?: {
-    fileName: string | null;
-    formatDetected: string | null;
-    confidenceScore: number | null;
-  } | null;
-}
+
 
 export interface McaInputAccordionsProps {
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;

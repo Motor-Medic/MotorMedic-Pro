@@ -19,3 +19,9 @@ export interface VibrationEnvelopeAnalysisFields {
   envelopeDominantFrequency?: number;
   envelopeEnergy?: number;
 }
+
+export interface SpectrumPoint {
+  hz: number;
+  amp: number;
+  baseline: number;
+}

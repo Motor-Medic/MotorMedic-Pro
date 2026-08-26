@@ -20,6 +20,7 @@ import {
   buildCmmsFieldList,
   buildCmmsPayload,
   CMMS_TARGETS,
+  normalizeSeverity,
   type CmmsPayloadContext
 } from "../src/lib/diagnostics/cmmsPayload";
 import {
@@ -128,6 +129,12 @@ if (prognosis.nonConverging.length) {
   }
 }
 
+// The Fusion Matrix's own per-technology strings, reused verbatim as the
+// tier-2 description source.
+const evidenceGroups = fusion.rows
+  .filter((r) => r.hasRecord && r.detail.length > 0)
+  .map((r) => ({ label: r.label, details: r.detail }));
+
 const ctx: CmmsPayloadContext = {
   assetTag: asset,
   component: "Sump",
@@ -144,7 +151,9 @@ const ctx: CmmsPayloadContext = {
   signOffEngineer: null,
   signOffAt: null,
   recommendations: [],
-  diagnosisId: null
+  diagnosisId: null,
+  rationale: null,
+  evidence: evidenceGroups
 };
 
 console.log("\n--- CMMS: same diagnosis, five vocabularies ---");
@@ -191,6 +200,70 @@ console.table(
     Value: f.value.length > 52 ? `${f.value.slice(0, 49)}…` : f.value
   }))
 );
+
+// --- Tiered work order text -------------------------------------------------
+console.log("\n--- WORK ORDER DESCRIPTION TIERS ---");
+
+const longTextOf = (c: CmmsPayloadContext) =>
+  buildCmmsFieldList("sap", c).find((f) => f.key === "LONG_TEXT")?.value ?? "";
+const priorityOf = (c: CmmsPayloadContext) =>
+  buildCmmsFieldList("sap", c).find((f) => f.key === "PRIORITY")?.value ?? "";
+const confidenceOf = (c: CmmsPayloadContext) =>
+  buildCmmsFieldList("sap", c).find((f) => f.key === "DIAGNOSIS_CONFIDENCE")
+    ?.value ?? "";
+
+// Tier 2: this asset has saved samples but no saved diagnosis of its own.
+const tier2Ctx: CmmsPayloadContext = { ...ctx, faultTitle: "" };
+const tier2Text = longTextOf(tier2Ctx);
+console.log(`\nTIER 2 (samples on file, no diagnosis) LONG_TEXT:\n${tier2Text}`);
+
+const everyEvidenceString = evidenceGroups.flatMap((g) => g.details);
+const missing = everyEvidenceString.filter((d) => !tier2Text.includes(d));
+console.log(
+  everyEvidenceString.length === 0
+    ? "SKIP: no saved readings on this asset to compose from"
+    : missing.length === 0
+      ? `PASS: all ${everyEvidenceString.length} Fusion Matrix evidence strings appear verbatim in LONG_TEXT`
+      : `FAIL: LONG_TEXT is missing ${missing.length} fusion string(s): ${missing.join(" | ")}`
+);
+console.log(
+  tier2Text.includes("No saved diagnosis")
+    ? "PASS: tier 2 states plainly that no diagnosis was saved"
+    : "FAIL: tier 2 text does not disclose the missing diagnosis"
+);
+
+const priority = priorityOf(tier2Ctx);
+console.log(`\nPriority field: ${priority}`);
+console.log(
+  /^\S+ - .+ \(.+\)$/.test(priority)
+    ? "PASS: priority renders as code + label + reason"
+    : `FAIL: priority is not code + label + reason -> "${priority}"`
+);
+console.log(`Confidence field: ${confidenceOf(tier2Ctx)}`);
+console.log(
+  /^\d+%$/.test(confidenceOf(tier2Ctx))
+    ? "FAIL: confidence is a bare percentage"
+    : "PASS: confidence is qualified, never a bare percentage"
+);
+
+// Tier 3: an asset with neither a diagnosis nor readings. With nothing saved,
+// normalizeSeverity(null) resolves to NORMAL, so this is the real default.
+const tier3Ctx: CmmsPayloadContext = {
+  ...ctx,
+  faultTitle: "",
+  severity: normalizeSeverity(null),
+  evidence: [],
+  corroborationPercent: null,
+  technologiesWithData: []
+};
+console.log(`\nTIER 3 (no data at all) LONG_TEXT: ${longTextOf(tier3Ctx)}`);
+console.log(
+  longTextOf(tier3Ctx) === "No diagnostic findings recorded."
+    ? "PASS: empty asset yields the honest default description"
+    : "FAIL: empty asset did not yield the default description"
+);
+console.log(`TIER 3 priority: ${priorityOf(tier3Ctx)}`);
+console.log(`TIER 3 confidence: ${confidenceOf(tier3Ctx)}`);
 
 // --- Wear particle panel + root-cause evidence ------------------------------
 const latest = samples.length

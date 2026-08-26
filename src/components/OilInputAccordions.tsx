@@ -849,7 +849,7 @@ export default function OilInputAccordions({
             type="text"
             value={iso4406Code}
             onChange={(e) => setIso4406Code(e.target.value)}
-            placeholder="e.g., 19/17/14"
+            placeholder="__/__/__"
             className={inputCls}
           />
           <p className="mt-1.5 text-[11px] text-slate-500">

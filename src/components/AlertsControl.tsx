@@ -115,6 +115,7 @@ interface HistoryAlarm {
   limit: number;
   unit: string;
   status: AlarmStatus;
+  detail?: string;
 }
 
 const ISO = {
@@ -469,28 +470,23 @@ const DEFAULT_NOTIFY: NotifyConfig = {
   cmmsCriticalMms: 4.5
 };
 
-const INITIAL_HISTORY: HistoryAlarm[] = [
-  { id: "a1", time: "Today 08:42", assetId: "gb-302", assetLabel: "GB-302 Extruder Gearbox", kind: "Critical", value: 5.85, limit: 4.8, unit: "mm/s", status: "New" },
-  { id: "a2", time: "Today 08:08", assetId: "p-101a", assetLabel: "P-101A Boiler Feed Pump A", kind: "Warning", value: 3.45, limit: 2.8, unit: "mm/s", status: "New" },
-  { id: "a3", time: "Today 07:55", assetId: "m-101a", assetLabel: "M-101A Drive Motor", kind: "Critical", value: 4.9, limit: 4.5, unit: "mm/s", status: "New" },
-  { id: "a4", time: "Today 06:40", assetId: "m-210", assetLabel: "M-210 Induction Motor", kind: "Warning", value: 3.6, limit: 2.8, unit: "mm/s", status: "Acknowledged" },
-  { id: "a5", time: "Today 05:12", assetId: "fn-04", assetLabel: "FN-04 Cooling Tower Fan", kind: "Warning", value: 3.3, limit: 3.2, unit: "mm/s", status: "Acknowledged" },
-  { id: "a6", time: "Yesterday 22:18", assetId: "cmp-37", assetLabel: "CMP-37 Screw Compressor", kind: "Warning", value: 3.1, limit: 3.0, unit: "mm/s", status: "Shelved" },
-  { id: "a7", time: "Yesterday 19:05", assetId: "p-402", assetLabel: "P-402 Slurry Recirc", kind: "Critical", value: 4.7, limit: 4.5, unit: "mm/s", status: "Acknowledged" },
-  { id: "a8", time: "Yesterday 16:44", assetId: "gb-302", assetLabel: "GB-302 Extruder Gearbox", kind: "Warning", value: 3.4, limit: 3.0, unit: "mm/s", status: "Acknowledged" },
-  { id: "a9", time: "Yesterday 14:20", assetId: "p-101b", assetLabel: "P-101B Boiler Feed Pump B", kind: "Warning", value: 2.9, limit: 2.8, unit: "mm/s", status: "Acknowledged" },
-  { id: "a10", time: "Yesterday 11:02", assetId: "m-101a", assetLabel: "M-101A Drive Motor", kind: "Warning", value: 3.1, limit: 2.8, unit: "mm/s", status: "Acknowledged" },
-  { id: "a11", time: "Jul 28 23:40", assetId: "fn-04", assetLabel: "FN-04 Cooling Tower Fan", kind: "Critical", value: 5.2, limit: 5.0, unit: "mm/s", status: "Acknowledged" },
-  { id: "a12", time: "Jul 28 18:15", assetId: "cv-gb3", assetLabel: "CV-GB-3 Conveyor Gearbox", kind: "Warning", value: 2.95, limit: 2.8, unit: "mm/s", status: "Suppressed" },
-  { id: "a13", time: "Jul 28 12:08", assetId: "p-101a", assetLabel: "P-101A Boiler Feed Pump A", kind: "Warning", value: 3.1, limit: 2.8, unit: "mm/s", status: "Acknowledged" },
-  { id: "a14", time: "Jul 28 09:33", assetId: "m-210", assetLabel: "M-210 Induction Motor", kind: "Critical", value: 4.8, limit: 4.5, unit: "mm/s", status: "Acknowledged" },
-  { id: "a15", time: "Jul 27 21:50", assetId: "gb-302", assetLabel: "GB-302 Extruder Gearbox", kind: "Warning", value: 3.2, limit: 3.0, unit: "mm/s", status: "Acknowledged" },
-  { id: "a16", time: "Jul 27 15:22", assetId: "cmp-37", assetLabel: "CMP-37 Screw Compressor", kind: "Warning", value: 3.4, limit: 3.0, unit: "mm/s", status: "Acknowledged" },
-  { id: "a17", time: "Jul 27 10:05", assetId: "p-402", assetLabel: "P-402 Slurry Recirc", kind: "Warning", value: 3.0, limit: 2.8, unit: "mm/s", status: "Acknowledged" },
-  { id: "a18", time: "Jul 26 20:41", assetId: "fn-04", assetLabel: "FN-04 Cooling Tower Fan", kind: "Warning", value: 3.5, limit: 3.2, unit: "mm/s", status: "Acknowledged" },
-  { id: "a19", time: "Jul 26 08:12", assetId: "p-101a", assetLabel: "P-101A Boiler Feed Pump A", kind: "Critical", value: 4.6, limit: 4.5, unit: "mm/s", status: "Acknowledged" },
-  { id: "a20", time: "Jul 25 16:30", assetId: "m-101a", assetLabel: "M-101A Drive Motor", kind: "Warning", value: 2.95, limit: 2.8, unit: "mm/s", status: "Suppressed" }
-];
+function dbAlertToHistory(alarm: SavedAlert): HistoryAlarm {
+  const assetKey = alarm.asset_id || "unassigned";
+  return {
+    id: alarm.id,
+    time: alarm.created_at
+      ? new Date(alarm.created_at).toLocaleString()
+      : "—",
+    assetId: assetKey,
+    assetLabel: assetKey,
+    kind: alarm.severity === "HIGH" ? "Critical" : "Warning",
+    value: 0,
+    limit: 0,
+    unit: "—",
+    status: alarm.acknowledged ? "Acknowledged" : "New",
+    detail: [alarm.title, alarm.description].filter(Boolean).join(" — ") || undefined
+  };
+}
 
 /* ========================================================================== */
 /* UI helpers                                                                 */
@@ -1704,13 +1700,9 @@ function CmmsIntegrationPanel({
             </button>
             <button
               type="button"
-              onClick={() =>
-                toast(
-                  `Simulated Work Order #WO-8942 dispatched to ${dispatchTarget} successfully.`,
-                  "success"
-                )
-              }
-              className="flex-1 min-h-[44px] rounded-xl bg-[#00E5FF]/15 border border-[#00E5FF]/40 text-[#00E5FF] text-sm font-bold cursor-pointer inline-flex items-center justify-center gap-1.5 hover:bg-[#00E5FF]/25 transition-colors"
+              disabled
+              title={`CMMS dispatch pending — no ${dispatchTarget} endpoint is connected. Use the copy button to move the payload manually.`}
+              className="flex-1 min-h-[44px] rounded-xl bg-slate-800/60 border border-slate-700 text-slate-500 text-sm font-bold cursor-not-allowed inline-flex items-center justify-center gap-1.5"
             >
               <Zap className="h-4 w-4" />
               Test CMMS Dispatch
@@ -1798,6 +1790,7 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
     try {
       const rows = await fetchAlerts({ limit: 100 });
       setDbAlerts(rows);
+      setHistory(rows.map(dbAlertToHistory));
       setDbAlertsError(null);
     } catch (err) {
       setDbAlertsError(err instanceof Error ? err.message : "Failed to load alerts");
@@ -2018,12 +2011,18 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
     );
   };
 
-  const ackAlarms = (ids: string[]) => {
-    setHistory((prev) =>
-      prev.map((h) => (ids.includes(h.id) ? { ...h, status: "Acknowledged" as const } : h))
-    );
-    setSelectedAlarms(new Set());
-    toast(`${ids.length} alarm(s) acknowledged.`, "success");
+  const ackAlarms = async (ids: string[]) => {
+    try {
+      await Promise.all(ids.map((id) => acknowledgeAlert(id)));
+      setHistory((prev) =>
+        prev.map((h) => (ids.includes(h.id) ? { ...h, status: "Acknowledged" as const } : h))
+      );
+      setSelectedAlarms(new Set());
+      await loadDbAlerts();
+      toast(`${ids.length} alarm(s) acknowledged.`, "success");
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Acknowledge failed", "error");
+    }
   };
 
   const unshelveAsset = (assetId: string) => {
@@ -2165,6 +2164,18 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
                           {alert.acknowledged ? " · acknowledged" : ""}
                         </p>
                       </div>
+                      {alert.asset_id && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigateToTab("analysis", { assetId: alert.asset_id! })
+                          }
+                          title={`Open the saved assessment for ${alert.asset_id}`}
+                          className="shrink-0 min-h-[36px] px-3 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-white hover:border-cyan-400 cursor-pointer transition-colors"
+                        >
+                          View Full Report
+                        </button>
+                      )}
                       {!alert.acknowledged && (
                         <button
                           type="button"
@@ -2240,16 +2251,16 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
       </nav>
 
       {/* TAB: Active Alarms & History — real diagnostics alerts only above; no mock history */}
-      {activeTab === "alarms" && history.length === 0 && assets.length === 0 && (
+      {activeTab === "alarms" && history.length === 0 && (
         <div className="rounded-2xl border border-slate-800 bg-[#0A0E1A] flex flex-col items-center justify-center text-center py-12 px-4">
           <Bell className="h-8 w-8 text-slate-600 mb-3" />
-          <p className="text-sm font-semibold text-slate-300">No data available</p>
+          <p className="text-sm font-semibold text-slate-300">No alarm history yet</p>
           <p className="text-xs text-slate-500 mt-1">
-            Alarm history will appear here when diagnostics generate alerts.
+            Diagnostics alerts will appear here when analyses generate threshold exceedances.
           </p>
         </div>
       )}
-      {activeTab === "alarms" && (history.length > 0 || assets.length > 0) && (
+      {activeTab === "alarms" && history.length > 0 && (
         <div className="space-y-5">
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
             <SummaryCard label="Active Critical Alarms" value={summary.critical} tone="red" icon={AlertTriangle} pulse />
@@ -2334,10 +2345,10 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
                         </span>
                       </td>
                       <td className={`p-2.5 font-mono ${h.status === "Acknowledged" ? "text-slate-500" : "text-white"}`}>
-                        {h.value} {h.unit}
+                        {h.value > 0 ? `${h.value} ${h.unit}` : h.detail || "—"}
                       </td>
                       <td className="p-2.5 font-mono text-slate-400">
-                        {h.limit} {h.unit}
+                        {h.limit > 0 ? `${h.limit} ${h.unit}` : "—"}
                       </td>
                       <td className="p-2.5">
                         <span

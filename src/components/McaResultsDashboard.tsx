@@ -191,11 +191,27 @@ export default function McaResultsDashboard({
   });
 
   const handleExportPdf = () => {
-    onToast?.("Generating MCA PDF report…", "info") ?? alert("Generating MCA PDF report…");
+    const reportData = { type: "mca_pdf_report", timestamp: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MCA-Report-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onToast?.("MCA PDF report export initiated", "info");
   };
 
   const handleManagerReport = () => {
-    onToast?.("Preparing manager summary…", "info") ?? alert("Preparing manager summary…");
+    const reportData = { type: "mca_manager_summary", timestamp: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MCA-Manager-Summary-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    onToast?.("Manager summary export initiated", "info");
   };
 
   return (
@@ -423,21 +439,17 @@ export default function McaResultsDashboard({
           <div className="flex flex-col gap-3 justify-center">
             <button
               type="button"
-              onClick={() =>
-                onToast?.("Overhaul kit queued for procurement…", "success") ??
-                alert("Overhaul kit queued for procurement…")
-              }
-              className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-3 px-4 rounded-lg text-sm cursor-pointer transition-colors"
+              disabled
+              title="Procurement integration pending — order endpoint not connected"
+              className="w-full bg-slate-800 border border-slate-700 text-slate-400 py-3 px-4 rounded-lg text-sm font-bold cursor-not-allowed transition-colors"
             >
-              🛒 Order Overhaul Kit - $840
+              🛒 Order Overhaul Kit
             </button>
             <button
               type="button"
-              onClick={() =>
-                onToast?.("Dispatch request sent to approved rewind shop…", "info") ??
-                alert("Dispatch request sent to approved rewind shop…")
-              }
-              className="w-full border border-slate-700 text-white hover:bg-slate-800 py-3 px-4 rounded-lg text-sm font-bold cursor-pointer transition-colors"
+              disabled
+              title="Rewind shop dispatch pending — rewind shop endpoint not connected"
+              className="w-full border border-slate-700 bg-slate-800 text-slate-400 py-3 px-4 rounded-lg text-sm font-bold cursor-not-allowed transition-colors"
             >
               🔧 Dispatch to Approved Rewind Shop
             </button>

@@ -148,13 +148,24 @@ export function useDiagnosticsIntelligence({
   }, [oilSamples]);
 
   // Only the record this diagnosis was actually saved as can date it.
-  const diagnosisAt = useMemo(
+  const savedRecord = useMemo(
     () =>
       savedAnalysisId
-        ? (analysisRecords.find((r) => r.id === savedAnalysisId)?.timestamp ??
-          null)
+        ? (analysisRecords.find((r) => r.id === savedAnalysisId) ?? null)
         : null,
     [analysisRecords, savedAnalysisId]
+  );
+  const diagnosisAt = savedRecord?.timestamp ?? null;
+  const rationale = savedRecord?.summary ?? null;
+
+  // The exact strings the Fusion Matrix shows, so a work order composed from
+  // readings quotes the same numbers the matrix does.
+  const evidence = useMemo(
+    () =>
+      fusion.rows
+        .filter((row) => row.hasRecord && row.detail.length > 0)
+        .map((row) => ({ label: row.label, details: row.detail })),
+    [fusion.rows]
   );
 
   const cmmsContext: CmmsPayloadContext = useMemo(
@@ -175,7 +186,9 @@ export function useDiagnosticsIntelligence({
       signOffAt: signOff?.updated_at ?? signOff?.created_at ?? null,
       recommendations,
       diagnosisId: savedAnalysisId,
-      diagnosisAt
+      diagnosisAt,
+      rationale,
+      evidence
     }),
     [
       assetTag,
@@ -190,7 +203,9 @@ export function useDiagnosticsIntelligence({
       signOff,
       recommendations,
       savedAnalysisId,
-      diagnosisAt
+      diagnosisAt,
+      rationale,
+      evidence
     ]
   );
 

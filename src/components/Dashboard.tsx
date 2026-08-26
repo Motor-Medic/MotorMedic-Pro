@@ -22,6 +22,22 @@ interface DashboardProps {
 
 type AssetFilter = "All" | "Class A" | "Class B/C";
 
+interface AssetHealthScore {
+  assetId: string;
+  assetName: string;
+  healthScore: number | null;
+  scoreComponents: string;
+}
+
+interface FleetAggregates {
+  totalAssets: number;
+  criticalCount: number;
+  warningCount: number;
+  healthyCount: number;
+  avgHealthIndex: number | null;
+  assetsWithScoresCount: number;
+}
+
 type DashboardPayload = {
   plantName: string | null;
   assetCount: number;
@@ -59,6 +75,8 @@ type DashboardPayload = {
   recentAnalyses: unknown[];
   correlationData: unknown[];
   error?: string;
+  assetHealthScores: AssetHealthScore[];
+  fleetAggregates: FleetAggregates;
 };
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
@@ -176,7 +194,8 @@ export default function Dashboard({
 
   const totalZoneAssets = zoneDistribution.reduce((s, z) => s + z.count, 0);
 
-  const fleetHealth = data?.fleetHealthScore;
+  const fleetAggregates = data?.fleetAggregates;
+  const fleetHealth = fleetAggregates?.avgHealthIndex ?? data?.fleetHealthScore;
   const healthTone =
     fleetHealth == null
       ? "text-slate-400"
@@ -253,7 +272,7 @@ export default function Dashboard({
           </p>
           <p className="text-xs text-slate-400 mt-3">
             {fleetHealth != null
-              ? "AVG(health_score) from analysis_results"
+              ? `Avg of ${data?.fleetAggregates?.assetsWithScoresCount ?? 0} scored assets`
               : "No data available"}
           </p>
         </div>
@@ -267,21 +286,30 @@ export default function Dashboard({
           </p>
           <p className="text-xs text-slate-400 mt-3">
             From assets table
-            {totalZoneAssets > 0 ? ` · ${totalZoneAssets} with health scores` : ""}
+            {data?.fleetAggregates?.assetsWithScoresCount != null
+              ? ` · ${data.fleetAggregates.assetsWithScoresCount} with health scores`
+              : ""}
           </p>
         </div>
 
         <div className={CARD}>
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">
-            Active Critical Alarms
+            Asset Status
           </p>
-          <p className="text-4xl font-bold text-red-500 leading-none">
-            {data?.highAlerts ?? 0} Critical
-          </p>
-          <p className="text-xs text-slate-400 mt-3">
-            {data?.warningAlerts ?? 0} Warnings | {data?.unacknowledgedAlerts ?? 0}{" "}
-            Unacknowledged
-          </p>
+          <div className="grid grid-cols-3 gap-2 mt-2">
+            <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-center">
+              <p className="text-2xl font-bold text-green-400">{data?.fleetAggregates?.healthyCount ?? 0}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-green-300/80">Healthy (≥75)</p>
+            </div>
+            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-center">
+              <p className="text-2xl font-bold text-yellow-400">{data?.fleetAggregates?.warningCount ?? 0}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-yellow-300/80">Warning (50–74)</p>
+            </div>
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-center">
+              <p className="text-2xl font-bold text-red-400">{data?.fleetAggregates?.criticalCount ?? 0}</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-red-300/80">Critical { "<50" }</p>
+            </div>
+          </div>
         </div>
 
         <div className={CARD}>

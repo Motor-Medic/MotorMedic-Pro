@@ -1,5 +1,6 @@
-import React, { useState } from "react";
-import { Sparkles, Zap } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Loader2, Sparkles, Zap } from "lucide-react";
+import { fetchAlerts, fetchAnalysisResults, type SavedAlert, type SavedAnalysisResult } from "../lib/analysisPersistence";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx)                                     */
@@ -30,102 +31,98 @@ const CAL_VIEWS: { id: CalView; label: string }[] = [
   { id: "list", label: "List" }
 ];
 
-interface WorkOrderPeek {
+interface CalendarEvent {
   id: string;
   title: string;
   time: string;
+  when: Date;
+  kind: "alert" | "action-plan" | "sign-off";
+  assetId: string;
   tech: string;
   tools: string;
   parts: string;
   vibration: string;
-  assetId: string;
 }
 
-const FEATURED_WO: WorkOrderPeek = {
-  id: "wo-vib-p101a",
-  title: "Boiler Feed Pump A (Vib Route)",
-  time: "8:00 AM",
-  tech: "M. Delgado (Vib LII)",
-  tools: "Accelerometer kit, laser tachometer",
-  parts: "None (inspection route)",
-  vibration: "2.8 mm/s",
-  assetId: "P-101A"
-};
+interface SignOffRow {
+  diagnosis_id: string;
+  status: string;
+  engineer_name?: string | null;
+  updated_at?: string;
+}
 
-const TECHNICIANS = [
-  {
-    name: "M. Delgado",
-    skills: "Vib LII, Laser Align",
-    hours: 36,
-    capacity: 48,
-    pct: 75,
-    bar: "bg-yellow-500",
-    certExpiry: "⚠️ Cert Expires Nov 12"
-  },
-  {
-    name: "J. Chen",
-    skills: "Ultrasound I, Oil Analysis",
-    hours: 22,
-    capacity: 48,
-    pct: 46,
-    bar: "bg-green-500",
-    certExpiry: null as string | null
-  },
-  {
-    name: "R. Okonkwo",
-    skills: "MCA, Thermography II",
-    hours: 44,
-    capacity: 48,
-    pct: 92,
-    bar: "bg-red-500",
-    certExpiry: null as string | null
+async function fetchSignOff(diagnosisId: string): Promise<SignOffRow | null> {
+  try {
+    const res = await fetch(
+      `/api/diagnosis-sign-off?diagnosisId=${encodeURIComponent(diagnosisId)}`
+    );
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.signOff ?? body.sign_off ?? null;
+  } catch {
+    return null;
   }
-];
+}
 
-const PARTS_ROWS = [
-  {
-    part: "SKF 6214 Bearing",
-    required: 2,
-    inStock: 5,
-    status: "ready" as const,
-    statusLabel: "🟢 Ready"
-  },
-  {
-    part: "Mechanical Seal Plan 53B",
-    required: 1,
-    inStock: 0,
-    status: "awaiting" as const,
-    statusLabel: "🟡 Awaiting Spare Parts"
+function buildEvents(
+  alerts: SavedAlert[],
+  analyses: SavedAnalysisResult[],
+  signOffs: Map<string, SignOffRow>
+): CalendarEvent[] {
+  const events: CalendarEvent[] = [];
+
+  for (const alert of alerts) {
+    const when = alert.created_at ? new Date(alert.created_at) : new Date();
+    events.push({
+      id: `alert-${alert.id}`,
+      title: alert.title || "Diagnostics alert",
+      time: when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+      when,
+      kind: "alert",
+      assetId: alert.asset_id || "—",
+      tech: "—",
+      tools: "—",
+      parts: "—",
+      vibration: alert.description || "—"
+    });
   }
-];
 
-const TEMPLATES = [
-  {
-    id: "monthly-vib",
-    title: "Monthly Vibration Route",
-    desc: "ISO 20816 broadband + spectral checkpoints for critical pumps."
-  },
-  {
-    id: "annual-bearing",
-    title: "Annual Bearing Inspection",
-    desc: "DE/NDE housing ΔT, ultrasound gSE, and grease purge verification."
-  },
-  {
-    id: "quarterly-align",
-    title: "Quarterly Laser Alignment",
-    desc: "Coupling soft-foot check and 2X harmonic baseline capture."
-  },
-  {
-    id: "oil-route",
-    title: "Bi-Weekly Oil Sample Route",
-    desc: "Wear metals, PQ index, and ISO cleanliness for gearbox sumps."
+  for (const rec of analyses) {
+    const when = new Date(rec.timestamp || rec.created_at || Date.now());
+    for (const [idx, recText] of (rec.recommendations || []).entries()) {
+      events.push({
+        id: `action-${rec.id}-${idx}`,
+        title: String(recText),
+        time: when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+        when,
+        kind: "action-plan",
+        assetId: rec.asset_id || "—",
+        tech: "From saved diagnosis",
+        tools: rec.analysis_type || "—",
+        parts: "—",
+        vibration: rec.primary_fault || "—"
+      });
+    }
+    const signOff = signOffs.get(rec.id);
+    if (signOff && signOff.status !== "pending") {
+      const signedWhen = signOff.updated_at ? new Date(signOff.updated_at) : when;
+      events.push({
+        id: `signoff-${rec.id}`,
+        title: `Engineer sign-off (${signOff.status})`,
+        time: signedWhen.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+        when: signedWhen,
+        kind: "sign-off",
+        assetId: rec.asset_id || "—",
+        tech: signOff.engineer_name || "—",
+        tools: "Certified review",
+        parts: "—",
+        vibration: rec.primary_fault || "—"
+      });
+    }
   }
-];
 
-const MONTH_DAYS = Array.from({ length: 35 }, (_, i) => {
-  const day = i - 4; // mock Aug 2026 starting mid-week
-  return day >= 1 && day <= 31 ? day : null;
-});
+  return events.sort((a, b) => b.when.getTime() - a.when.getTime());
+}
 
 const tabBtn = (active: boolean) =>
   `px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
@@ -143,7 +140,66 @@ export default function MaintenanceCalendar({
   const [activeCalTab, setActiveCalTab] = useState<CalTab>(1);
   const [calView, setCalView] = useState<CalView>("month");
   const [groupBy, setGroupBy] = useState<GroupBy>("asset");
-  const [selectedWO, setSelectedWO] = useState<WorkOrderPeek | null>(null);
+  const [selectedWO, setSelectedWO] = useState<CalendarEvent | null>(null);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void Promise.all([
+      fetchAlerts({ limit: 100 }).catch(() => [] as SavedAlert[]),
+      fetchAnalysisResults({ limit: 50 }).catch(() => [] as SavedAnalysisResult[])
+    ])
+      .then(async ([alerts, analyses]) => {
+        const signOffEntries = await Promise.all(
+          analyses.slice(0, 25).map(async (rec) => {
+            const row = await fetchSignOff(rec.id);
+            return row ? ([rec.id, row] as const) : null;
+          })
+        );
+        const signOffs = new Map(
+          signOffEntries.filter((e): e is [string, SignOffRow] => e != null)
+        );
+        if (!cancelled) {
+          setEvents(buildEvents(alerts, analyses, signOffs));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const monthLabel = useMemo(() => {
+    const d = events[0]?.when ?? new Date();
+    return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }, [events]);
+
+  const monthDays = useMemo(() => {
+    const anchor = events[0]?.when ?? new Date();
+    const year = anchor.getFullYear();
+    const month = anchor.getMonth();
+    const first = new Date(year, month, 1);
+    const startPad = first.getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    return Array.from({ length: 35 }, (_, i) => {
+      const day = i - startPad + 1;
+      return day >= 1 && day <= daysInMonth ? day : null;
+    });
+  }, [events]);
+
+  const eventsForDay = (day: number) => {
+    const anchor = events[0]?.when ?? new Date();
+    return events.filter(
+      (ev) =>
+        ev.when.getFullYear() === anchor.getFullYear() &&
+        ev.when.getMonth() === anchor.getMonth() &&
+        ev.when.getDate() === day
+    );
+  };
 
   return (
     <div className="w-full min-h-full bg-slate-950 text-white px-4 py-6 md:px-6">
@@ -156,30 +212,30 @@ export default function MaintenanceCalendar({
             </p>
             <div className="flex flex-wrap gap-2">
               <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
-                <span className="text-slate-300">WORK ORDERS: 31 Total </span>
-                <span className="text-red-500 font-semibold">(2 Overdue)</span>
+                <span className="text-slate-300">
+                  SCHEDULED EVENTS: {loading ? "…" : events.length}
+                </span>
               </div>
-              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-green-400 font-semibold">
-                PM RATIO: 80% Goal (Active)
-              </div>
-              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-yellow-500 font-semibold">
-                DOWNTIME COST: $116,300 Est.
+              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-400">
+                From saved alerts, action plans &amp; sign-offs
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => alert("Optimizing schedule with AI constraint solver…")}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-500/40 text-cyan-400 text-xs font-semibold cursor-pointer hover:bg-cyan-500/10 transition-colors"
+              disabled
+              title="AI optimizer not yet connected — schedule optimizer endpoint not available"
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-400 text-xs font-semibold cursor-not-allowed hover:bg-slate-700 transition-colors"
             >
               <Zap className="h-3.5 w-3.5" />
               Optimize Schedule
             </button>
             <button
               type="button"
-              onClick={() => alert("Opening New Work Order form…")}
-              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold cursor-pointer transition-colors"
+              disabled
+              title="Work order form integration pending — WO form endpoint not connected"
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 text-slate-400 text-xs font-semibold cursor-not-allowed hover:bg-slate-700 transition-colors"
             >
               + New Work Order
             </button>
@@ -202,7 +258,24 @@ export default function MaintenanceCalendar({
       </div>
 
       {/* ===== TAB 1: SCHEDULE & DISPATCH ===== */}
-      {activeCalTab === 1 && (
+      {activeCalTab === 1 && loading && (
+        <div className={`${CARD} mb-6 flex items-center gap-2 text-sm text-slate-400`}>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading scheduled events…
+        </div>
+      )}
+
+      {activeCalTab === 1 && !loading && events.length === 0 && (
+        <section className={`${CARD} mb-6 text-center py-16 px-4`}>
+          <p className="text-sm font-semibold text-slate-300 mb-1">No maintenance events on file.</p>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            Saved diagnostics alerts, engineer sign-offs, and action-plan recommendations will
+            appear here once recorded.
+          </p>
+        </section>
+      )}
+
+      {activeCalTab === 1 && !loading && events.length > 0 && (
         <>
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-6">
             <div className="flex flex-wrap gap-2">
@@ -233,7 +306,7 @@ export default function MaintenanceCalendar({
           {calView === "month" && (
             <div className={`${CARD} mb-6`}>
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-base font-bold text-white">August 2026</h3>
+                <h3 className="text-base font-bold text-white">{monthLabel}</h3>
                 <p className="text-xs text-slate-400">
                   Grouped by {groupBy === "asset" ? "Asset Route" : "Technician"}
                 </p>
@@ -249,7 +322,7 @@ export default function MaintenanceCalendar({
                 ))}
               </div>
               <div className="grid grid-cols-7 gap-1">
-                {MONTH_DAYS.map((day, idx) => (
+                {monthDays.map((day, idx) => (
                   <div
                     key={idx}
                     className="min-h-[88px] rounded-lg border border-white/10 bg-slate-950/50 p-1.5"
@@ -257,20 +330,18 @@ export default function MaintenanceCalendar({
                     {day && (
                       <>
                         <p className="text-[10px] text-slate-500 mb-1">{day}</p>
-                        {day === 4 && (
+                        {eventsForDay(day).slice(0, 2).map((ev) => (
                           <button
+                            key={ev.id}
                             type="button"
-                            onClick={() => setSelectedWO(FEATURED_WO)}
-                            className="w-full text-left rounded-md border border-red-500/40 bg-red-500/10 p-1.5 cursor-pointer hover:border-cyan-500/50 transition-colors"
+                            onClick={() => setSelectedWO(ev)}
+                            className="w-full text-left rounded-md border border-cyan-500/40 bg-cyan-500/10 p-1.5 mb-1 cursor-pointer hover:border-cyan-400/60 transition-colors"
                           >
-                            <p className="text-[10px] font-bold text-white leading-tight">
-                              {FEATURED_WO.time} — {FEATURED_WO.title}
+                            <p className="text-[10px] font-bold text-white leading-tight truncate">
+                              {ev.time} — {ev.title}
                             </p>
-                            <span className="inline-flex mt-1 text-[9px] font-bold text-red-400">
-                              🔴 Sensor Triggered
-                            </span>
                           </button>
-                        )}
+                        ))}
                       </>
                     )}
                   </div>
@@ -282,85 +353,89 @@ export default function MaintenanceCalendar({
           {calView === "week" && (
             <div className={`${CARD} mb-6`}>
               <h3 className="text-base font-bold text-white mb-4">Week View</h3>
-              <div className="grid grid-cols-1 md:grid-cols-7 gap-2">
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d, i) => (
-                  <div
-                    key={d}
-                    className="rounded-lg border border-white/10 bg-slate-950/50 p-3 min-h-[120px]"
-                  >
-                    <p className="text-[10px] font-bold text-slate-500 mb-2">{d}</p>
-                    {i === 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedWO(FEATURED_WO)}
-                        className="w-full text-left text-[10px] rounded border border-red-500/40 bg-red-500/10 p-2 cursor-pointer"
-                      >
-                        8:00 AM Vib Route
-                        <span className="block text-red-400 mt-1">🔴 Sensor Triggered</span>
-                      </button>
-                    )}
-                  </div>
+              <ul className="space-y-2">
+                {events.slice(0, 14).map((ev) => (
+                  <li key={ev.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedWO(ev)}
+                      className="w-full text-left rounded-lg border border-white/10 bg-slate-950/50 p-3 hover:border-cyan-500/40 cursor-pointer"
+                    >
+                      <p className="text-xs text-slate-400">
+                        {ev.when.toLocaleDateString()} · {ev.time}
+                      </p>
+                      <p className="text-sm font-semibold text-white mt-0.5">{ev.title}</p>
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           )}
 
           {calView === "gantt" && (
             <div className={`${CARD} mb-6 overflow-x-auto`}>
               <h3 className="text-base font-bold text-white mb-4">
-                Gantt — by {groupBy === "asset" ? "Asset Route" : "Technician"}
+                Gantt — by {groupBy === "asset" ? "Asset" : "Technician"}
               </h3>
               <div className="min-w-[640px] space-y-3">
-                {(groupBy === "asset"
-                  ? ["P-101A Vib Route", "GB-302 Oil Sample", "MCC-12 IR Scan"]
-                  : ["M. Delgado", "J. Chen", "R. Okonkwo"]
-                ).map((row, i) => (
-                  <div key={row} className="flex items-center gap-3">
-                    <p className="w-40 shrink-0 text-xs text-slate-300 truncate">{row}</p>
-                    <div className="flex-1 h-8 rounded bg-slate-950 border border-white/10 relative">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedWO(FEATURED_WO)}
-                        className="absolute top-1 bottom-1 rounded bg-cyan-500/30 border border-cyan-500/50 cursor-pointer hover:bg-cyan-500/40"
-                        style={{ left: `${10 + i * 18}%`, width: "22%" }}
-                      />
+                {[...new Set(events.map((e) => (groupBy === "asset" ? e.assetId : e.tech)))].map(
+                  (row, i) => (
+                    <div key={row} className="flex items-center gap-3">
+                      <p className="w-40 shrink-0 text-xs text-slate-300 truncate">{row}</p>
+                      <div className="flex-1 h-8 rounded bg-slate-950 border border-white/10 relative">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const match = events.find((e) =>
+                              groupBy === "asset" ? e.assetId === row : e.tech === row
+                            );
+                            if (match) setSelectedWO(match);
+                          }}
+                          className="absolute top-1 bottom-1 rounded bg-cyan-500/30 border border-cyan-500/50 cursor-pointer hover:bg-cyan-500/40"
+                          style={{ left: `${10 + i * 12}%`, width: "18%" }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                )}
               </div>
             </div>
           )}
 
           {calView === "list" && (
             <div className={`${CARD} mb-6`}>
-              <h3 className="text-base font-bold text-white mb-4">Work Order List</h3>
+              <h3 className="text-base font-bold text-white mb-4">Event List</h3>
               <div className="w-full overflow-x-auto rounded-lg border border-white/10">
                 <table className="w-full text-sm min-w-[640px]">
                   <thead>
                     <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
-                      <th className="px-3 py-2 font-bold">Time</th>
-                      <th className="px-3 py-2 font-bold">Work Order</th>
-                      <th className="px-3 py-2 font-bold">Tech</th>
-                      <th className="px-3 py-2 font-bold">Status</th>
+                      <th className="px-3 py-2 font-bold">When</th>
+                      <th className="px-3 py-2 font-bold">Event</th>
+                      <th className="px-3 py-2 font-bold">Asset</th>
+                      <th className="px-3 py-2 font-bold">Type</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-t border-white/10">
-                      <td className="px-3 py-2.5 text-slate-300">{FEATURED_WO.time}</td>
-                      <td className="px-3 py-2.5">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedWO(FEATURED_WO)}
-                          className="text-white font-medium hover:text-cyan-400 cursor-pointer"
-                        >
-                          {FEATURED_WO.title}
-                        </button>
-                      </td>
-                      <td className="px-3 py-2.5 text-slate-400">{FEATURED_WO.tech}</td>
-                      <td className="px-3 py-2.5 text-red-400 text-xs font-bold">
-                        🔴 Sensor Triggered
-                      </td>
-                    </tr>
+                    {events.map((ev) => (
+                      <tr key={ev.id} className="border-t border-white/10">
+                        <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">
+                          {ev.when.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedWO(ev)}
+                            className="text-white font-medium hover:text-cyan-400 cursor-pointer text-left"
+                          >
+                            {ev.title}
+                          </button>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-400">{ev.assetId}</td>
+                        <td className="px-3 py-2.5 text-slate-400 text-xs capitalize">
+                          {ev.kind.replace("-", " ")}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -405,9 +480,7 @@ export default function MaintenanceCalendar({
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">
                     Live Sensor Health
                   </p>
-                  <p className="text-sm text-red-400 font-semibold">
-                    Vibration: {selectedWO.vibration} 🔴
-                  </p>
+                  <p className="text-sm text-slate-300">{selectedWO.vibration}</p>
                   <button
                     type="button"
                     onClick={() => onNavigateToTrends?.(selectedWO.assetId)}
@@ -424,188 +497,31 @@ export default function MaintenanceCalendar({
 
       {/* ===== TAB 2: RESOURCE & SKILLS ===== */}
       {activeCalTab === 2 && (
-        <>
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-4">
-              Technician Workload Heatmap
-            </h3>
-            <div className="space-y-4">
-              {TECHNICIANS.map((tech) => (
-                <div key={tech.name}>
-                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-semibold text-white">
-                        {tech.name}{" "}
-                        <span className="text-slate-400 font-normal">({tech.skills})</span>
-                      </p>
-                      {tech.certExpiry && (
-                        <span className="text-xs text-yellow-500 font-semibold">
-                          {tech.certExpiry}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-400">
-                      {tech.hours}h / {tech.capacity}h Assigned
-                    </p>
-                  </div>
-                  <div className="w-full h-2 bg-slate-800 rounded">
-                    <div
-                      className={`h-2 ${tech.bar} rounded`}
-                      style={{ width: `${tech.pct}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-3">Skill-to-WO Lockout</h3>
-            <div className="rounded-lg border border-white/10 bg-slate-950/60 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-white">
-                  WO-4481 — P-101A High-Freq Bearing Diagnostics
-                </p>
-                <p className="text-xs text-slate-400 mt-1">
-                  Attempted assign: R. Okonkwo (MCA / Thermography)
-                </p>
-              </div>
-              <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-slate-300">
-                Status: 🔒 Locked (Requires Vibration LII)
-              </span>
-            </div>
-          </div>
-        </>
+        <section className={`${CARD} mb-6 text-center py-16 px-4`}>
+          <p className="text-sm font-semibold text-slate-300 mb-1">No technician workload data.</p>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            Resource scheduling requires work-order assignees from your CMMS. Events on the Schedule
+            tab show saved alerts and action plans only.
+          </p>
+        </section>
       )}
 
-      {/* ===== TAB 3: PARTS & DOWNTIME ===== */}
       {activeCalTab === 3 && (
-        <>
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-4">
-              Kitting &amp; Parts Reservation
-            </h3>
-            <div className="w-full overflow-x-auto rounded-lg border border-white/10">
-              <table className="w-full text-sm min-w-[560px]">
-                <thead>
-                  <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
-                    <th className="px-3 py-2 font-bold">Part</th>
-                    <th className="px-3 py-2 font-bold">Required</th>
-                    <th className="px-3 py-2 font-bold">In Stock</th>
-                    <th className="px-3 py-2 font-bold">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {PARTS_ROWS.map((row) => (
-                    <tr key={row.part} className="border-t border-white/10">
-                      <td className="px-3 py-2.5 text-white font-medium">{row.part}</td>
-                      <td className="px-3 py-2.5 text-slate-300">{row.required}</td>
-                      <td className="px-3 py-2.5 text-slate-300">{row.inStock}</td>
-                      <td className="px-3 py-2.5">
-                        <span
-                          className={`inline-flex px-2 py-0.5 rounded text-[10px] font-bold ${
-                            row.status === "ready"
-                              ? "bg-green-500/15 border border-green-500/30 text-green-400"
-                              : "bg-yellow-500/15 border border-yellow-500/30 text-yellow-400"
-                          }`}
-                        >
-                          {row.statusLabel}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-1">
-              Production Schedule Collision Detector
-            </h3>
-            <p className="text-xs text-slate-400 mb-4">
-              Planned Downtime (61h) overlapping with Production Run
-            </p>
-            <div className="relative h-14 rounded-lg border border-white/10 bg-slate-950 overflow-hidden mb-4">
-              <div
-                className="absolute top-2 bottom-2 left-[8%] w-[55%] rounded bg-blue-500/30 border border-blue-400/40"
-                title="Production Run"
-              />
-              <div
-                className="absolute top-3 bottom-3 left-[35%] w-[40%] rounded bg-yellow-500/40 border border-yellow-400/50"
-                title="Planned Downtime 61h"
-              />
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <span className="text-[10px] font-bold text-yellow-300 bg-slate-950/80 px-2 py-0.5 rounded border border-yellow-500/30">
-                  Collision Zone
-                </span>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-3 text-[10px] text-slate-400 mb-4">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-blue-500/60" /> Production Run
-              </span>
-              <span className="inline-flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm bg-yellow-500/70" /> Planned Downtime (61h)
-              </span>
-            </div>
-            <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
-              <p className="text-sm font-semibold text-yellow-400">
-                Financial Exposure: $14,500 (Planned) + $45,000 (Unplanned Penalty Risk)
-              </p>
-            </div>
-          </div>
-        </>
+        <section className={`${CARD} mb-6 text-center py-16 px-4`}>
+          <p className="text-sm font-semibold text-slate-300 mb-1">No parts reservations on file.</p>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            Parts kitting links to work orders once CMMS integration is connected.
+          </p>
+        </section>
       )}
 
-      {/* ===== TAB 4: PM/PdM TEMPLATE STUDIO ===== */}
       {activeCalTab === 4 && (
-        <>
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-2">
-              Condition-Based Trigger Rules
-            </h3>
-            <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-4 flex items-start gap-3">
-              <Sparkles className="h-4 w-4 text-cyan-400 shrink-0 mt-0.5" />
-              <p className="text-sm text-slate-200">
-                <span className="font-mono text-cyan-300">
-                  IF gSE &gt; 3.5 OR Bearing Temp &gt; 85°C
-                </span>
-                <span className="text-slate-400"> → </span>
-                <span className="font-semibold text-white">
-                  Auto-generate Priority 1 PdM Work Order
-                </span>
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            {TEMPLATES.map((tpl) => (
-              <div key={tpl.id} className={CARD}>
-                <h4 className="text-base font-bold text-white mb-2">{tpl.title}</h4>
-                <p className="text-xs text-slate-400 mb-4 leading-relaxed">{tpl.desc}</p>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => alert(`Generating work order from template: ${tpl.title}`)}
-                    className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold cursor-pointer transition-colors"
-                  >
-                    Generate Work Order
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      alert(`Executing immediate route from template: ${tpl.title}`)
-                    }
-                    className="px-3 py-1.5 rounded-lg border border-cyan-500/40 text-cyan-400 text-xs font-semibold cursor-pointer hover:bg-cyan-500/10 transition-colors"
-                  >
-                    ⚡ Execute Immediate Route
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
+        <section className={`${CARD} mb-6 text-center py-16 px-4`}>
+          <p className="text-sm font-semibold text-slate-300 mb-1">No PM/PdM templates saved.</p>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            Template studio will populate when recurring routes are configured in your CMMS.
+          </p>
+        </section>
       )}
     </div>
   );

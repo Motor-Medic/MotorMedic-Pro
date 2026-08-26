@@ -48,6 +48,7 @@ import {
   type EquipUnit,
   type EquipmentStore
 } from "../data/equipmentDb";
+import { navigateToTab } from "../navigation";
 import { useToast } from "./Toast";
 import ComponentKinematicsSpecsForm, {
   type CbmKinematics
@@ -3564,6 +3565,23 @@ export default function EquipmentExplorer({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {isAsset && summaryEntity.asset ? (
+            <button
+              type="button"
+              onClick={() =>
+                navigateToTab("analysis", {
+                  // Diagnose keys saved records on the tag, falling back to id.
+                  assetId: String(
+                    summaryEntity.asset!.tag || summaryEntity.asset!.id || ""
+                  )
+                })
+              }
+              className="min-h-[40px] px-3.5 rounded-xl border border-cyan-500/45 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+            >
+              <FileText className="h-4 w-4" />
+              View Full Report
+            </button>
+          ) : null}
           {canEditMasterSpecs ? (
             <button
               type="button"
@@ -4005,19 +4023,9 @@ export default function EquipmentExplorer({
                   <td className="px-3 py-2.5 align-middle">
                     <button
                       type="button"
-                      onClick={() =>
-                        toast(
-                          row.monitored
-                            ? `Manage ${row.technology} monitoring…`
-                            : `Enable ${row.technology} monitoring…`,
-                          "info"
-                        )
-                      }
-                      className={`min-h-[30px] px-2.5 rounded-lg text-[11px] font-bold cursor-pointer transition-colors border ${
-                        row.monitored
-                          ? "border-[#FFC700]/40 bg-[#FFC700]/10 text-[#FFC700] hover:bg-[#FFC700]/20"
-                          : "border-slate-700 bg-slate-900 text-slate-500 hover:border-slate-600 hover:text-slate-300"
-                      }`}
+                      disabled
+                      title="Monitoring configuration is not built yet"
+                      className="min-h-[30px] px-2.5 rounded-lg text-[11px] font-bold cursor-not-allowed transition-colors border border-slate-700 bg-slate-900 text-slate-500"
                     >
                       {row.monitored ? "Manage" : "Enable"}
                     </button>
@@ -4026,14 +4034,9 @@ export default function EquipmentExplorer({
                     {row.monitored ? (
                       <button
                         type="button"
-                        onClick={() =>
-                          toast(
-                            `Viewing ${row.technology} collection data / waveforms…`,
-                            "info"
-                          )
-                        }
-                        className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900 text-base leading-none cursor-pointer hover:border-[#FFC700]/50 hover:bg-[#FFC700]/10 transition-colors inline-flex items-center justify-center"
-                        title="View raw collection data / waveforms"
+                        disabled
+                        className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900 text-base leading-none cursor-not-allowed opacity-50 transition-colors inline-flex items-center justify-center"
+                        title="Raw collection data / waveform viewer is not built yet"
                         aria-label={`View ${row.technology} collection data`}
                       >
                         ⏳
@@ -4441,9 +4444,9 @@ export default function EquipmentExplorer({
                       {fb.hasImage ? (
                         <button
                           type="button"
-                          onClick={() => toast("Opening attachment…", "info")}
-                          className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900 text-slate-300 cursor-pointer hover:border-[#FFC700]/50 inline-flex items-center justify-center"
-                          title="View image attachment"
+                          disabled
+                          className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900 text-slate-500 cursor-not-allowed opacity-50 inline-flex items-center justify-center"
+                          title="Attachment viewer is not built yet"
                           aria-label="View image attachment"
                         >
                           <ImageIcon className="h-4 w-4" />
@@ -4825,17 +4828,6 @@ export default function EquipmentExplorer({
                   >
                     <Printer className="h-3.5 w-3.5" />
                     <span className="hidden sm:inline">Print</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toast("Fault Entry Report PDF download started.", "success")
-                    }
-                    className="min-h-[36px] px-3 rounded-xl border border-slate-600 bg-slate-800/80 text-slate-200 text-xs font-bold cursor-pointer hover:border-slate-400 hover:bg-slate-700 transition-colors inline-flex items-center gap-1.5"
-                    title="Download PDF"
-                  >
-                    <Download className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline">Download PDF</span>
                   </button>
                   <button
                     type="button"

@@ -11,6 +11,13 @@
  */
 
 import type { SignOffStatus } from "./signOff";
+import {
+  composeConfidenceText,
+  composePriorityText,
+  composeWorkOrderDescription,
+  type EvidenceGroup,
+  type PriorityCode
+} from "./workOrderText";
 
 export type CmmsTargetId =
   | "sap"
@@ -54,6 +61,16 @@ export interface CmmsPayloadContext {
   diagnosisAt?: string | null;
   /** Parts drawn from a saved BOM. Empty means the field is omitted, never guessed. */
   requiredParts?: string[];
+  /**
+   * Stored rationale for the diagnosis. Appended to the description verbatim;
+   * never synthesised when absent.
+   */
+  rationale?: string | null;
+  /**
+   * Measured readings per technology, exactly as the Fusion Matrix renders
+   * them. Used to compose the description when no diagnosis has been saved.
+   */
+  evidence?: EvidenceGroup[];
 }
 
 /**
@@ -103,18 +120,49 @@ export interface CmmsField {
   multiline?: boolean;
 }
 
-/** Priority code per system, indexed by severity. */
-const PRIORITY: Record<CmmsTargetId, Record<DiagnosisSeverity, string>> = {
+/**
+ * Priority per system, indexed by severity. Each entry carries the code the
+ * system stores and the label its planners read, so the rendered field can
+ * show both alongside the reason the severity earned it.
+ */
+export const PRIORITY: Record<
+  CmmsTargetId,
+  Record<DiagnosisSeverity, PriorityCode>
+> = {
   // SAP priority scale: 1 = very high … 4 = low
-  sap: { CRITICAL: "1", ANOMALY: "2", NORMAL: "4" },
+  sap: {
+    CRITICAL: { code: "1", label: "Very High" },
+    ANOMALY: { code: "2", label: "High" },
+    NORMAL: { code: "4", label: "Low" }
+  },
   // Maximo WOPRIORITY: 1 = highest … 5 = lowest
-  maximo: { CRITICAL: "1", ANOMALY: "3", NORMAL: "5" },
-  maintainx: { CRITICAL: "High", ANOMALY: "Medium", NORMAL: "Low" },
-  fiix: { CRITICAL: "Critical", ANOMALY: "Medium", NORMAL: "Low" },
+  maximo: {
+    CRITICAL: { code: "1", label: "Highest" },
+    ANOMALY: { code: "3", label: "Medium" },
+    NORMAL: { code: "5", label: "Lowest" }
+  },
+  maintainx: {
+    CRITICAL: { code: "High", label: "High" },
+    ANOMALY: { code: "Medium", label: "Medium" },
+    NORMAL: { code: "Low", label: "Low" }
+  },
+  fiix: {
+    CRITICAL: { code: "Critical", label: "Critical" },
+    ANOMALY: { code: "Medium", label: "Medium" },
+    NORMAL: { code: "Low", label: "Low" }
+  },
   // Oracle EAM priority: 1 = emergency … 5 = routine
-  oracle_eam: { CRITICAL: "1", ANOMALY: "3", NORMAL: "5" },
+  oracle_eam: {
+    CRITICAL: { code: "1", label: "Emergency" },
+    ANOMALY: { code: "3", label: "Scheduled" },
+    NORMAL: { code: "5", label: "Routine" }
+  },
   // Custom CMMS uses generic text priorities
-  custom: { CRITICAL: "High", ANOMALY: "Medium", NORMAL: "Low" }
+  custom: {
+    CRITICAL: { code: "High", label: "High" },
+    ANOMALY: { code: "Medium", label: "Medium" },
+    NORMAL: { code: "Low", label: "Low" }
+  }
 };
 
 /** Work order type / order type per system. */
@@ -161,6 +209,37 @@ function horizonText(ctx: CmmsPayloadContext): string | null {
   return `~${Math.round(ctx.horizonHours).toLocaleString()} ${basis} hours${driver}`;
 }
 
+/** Tiered description: saved diagnosis, else measured exceedances, else none. */
+function describe(ctx: CmmsPayloadContext): string {
+  return composeWorkOrderDescription({
+    assetTag: ctx.assetTag,
+    component: ctx.component,
+    faultTitle: ctx.faultTitle,
+    severity: ctx.severity,
+    rationale: ctx.rationale,
+    evidence: ctx.evidence
+  }).text;
+}
+
+function confidenceOf(ctx: CmmsPayloadContext): string {
+  return composeConfidenceText({
+    storedConfidencePercent: ctx.confidencePercent,
+    fusionAggregate: ctx.corroborationPercent
+  });
+}
+
+/**
+ * One-line form for short-text and title fields. Takes the leading sentence
+ * rather than a blind slice so a truncated field never ends mid-measurement.
+ */
+function summaryLine(description: string, maxLength: number): string {
+  const firstLine = description.split("\n")[0].trim();
+  if (firstLine.length <= maxLength) return firstLine;
+  const cut = firstLine.slice(0, maxLength);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
+}
+
 function corroborationText(ctx: CmmsPayloadContext): string {
   if (ctx.corroborationPercent == null) {
     return `Single-domain diagnosis - cross-validation pending (${ctx.technologiesWithData.join(", ") || "no technologies"})`;
@@ -202,12 +281,11 @@ export function buildCmmsFieldList(
   target: CmmsTargetId,
   ctx: CmmsPayloadContext
 ): CmmsField[] {
-  const priority = PRIORITY[target][ctx.severity];
+  const priority = composePriorityText(PRIORITY[target][ctx.severity], ctx.severity);
   const workType = WORK_TYPE[target][ctx.severity];
-  const description = `${ctx.faultTitle} detected on ${ctx.assetTag} ${ctx.component}`.trim();
+  const description = describe(ctx);
   const horizon = horizonText(ctx);
-  const confidence =
-    ctx.confidencePercent != null ? `${ctx.confidencePercent}%` : null;
+  const confidence = confidenceOf(ctx);
   const started = malfunctionStart(ctx);
   const parts = (ctx.requiredParts ?? []).join(" | ");
   const steps = ctx.recommendations.join(" | ");
@@ -217,7 +295,7 @@ export function buildCmmsFieldList(
       return fields([
         ["ORDER_TYPE", "Notification Type", workType],
         ["EQUNR", "Equipment ID", ctx.assetTag],
-        ["SHORT_TEXT", "Short Text", description.slice(0, 40)],
+        ["SHORT_TEXT", "Short Text", summaryLine(description, 40)],
         ["MALFUNCTION_START", "Malfunction Start", started],
         ["PRIORITY", "Priority", priority],
         ["MN_WK_CTR", "Main Work Center", "PDM"],
@@ -261,7 +339,7 @@ export function buildCmmsFieldList(
         ["category", "Category", workType],
         ["asset", "Asset", ctx.assetTag],
         ["location", "Location", ctx.component],
-        ["title", "Title", description.slice(0, 60)],
+        ["title", "Title", summaryLine(description, 60)],
         ["dueDate", "Reported At", started],
         ["priority", "Priority", priority],
         ["status", "Status", ctx.signOffStatus === "approved" ? "Open" : "On Hold"],
@@ -286,7 +364,7 @@ export function buildCmmsFieldList(
         ["strPriority", "Priority", priority],
         ["strStatus", "Status", ctx.signOffStatus === "approved" ? "Open" : "Awaiting Approval"],
         ["strFailureCode", "Failure Code", ctx.faultTitle],
-        ["intConfidence", "Diagnosis Confidence", ctx.confidencePercent],
+        ["intConfidence", "Diagnosis Confidence", confidence],
         ["intHealthScore", "Health Score", ctx.healthScore],
         ["strFailureHorizon", "Failure Horizon", horizon],
         ["strCorroboration", "Corroboration", corroborationText(ctx)],
@@ -311,7 +389,7 @@ export function buildCmmsFieldList(
         ],
         ["FAILURE_CODE", "Failure Code", ctx.faultTitle],
         ["OWNING_DEPARTMENT", "Owning Department", "RELIABILITY"],
-        ["CONFIDENCE_PCT", "Diagnosis Confidence", ctx.confidencePercent],
+        ["CONFIDENCE_PCT", "Diagnosis Confidence", confidence],
         ["HEALTH_SCORE", "Health Score", ctx.healthScore],
         ["FAILURE_HORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
@@ -352,11 +430,15 @@ export function buildCustomCmmsFields(
     return buildDefaultCustomFields(ctx);
   }
 
-  const priority = template.priorityMapping?.[ctx.severity] ?? "Medium";
+  const mapped = template.priorityMapping?.[ctx.severity];
+  const priority = composePriorityText(
+    mapped ? { code: mapped, label: mapped } : PRIORITY.custom[ctx.severity],
+    ctx.severity
+  );
   const workType = template.workTypeMapping?.[ctx.severity] ?? "Corrective";
-  const description = `${ctx.faultTitle} detected on ${ctx.assetTag} ${ctx.component}`.trim();
+  const description = describe(ctx);
   const horizon = horizonText(ctx);
-  const confidence = ctx.confidencePercent != null ? `${ctx.confidencePercent}%` : null;
+  const confidence = confidenceOf(ctx);
   const started = malfunctionStart(ctx);
   const parts = (ctx.requiredParts ?? []).join(" | ");
   const steps = ctx.recommendations.join(" | ");
@@ -396,11 +478,11 @@ export function buildCustomCmmsFields(
  * Default custom CMMS fields when no template is loaded.
  */
 function buildDefaultCustomFields(ctx: CmmsPayloadContext): CmmsField[] {
-  const priority = PRIORITY.custom[ctx.severity];
+  const priority = composePriorityText(PRIORITY.custom[ctx.severity], ctx.severity);
   const workType = WORK_TYPE.custom[ctx.severity];
-  const description = `${ctx.faultTitle} detected on ${ctx.assetTag} ${ctx.component}`.trim();
+  const description = describe(ctx);
   const horizon = horizonText(ctx);
-  const confidence = ctx.confidencePercent != null ? `${ctx.confidencePercent}%` : null;
+  const confidence = confidenceOf(ctx);
   const started = malfunctionStart(ctx);
   const parts = (ctx.requiredParts ?? []).join(" | ");
   const steps = ctx.recommendations.join(" | ");

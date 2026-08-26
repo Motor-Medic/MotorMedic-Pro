@@ -27,6 +27,14 @@ import {
   YAxis
 } from "recharts";
 import { useToast } from "./Toast";
+import type { SpectrumPoint } from "../types/vibration";
+import {
+  DEEP_FFT_DATA,
+  DEEP_FFT_DATA_HF,
+  TWF_DATA,
+  ENVELOPE_DATA,
+  SAMPLE_WATERMARK,
+} from "../lib/diagnostics/sampleSpectralData";
 import {
   BASE_COMPONENT_TYPES,
   emptySpecsFor,
@@ -36,6 +44,8 @@ import {
   SpecTabId
 } from "./CreateComponentModal";
 import { navigateToTab } from "../navigation";
+import { getStockStatus, usePartsInventory } from "./PartsInventory";
+import { printPickingTicket } from "../lib/printPickingTicket";
 import {
   getActiveDbSelection,
   getFlatEquipment,
@@ -63,8 +73,10 @@ import {
 } from "../lib/spectrumChartRegions";
 import {
   saveAnalysisResult,
-  setAnalysisBaseline
+  setAnalysisBaseline,
+  fetchLatestMcaAnalysis
 } from "../lib/analysisPersistence";
+import type { McaOperatorSnapshot } from "../lib/mca/mcaPersistence";
 import {
   extractVibrationDataFromImage,
   type ExtractedVibrationData
@@ -119,9 +131,7 @@ import UltrasoundInputAccordions, {
   type UltrasoundInputSnapshot
 } from "./UltrasoundInputAccordions";
 import UltrasoundResultsDashboard from "./UltrasoundResultsDashboard";
-import McaInputAccordions, {
-  type McaOperatorSnapshot
-} from "./McaInputAccordions";
+import McaInputAccordions from "./McaInputAccordions";
 import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
 import { calculateGroundwallInsulation } from "../lib/mca/groundwallCalculator";
 import {
@@ -167,6 +177,12 @@ interface DiagnoseProps {
   onNavigateToCalendar?: (assetLabel?: string) => void;
 }
 
+/** Part numbers staged for a bearing correction; quantities are per repair. */
+const STAGED_REPAIR_KIT: { partNumber: string; quantity: number }[] = [
+  { partNumber: "SKF-6308-C3", quantity: 2 },
+  { partNumber: "ALN-SHIM-KIT", quantity: 1 }
+];
+
 type Technology = "vibration" | "ir" | "ultrasound" | "mca" | "oil";
 type DataSource = "upload" | "latest" | "realtime" | "manual";
 type UnitMode = "velocity" | "acceleration" | "displacement";
@@ -203,12 +219,6 @@ interface TechCard {
 interface UploadedFileMeta {
   name: string;
   preview?: string;
-}
-
-interface SpectrumPoint {
-  hz: number;
-  amp: number;
-  baseline: number;
 }
 
 interface FaultAnnotation {
@@ -1413,51 +1423,6 @@ const IMMEDIATE_ACTIONS = [
   "Perform precision field balance in Plane 1 if 1X peak persists."
 ];
 
-/** Deep-dive FFT mock — ~100 pts, BPFO spike @ index 15 (~152 Hz), 2X @ index 30 */
-const DEEP_FFT_DATA = Array.from({ length: 100 }, (_, i) => {
-  let measured = 0.35 + (i % 7) * 0.02 + Math.sin(i / 5) * 0.08;
-  const baseline = 0.42 + Math.sin(i / 9) * 0.04;
-  if (i === 15) measured = 9.5;
-  else if (i === 14 || i === 16) measured = 3.4;
-  else if (i === 30) measured = 2.9;
-  else if (i === 29 || i === 31) measured = 1.15;
-  return { hz: i * 10, measured: Math.round(measured * 100) / 100, baseline: Math.round(baseline * 100) / 100 };
-});
-
-/** High-freq / envelope view — 0–5 kHz mock (BPFO family + HF energy) */
-const DEEP_FFT_DATA_HF = Array.from({ length: 51 }, (_, i) => {
-  const hz = i * 100;
-  let measured = 0.25 + (i % 6) * 0.015 + Math.sin(i / 4) * 0.06;
-  const baseline = 0.3 + Math.sin(i / 8) * 0.03;
-  if (hz === 200) measured = 4.8;
-  else if (hz === 1500) measured = 6.2;
-  else if (hz === 1400 || hz === 1600) measured = 2.1;
-  else if (hz === 3000) measured = 3.4;
-  return { hz, measured: Math.round(measured * 100) / 100, baseline: Math.round(baseline * 100) / 100 };
-});
-
-/** Time waveform — noisy sine */
-const TWF_DATA = Array.from({ length: 80 }, (_, i) => {
-  let amp =
-    Math.sin(i / 2.8) * 5.5 +
-    Math.sin(i * 1.9) * 2.2 +
-    Math.sin(i * 0.4) * 1.1 +
-    ((i * 17) % 10) / 10 -
-    0.5;
-  // Main impact peak — synced cursor target (index 15)
-  if (i === 15) amp = 12.4;
-  else if (i === 14 || i === 16) amp = Math.max(amp, 7.2);
-  return { t: i, amp: Math.round(amp * 100) / 100 };
-});
-
-/** Demodulated / enveloped spectrum — flat with sharp mid spike (scaled for 0–4 gE axis) */
-const ENVELOPE_DATA = Array.from({ length: 60 }, (_, i) => {
-  const mid = 30;
-  const dist = Math.abs(i - mid);
-  const amp = dist === 0 ? 3.2 : dist === 1 ? 1.5 : dist === 2 ? 0.55 : 0.12 + (i % 5) * 0.01;
-  return { hz: i * 5, amp: Math.round(amp * 100) / 100 };
-});
-
 function buildSpectrum(maxHz: number): SpectrumPoint[] {
   const peaks = [
     { f: 29.8, a: 1.8, w: 4 },
@@ -1564,6 +1529,7 @@ export default function Diagnose({
 }: DiagnoseProps) {
   void selectedCompanyId;
   void subscriptionPlan;
+  const { inventory: partsInventory } = usePartsInventory();
 
   const { toast } = useToast();
   const [activeTech, setActiveTech] = useState<Technology>("vibration");
@@ -1661,6 +1627,18 @@ export default function Diagnose({
     useState<SpectrumRegionDetection | null>(null);
   const [croppedCharts, setCroppedCharts] = useState<CroppedChartRegions>({});
   const [chartRegionError, setChartRegionError] = useState<string | null>(null);
+
+  // Spectral data state management — honest empty/error/sample modes
+  const [spectralHasData, setSpectralHasData] = useState(false);
+  const [spectralIsExtractionError, setSpectralIsExtractionError] = useState(false);
+  const [spectralIsSampleMode, setSpectralIsSampleMode] = useState(false);
+  const [twfHasData, setTwfHasData] = useState(false);
+  const [twfIsExtractionError, setTwfIsExtractionError] = useState(false);
+  const [twfIsSampleMode, setTwfIsSampleMode] = useState(false);
+  const [envelopeHasData, setEnvelopeHasData] = useState(false);
+  const [envelopeIsExtractionError, setEnvelopeIsExtractionError] = useState(false);
+  const [envelopeIsSampleMode, setEnvelopeIsSampleMode] = useState(false);
+
   const [expandedCrop, setExpandedCrop] = useState<{
     kind: ChartRegionKind;
     title: string;
@@ -2170,6 +2148,76 @@ export default function Diagnose({
     if (!selectedAsset || !browseComponent) return;
     applyComponentKinematics(selectedAsset, browseComponent);
   }, [selectedAsset, browseComponent, applyComponentKinematics]);
+
+// Helper to build McaOperatorSnapshot from a saved MCA peak
+function buildMcaSnapshotFromPeak(mcaPeak: any): McaOperatorSnapshot {
+  return {
+    mode: "mca",
+    windingConfig: mcaPeak.windingConfig,
+    ratedHp: mcaPeak.ratedHp ?? mcaPeak.rated_hp,
+    ratedVoltage: mcaPeak.ratedVoltage ?? mcaPeak.rated_voltage,
+    windingTempC: mcaPeak.windingTempC ?? mcaPeak.winding_temp_c,
+    ambientTempC: mcaPeak.ambientTempC,
+    insulationClass: mcaPeak.insulationClass ?? mcaPeak.insulation_class,
+    testVoltageV: mcaPeak.testVoltageV ?? mcaPeak.test_voltage_v,
+    phases: mcaPeak.phases,
+    phaseR: mcaPeak.phaseR ?? mcaPeak.phase_r,
+    phaseL: mcaPeak.phaseL ?? mcaPeak.phase_l,
+    phaseZ: mcaPeak.phaseZ ?? mcaPeak.phase_z,
+    phaseFi: mcaPeak.phaseFi ?? mcaPeak.phase_fi,
+    phaseIF: mcaPeak.phaseIF ?? mcaPeak.phase_if,
+    ir15sMOmega: mcaPeak.ir15sMOmega ?? mcaPeak.ir_15s,
+    ir30sMOmega: mcaPeak.ir30sMOmega ?? mcaPeak.ir_30s,
+    ir1mMOmega: mcaPeak.ir1mMOmega ?? mcaPeak.ir_1m,
+    ir10mMOmega: mcaPeak.ir10mMOmega ?? mcaPeak.ir_10m,
+    megohms: mcaPeak.megohms,
+    reportPi: mcaPeak.reportPi ?? mcaPeak.report_pi,
+    reportDar: mcaPeak.reportDar ?? mcaPeak.report_dar,
+    ricData: mcaPeak.ricData,
+    surgeData: mcaPeak.surgeData,
+    surgeTestVoltageV: mcaPeak.surgeTestVoltageV ?? mcaPeak.surge_test_voltage_v,
+    surgeEar: mcaPeak.surgeEar,
+    extractMeta: mcaPeak.extractMeta,
+  };
+}
+
+const loadMcaData = async (cancelledRef: { current: boolean }) => {
+  try {
+    const mcaResult = await fetchLatestMcaAnalysis(resolveVibrationAssetKey());
+    if (cancelledRef.current) return;
+    if (mcaResult && mcaResult.peaks && Array.isArray(mcaResult.peaks)) {
+      const mcaPeak = mcaResult.peaks.find((p: any) => p && p.type === "mca");
+      if (mcaPeak) {
+        const mcaSnapshotData = buildMcaSnapshotFromPeak(mcaPeak);
+        setMcaSnapshot(mcaSnapshotData);
+      } else {
+        setMcaSnapshot(null);
+      }
+    } else {
+      setMcaSnapshot(null);
+    }
+  } catch (err) {
+    if (!cancelledRef.current) {
+      console.error("[Diagnose] Failed to load MCA analysis:", err);
+      setMcaSnapshot(null);
+    }
+  }
+};
+
+useEffect(() => {
+    if (!selectedAsset) {
+      setMcaSnapshot(null);
+      return;
+    }
+    const cancelledRef = { current: false };
+    const loadMca = async () => {
+      await loadMcaData(cancelledRef);
+    };
+    loadMca();
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [selectedAsset, browseComponent]);
 
   const clearAnalysisTimers = () => {
     analysisTimersRef.current.forEach((t) => window.clearTimeout(t));
@@ -3675,6 +3723,45 @@ export default function Diagnose({
     }
   };
 
+  /**
+   * Parts staged for a rolling-element bearing correction. The part numbers are
+   * the only fixed input — description, stock, supplier and lead time are all
+   * read from the live inventory below, so the picking ticket can never quote a
+   * stock level the stockroom does not actually have.
+   */
+  const bomLines = useMemo(
+    () =>
+      STAGED_REPAIR_KIT.map((line) => {
+        const part =
+          partsInventory.find((p) => p.partNumber === line.partNumber) ?? null;
+        return {
+          ...line,
+          part,
+          status: part ? getStockStatus(part).label : "Not in inventory"
+        };
+      }),
+    [partsInventory]
+  );
+
+  const handlePrintPickingTicket = () => {
+    printPickingTicket({
+      assetTag: browseAssetTag || reportAsset.tag || reportAsset.label,
+      component: browseComponent || "",
+      faultTitle:
+        analysisResult?.primaryFault?.title ?? analysisResult?.summary ?? null,
+      severity: analysisResult?.severity ?? null,
+      lines: bomLines.map((line) => ({
+        partNumber: line.partNumber,
+        description: line.part?.description ?? "Not carried in inventory",
+        quantity: line.quantity,
+        quantityInStock: line.part?.quantityInStock ?? null,
+        stockStatus: line.status,
+        supplierName: line.part?.supplierName ?? null,
+        leadTimeDays: line.part?.leadTimeDays ?? null
+      }))
+    });
+  };
+
   /** Logged-in user, used only to pre-fill the sign-off name field. */
   const signOffEngineerName =
     (user?.full_name as string) ||
@@ -3782,10 +3869,6 @@ export default function Diagnose({
   const toggleSymptom = (tag: string) => {
     setSymptomTags((prev) => (prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]));
   };
-
-  const exportChart = useCallback(() => {
-    toast("Chart export queued (PNG/PDF) — demo mode.", "info");
-  }, [toast]);
 
   const createWorkOrder = () => {
     const a = selectedAsset ?? EMPTY_DIAGNOSE_ASSET;
@@ -5912,27 +5995,22 @@ export default function Diagnose({
                         })
                       }
                     />
-                  ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart
-                      data={fmaxView === "highfreq" ? DEEP_FFT_DATA_HF : DEEP_FFT_DATA}
-                      margin={{ top: 28, right: 48, left: 0, bottom: 8 }}
-                    >
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="hz"
-                        type="number"
-                        domain={fmaxView === "highfreq" ? [0, 5000] : [0, 1000]}
-                        ticks={
-                          fmaxView === "highfreq"
-                            ? [0, 1000, 2000, 3000, 4000, 5000]
-                            : [0, 200, 400, 600, 800, 1000]
-                        }
-                        tick={{ fill: "#64748b", fontSize: 10 }}
-                        axisLine={{ stroke: "#334155" }}
-                        tickLine={false}
-                        label={{ value: "Hz", position: "insideBottomRight", offset: -4, fill: "#64748b", fontSize: 10 }}
-                      />
+) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart
+                        data={displaySpectrum}
+                        margin={{ top: 28, right: 48, left: 0, bottom: 8 }}
+                      >
+                        <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="hz"
+                          type="number"
+                          domain={[0, maxHz]}
+                          tick={{ fill: "#64748b", fontSize: 10 }}
+                          axisLine={{ stroke: "#334155" }}
+                          tickLine={false}
+                          label={{ value: "Hz", position: "insideBottomRight", offset: -4, fill: "#64748b", fontSize: 10 }}
+                        />
                       <YAxis
                         tick={{ fill: "#64748b", fontSize: 10 }}
                         axisLine={false}
@@ -6296,33 +6374,46 @@ export default function Diagnose({
                 <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
                   Required Parts
                 </p>
-                <div className="text-sm text-slate-300 leading-snug">
-                  <span>PART SKF 6320 C3 Deep Groove Ball Bearing (Qty: 2)</span>
-                  <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-green-500/10 text-green-400 border border-green-500/30 ml-2">
-                    📦 2 In Stock - Allocated
-                  </span>
-                </div>
-                <div className="text-sm text-slate-300 leading-snug">
-                  <span>
-                    PART Pre-Cut Stainless Steel Alignment Shim Kit (0.002&quot; - 0.050&quot;)
-                    (Qty: 1 Kit)
-                  </span>
-                  <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-red-500/10 text-red-400 border border-red-500/30 ml-2">
-                    ⚠️ Out of Stock
-                  </span>
-                </div>
+                {bomLines.map((line) => (
+                  <div
+                    key={line.partNumber}
+                    className="text-sm text-slate-300 leading-snug"
+                  >
+                    <span className="font-mono text-xs text-slate-400">
+                      {line.partNumber}
+                    </span>{" "}
+                    <span>
+                      {line.part?.description ?? "Not carried in inventory"} (Qty:{" "}
+                      {line.quantity})
+                    </span>
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded text-[10px] ml-2 border ${
+                        line.part == null
+                          ? "bg-slate-500/10 text-slate-400 border-slate-500/30"
+                          : line.part.quantityInStock >= line.quantity
+                            ? "bg-green-500/10 text-green-400 border-green-500/30"
+                            : "bg-red-500/10 text-red-400 border-red-500/30"
+                      }`}
+                    >
+                      {line.part == null
+                        ? line.status
+                        : `${line.part.quantityInStock} on hand · ${line.status}`}
+                    </span>
+                  </div>
+                ))}
               </div>
               <div className="flex flex-col justify-center">
                 <button
                   type="button"
-                  onClick={() => toast("Alignment shim kit order queued…", "success")}
-                  className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-2 rounded-lg text-sm mb-2 cursor-pointer transition-colors"
+                  disabled
+                  title="Procurement integration pending — order endpoint not connected"
+                  className="w-full bg-slate-800 border border-slate-700 text-slate-400 py-2 rounded-lg text-sm font-bold cursor-not-allowed transition-colors"
                 >
-                  🛒 Order Missing Alignment Shims - $85
+                  🛒 Order Missing Alignment Shims
                 </button>
                 <button
                   type="button"
-                  onClick={() => toast("Stockroom picking ticket sent to printer…", "info")}
+                  onClick={handlePrintPickingTicket}
                   className="w-full border border-slate-700 text-white hover:bg-slate-800 py-2 rounded-lg text-sm cursor-pointer transition-colors"
                 >
                   📋 Print Stockroom Picking Ticket

@@ -113,6 +113,12 @@ export interface ComponentKinematics {
   /** Spindle / Other */
   customEquipmentType?: string;
   spindleClass?: string;
+  /**
+   * Nameplate electrical data. Not collected by the kinematics form — these
+   * arrive with imported or legacy component specs, so both are optional.
+   */
+  voltage?: string;
+  operationalDuty?: string;
   /** Bearings & coupling */
   bearingDe?: string;
   bearingNde?: string;

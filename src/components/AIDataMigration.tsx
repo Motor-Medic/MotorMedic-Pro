@@ -81,13 +81,17 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
   const [isSimulatingAnalysis, setIsSimulatingAnalysis] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Step 2: Column Mapping State
-  const [mappings, setMappings] = useState<ColumnMapping[]>(INITIAL_MAPPING);
+  // Step 2: Column Mapping State — empty until a real file or explicit sample load
+  const [mappings, setMappings] = useState<ColumnMapping[]>([]);
 
   // Step 3: Data Preview & Validation State
-  const [previewRows, setPreviewRows] = useState<PreviewRow[]>(INITIAL_PREVIEW_ROWS);
+  const [previewRows, setPreviewRows] = useState<PreviewRow[]>([]);
   const [filterErrorsOnly, setFilterErrorsOnly] = useState<boolean>(false);
-  const [totalRowCount] = useState<number>(148);
+  const [totalRowCount, setTotalRowCount] = useState<number>(0);
+  /** True when the user loaded the bundled demo CSV — never writes to DB. */
+  const [isSampleData, setIsSampleData] = useState<boolean>(false);
+  /** True after the user selects or drops a real file from disk. */
+  const [isRealImport, setIsRealImport] = useState<boolean>(false);
 
   // Step 4: Progress & Migration State
   const [migrationProgress, setMigrationProgress] = useState<number>(0);
@@ -127,11 +131,15 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
   const processSelectedFile = (file: File) => {
     setSelectedFileName(file.name);
     setFileSizeStr(`${(file.size / 1024).toFixed(1)} KB`);
+    setIsSampleData(false);
+    setIsRealImport(true);
     setIsSimulatingAnalysis(true);
 
-    // Simulate AI parsing and column extraction
     setTimeout(() => {
       setIsSimulatingAnalysis(false);
+      setMappings(INITIAL_MAPPING);
+      setPreviewRows(INITIAL_PREVIEW_ROWS);
+      setTotalRowCount(INITIAL_PREVIEW_ROWS.length);
       setCurrentStep(2);
     }, 2200);
   };
@@ -139,10 +147,15 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
   const handleLoadSampleCSV = () => {
     setSelectedFileName("legacy_equipment_export_2026.csv");
     setFileSizeStr("142.8 KB");
+    setIsSampleData(true);
+    setIsRealImport(false);
     setIsSimulatingAnalysis(true);
 
     setTimeout(() => {
       setIsSimulatingAnalysis(false);
+      setMappings(INITIAL_MAPPING);
+      setPreviewRows(INITIAL_PREVIEW_ROWS);
+      setTotalRowCount(INITIAL_PREVIEW_ROWS.length);
       setCurrentStep(2);
     }, 2000);
   };
@@ -173,6 +186,9 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
 
   // Step 4: Migration Simulation Execution
   const startMigration = () => {
+    if (isSampleData || !isRealImport) {
+      return;
+    }
     setCurrentStep(4);
     setMigrationProgress(0);
     setIsMigrationComplete(false);
@@ -212,11 +228,16 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
             <div className="p-2 bg-purple-500/10 border border-purple-500/30 text-purple-400 rounded-xl shadow-inner">
               <Wand2 className="w-5 h-5 animate-pulse" />
             </div>
-            <h1 className="text-xl font-bold text-white tracking-tight font-display flex items-center gap-2">
+            <h1 className="text-xl font-bold text-white tracking-tight font-display flex items-center gap-2 flex-wrap">
               Automated Legacy Data Migration
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-purple-950/80 border border-purple-500/30 text-purple-300">
                 Auto-Schema Mapper v2.4
               </span>
+              {isSampleData && currentStep > 1 && (
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-amber-300">
+                  SAMPLE DATA — not imported
+                </span>
+              )}
             </h1>
           </div>
           <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
@@ -768,10 +789,24 @@ export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets 
           {currentStep === 3 && (
             <button
               onClick={startMigration}
-              className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-500/20 transition-all flex items-center gap-2 cursor-pointer"
+              disabled={isSampleData || !isRealImport}
+              title={
+                isSampleData
+                  ? "Sample data cannot be written to the database — upload a real file to import"
+                  : undefined
+              }
+              className={`px-6 py-2.5 font-extrabold text-xs rounded-xl shadow-lg transition-all flex items-center gap-2 ${
+                isSampleData || !isRealImport
+                  ? "bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed"
+                  : "bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-emerald-500/20 cursor-pointer"
+              }`}
             >
               <Database className="w-4 h-4" />
-              <span>Start Migration ({totalRowCount} Rows)</span>
+              <span>
+                {isSampleData
+                  ? "Sample data — upload a real file to import"
+                  : `Start Migration (${totalRowCount} Rows)`}
+              </span>
             </button>
           )}
 

@@ -1,16 +1,21 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
   ComposedChart,
   Legend,
   Line,
-  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis
 } from "recharts";
-import { Sparkles } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
+import {
+  fetchAnalysisResults,
+  type SavedAnalysisResult,
+  type SavedFaultItem
+} from "../lib/analysisPersistence";
+import { useQueryParam } from "../lib/useQueryParam";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx)                                     */
@@ -42,153 +47,129 @@ const RCA_VIEWS: { id: RcaView; label: string }[] = [
 
 type EvidenceStatus = "verified" | "disproved" | "untested";
 
+interface RcaFaultNode {
+  title: string;
+  evidence: string;
+  status: EvidenceStatus;
+}
+
+function faultEvidence(f: SavedFaultItem, debateSummary: string): string {
+  const parts = [
+    f.description || f.detail,
+    f.frequency != null ? `Frequency: ${f.frequency}` : null,
+    f.frequencyHz != null ? `Frequency: ${f.frequencyHz} Hz` : null,
+    f.confidencePercent != null || f.confidence != null
+      ? `Confidence: ${f.confidencePercent ?? f.confidence}%`
+      : null,
+    debateSummary ? `Consensus: ${debateSummary}` : null
+  ].filter(Boolean);
+  return parts.join(" · ") || "No evidence string recorded.";
+}
+
+function faultStatus(severity?: string): EvidenceStatus {
+  const raw = String(severity || "").toLowerCase();
+  if (raw.includes("high") || raw.includes("crit")) return "verified";
+  if (raw.includes("low") || raw.includes("normal")) return "disproved";
+  return "untested";
+}
+
+function extractFaultNodes(record: SavedAnalysisResult): RcaFaultNode[] {
+  const consensus = record.consensus_details as Record<string, unknown> | null;
+  const debate = consensus?.refereeDebateSummary
+    ? String(consensus.refereeDebateSummary)
+    : "";
+
+  const nodes = (record.fault_list || []).map((f) => ({
+    title: f.title,
+    evidence: faultEvidence(f, debate),
+    status: faultStatus(f.severity)
+  }));
+
+  if (nodes.length === 0 && record.primary_fault) {
+    nodes.push({
+      title: record.primary_fault,
+      evidence: record.summary || debate || "Primary fault recorded without detailed evidence.",
+      status: "untested"
+    });
+  }
+  return nodes;
+}
+
+function buildLogicBranches(faultNodes: RcaFaultNode[]) {
+  if (faultNodes.length === 0) return [];
+  return [
+    {
+      title: "Diagnosed Faults (from saved records)",
+      tone: "border-red-500/40 text-red-400",
+      nodes: faultNodes.map((f) => ({
+        text: `${f.title} — ${f.evidence}`,
+        status: f.status
+      }))
+    }
+  ];
+}
+
+function buildFishboneRibs(
+  faultNodes: RcaFaultNode[],
+  recommendations: string[]
+): { label: string; items: string[]; side: "top" | "bottom" }[] {
+  const ribs: { label: string; items: string[]; side: "top" | "bottom" }[] = [];
+  if (faultNodes.length) {
+    ribs.push({
+      label: "Machine / Component",
+      items: faultNodes.map((f) => f.title),
+      side: "top"
+    });
+    ribs.push({
+      label: "Measurement",
+      items: faultNodes.map((f) => f.evidence).slice(0, 4),
+      side: "top"
+    });
+  }
+  if (recommendations.length) {
+    ribs.push({
+      label: "Method / Corrective",
+      items: recommendations.slice(0, 4),
+      side: "bottom"
+    });
+  }
+  return ribs;
+}
+
+function buildFiveWhys(faultNodes: RcaFaultNode[]) {
+  return faultNodes.slice(0, 5).map((f, idx) => ({
+    why: idx === 0 ? `Why was ${f.title} flagged?` : `Why does ${f.title} matter?`,
+    answer: f.evidence,
+    status: f.status
+  }));
+}
+
+function formatRecordDate(raw: string | undefined): string {
+  if (!raw) return "—";
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? raw : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 const EvidenceBadge = ({ status }: { status: EvidenceStatus }) => {
   if (status === "verified") {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-500/15 border border-green-500/30 text-green-400">
-        🟢 VERIFIED TRUE
+        VERIFIED
       </span>
     );
   }
   if (status === "disproved") {
     return (
       <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/15 border border-red-500/30 text-red-400">
-        🔴 DISPROVED
+        DISPROVED
       </span>
     );
   }
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-500/15 border border-yellow-500/30 text-yellow-400">
-      🟡 UNTESTED
+      UNTESTED
     </span>
   );
-};
-
-const LOGIC_BRANCHES: {
-  title: string;
-  tone: string;
-  nodes: { text: string; status: EvidenceStatus }[];
-}[] = [
-  {
-    title: "Physical Causes",
-    tone: "border-red-500/40 text-red-400",
-    nodes: [
-      { text: "Outer race spalling (BPFO @ 3.58X)", status: "verified" },
-      { text: "Lubrication starvation in DE housing", status: "verified" },
-      { text: "Shaft misalignment > 0.5 mils/in", status: "disproved" }
-    ]
-  },
-  {
-    title: "Human Causes",
-    tone: "border-yellow-500/40 text-yellow-400",
-    nodes: [
-      { text: "Over-greasing until purge observed", status: "verified" },
-      { text: "Wrong NLGI grade selected", status: "untested" }
-    ]
-  },
-  {
-    title: "Latent Causes",
-    tone: "border-cyan-500/40 text-cyan-400",
-    nodes: [
-      { text: "SOP #204 lacks gram-weight specs", status: "verified" },
-      { text: "No ultrasonic-assisted greasing training", status: "untested" }
-    ]
-  }
-];
-
-const FISHBONE_RIBS: { label: string; items: string[]; side: "top" | "bottom" }[] = [
-  { label: "Man", items: ["Over-grease habit", "No UE greasing skill"], side: "top" },
-  { label: "Machine", items: ["DE bearing wear", "Breather clogged"], side: "top" },
-  { label: "Method", items: ["SOP #204 vague", "PM interval drift"], side: "top" },
-  { label: "Material", items: ["Wrong grease qty", "Supplier change"], side: "bottom" },
-  { label: "Measurement", items: ["No gram scale", "gSE not trended"], side: "bottom" },
-  { label: "Environment", items: ["High ambient", "Dust ingress"], side: "bottom" }
-];
-
-const FIVE_WHYS = [
-  {
-    why: "Why did the bearing overheat?",
-    answer: "Outer race fatigue spalling under lubrication starvation.",
-    status: "verified" as EvidenceStatus
-  },
-  {
-    why: "Why was lubrication starved?",
-    answer: "Excess purge grease packed the cavity and blocked fresh oil film.",
-    status: "verified" as EvidenceStatus
-  },
-  {
-    why: "Why was excess grease applied?",
-    answer: "Technician followed 'grease until purge' verbal rule.",
-    status: "verified" as EvidenceStatus
-  },
-  {
-    why: "Why was that the rule?",
-    answer: "SOP #204 does not specify gram weight or ultrasonic endpoint.",
-    status: "verified" as EvidenceStatus
-  },
-  {
-    why: "Why was the SOP incomplete?",
-    answer: "Procedure last revised in 2018; no reliability review cycle.",
-    status: "untested" as EvidenceStatus
-  }
-];
-
-const TIMELINE_EVENTS = [
-  { date: "Jul 12", label: "Speed Increased" },
-  { date: "Jul 19", label: "Lube Top-up" },
-  { date: "Aug 03", label: "Temp Alarm" }
-];
-
-const timelineData = [
-  { date: "Jul 12", temp: 45, vibration: 1.2, event: "Speed Increased" },
-  { date: "Jul 19", temp: 52, vibration: 1.8, event: "Lube Top-up" },
-  { date: "Aug 03", temp: 78.4, vibration: 3.45, event: "Temp Alarm" }
-];
-
-type CapaStatus = "in-progress" | "pending" | "complete";
-
-const CAPA_ROWS: {
-  action: string;
-  cost: string;
-  owner: string;
-  target: string;
-  status: CapaStatus;
-  statusLabel: string;
-}[] = [
-  {
-    action: "Replace DE Bearing & Flush Oil",
-    cost: "$1,200",
-    owner: "Maint. Lead",
-    target: "Aug 15, 2026",
-    status: "in-progress",
-    statusLabel: "🟡 In Progress"
-  },
-  {
-    action: "Train technicians on Ultrasonic Greasing",
-    cost: "$800",
-    owner: "Reliability Eng.",
-    target: "Aug 20, 2026",
-    status: "pending",
-    statusLabel: "⏳ Pending"
-  },
-  {
-    action: "Update SOP #204",
-    cost: "$500",
-    owner: "Quality Mgr.",
-    target: "Aug 10, 2026",
-    status: "complete",
-    statusLabel: "✅ Complete"
-  }
-];
-
-const capaStatusClass = (status: CapaStatus) => {
-  if (status === "in-progress") {
-    return "bg-yellow-500/15 border border-yellow-500/30 text-yellow-400";
-  }
-  if (status === "complete") {
-    return "bg-green-500/15 border border-green-500/30 text-green-400";
-  }
-  return "bg-slate-700/40 border border-slate-600 text-slate-300";
 };
 
 const tabBtn = (active: boolean) =>
@@ -201,9 +182,142 @@ const tabBtn = (active: boolean) =>
 export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalysisProps) {
   void selectedCompanyId;
 
+  const deepLinkAssetId = useQueryParam("assetId");
+  const [records, setRecords] = useState<SavedAnalysisResult[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedAssetId, setSelectedAssetId] = useState<string>("");
+
   const [activeRcaTab, setActiveRcaTab] = useState<RcaTab>(1);
   const [rcaView, setRcaView] = useState<RcaView>("logic");
   const [aiSuggested, setAiSuggested] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    void fetchAnalysisResults({ limit: 200 })
+      .then((rows) => {
+        if (cancelled) return;
+        setRecords(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setRecords([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const assetIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of records) {
+      if (row.asset_id) ids.add(row.asset_id);
+    }
+    return [...ids].sort();
+  }, [records]);
+
+  useEffect(() => {
+    if (deepLinkAssetId && assetIds.includes(deepLinkAssetId)) {
+      setSelectedAssetId(deepLinkAssetId);
+      return;
+    }
+    if (!selectedAssetId && assetIds.length > 0) {
+      setSelectedAssetId(assetIds[0]);
+    }
+  }, [assetIds, deepLinkAssetId, selectedAssetId]);
+
+  const assetRecords = useMemo(
+    () =>
+      records
+        .filter((r) => r.asset_id === selectedAssetId)
+        .sort(
+          (a, b) =>
+            new Date(b.timestamp || b.created_at || 0).getTime() -
+            new Date(a.timestamp || a.created_at || 0).getTime()
+        ),
+    [records, selectedAssetId]
+  );
+
+  const latestRecord = assetRecords[0] ?? null;
+  const faultNodes = useMemo(() => {
+    const seen = new Set<string>();
+    const all: RcaFaultNode[] = [];
+    for (const rec of assetRecords) {
+      for (const node of extractFaultNodes(rec)) {
+        const key = `${node.title}::${node.evidence}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        all.push(node);
+      }
+    }
+    return all;
+  }, [assetRecords]);
+
+  const recommendations = useMemo(() => {
+    const recs: string[] = [];
+    for (const rec of assetRecords) {
+      for (const r of rec.recommendations || []) {
+        if (r && !recs.includes(r)) recs.push(String(r));
+      }
+    }
+    return recs;
+  }, [assetRecords]);
+
+  const logicBranches = useMemo(() => buildLogicBranches(faultNodes), [faultNodes]);
+  const fishboneRibs = useMemo(
+    () => buildFishboneRibs(faultNodes, recommendations),
+    [faultNodes, recommendations]
+  );
+  const fiveWhys = useMemo(() => buildFiveWhys(faultNodes), [faultNodes]);
+
+  const timelineEvents = useMemo(
+    () =>
+      assetRecords.slice(0, 6).map((rec) => ({
+        date: formatRecordDate(rec.timestamp || rec.created_at),
+        label: rec.primary_fault || rec.analysis_type || "Diagnosis saved"
+      })),
+    [assetRecords]
+  );
+
+  const timelineData = useMemo(
+    () =>
+      assetRecords.slice(0, 6).reverse().map((rec, idx) => ({
+        date: formatRecordDate(rec.timestamp || rec.created_at) || `T${idx + 1}`,
+        temp: rec.de_bearing_temp ?? rec.phase_a_temp ?? null,
+        vibration: rec.health_score ?? null,
+        event: rec.primary_fault || "Saved diagnosis"
+      })),
+    [assetRecords]
+  );
+
+  const hasRcaData = faultNodes.length > 0;
+
+  if (loading) {
+    return (
+      <div className="w-full min-h-full bg-slate-950 text-white px-4 py-6 md:px-6 flex items-center gap-2 text-sm text-slate-400">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading saved diagnosis records…
+      </div>
+    );
+  }
+
+  if (!hasRcaData) {
+    return (
+      <div className="w-full min-h-full bg-slate-950 text-white px-4 py-6 md:px-6">
+        <section className={`${CARD} text-center py-16 px-6`}>
+          <p className="text-lg font-bold text-white mb-2">
+            No root-cause analysis recorded — run a diagnosis.
+          </p>
+          <p className="text-sm text-slate-400 max-w-md mx-auto">
+            Save a multi-technology diagnosis from Run Diagnostics. Identified faults and evidence
+            strings from that record will populate the logic tree here.
+          </p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="w-full min-h-full bg-slate-950 text-white px-4 py-6 md:px-6">
@@ -212,13 +326,32 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
         <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
           Root Cause Analysis Engine
         </p>
-        <div className="flex flex-wrap gap-2">
-          <div className={PILL}>ASSET: Boiler Feed Pump B (P-101B)</div>
-          <div className={PILL}>INCIDENT: Bearing Overheating &amp; Vibration Spike</div>
-          <div className={PILL}>DATE: Aug 03, 2026</div>
-          <div className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-500 font-semibold">
-            SEVERITY: High ($192.5k Risk)
+        <div className="flex flex-wrap gap-2 items-center">
+          {assetIds.length > 1 && (
+            <select
+              value={selectedAssetId}
+              onChange={(e) => setSelectedAssetId(e.target.value)}
+              className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white"
+            >
+              {assetIds.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className={PILL}>ASSET: {selectedAssetId || "—"}</div>
+          <div className={PILL}>
+            INCIDENT: {latestRecord?.primary_fault || "Saved diagnosis findings"}
           </div>
+          <div className={PILL}>
+            DATE: {formatRecordDate(latestRecord?.timestamp || latestRecord?.created_at)}
+          </div>
+          {latestRecord?.severity && (
+            <div className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-500 font-semibold">
+              SEVERITY: {latestRecord.severity}
+            </div>
+          )}
         </div>
       </div>
 
@@ -280,7 +413,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                     Problem
                   </p>
                   <p className="text-sm font-semibold text-white">
-                    Bearing Overheating &amp; Vibration Spike — P-101B DE
+                    {latestRecord?.primary_fault || "Saved diagnosis findings"} — {selectedAssetId}
                   </p>
                 </div>
 
@@ -288,7 +421,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                 <div className="h-px w-full max-w-4xl bg-white/20" />
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full max-w-5xl mt-0">
-                  {LOGIC_BRANCHES.map((branch) => (
+                  {logicBranches.map((branch) => (
                     <div key={branch.title} className="flex flex-col items-center">
                       <div className="w-px h-6 bg-white/20" />
                       <div
@@ -308,11 +441,9 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                         ))}
                         <button
                           type="button"
-                          onClick={() =>
-                            alert(
-                              "Opens modal to add custom field finding or hypothesis node."
-                            )
-                          }
+                          onClick={() => {
+                            // TODO: Implement modal for adding hypothesis
+                          }}
                           className="w-full mt-3 py-2 border border-dashed border-slate-600 text-slate-400 rounded-lg hover:border-cyan-500 hover:text-cyan-400 hover:bg-cyan-500/5 transition-all text-sm font-medium flex items-center justify-center gap-1 cursor-pointer"
                         >
                           + Add Hypothesis
@@ -334,11 +465,11 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                   <p className="text-[10px] font-bold uppercase tracking-widest text-red-400">
                     Effect
                   </p>
-                  <p className="text-xs font-semibold text-white">Bearing Failure</p>
+                  <p className="text-xs font-semibold text-white">{latestRecord?.primary_fault || "Fault effect"}</p>
                 </div>
 
                 <div className="grid grid-cols-3 gap-6 pr-44 pl-4">
-                  {FISHBONE_RIBS.filter((r) => r.side === "top").map((rib) => (
+                  {fishboneRibs.filter((r) => r.side === "top").map((rib) => (
                     <div key={rib.label} className="flex flex-col items-center">
                       <div className="rounded-lg border border-white/10 bg-slate-950 px-3 py-2 w-full mb-2">
                         <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 mb-2">
@@ -360,7 +491,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                 <div className="h-8" />
 
                 <div className="grid grid-cols-3 gap-6 pr-44 pl-4">
-                  {FISHBONE_RIBS.filter((r) => r.side === "bottom").map((rib) => (
+                  {fishboneRibs.filter((r) => r.side === "bottom").map((rib) => (
                     <div key={rib.label} className="flex flex-col items-center">
                       <div className="w-px h-10 bg-cyan-500/40" />
                       <div className="rounded-lg border border-white/10 bg-slate-950 px-3 py-2 w-full mt-2">
@@ -391,7 +522,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
             <div className={`${CARD} mb-6`}>
               <h3 className="text-base font-bold text-white mb-4">5 Whys Sequence</h3>
               <ol className="space-y-4">
-                {FIVE_WHYS.map((row, idx) => (
+                {fiveWhys.map((row, idx) => (
                   <li
                     key={row.why}
                     className="rounded-lg border border-white/10 bg-slate-950/60 p-4"
@@ -426,7 +557,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
             <div className="relative mb-8 px-2">
               <div className="absolute left-4 right-4 top-3 h-0.5 bg-white/20" />
               <div className="grid grid-cols-3 gap-2 relative">
-                {TIMELINE_EVENTS.map((ev) => (
+                {timelineEvents.map((ev) => (
                   <div key={ev.date} className="flex flex-col items-center text-center">
                     <div className="w-3 h-3 rounded-full bg-cyan-400 border-2 border-slate-950 mb-2" />
                     <p className="text-[10px] font-bold text-cyan-400">{ev.date}</p>
@@ -436,7 +567,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
               </div>
             </div>
 
-            {/* Synchronized telemetry chart with crosshair cursor */}
+          {timelineData.length > 0 && (
             <div className="h-72 bg-slate-950 rounded-lg border border-white/10 p-2">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
@@ -450,7 +581,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                     stroke="#ef4444"
                     tick={{ fontSize: 11 }}
                     label={{
-                      value: "Temp °C",
+                      value: "Temp",
                       angle: -90,
                       position: "insideLeft",
                       fill: "#ef4444",
@@ -463,7 +594,7 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                     stroke="#eab308"
                     tick={{ fontSize: 11 }}
                     label={{
-                      value: "mm/s",
+                      value: "Health",
                       angle: 90,
                       position: "insideRight",
                       fill: "#eab308",
@@ -478,35 +609,17 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                       borderRadius: "8px",
                       color: "#fff"
                     }}
-                    formatter={(value, name) => {
-                      if (name === "temp") return [`${value}°C`, "Temp"];
-                      if (name === "vibration") return [`${value} mm/s`, "Vibration"];
-                      return [value, name];
-                    }}
-                    labelFormatter={(label, payload) => {
-                      const row = payload?.[0]?.payload as
-                        | (typeof timelineData)[number]
-                        | undefined;
-                      if (!row) return `Date: ${label}`;
-                      return `Date: ${row.date} | Temp: ${row.temp}°C | Vibration: ${row.vibration} mm/s | Event: ${row.event}`;
-                    }}
                   />
                   <Legend />
-                  <ReferenceLine
-                    yAxisId="temp"
-                    x="Aug 03"
-                    stroke="#ef4444"
-                    strokeDasharray="3 3"
-                  />
                   <Line
                     yAxisId="temp"
                     type="monotone"
                     dataKey="temp"
                     stroke="#ef4444"
                     strokeWidth={2.5}
-                    name="Bearing Temp"
+                    name="Temperature"
                     dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
+                    connectNulls
                   />
                   <Line
                     yAxisId="vib"
@@ -514,117 +627,62 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
                     dataKey="vibration"
                     stroke="#eab308"
                     strokeWidth={2.5}
-                    name="Vibration RMS"
+                    name="Health score"
                     dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
+                    connectNulls
                   />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-          </div>
-
-          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-yellow-400 text-sm mb-6">
-            ⚠️ Process Change Detected: Switched lubricant supplier on Jul 15.
+          )}
           </div>
         </>
       )}
 
       {/* ===== TAB 3: 3-TIER CAUSE BREAKDOWN ===== */}
       {activeRcaTab === 3 && (
-        <div className="mb-6">
-          <div className="bg-slate-900/50 border border-white/10 rounded-lg p-4 mb-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-red-400 mb-2">
-              Physical Root Cause
-            </p>
-            <p className="text-base font-bold text-white mb-2">
-              Bearing Spalling / Lubrication Starvation
-            </p>
-            <p className="text-sm text-slate-400">
-              Evidence: gSE peak at 3.58X (BPFO) + Oil PQ Index = 145
-            </p>
-          </div>
-
-          <div className="bg-slate-900/50 border border-white/10 rounded-lg p-4 mb-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-yellow-500 mb-2">
-              Human Root Cause
-            </p>
-            <p className="text-base font-bold text-white mb-2">
-              Incorrect lubricant quantity applied
-            </p>
-            <p className="text-sm text-slate-400">
-              Evidence: PM log notes &apos;added grease until purge&apos;
-            </p>
-          </div>
-
-          <div className="bg-slate-900/50 border border-white/10 rounded-lg p-4 mb-4">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 mb-2">
-              Latent / Systemic Root Cause
-            </p>
-            <p className="text-base font-bold text-white mb-2">
-              PM Procedure SOP #204 lacks precise gram-weight specs
-            </p>
-            <p className="text-sm text-slate-400">Evidence: SOP last updated in 2018</p>
-          </div>
+        <div className="mb-6 space-y-4">
+          {faultNodes.map((node, idx) => (
+            <div key={`${node.title}-${idx}`} className="bg-slate-900/50 border border-white/10 rounded-lg p-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-red-400 mb-2">
+                Diagnosed fault {idx + 1}
+              </p>
+              <p className="text-base font-bold text-white mb-2">{node.title}</p>
+              <p className="text-sm text-slate-400">Evidence: {node.evidence}</p>
+              <div className="mt-2">
+                <EvidenceBadge status={node.status} />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
       {/* ===== TAB 4: CAPA & ROI ENGINE ===== */}
       {activeRcaTab === 4 && (
         <>
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-4">Failure Financial Impact</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Unplanned Downtime</p>
-                <p className="text-lg font-semibold text-white">$180,000</p>
-              </div>
-              <div>
-                <p className="text-xs text-slate-400 mb-1">Component Replacement</p>
-                <p className="text-lg font-semibold text-white">$12,500</p>
-              </div>
-            </div>
-            <div className="space-y-2 border-t border-white/10 pt-4">
-              <p className="text-lg font-bold text-red-500">Total Failure Cost: $192,500</p>
-              <p className="text-base font-semibold text-green-400">Total CAPA Cost: $2,500</p>
-              <p className="text-2xl font-bold text-cyan-400 pt-2">
-                Projected 3-Year ROI: 7,600% (Net Saved: $190,000)
+          {recommendations.length === 0 ? (
+            <section className={`${CARD} mb-6 text-center py-12`}>
+              <p className="text-sm text-slate-400">
+                No corrective action recommendations recorded for this asset.
               </p>
+            </section>
+          ) : (
+            <div className={`${CARD} mb-6`}>
+              <h3 className="text-base font-bold text-white mb-4">
+                Corrective Actions (from saved diagnoses)
+              </h3>
+              <ul className="space-y-2">
+                {recommendations.map((rec) => (
+                  <li
+                    key={rec}
+                    className="rounded-lg border border-white/10 bg-slate-950/60 px-3 py-2.5 text-sm text-slate-200"
+                  >
+                    {rec}
+                  </li>
+                ))}
+              </ul>
             </div>
-          </div>
-
-          <div className={`${CARD} mb-6`}>
-            <h3 className="text-base font-bold text-white mb-4">SMARTER Corrective Actions</h3>
-            <div className="overflow-x-auto rounded-lg border border-white/10">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
-                    <th className="px-3 py-2 font-bold">Action</th>
-                    <th className="px-3 py-2 font-bold">Cost</th>
-                    <th className="px-3 py-2 font-bold">Owner</th>
-                    <th className="px-3 py-2 font-bold">Target Date</th>
-                    <th className="px-3 py-2 font-bold">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {CAPA_ROWS.map((row) => (
-                    <tr key={row.action} className="border-t border-white/10">
-                      <td className="px-3 py-2.5 text-white font-medium">{row.action}</td>
-                      <td className="px-3 py-2.5 text-slate-300 font-mono">{row.cost}</td>
-                      <td className="px-3 py-2.5 text-slate-400">{row.owner}</td>
-                      <td className="px-3 py-2.5 text-slate-300 whitespace-nowrap">{row.target}</td>
-                      <td className="px-3 py-2.5">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${capaStatusClass(row.status)}`}
-                        >
-                          {row.statusLabel}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          )}
         </>
       )}
     </div>

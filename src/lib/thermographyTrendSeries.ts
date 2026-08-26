@@ -148,7 +148,9 @@ function telemetryDataBlob(row: SavedAnalysisResult): {
   polymorphic: Record<string, unknown>;
 } {
   let root: Record<string, unknown> = {};
-  const raw = row.telemetry_data;
+  // Widened deliberately: the column is JSONB, but drivers and older rows can
+  // hand this back as a JSON string, which the declared type does not admit.
+  const raw: unknown = row.telemetry_data;
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     root = raw as Record<string, unknown>;
   } else if (typeof raw === "string" && raw.trim().startsWith("{")) {

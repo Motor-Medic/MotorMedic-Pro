@@ -1126,7 +1126,11 @@ export default function MountingPlanner() {
           <div className="min-w-0">
             <h1 className="text-lg sm:text-xl font-bold text-white tracking-tight">Mounting Planner</h1>
             <p className="text-xs sm:text-sm text-slate-400 mt-0.5">
-              Sensor placement coordinates, surface preparation specs, and the ISO 10816 reference library.
+              Sensor placement coordinates, surface preparation specs, and the ISO 10816 reference
+              library.
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1 italic">
+              Reference guidance — not asset-specific data.
             </p>
           </div>
         </div>

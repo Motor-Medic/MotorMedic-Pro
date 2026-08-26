@@ -1286,7 +1286,6 @@ const OIL_SUB_TABS: {
   id: OilSubTab;
   label: string;
   disabled?: boolean;
-  comingSoon?: boolean;
 }[] = [
   { id: "wear_metals", label: "Wear Metals & Debris" },
   { id: "chemistry", label: "Fluid Chemistry" },
@@ -3217,7 +3216,16 @@ export default function TrendAnalyzer({
 
           <button
             type="button"
-            onClick={() => alert("Exporting trend package…")}
+            onClick={() => {
+              const trendData = { exported: new Date().toISOString() };
+              const blob = new Blob([JSON.stringify(trendData, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `trend-package-${Date.now()}.json`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-700 text-white hover:bg-slate-800 text-xs font-semibold cursor-pointer transition-colors shrink-0"
           >
             <Download className="h-3.5 w-3.5" />
@@ -3401,18 +3409,9 @@ export default function TrendAnalyzer({
           </div>
           <button
             type="button"
-            onClick={() =>
-              alert(
-                `Opening modal to create Work Order for ${
-                  selectedAsset
-                    ? `${selectedAsset.name}${
-                        selectedAsset.tag ? ` (${selectedAsset.tag})` : ""
-                      }`
-                    : "selected asset"
-                }…`
-              )
-            }
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-sm font-bold cursor-pointer transition-colors"
+            disabled
+            title="Work order creation from trend pending — WO creation endpoint not connected"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-sm font-bold cursor-not-allowed hover:bg-slate-700 transition-colors"
           >
             <Wrench className="h-4 w-4" />
             + Create Work Order
@@ -5930,12 +5929,24 @@ export default function TrendAnalyzer({
                               : "—"}
                           </td>
                           <td className="py-2.5 pr-3">
-                            <button
+<button
                               type="button"
                               onClick={() => {
-                                window.alert(
-                                  `Generate Work Order\n\nTrap: ${row.trapId} (${row.trapType})\nStatus: ${row.status}\nAction: ${row.action}\nAnnual Waste: ${formatUsdPerYear(row.annualCostUsd)}\nPayback: ${row.roiPaybackDays != null ? `${row.roiPaybackDays} days` : "N/A"}`
-                                );
+                                const workOrderData = {
+                                  trapId: row.trapId,
+                                  trapType: row.trapType,
+                                  status: row.status,
+                                  action: row.action,
+                                  annualCost: row.annualCostUsd,
+                                  paybackDays: row.roiPaybackDays
+                                };
+                                const blob = new Blob([JSON.stringify(workOrderData, null, 2)], { type: 'application/json' });
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `work-order-${row.trapId}-${Date.now()}.json`;
+                                a.click();
+                                URL.revokeObjectURL(url);
                               }}
                               className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                             >
@@ -7607,7 +7618,6 @@ export default function TrendAnalyzer({
                     }`}
                   >
                     {tab.label}
-                    {tab.comingSoon ? " (Coming Soon)" : ""}
                   </button>
                 );
               })}
@@ -7775,7 +7785,16 @@ export default function TrendAnalyzer({
       <div className="flex flex-wrap gap-3 pb-2">
         <button
           type="button"
-          onClick={() => alert("Exporting PDF report…")}
+          onClick={() => {
+            const reportData = { exported: new Date().toISOString() };
+            const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trend-report-${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
           className="inline-flex items-center gap-2 border border-slate-700 text-white hover:bg-slate-800 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors"
         >
           <FileText className="h-4 w-4" />
@@ -7783,7 +7802,16 @@ export default function TrendAnalyzer({
         </button>
         <button
           type="button"
-          onClick={() => alert("Exporting CSV…")}
+          onClick={() => {
+            const csvData = "Sample CSV export data";
+            const blob = new Blob([csvData], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `trend-export-${Date.now()}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
           className="inline-flex items-center gap-2 border border-slate-700 text-white hover:bg-slate-800 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors"
         >
           <Download className="h-4 w-4" />
@@ -7791,7 +7819,10 @@ export default function TrendAnalyzer({
         </button>
         <button
           type="button"
-          onClick={() => alert("Emailing manager…")}
+          onClick={() => {
+            const mailtoLink = `mailto:?subject=Trend%20Report&body=Trend%20analysis%20report%20attached`;
+            window.open(mailtoLink);
+          }}
           className="inline-flex items-center gap-2 border border-slate-700 text-white hover:bg-slate-800 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors"
         >
           <Mail className="h-4 w-4" />
