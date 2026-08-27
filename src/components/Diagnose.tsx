@@ -1681,6 +1681,7 @@ export default function Diagnose({
   const [oilExtracting, setOilExtracting] = useState(false);
   const [thermoExtracting, setThermoExtracting] = useState(false);
   const [ultrasoundExtracting, setUltrasoundExtracting] = useState(false);
+  const [oilSumpGallons, setOilSumpGallons] = useState<number | null>(null);
   const isAnyVisionExtracting =
     vibrationExtractStatus === "extracting" ||
     mcaExtracting ||
@@ -4468,6 +4469,7 @@ useEffect(() => {
             <OilInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
               onExtractionStatusChange={setOilExtracting}
+              onSumpCapacityChange={setOilSumpGallons}
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
@@ -6670,6 +6672,7 @@ useEffect(() => {
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}
             identifiedFaults={analysisResult?.identifiedFaults}
+            capacityGallons={oilSumpGallons}
           />
         </div>
       )}

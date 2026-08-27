@@ -131,8 +131,12 @@ export function OilVisionDropzone({
         }
 
         onExtracted(result.data, file.name);
+        const fmt =
+          result.data.formatDetected && result.data.formatDetected !== "UNKNOWN"
+            ? result.data.formatDetected
+            : "lab";
         setExtractBanner(
-          `Auto-filled from ${result.data.formatDetected} report (confidence ${result.data.confidenceScore}%)`
+          `Auto-filled from ${fmt} report (confidence ${result.data.confidenceScore}%)`
         );
       } catch (err) {
         if (capturedAssetId && activeAssetRef.current !== capturedAssetId) {
@@ -170,12 +174,6 @@ export function OilVisionDropzone({
         <Upload className="h-5 w-5 text-cyan-400 shrink-0" aria-hidden />
       </div>
 
-      {parsing && (
-        <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Extracting Telemetry Data...
-        </div>
-      )}
       {!hasPreview ? (
         <div
           role="button"
@@ -208,23 +206,27 @@ export function OilVisionDropzone({
                 : "border-slate-600 hover:border-cyan-500/60 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"
           }`}
         >
-          <Upload className={`h-8 w-8 mx-auto mb-3 ${parsing ? "text-slate-500" : "text-cyan-400"}`} />
-          <p className={`text-sm font-bold flex items-center justify-center gap-2 ${parsing ? "text-slate-500" : "text-white"}`}>
-            {parsing && <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />}
-            {parsing ? "Extracting Telemetry Data..." : "Drop oil lab report screenshot here"}
-          </p>
-          <p className="text-xs text-slate-500 mt-1">
-            .png · .jpg · .webp — Polaris / TestOil / ALS / Bureau Veritas
-          </p>
+          {parsing ? (
+            <Loader2 className="h-10 w-10 animate-spin text-cyan-400" />
+          ) : (
+            <>
+              <Upload className="h-8 w-8 mx-auto mb-3 text-cyan-400" />
+              <p className="text-sm font-bold text-white flex items-center justify-center gap-2">
+                Drop oil lab report screenshot here
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                .png · .jpg · .webp — Polaris / TestOil / ALS / Bureau Veritas
+              </p>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-4 rounded-xl border border-white/10 bg-slate-950/50 p-4">
           <div className="flex flex-col sm:flex-row gap-4 items-start">
             <div className="w-36 h-24 shrink-0 rounded-lg border border-slate-600 bg-slate-900 relative overflow-hidden shadow-inner">
               {parsing ? (
-                <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-cyan-300">
+                <div className="w-full h-full flex items-center justify-center text-cyan-300">
                   <Loader2 className="h-6 w-6 animate-spin" />
-                  <span className="text-[10px] font-bold">Extracting Telemetry Data...</span>
                 </div>
               ) : uploadPreview ? (
                 <img
@@ -241,11 +243,11 @@ export function OilVisionDropzone({
                 </span>
                 <span className="text-slate-500">|</span>
                 <span className="text-cyan-300">
-                  {parsing
-                    ? "Extracting Telemetry Data..."
-                    : extractBanner
-                      ? "Fields auto-filled"
-                      : "Ready"}
+                {parsing
+                  ? "Processing…"
+                  : extractBanner
+                    ? "Fields auto-filled"
+                    : "Ready"}
                 </span>
               </div>
               {extractBanner && (

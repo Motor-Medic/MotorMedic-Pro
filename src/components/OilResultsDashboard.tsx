@@ -56,7 +56,7 @@ function calculateOilFinancials({ capacityGallons, tanValue }: DynamicOilMetrics
   const savings = fullSumpReplacement !== null && kidneyCost !== null ? fullSumpReplacement - kidneyCost : null;
 
   const sumpFootnote = hasCapacity
-    ? `${capacityGallons} gal × $${OIL_COST_PER_GAL}/gal = $${fullSumpReplacement?.toLocaleString()}`
+    ? `${capacityGallons} gal x $${OIL_COST_PER_GAL}/gal = $${fullSumpReplacement?.toLocaleString()}`
     : "Enter sump capacity to compute ROI";
 
   const lifeImpactPct = hasTan ? Math.min(50, Math.max(0, (tanValue - 2.0) * 14)) : null;
@@ -65,10 +65,10 @@ function calculateOilFinancials({ capacityGallons, tanValue }: DynamicOilMetrics
     : "Awaiting TAN measurement";
 
   return {
-    fullSumpFormatted: fullSumpReplacement !== null ? `$${fullSumpReplacement.toLocaleString()}` : "—",
-    kidneyCostFormatted: kidneyCost !== null ? `$${kidneyCost.toLocaleString()}` : "—",
-    savingsFormatted: savings !== null ? `$${savings.toLocaleString()}` : "—",
-    lifeImpactFormatted: lifeImpactPct !== null ? `-${lifeImpactPct.toFixed(1)}%` : "—",
+    fullSumpFormatted: fullSumpReplacement !== null ? `$${fullSumpReplacement.toLocaleString()}` : "-",
+    kidneyCostFormatted: kidneyCost !== null ? `$${kidneyCost.toLocaleString()}` : "-",
+    savingsFormatted: savings !== null ? `$${savings.toLocaleString()}` : "-",
+    lifeImpactFormatted: lifeImpactPct !== null ? `-${lifeImpactPct.toFixed(1)}%` : "-",
     sumpFootnote,
     lifeFootnote,
   };
@@ -363,6 +363,8 @@ export interface OilResultsDashboardProps {
   engineerName?: string;
   /** Saved fault hypotheses; root-cause cards render from these alone. */
   identifiedFaults?: IdentifiedFault[];
+  /** Sump capacity in gallons derived from vision sump_capacity (4 qt =1 gal) */
+  capacityGallons?: number | null;
 }
 
 const NO_RECOMMENDATIONS: string[] = [];
@@ -383,7 +385,8 @@ export default function OilResultsDashboard({
   recommendations = NO_RECOMMENDATIONS,
   savedAnalysisId = null,
   engineerName,
-  identifiedFaults = NO_FAULTS
+  identifiedFaults = NO_FAULTS,
+  capacityGallons: capacityGallonsProp = null
 }: OilResultsDashboardProps) {
   const [checked, setChecked] = useState<Record<number, boolean>>({});
 
@@ -644,8 +647,7 @@ export default function OilResultsDashboard({
               Oil Life Extension ROI
             </p>
             {(() => {
-              // OilSample doesn't have capacityGallons; will fall back to "—" when unavailable
-              const capacity = null as number | null;
+              const capacity = capacityGallonsProp ?? null;
               const tan = latestOilSample?.acidNumber ?? null;
               const { fullSumpFormatted, kidneyCostFormatted, savingsFormatted, sumpFootnote } = calculateOilFinancials({ capacityGallons: capacity, tanValue: tan });
               const kidneyHours = capacity ? Math.max(6, (capacity * TURNOVERS_TARGET) / FLOW_RATE_GPH) : null;

@@ -1824,6 +1824,14 @@ app.post(OIL_VISION_API_PATH, async (req, res) => {
         typeof req.body?.maxTokens === "number" ? req.body.maxTokens : undefined
     });
 
+    console.info(
+      "[vision] model:",
+      outcome.success === false ? "n/a" : outcome.model,
+      "route:",
+      OIL_VISION_API_PATH,
+      "raw logged by extractor"
+    );
+
     if (outcome.success === false) {
       return res.status(outcome.httpStatus).json({
         success: false,

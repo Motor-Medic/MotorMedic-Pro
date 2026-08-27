@@ -79,6 +79,40 @@ const inputCompact =
 const selectCls = `${inputCls} appearance-none cursor-pointer pr-10`;
 const microLabel = "text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block";
 
+// Maps the human-readable PpmField label (e.g. "Iron (Fe)") to the canonical
+// consensus flag key produced by the vision extractor.
+const PPM_LABEL_TO_CANONICAL: Record<string, string> = {
+  "Iron (Fe)": "iron",
+  "Copper (Cu)": "copper",
+  "Lead (Pb)": "lead",
+  "Tin (Sn)": "tin",
+  "Aluminum (Al)": "aluminum",
+  "Chromium (Cr)": "chromium",
+  "Nickel (Ni)": "nickel",
+  "Silicon (Si/Dirt)": "silicon",
+  "Sodium (Na/Coolant)": "sodium",
+  "Potassium (K/Coolant)": "potassium",
+  "Zinc (Zn)": "zinc",
+  "Phosphorus (P)": "phosphorus",
+  "Calcium (Ca)": "calcium",
+  "Magnesium (Mg)": "magnesium",
+  "Boron (B)": "boron",
+  "Molybdenum (Mo)": "molybdenum"
+};
+
+const FlagContext = React.createContext<string[]>([]);
+
+function VerifyChip() {
+  return (
+    <span
+      title="Vision models disagreed — verify this value"
+      className="ml-1.5 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40 align-middle"
+    >
+      verify
+    </span>
+  );
+}
+
 function numStr(v: number | null | undefined): string {
   return v != null && Number.isFinite(v) ? String(v) : "";
 }
@@ -187,9 +221,14 @@ function PpmField({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const flaggedFields = React.useContext(FlagContext);
+  const flagged = flaggedFields.includes(PPM_LABEL_TO_CANONICAL[label]);
   return (
     <label className="block min-w-0">
-      <span className={microLabel}>{label}</span>
+      <span className={microLabel}>
+        {label}
+        {flagged && <VerifyChip />}
+      </span>
       <input
         type="number"
         step="any"
@@ -216,6 +255,7 @@ export interface OilInputAccordionsProps {
     rpm?: number;
   };
   onExtractionStatusChange?: (isExtracting: boolean) => void;
+  onSumpCapacityChange?: (gallons: number | null) => void;
 }
 
 function sanitizePpmOil(v: number | null | undefined): number | null {
@@ -228,11 +268,14 @@ function sanitizeTempOil(v: number | null | undefined): number | null {
   if (v < -50 || v > 200) return null;
   return v;
 }
+const QT_PER_GALLON = 4;
+const LITERS_PER_GALLON = 3.78541;
 
 export default function OilInputAccordions({
   onToast,
   equipment,
-  onExtractionStatusChange
+  onExtractionStatusChange,
+  onSumpCapacityChange
 }: OilInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<OilAccordionSection[]>([]);
   const [oilParsing, setOilParsing] = useState(false);
@@ -247,6 +290,7 @@ export default function OilInputAccordions({
   const [baseChemistry, setBaseChemistry] = useState<BaseOilChemistry>("Mineral");
   const [systemCapacity, setSystemCapacity] = useState("");
   const [capacityUnit, setCapacityUnit] = useState<"Gallons" | "Liters">("Gallons");
+  const [sumpFootnote, setSumpFootnote] = useState<string | null>(null);
 
   // Section 2
   const [assetHours, setAssetHours] = useState("");
@@ -260,6 +304,8 @@ export default function OilInputAccordions({
 
   // Section 3 — spectroscopy
   const [ppm, setPpm] = useState<Record<string, string>>({});
+  // Fields the dual-model vision consensus flagged as disagreed (need operator verify)
+  const [flaggedFields, setFlaggedFields] = useState<string[]>([]);
 
   // Section 4
   const [visc40, setVisc40] = useState("");
@@ -320,6 +366,7 @@ export default function OilInputAccordions({
         }
         if (sane != null) ppmUpdates[key] = numStr(sane);
       };
+      // Strict key mapping per master prompt — status illegible/confidence<0.8 already nulled in extractor
       collectPpm("fe", m.iron);
       collectPpm("cu", m.copper);
       collectPpm("pb", m.lead);
@@ -333,6 +380,12 @@ export default function OilInputAccordions({
       collectPpm("zn", m.zinc);
       collectPpm("ca", m.calcium);
       collectPpm("mg", m.magnesium);
+      // Multi-source B/Mo and additives P/Ba strictly by key
+      collectPpm("b", (m as unknown as Record<string, number | null>).boron);
+      collectPpm("mo", (m as unknown as Record<string, number | null>).molybdenum);
+      const pValMaster = (data as unknown as Record<string, unknown>).phosphorus as number | null | undefined;
+      if (pValMaster != null) collectPpm("p", pValMaster);
+      // Honest handling for water 0.1 with operator "<" — value 0.1 already sanitized, blank if illegible/absent
       if (Object.keys(ppmUpdates).length) {
         setPpm((prev) => ({ ...prev, ...ppmUpdates }));
       }
@@ -356,6 +409,36 @@ export default function OilInputAccordions({
         // Basic validation xx/xx/xx ; out-of-bounds remains blank with verify note
         if (/^\s*\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{1,2}\s*$/.test(c)) setIso4406Code(c);
         else onToast?.(`Verify manually — ISO 4406 code "${c}" invalid — left blank`, "warning");
+      } else {
+        // Honest empty: iso_4406 null per master prompt -> leave blank (never fabricated)
+        setIso4406Code("");
+      }
+
+      // --- MASTER VISION sump_capacity handling with named constants ---
+      const sumpGallons = (data as unknown as Record<string, unknown>).sumpCapacityGallons as number | null | undefined;
+      if (sumpGallons != null && Number.isFinite(sumpGallons)) {
+        setSystemCapacity(String(sumpGallons));
+        setCapacityUnit("Gallons");
+        // Financial Sump footnote with named constants: 4 qt = 1 gal, $30/gal
+        const cost = sumpGallons * 30;
+        setSumpFootnote(`${sumpGallons} gal x $30/gal = $${cost.toLocaleString()}`);
+        onSumpCapacityChange?.(sumpGallons);
+      } else {
+        setSumpFootnote(null);
+        onSumpCapacityChange?.(null);
+      }
+
+      // Fuel dilution and additional master fields strictly by key — honest empty if absent/illegible
+      const fuelDilVal = (data as unknown as Record<string, unknown>).fuelDilutionPercent as number | null | undefined;
+      if (fuelDilVal != null && Number.isFinite(fuelDilVal)) {
+        setFuelDilution(String(fuelDilVal));
+      }
+      // Water percent 0.1 with operator "<" — value already 0.1, handled by sanitizer
+      const waterPctVal = f.waterPercent as unknown as number | null | undefined;
+      if (waterPctVal != null && Number.isFinite(waterPctVal)) {
+        const saneW = sanitizePpmOil(waterPctVal);
+        if (saneW != null) setWaterPpm(String(saneW));
+        else onToast?.(`Verify manually — water percent ${waterPctVal} out of bounds discarded`, "warning");
       }
 
       const nextOpen: OilAccordionSection[] = [];
@@ -383,8 +466,32 @@ export default function OilInputAccordions({
         setOpenSections((prev) => Array.from(new Set([...prev, ...nextOpen])));
       }
 
+      const visionModel = (data as unknown as Record<string, unknown>).model as string | undefined;
+      const detectedTech = (data as unknown as Record<string, unknown>).detectedTechnology as
+        | string
+        | null
+        | undefined;
+      const extractionMode = (data as unknown as Record<string, unknown>).extractionMode as
+        | "consensus"
+        | "single"
+        | undefined;
+      const extractedFlagged = ((data as unknown as Record<string, unknown>).flaggedFields as
+        | string[]
+        | undefined) ?? [];
+      setFlaggedFields(extractedFlagged);
+
+      const filledCount = Object.keys(ppmUpdates).length;
+      let statusSuffix: string;
+      if (extractionMode === "consensus") {
+        statusSuffix =
+          extractedFlagged.length > 0
+            ? `${extractedFlagged.length} field(s) flagged for review (models disagreed).`
+            : "both models agreed — no flags.";
+      } else {
+        statusSuffix = "single-model extraction — review all fields.";
+      }
       onToast?.(
-        `Oil lab report read by vision — form fields updated for review (${data.formatDetected}, confidence ${data.confidenceScore}%).`,
+        `Oil lab report read by vision — ${filledCount} field(s) auto-filled (detected ${detectedTech ?? "OIL"} via ${visionModel ?? "vision model"}, confidence ${data.confidenceScore}%). ${statusSuffix}`,
         "success"
       );
     },
@@ -412,6 +519,7 @@ export default function OilInputAccordions({
   );
 
   return (
+    <FlagContext.Provider value={flaggedFields}>
     <div className="space-y-0">
       {(equipment?.assetLabel || equipment?.assetTag || equipment?.component) && (
         <div className="mb-4 rounded-xl border border-white/10 bg-slate-900/50 px-4 py-3">
@@ -530,7 +638,7 @@ export default function OilInputAccordions({
         </div>
 
         <div>
-          <span className={fieldLabel}>System Capacity</span>
+          <span className={fieldLabel}>System Capacity{flaggedFields.includes("sumpCapacityGallons") && <VerifyChip />}</span>
           <div className="flex gap-2 max-w-md">
             <input
               type="number"
@@ -557,6 +665,10 @@ export default function OilInputAccordions({
               ))}
             </div>
           </div>
+          {sumpFootnote && (
+            <p className="mt-2 text-[11px] text-slate-500">{sumpFootnote}</p>
+          )}
+          <p className="mt-1 text-[11px] text-slate-500">Conversion: 4 qt = 1 gal · {LITERS_PER_GALLON} L = 1 gal</p>
         </div>
       </AccordionShell>
 
@@ -569,7 +681,7 @@ export default function OilInputAccordions({
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <label className="block min-w-0">
-            <span className={fieldLabel}>Asset Total Operating Hours</span>
+            <span className={fieldLabel}>Asset Total Operating Hours{flaggedFields.includes("operatingHours") && <VerifyChip />}</span>
             <input
               type="number"
               value={assetHours}
@@ -579,7 +691,7 @@ export default function OilInputAccordions({
             />
           </label>
           <label className="block min-w-0">
-            <span className={fieldLabel}>Fluid Age (Hours)</span>
+            <span className={fieldLabel}>Fluid Age (Hours){flaggedFields.includes("lubeTimeHours") && <VerifyChip />}</span>
             <input
               type="number"
               value={fluidAgeHours}
@@ -752,7 +864,7 @@ export default function OilInputAccordions({
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <label className="block min-w-0">
-              <span className={fieldLabel}>@ 40°C (cSt)</span>
+              <span className={fieldLabel}>@ 40°C (cSt){flaggedFields.includes("viscosity40C") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="any"
@@ -762,7 +874,7 @@ export default function OilInputAccordions({
               />
             </label>
             <label className="block min-w-0">
-              <span className={fieldLabel}>@ 100°C (cSt)</span>
+              <span className={fieldLabel}>@ 100°C (cSt){flaggedFields.includes("viscosity100C") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="any"
@@ -783,7 +895,7 @@ export default function OilInputAccordions({
           </p>
           {showTbn ? (
             <label className="block min-w-0 max-w-md">
-              <span className={fieldLabel}>Total Base Number (TBN - mg KOH/g)</span>
+              <span className={fieldLabel}>Total Base Number (TBN - mg KOH/g){flaggedFields.includes("baseNumber") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="0.01"
@@ -794,7 +906,7 @@ export default function OilInputAccordions({
             </label>
           ) : (
             <label className="block min-w-0 max-w-md">
-              <span className={fieldLabel}>Total Acid Number (TAN - mg KOH/g)</span>
+              <span className={fieldLabel}>Total Acid Number (TAN - mg KOH/g){flaggedFields.includes("acidNumber") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="0.01"
@@ -812,7 +924,7 @@ export default function OilInputAccordions({
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <label className="block min-w-0">
-              <span className={fieldLabel}>Oxidation</span>
+              <span className={fieldLabel}>Oxidation{flaggedFields.includes("oxidation") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="any"
@@ -823,7 +935,7 @@ export default function OilInputAccordions({
               />
             </label>
             <label className="block min-w-0">
-              <span className={fieldLabel}>Nitration</span>
+              <span className={fieldLabel}>Nitration{flaggedFields.includes("nitration") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="any"
@@ -834,7 +946,7 @@ export default function OilInputAccordions({
               />
             </label>
             <label className="block min-w-0">
-              <span className={fieldLabel}>Sulfation</span>
+              <span className={fieldLabel}>Sulfation{flaggedFields.includes("sulfation") && <VerifyChip />}</span>
               <input
                 type="number"
                 step="any"
@@ -859,7 +971,7 @@ export default function OilInputAccordions({
                 />
               </label>
               <label className="block min-w-0">
-                <span className={fieldLabel}>Soot Content (%)</span>
+                <span className={fieldLabel}>Soot Content (%){flaggedFields.includes("sootPercent") && <VerifyChip />}</span>
                 <input
                   type="number"
                   step="any"
@@ -908,5 +1020,6 @@ export default function OilInputAccordions({
         </label>
       </AccordionShell>
     </div>
+    </FlagContext.Provider>
   );
 }

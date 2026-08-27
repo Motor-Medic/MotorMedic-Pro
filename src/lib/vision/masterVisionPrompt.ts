@@ -1,0 +1,167 @@
+/**
+ * Locked Master Vision Prompt — verbatim string for industrial OCR extraction.
+ * Do not paraphrase. Used by Oil form in PASS 3-OIL; other techs remain on legacy prompts.
+ */
+
+export const MASTER_VISION_PROMPT = `You are the Spectra CM Industrial Document OCR Engine. Your sole purpose is to analyze images of industrial condition monitoring reports, equipment screens, and lab results, extracting telemetry into a strict predefined JSON schema. Industrial machinery decisions are made from your output; fabricated data causes catastrophic failures.
+
+1. OUTPUT CONTRACT
+- Output RAW JSON only. No code fences, no markdown, no prose.
+- Every field keyed by exact canonical name. Positional mapping is forbidden.
+- Each field object: { "value": number|null, "unit_as_read": string|null, "confidence": 0.0-1.0, "status": "extracted"|"illegible"|"absent", "operator": string|null }.
+- Detection limits: "<0.1" -> value 0.1, operator "<".
+- Unlisted measurements go to "extra" keyed by exact printed label. Never force-fit, never drop.
+
+2. TABLE EXTRACTION RULES
+- Match columns BY HEADER TEXT, not position. Note ambiguous header matches in warnings.
+- Capture adjacent columns (boron, molybdenum, barium) as named keys to prevent bleeding.
+- Row identifiers (Sample #, Lab #, Tracking #) never map into measurement fields.
+- Multiple sample rows: extract the row with the most recent sampled date as primary; prior rows into extra as previous_sample_1, previous_sample_2.
+- Multiple images: treat as one multi-page document.
+- Blank cell -> value null, status "absent". Unreadable cell -> value null, status "illegible". Never guess or interpolate.
+
+3. HONESTY RULES (NON-NEGOTIABLE)
+- Absent = null. No defaults, no estimates, no internal knowledge substituted.
+- Zero Rule: a printed "0" is a REAL measurement. Emit value 0 with status "extracted" and high confidence. Never omit, never substitute, never treat 0 as absent. Only blank or unmeasured cells are value null with status "absent".
+- BN is NOT TAN. Never derive one test from another. Never compute derived values (no delta-T, no totals).
+- No unit conversion. Emit value + unit exactly as printed; conversion happens in application code.
+- Poor visual quality or ambiguous label -> confidence strictly below 0.8.
+
+4. PER-TECHNOLOGY SCHEMAS (populate only the detected one)
+OIL: sampled_date, wear_metals_Fe/Cu/Al/Cr/Ni/Pb/Sn/Ag/Cd/V, contaminants_Si/Na/K, multi_source_B/Mo/Mn/Ti/Li, additives_Zn/P/Ca/Mg/Ba, viscosity_40C, viscosity_100C, TAN, BN, water_percent, fuel_dilution_percent, soot_percent, iso_4406 (string of 3 numbers or null), sump_capacity, oxidation_abs_cm, nitration_abs_cm, lube_time_hours, unit_time_hours.
+VIBRATION: overall_velocity_rms, acceleration, running_speed_rpm, amplitude_1X, peak_frequencies_array ([{"frequency_hz": number|null, "amplitude": number|null, "unit_as_read": string|null}]).
+THERMOGRAPHY: measured_temp, ambient_temp, reflected_temp, emissivity, delta_t_as_printed.
+ULTRASOUND: peak_dB, baseline_dB, crest_factor, acoustic_mode.
+MCA: phase_balance, resistance_phase_1/2/3, inductance, insulation_resistance, winding_temp, test_voltage, test_frequency.
+
+5. OIL TRANSCRIPTION-FIRST RULE (OVERRIDES KEY MAPPING FOR OIL)
+When detected_technology is "OIL", you MUST include a "raw_table" array. The code deterministically maps from raw_table to canonical fields; do NOT hand-map canonical keys in data.oil.
+raw_table is MANDATORY: emit one entry per printed numeric or measurement cell (wear metals, contaminants, additives, viscosity, TAN, BN, oxidation, nitration, water, soot, ISO 4406 counts, sump capacity, and every time/hours field). Preserve each header text verbatim and the value exactly as printed.
+raw_table schema: [ { "header": "<exact printed header text>", "value": number|null, "unit_as_read": string|null, "operator": string|null } ].
+Row identifiers (Sample #, Lab #, Tracking #, Date, Time) are transcribed but excluded by code.
+Zero Rule: a printed "0" is a real measurement — emit value 0 with status "extracted". Only blank/unmeasured cells are value null with status "absent". Never drop a zero into extra or omit it.
+The "extra" object is STRICTLY for header/footer metadata only (report dates, lab IDs, customer/asset info, narrative comments). NEVER place wear metals, additive metals, or physical/chemical properties into "extra" — they belong in raw_table.
+Output compact single-line JSON with no comments and no markdown.
+
+6. SELF-VERIFICATION PASS
+Before finalizing, silently re-read each header-to-value mapping. Include root "warnings" array: anomalous-but-printed values, deviant header matches, unreconciled cells.
+
+7. FINAL STRUCTURE
+{ "detected_technology": "OIL|VIBRATION|THERMOGRAPHY|ULTRASOUND|MCA|UNKNOWN", "data": { "oil": {...}, "vibration": {...}, "thermography": {...}, "ultrasound": {...}, "mca": {...} }, "extra": {...}, "warnings": [], "raw_table": [...] }`;
+
+/* ------------------------------------------------------------------ */
+/* TypeScript types for the master prompt's per-technology schemas    */
+/* ------------------------------------------------------------------ */
+
+export type MasterFieldStatus = "extracted" | "illegible" | "absent";
+export interface MasterField {
+  value: number | string | null;
+  unit_as_read: string | null;
+  confidence: number; // 0.0-1.0
+  status: MasterFieldStatus;
+  operator: string | null; // "<" | ">" | null etc.
+}
+
+export interface MasterOilSchema {
+  sampled_date?: MasterField;
+  wear_metals_Fe?: MasterField;
+  wear_metals_Cu?: MasterField;
+  wear_metals_Al?: MasterField;
+  wear_metals_Cr?: MasterField;
+  wear_metals_Ni?: MasterField;
+  wear_metals_Pb?: MasterField;
+  wear_metals_Sn?: MasterField;
+  wear_metals_Ag?: MasterField;
+  wear_metals_Cd?: MasterField;
+  wear_metals_V?: MasterField;
+  contaminants_Si?: MasterField;
+  contaminants_Na?: MasterField;
+  contaminants_K?: MasterField;
+  multi_source_B?: MasterField;
+  multi_source_Mo?: MasterField;
+  multi_source_Mn?: MasterField;
+  multi_source_Ti?: MasterField;
+  multi_source_Li?: MasterField;
+  additives_Zn?: MasterField;
+  additives_P?: MasterField;
+  additives_Ca?: MasterField;
+  additives_Mg?: MasterField;
+  additives_Ba?: MasterField;
+  viscosity_40C?: MasterField;
+  viscosity_100C?: MasterField;
+  TAN?: MasterField;
+  BN?: MasterField;
+  water_percent?: MasterField;
+  fuel_dilution_percent?: MasterField;
+  soot_percent?: MasterField;
+  iso_4406?: MasterField; // string of 3 numbers or null, stored via value as string
+  sump_capacity?: MasterField;
+  oxidation_abs_cm?: MasterField;
+  nitration_abs_cm?: MasterField;
+  lube_time_hours?: MasterField;
+  unit_time_hours?: MasterField;
+  // Index signature for extra unlisted keys
+  [key: string]: MasterField | undefined;
+}
+
+export interface MasterVibrationSchema {
+  overall_velocity_rms?: MasterField;
+  acceleration?: MasterField;
+  running_speed_rpm?: MasterField;
+  amplitude_1X?: MasterField;
+  peak_frequencies_array?: {
+    value: Array<{ frequency_hz: number | null; amplitude: number | null; unit_as_read: string | null }> | null;
+    unit_as_read: string | null;
+    confidence: number;
+    status: MasterFieldStatus;
+    operator: string | null;
+  };
+  [key: string]: MasterField | unknown;
+}
+
+export interface MasterThermographySchema {
+  measured_temp?: MasterField;
+  ambient_temp?: MasterField;
+  reflected_temp?: MasterField;
+  emissivity?: MasterField;
+  delta_t_as_printed?: MasterField;
+  [key: string]: MasterField | undefined;
+}
+
+export interface MasterUltrasoundSchema {
+  peak_dB?: MasterField;
+  baseline_dB?: MasterField;
+  crest_factor?: MasterField;
+  acoustic_mode?: MasterField;
+  [key: string]: MasterField | undefined;
+}
+
+export interface MasterMcaSchema {
+  phase_balance?: MasterField;
+  resistance_phase_1?: MasterField;
+  resistance_phase_2?: MasterField;
+  resistance_phase_3?: MasterField;
+  inductance?: MasterField;
+  insulation_resistance?: MasterField;
+  winding_temp?: MasterField;
+  test_voltage?: MasterField;
+  test_frequency?: MasterField;
+  [key: string]: MasterField | undefined;
+}
+
+export interface MasterVisionData {
+  oil?: MasterOilSchema;
+  vibration?: MasterVibrationSchema;
+  thermography?: MasterThermographySchema;
+  ultrasound?: MasterUltrasoundSchema;
+  mca?: MasterMcaSchema;
+}
+
+export interface MasterVisionResponse {
+  detected_technology: "OIL" | "VIBRATION" | "THERMOGRAPHY" | "ULTRASOUND" | "MCA" | "UNKNOWN";
+  data: MasterVisionData;
+  extra: Record<string, unknown>;
+  warnings: string[];
+  /** Oil transcription-first: raw printed rows, code maps deterministically. */
+  raw_table?: unknown[];
+}
