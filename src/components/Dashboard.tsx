@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
+  ExternalLink,
   Radio,
   TrendingUp,
   Wrench
@@ -14,7 +15,7 @@ import {
 
 interface DashboardProps {
   companyId: number;
-  onNavigate: (tab: "diagnose" | "history" | "trends" | "sensors" | "assets" | "migration") => void;
+  onNavigate: (tab: "diagnose" | "history" | "trends" | "sensors" | "assets" | "migration" | "alerts") => void;
   onSelectReport?: (report: any) => void;
   onStartQuickAnalysis: () => void;
   onAddAsset: () => void;
@@ -72,7 +73,15 @@ type DashboardPayload = {
     assetId: string | null;
   }>;
   healthZones: { A: number; B: number; C: number; D: number };
-  recentAnalyses: unknown[];
+  recentAnalyses: Array<{
+    assetId: string | null;
+    component: string | null;
+    healthScore: number | null;
+    primaryFault: string | null;
+    severity: string | null;
+    summary: string | null;
+    timestamp: string | null;
+  }>;
   correlationData: unknown[];
   error?: string;
   assetHealthScores: AssetHealthScore[];
@@ -100,6 +109,54 @@ function formatUsd(n: number): string {
     currency: "USD",
     maximumFractionDigits: 0
   });
+}
+
+interface BriefingEntry {
+  assetId: string | null;
+  component: string | null;
+  primaryFault: string | null;
+  severity: string | null;
+  summary: string | null;
+  healthScore: number | null;
+  timestamp: string | null;
+  count: number;
+}
+
+function deduplicateBriefingEntries(entries: DashboardPayload["recentAnalyses"]): BriefingEntry[] {
+  if (!entries || entries.length === 0) return [];
+  
+  const result: BriefingEntry[] = [];
+  let currentGroup: BriefingEntry | null = null;
+  
+  for (const entry of entries) {
+    const assetKey = entry.assetId || "unknown";
+    const faultKey = entry.primaryFault || entry.summary || "unknown";
+    const groupKey = `${assetKey}|${faultKey}`;
+    
+    if (currentGroup && `${currentGroup.assetId || "unknown"}|${currentGroup.primaryFault || currentGroup.summary || "unknown"}` === groupKey) {
+      currentGroup.count += 1;
+    } else {
+      if (currentGroup) {
+        result.push(currentGroup);
+      }
+      currentGroup = {
+        assetId: entry.assetId,
+        component: entry.component,
+        primaryFault: entry.primaryFault,
+        severity: entry.severity,
+        summary: entry.summary,
+        healthScore: entry.healthScore,
+        timestamp: entry.timestamp,
+        count: 1
+      };
+    }
+  }
+  
+  if (currentGroup) {
+    result.push(currentGroup);
+  }
+  
+  return result;
 }
 
 function EmptyBlock({
@@ -186,6 +243,9 @@ export default function Dashboard({
     }
     return alarms;
   }, [data?.liveAlarms, assetFilter]);
+
+  const displayedAlarms = useMemo(() => filteredAlarms.slice(0, 5), [filteredAlarms]);
+  const hasMoreAlarms = filteredAlarms.length > 5;
 
   const zoneDistribution = useMemo(() => {
     const zones = data?.healthZones || { A: 0, B: 0, C: 0, D: 0 };
@@ -427,9 +487,43 @@ export default function Dashboard({
             <Activity className="h-4 w-4 text-yellow-500" />
             <h3 className="text-lg font-bold text-white">AI Shift Briefing</h3>
           </div>
-          {data?.aiBriefing ? (
+          {data?.recentAnalyses && data.recentAnalyses.length > 0 ? (
             <>
-              <p className="text-sm text-slate-300 mb-4 leading-relaxed">{data.aiBriefing}</p>
+              {(() => {
+                const deduped = deduplicateBriefingEntries(data.recentAnalyses);
+                return (
+                  <ul className="space-y-2.5 mb-4">
+                    {deduped.map((entry, index) => (
+                      <li
+                        key={`${index}-${entry.assetId}-${entry.primaryFault}`}
+                        className="flex items-start gap-3 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2.5"
+                      >
+                        <span className="shrink-0 w-6 h-6 rounded-md bg-yellow-500/15 border border-yellow-500/40 text-yellow-500 text-xs font-bold flex items-center justify-center">
+                          #{index + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold text-white truncate">
+                              {entry.assetId || "Unknown Asset"}
+                              {entry.component && <span className="text-slate-400"> / {entry.component}</span>}
+                            </p>
+                            {entry.count > 1 && (
+                              <span className="shrink-0 inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-400/15 text-cyan-300 border border-cyan-400/40">
+                                x{entry.count}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            {entry.primaryFault || entry.summary || "No fault detail"}
+                            {entry.healthScore != null && <span className="ml-2 font-mono text-yellow-400">· Health {entry.healthScore}</span>}
+                            {entry.severity && <span className="ml-2 font-mono text-red-400">· {entry.severity}</span>}
+                          </p>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
               <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
                 Top {filteredBadActors.length} Bad Actors
               </p>
@@ -473,45 +567,58 @@ export default function Dashboard({
             <h3 className="text-lg font-bold text-white">Live Alarm Feed &amp; CMMS Sync Status</h3>
           </div>
 
-          {filteredAlarms.length > 0 ? (
-            <ul className="space-y-3">
-              {filteredAlarms.map((alarm) => (
-                <li
-                  key={alarm.id}
-                  className={`rounded-lg border p-3 ${
-                    alarm.severity === "critical"
-                      ? "border-red-500/30 bg-red-500/5"
-                      : "border-slate-700/60 bg-slate-950/40"
-                  }`}
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div>
-                      <p className="text-sm font-semibold text-white">
-                        {alarm.name} ({alarm.zone})
-                      </p>
-                      <p className="text-xs text-slate-400 mt-0.5">{alarm.detail}</p>
+          {displayedAlarms.length > 0 ? (
+            <div className="max-h-[380px] overflow-y-auto pr-1">
+              <ul className="space-y-3">
+                {displayedAlarms.map((alarm) => (
+                  <li
+                    key={alarm.id}
+                    className={`rounded-lg border p-3 ${
+                      alarm.severity === "critical"
+                        ? "border-red-500/30 bg-red-500/5"
+                        : "border-slate-700/60 bg-slate-950/40"
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-white">
+                          {alarm.name} ({alarm.zone})
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">{alarm.detail}</p>
+                      </div>
+                      {alarm.acknowledged ? (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold bg-green-500/15 text-green-400 border border-green-500/40 shrink-0">
+                          <CheckCircle2 className="h-3 w-3" />
+                          Acknowledged
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-500/15 text-yellow-500 border border-yellow-500/40 shrink-0">
+                          <Wrench className="h-3 w-3" />
+                          Unacknowledged
+                        </span>
+                      )}
                     </div>
-                    {alarm.acknowledged ? (
-                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold bg-green-500/15 text-green-400 border border-green-500/40 shrink-0">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Acknowledged
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-500/15 text-yellow-500 border border-yellow-500/40 shrink-0">
-                        <Wrench className="h-3 w-3" />
-                        Unacknowledged
-                      </span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : (
             <EmptyBlock
               icon={AlertTriangle}
               title="No data available"
               message="Alarms appear here when diagnostics create HIGH/MEDIUM severity alerts."
             />
+          )}
+
+          {hasMoreAlarms && (
+            <button
+              type="button"
+              onClick={() => onNavigate("alerts")}
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-400/10 border border-cyan-400/40 text-cyan-300 text-xs font-bold hover:bg-cyan-400/20 cursor-pointer transition-colors"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              View All Alarms ({filteredAlarms.length})
+            </button>
           )}
 
           <div className="mt-4 flex flex-wrap gap-2">

@@ -2141,67 +2141,81 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
                   : sev === "MEDIUM"
                     ? "border-amber-500/40 text-amber-300"
                     : "border-slate-600 text-slate-300";
+              const displayedGroup = group.slice(0, 5);
+              const hasMore = group.length > 5;
               return (
                 <div key={sev} className="space-y-2">
                   <p className={`text-[10px] font-bold uppercase tracking-widest ${sevCls.split(" ").pop()}`}>
                     {sev} · {group.length}
                   </p>
-                  {group.map((alert) => (
-                    <div
-                      key={alert.id}
-                      className={`rounded-xl border bg-slate-950/60 px-3 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2 ${sevCls}`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-white truncate">{alert.title}</p>
-                        <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">
-                          {alert.description || "—"}
-                        </p>
-                        <p className="text-[10px] text-slate-500 mt-1">
-                          {alert.asset_id || "unassigned"} ·{" "}
-                          {alert.created_at
-                            ? new Date(alert.created_at).toLocaleString()
-                            : ""}
-                          {alert.acknowledged ? " · acknowledged" : ""}
-                        </p>
-                      </div>
-                      {alert.asset_id && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            navigateToTab("analysis", { assetId: alert.asset_id! })
-                          }
-                          title={`Open the saved assessment for ${alert.asset_id}`}
-                          className="shrink-0 min-h-[36px] px-3 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-white hover:border-cyan-400 cursor-pointer transition-colors"
-                        >
-                          View Full Report
-                        </button>
-                      )}
-                      {!alert.acknowledged && (
-                        <button
-                          type="button"
-                          disabled={ackingId === alert.id}
-                          onClick={async () => {
-                            setAckingId(alert.id);
-                            try {
-                              await acknowledgeAlert(alert.id);
-                              toast("Alert acknowledged.", "success");
-                              await loadDbAlerts();
-                            } catch (err) {
-                              toast(
-                                err instanceof Error ? err.message : "Acknowledge failed",
-                                "error"
-                              );
-                            } finally {
-                              setAckingId(null);
+                  <div className="max-h-[380px] overflow-y-auto pr-1 space-y-2">
+                    {displayedGroup.map((alert) => (
+                      <div
+                        key={alert.id}
+                        className={`rounded-xl border bg-slate-950/60 px-3 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2 ${sevCls}`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-white truncate">{alert.title}</p>
+                          <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">
+                            {alert.description || "—"}
+                          </p>
+                          <p className="text-[10px] text-slate-500 mt-1">
+                            {alert.asset_id || "unassigned"} ·{" "}
+                            {alert.created_at
+                              ? new Date(alert.created_at).toLocaleString()
+                              : ""}
+                            {alert.acknowledged ? " · acknowledged" : ""}
+                          </p>
+                        </div>
+                        {alert.asset_id && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigateToTab("analysis", { assetId: alert.asset_id! })
                             }
-                          }}
-                          className="shrink-0 min-h-[36px] px-3 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-white hover:border-amber-400 disabled:opacity-50"
-                        >
-                          {ackingId === alert.id ? "…" : "Acknowledge"}
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                            title={`Open the saved assessment for ${alert.asset_id}`}
+                            className="shrink-0 min-h-[36px] px-3 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-white hover:border-cyan-400 cursor-pointer transition-colors"
+                          >
+                            View Full Report
+                          </button>
+                        )}
+                        {!alert.acknowledged && (
+                          <button
+                            type="button"
+                            disabled={ackingId === alert.id}
+                            onClick={async () => {
+                              setAckingId(alert.id);
+                              try {
+                                await acknowledgeAlert(alert.id);
+                                toast("Alert acknowledged.", "success");
+                                await loadDbAlerts();
+                              } catch (err) {
+                                toast(
+                                  err instanceof Error ? err.message : "Acknowledge failed",
+                                  "error"
+                                );
+                              } finally {
+                                setAckingId(null);
+                              }
+                            }}
+                            className="shrink-0 min-h-[36px] px-3 rounded-lg bg-slate-800 border border-slate-600 text-xs font-bold text-white hover:border-amber-400 disabled:opacity-50"
+                          >
+                            {ackingId === alert.id ? "…" : "Acknowledge"}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {hasMore && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("alarms")}
+                      className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-400/10 border border-cyan-400/40 text-cyan-300 text-xs font-bold hover:bg-cyan-400/20 cursor-pointer transition-colors"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      View All {sev} ({group.length})
+                    </button>
+                  )}
                 </div>
               );
             })}
