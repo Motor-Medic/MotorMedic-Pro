@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   Info,
+  Loader2,
   Upload
 } from "lucide-react";
 import {
@@ -326,13 +327,21 @@ export interface ThermographyInputAccordionsProps {
   ) => void;
   /** Live telemetry + physics for /api/analyze-thermography metadata + DB columns. */
   onTelemetryChange?: (snapshot: ThermographyTelemetrySnapshot) => void;
+  onExtractionStatusChange?: (isExtracting: boolean) => void;
+}
+
+function sanitizeTempIr(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < -50 || v > 200) return null;
+  return v;
 }
 
 export default function ThermographyInputAccordions({
   onToast,
   equipment,
   onThermalFileReady,
-  onTelemetryChange
+  onTelemetryChange,
+  onExtractionStatusChange
 }: ThermographyInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<IrAccordionSection[]>([]);
 
@@ -765,6 +774,11 @@ export default function ThermographyInputAccordions({
     if (fileRef.current) fileRef.current.value = "";
   };
 
+  // Notify parent of extracting state for Run button lock
+  useEffect(() => {
+    onExtractionStatusChange?.(exifExtractStatus === "reading");
+  }, [exifExtractStatus, onExtractionStatusChange]);
+
   const applyExifMetadata = (
     meta: ThermalImageMetadata,
     formTempUnit: "°F" | "°C",
@@ -782,8 +796,13 @@ export default function ThermographyInputAccordions({
 
     if (meta.ambientTemp != null) {
       const v = convertTemp(meta.ambientTemp, srcTempUnit, formTempUnit);
-      setAmbientTemp(String(v));
-      next.ambientTemp = true;
+      const sane = sanitizeTempIr(v);
+      if (sane == null) {
+        onToast?.(`Verify manually — ambient temp ${v}° out of bounds (-50..200) discarded`, "warning");
+      } else {
+        setAmbientTemp(String(sane));
+        next.ambientTemp = true;
+      }
     }
     if (meta.humidity != null) {
       setHumidity(String(meta.humidity));
@@ -791,8 +810,13 @@ export default function ThermographyInputAccordions({
     }
     if (meta.reflectedTemp != null) {
       const v = convertTemp(meta.reflectedTemp, srcTempUnit, formTempUnit);
-      setReflectedTemp(String(v));
-      next.reflectedTemp = true;
+      const sane = sanitizeTempIr(v);
+      if (sane == null) {
+        onToast?.(`Verify manually — reflected temp ${v}° out of bounds discarded`, "warning");
+      } else {
+        setReflectedTemp(String(sane));
+        next.reflectedTemp = true;
+      }
     }
     if (meta.distance != null) {
       const v = convertDistance(meta.distance, srcDistUnit, formDistanceUnit);
@@ -801,9 +825,14 @@ export default function ThermographyInputAccordions({
     }
     if (meta.emissivity != null) {
       const e = String(meta.emissivity);
-      setEmissivityPreset("custom");
-      setEmissivityManual(e);
-      next.emissivity = true;
+      const numE = Number(e);
+      if (Number.isFinite(numE) && (numE < 0.01 || numE > 1)) {
+        onToast?.(`Verify manually — emissivity ${e} out of bounds (0.01-1) discarded`, "warning");
+      } else {
+        setEmissivityPreset("custom");
+        setEmissivityManual(e);
+        next.emissivity = true;
+      }
     }
 
     setExifSources(next);
@@ -816,6 +845,7 @@ export default function ThermographyInputAccordions({
 
   const extractExifFromFile = async (file: File) => {
     const requestId = ++exifRequestId.current;
+    const capturedAssetId = equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
     const formTempUnit = tempUnit;
     const formDistanceUnit = distanceUnit;
     setExifExtractStatus("reading");
@@ -838,9 +868,16 @@ export default function ThermographyInputAccordions({
       });
       const payload = await res.json().catch(() => ({}));
       if (requestId !== exifRequestId.current) return;
+      const currentAssetId = equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+      if (capturedAssetId && currentAssetId !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        setExifExtractStatus("idle");
+        return;
+      }
 
       if (!res.ok || payload?.success === false) {
         setExifExtractStatus("error");
+        onToast?.("Vision extraction failed — Verify manually.", "warning");
         return;
       }
 
@@ -848,6 +885,7 @@ export default function ThermographyInputAccordions({
       if (!meta?.found) {
         setExifExtractStatus("none");
         setExifSources({});
+        onToast?.("Vision model found no thermography fields — Verify manually.", "warning");
         return;
       }
 
@@ -858,9 +896,18 @@ export default function ThermographyInputAccordions({
       );
     } catch {
       if (requestId !== exifRequestId.current) return;
+      const currentAssetId2 = equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+      if (capturedAssetId && currentAssetId2 !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        setExifExtractStatus("idle");
+        return;
+      }
       // Silent fallback — leave defaults / manual entry
       setExifExtractStatus("none");
       setExifSources({});
+    } finally {
+      // Ensure extracting state eventually releases even if early return skipped
+      // (exifExtractStatus already set to none/found/error/idle above)
     }
   };
 
@@ -960,20 +1007,28 @@ export default function ThermographyInputAccordions({
         </div>
 
         <div className="space-y-4">
+          {exifExtractStatus === "reading" && (
+            <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Extracting Telemetry Data...
+            </div>
+          )}
           <span className={fieldLabel}>Thermal Image (AI Vision)</span>
           {!hasThermalPreview ? (
             <button
               type="button"
-              onClick={() => fileRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
+              onClick={() => { if (exifExtractStatus !== "reading") fileRef.current?.click(); }}
+              onDragOver={(e) => { if (exifExtractStatus === "reading") return; e.preventDefault(); }}
               onDrop={(e) => {
                 e.preventDefault();
+                if (exifExtractStatus === "reading") return;
                 handleThermalUpload(e.dataTransfer.files?.[0] ?? null);
               }}
-              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+              disabled={exifExtractStatus === "reading"}
+              className={`w-full rounded-xl border border-dashed px-6 py-10 text-center transition-colors ${exifExtractStatus === "reading" ? "border-slate-700 bg-slate-900/40 opacity-50 cursor-not-allowed" : "border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"}`}
             >
-              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
-              <p className="text-sm font-bold text-white">Drop thermal image here</p>
+              <Upload className={`h-8 w-8 mx-auto mb-3 ${exifExtractStatus === "reading" ? "text-slate-500" : "text-yellow-400"}`} />
+              <p className={`text-sm font-bold ${exifExtractStatus === "reading" ? "text-slate-500" : "text-white"}`}>{exifExtractStatus === "reading" ? "Extracting Telemetry Data..." : "Drop thermal image here"}</p>
               <p className="text-xs text-slate-500 mt-1">
                 .png, .jpg, .webp — photo or screenshot of thermal scan
               </p>
@@ -1006,14 +1061,16 @@ export default function ThermographyInputAccordions({
                     <button
                       type="button"
                       onClick={clearThermalPreview}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors"
+                      disabled={exifExtractStatus === "reading"}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-red-400/50 hover:text-red-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       ✕ Remove
                     </button>
                     <button
                       type="button"
                       onClick={() => fileRef.current?.click()}
-                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors"
+                      disabled={exifExtractStatus === "reading"}
+                      className="min-h-[30px] px-2.5 rounded-md border border-slate-600 bg-slate-900 text-slate-300 text-[11px] font-bold cursor-pointer hover:border-cyan-400/40 hover:text-cyan-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Replace image
                     </button>

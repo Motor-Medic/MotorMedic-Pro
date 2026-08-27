@@ -1677,8 +1677,17 @@ export default function Diagnose({
     confidence: number;
   } | null>(null);
   const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
-  const isLoading =
-    isAnalyzing || vibrationExtractStatus === "extracting";
+  const [mcaExtracting, setMcaExtracting] = useState(false);
+  const [oilExtracting, setOilExtracting] = useState(false);
+  const [thermoExtracting, setThermoExtracting] = useState(false);
+  const [ultrasoundExtracting, setUltrasoundExtracting] = useState(false);
+  const isAnyVisionExtracting =
+    vibrationExtractStatus === "extracting" ||
+    mcaExtracting ||
+    oilExtracting ||
+    thermoExtracting ||
+    ultrasoundExtracting;
+  const isLoading = isAnalyzing || isAnyVisionExtracting;
 
   const [measurementLocation, setMeasurementLocation] = useState<string>("Motor DE");
   const [measurementPoint, setMeasurementPoint] = useState("1H");
@@ -1905,7 +1914,7 @@ export default function Diagnose({
       : activeTech === "ir"
         ? equipmentReady && hasThermalImage
         : equipmentReady) && ultrasoundTelemetryValid;
-  const runButtonReady = canRun && !isAnalyzing;
+  const runButtonReady = canRun && !isAnalyzing && !isAnyVisionExtracting;
 
   const displayFaults: FaultFinding[] = useMemo(() => {
     // Never mix API NORMAL/"None" headers with the demo FAULTS mock list.
@@ -3778,6 +3787,7 @@ useEffect(() => {
 
   /** Qwen-VL / local vision extract — only from Run Diagnostics spectrum upload. */
   const runVibrationVisionExtraction = async (file: File) => {
+    const capturedAssetId = resolveVibrationAssetKey();
     setVibrationExtractStatus("extracting");
     setVibrationExtractError(null);
     setVibrationExtractSummary(null);
@@ -3794,6 +3804,23 @@ useEffect(() => {
         VISION_MODEL_CONFIG.endpoint,
         "full"
       );
+      // --- STALE-EXTRACTION RACE GUARD ---
+      if (capturedAssetId && resolveVibrationAssetKey() !== capturedAssetId) {
+        toast("Extraction discarded - asset changed", "warning");
+        setVibrationExtractStatus("idle");
+        return;
+      }
+      // --- SANITY BOUNDS ---
+      if (data.rpm != null && Number.isFinite(data.rpm)) {
+        if (data.rpm < 100 || data.rpm > 10000) {
+          toast(`Verify manually — RPM ${data.rpm} out of bounds (100-10000) discarded`, "warning");
+          data.rpm = undefined as unknown as number;
+        }
+      }
+      if (data.overallVelocity != null && Number.isFinite(data.overallVelocity) && data.overallVelocity < 0) {
+        toast(`Verify manually — velocity ${data.overallVelocity} < 0 discarded`, "warning");
+        data.overallVelocity = undefined;
+      }
       if (!data.spectralPeaks.length) {
         throw new Error(SPECTRAL_EXTRACTION_FAILED_MSG);
       }
@@ -3803,7 +3830,7 @@ useEffect(() => {
 
       vibrationExtractedRef.current = data;
       const record = buildVibrationDiagnosticRecord({
-        assetId: resolveVibrationAssetKey(),
+        assetId: capturedAssetId,
         extracted: data,
         component: browseComponent || null,
         timestamp: new Date().toISOString()
@@ -3831,6 +3858,12 @@ useEffect(() => {
         "success"
       );
     } catch (err) {
+      // Re-check race on error path as well
+      if (capturedAssetId && resolveVibrationAssetKey() !== capturedAssetId) {
+        toast("Extraction discarded - asset changed", "warning");
+        setVibrationExtractStatus("idle");
+        return;
+      }
       logPipelineFail("frontend-extract-vibration", startTime, err);
       console.error("❌ [PIPELINE FAIL] Extraction failed (no fallback):", {
         kind: classifyPipelineFailure(err),
@@ -3850,6 +3883,12 @@ useEffect(() => {
           : message,
         "warning"
       );
+    } finally {
+      // Safety: if status somehow still stuck at extracting (e.g. early return path missed), release it
+      // Use a microtask to avoid overwriting the intentional ready/failed/idle just set
+      setTimeout(() => {
+        setVibrationExtractStatus((prev) => (prev === "extracting" ? "failed" : prev));
+      }, 0);
     }
   };
 
@@ -4264,6 +4303,7 @@ useEffect(() => {
               openSection={openVibSection}
               onToggleSection={toggleVibSection}
               isFanOrPump={isFanOrPump}
+              isExtracting={vibrationExtractStatus === "extracting"}
               vibRpm={vibRpm}
               setVibRpm={setVibRpm}
               driveConfig={driveConfig}
@@ -4359,6 +4399,7 @@ useEffect(() => {
             <ThermographyInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
               onTelemetryChange={setThermoTelemetry}
+              onExtractionStatusChange={setThermoExtracting}
               onThermalFileReady={(meta) => {
                 if (!meta?.name) {
                   setThermalUpload((prev) => {
@@ -4393,6 +4434,7 @@ useEffect(() => {
             <UltrasoundInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
               onSnapshotChange={setUltrasoundSnapshot}
+              onExtractionStatusChange={setUltrasoundExtracting}
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
@@ -4407,6 +4449,7 @@ useEffect(() => {
           ) : activeTech === "mca" ? (
             <McaInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              onExtractionStatusChange={setMcaExtracting}
               onSnapshotChange={(snap) =>
                 setMcaSnapshot((prev) => mergeMcaOperatorSnapshots(prev, snap))
               }
@@ -4424,6 +4467,7 @@ useEffect(() => {
           ) : activeTech === "oil" ? (
             <OilInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
+              onExtractionStatusChange={setOilExtracting}
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
@@ -5449,7 +5493,7 @@ useEffect(() => {
                       <button
                         type="button"
                         onClick={() => void handleRunAnalysis()}
-                        disabled={!canRun || isAnalyzing}
+                        disabled={!runButtonReady}
                         className="px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-400 text-black border border-amber-300 hover:bg-amber-300 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Retry
@@ -5490,10 +5534,16 @@ useEffect(() => {
                 </span>
               </div>
             )}
+            {isAnyVisionExtracting && !isAnalyzing && (
+              <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2.5 text-xs font-bold text-cyan-300">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Extracting Telemetry Data...
+              </div>
+            )}
             <button
               type="button"
               onClick={() => void handleRunAnalysis()}
-              disabled={!canRun || isAnalyzing}
+              disabled={!runButtonReady}
               className={`w-full py-3 rounded-xl text-sm inline-flex items-center justify-center gap-2 cursor-pointer transition-all hover:scale-[1.01] disabled:bg-slate-700 disabled:text-slate-400 disabled:shadow-none disabled:cursor-not-allowed disabled:hover:scale-100 ${
                 runButtonReady
                   ? "bg-amber-400 hover:bg-amber-300 text-black font-bold shadow-[0_0_24px_rgba(251,191,36,0.45)]"
@@ -5505,7 +5555,12 @@ useEffect(() => {
                   : undefined
               }
             >
-              {isAnalyzing ? (
+              {isAnyVisionExtracting ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Extracting Telemetry Data...
+                </>
+              ) : isAnalyzing ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Analyzing…

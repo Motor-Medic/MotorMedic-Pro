@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, Upload } from "lucide-react";
+import { AlertTriangle, ChevronDown, Loader2, Upload } from "lucide-react";
 
 export type VibAccordionSection = "kinematics" | "metadata" | "telemetry" | "ingestion";
 export type DriveConfig = "Direct-Coupled" | "Belt-Driven" | "Gearbox-Driven";
@@ -40,6 +40,7 @@ export interface VibrationInputAccordionsProps {
   openSection: VibAccordionSection | null;
   onToggleSection: (id: VibAccordionSection) => void;
   isFanOrPump: boolean;
+  isExtracting?: boolean;
 
   vibRpm: string;
   setVibRpm: (v: string) => void;
@@ -187,6 +188,7 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
     openSection,
     onToggleSection,
     isFanOrPump,
+    isExtracting = false,
     vibRpm,
     setVibRpm,
     driveConfig,
@@ -285,7 +287,7 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
   };
 
   const handleSpectrumImage = (file?: File | null) => {
-    if (!file) return;
+    if (!file || isExtracting) return;
     setLocalFileName(file.name);
     setUploadedImage(true);
     onUploadFile(file);
@@ -349,18 +351,26 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
 
         {dataSource === "upload" && (
           <div className="space-y-4">
+            {isExtracting && (
+              <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Extracting Telemetry Data...
+              </div>
+            )}
             <span className={vibFieldLabel}>Spectrum Chart Image (AI Vision)</span>
             {!hasSpectrumPreview ? (
               <button
                 type="button"
-                onClick={() => fileRef.current?.click()}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={onDropFiles}
-                className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+                onClick={() => { if (!isExtracting) fileRef.current?.click(); }}
+                onDragOver={(e) => { if (isExtracting) return; e.preventDefault(); }}
+                onDrop={(e) => { if (isExtracting) return; onDropFiles(e); }}
+                disabled={isExtracting}
+                className={`w-full rounded-xl border border-dashed px-6 py-10 text-center transition-colors ${isExtracting ? "border-slate-700 bg-slate-900/40 opacity-50 cursor-not-allowed" : "border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"}`}
               >
-                <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
-                <p className="text-sm font-bold text-white">
-                  Drop spectrum chart image here
+                <Upload className={`h-8 w-8 mx-auto mb-3 ${isExtracting ? "text-slate-500" : "text-yellow-400"}`} />
+                <p className={`text-sm font-bold flex items-center justify-center gap-2 ${isExtracting ? "text-slate-500" : "text-white"}`}>
+                  {isExtracting && <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />}
+                  {isExtracting ? "Extracting Telemetry Data..." : "Drop spectrum chart image here"}
                 </p>
                 <p className="text-xs text-slate-500 mt-1">
                   .png, .jpg, .webp — photo or screenshot of FFT / spectrum

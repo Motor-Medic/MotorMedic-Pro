@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { OilReportData } from "../types/oilVision";
 import OilVisionDropzone from "./trendAnalyzer/OilVisionDropzone";
@@ -215,13 +215,30 @@ export interface OilInputAccordionsProps {
     hp?: number;
     rpm?: number;
   };
+  onExtractionStatusChange?: (isExtracting: boolean) => void;
+}
+
+function sanitizePpmOil(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < 0) return null;
+  return v;
+}
+function sanitizeTempOil(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < -50 || v > 200) return null;
+  return v;
 }
 
 export default function OilInputAccordions({
   onToast,
-  equipment
+  equipment,
+  onExtractionStatusChange
 }: OilInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<OilAccordionSection[]>([]);
+  const [oilParsing, setOilParsing] = useState(false);
+  const equipmentRefOil = React.useRef(equipment);
+  React.useEffect(() => { equipmentRefOil.current = equipment; }, [equipment]);
+  React.useEffect(() => { onExtractionStatusChange?.(oilParsing); }, [oilParsing, onExtractionStatusChange]);
 
   // Section 1
   const [assetType, setAssetType] = useState<OilAssetType>("Hydraulic System");
@@ -295,19 +312,27 @@ export default function OilInputAccordions({
       }
 
       const ppmUpdates: Record<string, string> = {};
-      if (m.iron != null) ppmUpdates.fe = numStr(m.iron);
-      if (m.copper != null) ppmUpdates.cu = numStr(m.copper);
-      if (m.lead != null) ppmUpdates.pb = numStr(m.lead);
-      if (m.tin != null) ppmUpdates.sn = numStr(m.tin);
-      if (m.aluminum != null) ppmUpdates.al = numStr(m.aluminum);
-      if (m.chromium != null) ppmUpdates.cr = numStr(m.chromium);
-      if (m.nickel != null) ppmUpdates.ni = numStr(m.nickel);
-      if (m.silicon != null) ppmUpdates.si = numStr(m.silicon);
-      if (m.sodium != null) ppmUpdates.na = numStr(m.sodium);
-      if (m.potassium != null) ppmUpdates.k = numStr(m.potassium);
-      if (m.zinc != null) ppmUpdates.zn = numStr(m.zinc);
-      if (m.calcium != null) ppmUpdates.ca = numStr(m.calcium);
-      if (m.magnesium != null) ppmUpdates.mg = numStr(m.magnesium);
+      const collectPpm = (key: string, v: number | null | undefined) => {
+        const sane = sanitizePpmOil(v);
+        if (v != null && sane == null) {
+          onToast?.(`Verify manually — ${key} ppm ${v} out of bounds (<0) discarded`, "warning");
+          return;
+        }
+        if (sane != null) ppmUpdates[key] = numStr(sane);
+      };
+      collectPpm("fe", m.iron);
+      collectPpm("cu", m.copper);
+      collectPpm("pb", m.lead);
+      collectPpm("sn", m.tin);
+      collectPpm("al", m.aluminum);
+      collectPpm("cr", m.chromium);
+      collectPpm("ni", m.nickel);
+      collectPpm("si", m.silicon);
+      collectPpm("na", m.sodium);
+      collectPpm("k", m.potassium);
+      collectPpm("zn", m.zinc);
+      collectPpm("ca", m.calcium);
+      collectPpm("mg", m.magnesium);
       if (Object.keys(ppmUpdates).length) {
         setPpm((prev) => ({ ...prev, ...ppmUpdates }));
       }
@@ -320,8 +345,18 @@ export default function OilInputAccordions({
       if (f.nitration != null) setFtirNitration(numStr(f.nitration));
       if (f.sulfation != null) setFtirSulfation(numStr(f.sulfation));
       if (f.sootPercent != null) setSootContent(numStr(f.sootPercent));
-      if (f.waterPpm != null) setWaterPpm(numStr(f.waterPpm));
-      if (f.particleCountIso4406) setIso4406Code(f.particleCountIso4406);
+      if (f.waterPpm != null) {
+        const saneW = sanitizePpmOil(f.waterPpm);
+        if (saneW != null) setWaterPpm(numStr(saneW));
+        else if (f.waterPpm != null) onToast?.(`Verify manually — water ppm ${f.waterPpm} out of bounds discarded`, "warning");
+      }
+      // ISO 4406 codes: honest parsing — never fabricated; blank if missing/invalid
+      if (f.particleCountIso4406) {
+        const c = String(f.particleCountIso4406).trim();
+        // Basic validation xx/xx/xx ; out-of-bounds remains blank with verify note
+        if (/^\s*\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{1,2}\s*$/.test(c)) setIso4406Code(c);
+        else onToast?.(`Verify manually — ISO 4406 code "${c}" invalid — left blank`, "warning");
+      }
 
       const nextOpen: OilAccordionSection[] = [];
       if (brandMatch || gradeMatch) nextOpen.push("identity");
@@ -358,16 +393,22 @@ export default function OilInputAccordions({
 
   const handleVisionExtracted = useCallback(
     (data: OilReportData, fileName: string) => {
+      const captured = equipmentRefOil.current?.assetTag || equipmentRefOil.current?.assetLabel || "";
+      const current = equipment?.assetTag || equipment?.assetLabel || "";
+      if (captured && current !== captured) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
       if (!oilReportHasData(data)) {
         onToast?.(
-          "Vision model found no oil analysis fields — try a sharper screenshot or enter values manually.",
+          "Vision model found no oil analysis fields — try a sharper screenshot or enter values manually. Verify manually.",
           "warning"
         );
         return;
       }
       applyOilReportToForm(data, fileName);
     },
-    [applyOilReportToForm, onToast]
+    [applyOilReportToForm, onToast, equipment?.assetTag, equipment?.assetLabel]
   );
 
   return (
@@ -384,7 +425,16 @@ export default function OilInputAccordions({
           </p>
         </div>
       )}
+      {oilParsing && (
+        <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300 mb-4">
+          <div className="h-4 w-4 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin" />
+          Extracting Telemetry Data...
+        </div>
+      )}
       <OilVisionDropzone
+        activeAssetId={equipment?.assetTag || equipment?.assetLabel || ""}
+        onParsingChange={(p) => { setOilParsing(p); onExtractionStatusChange?.(p); }}
+        disabled={oilParsing}
         onExtracted={handleVisionExtracted}
         onError={(msg) => onToast?.(msg, "error")}
       />

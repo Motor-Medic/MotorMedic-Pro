@@ -11,6 +11,8 @@ const OIL_VISION_API_PATH = "/api/oil-analysis/vision-extract";
 
 export interface OilVisionDropzoneProps {
   disabled?: boolean;
+  activeAssetId?: string;
+  onParsingChange?: (parsing: boolean) => void;
   onExtracted: (data: OilReportData, fileName: string) => void;
   onError?: (message: string) => void;
 }
@@ -34,6 +36,8 @@ function isImageFile(file: File): boolean {
 
 export function OilVisionDropzone({
   disabled,
+  activeAssetId,
+  onParsingChange,
   onExtracted,
   onError
 }: OilVisionDropzoneProps) {
@@ -44,6 +48,12 @@ export function OilVisionDropzone({
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [extractBanner, setExtractBanner] = useState<string | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
+  const activeAssetRef = useRef(activeAssetId);
+  activeAssetRef.current = activeAssetId;
+  const notifyParsing = (v: boolean) => {
+    setParsing(v);
+    onParsingChange?.(v);
+  };
 
   const clearPreview = useCallback(() => {
     setUploadPreview((prev) => {
@@ -61,12 +71,13 @@ export function OilVisionDropzone({
       if (!file || disabled || parsing) return;
 
       if (!isImageFile(file)) {
-        const msg = "Upload a lab report screenshot (.png / .jpg / .webp).";
+        const msg = "Upload a lab report screenshot (.png / .jpg / .webp). Verify manually.";
         setExtractError(msg);
         onError?.(msg);
         return;
       }
 
+      const capturedAssetId = activeAssetRef.current || "";
       setExtractError(null);
       setExtractBanner(null);
       setUploadName(file.name);
@@ -77,7 +88,7 @@ export function OilVisionDropzone({
         return preview;
       });
 
-      setParsing(true);
+      notifyParsing(true);
       try {
         const imageBase64 = await fileToBase64(file);
         const res = await fetch(OIL_VISION_API_PATH, {
@@ -88,6 +99,14 @@ export function OilVisionDropzone({
             fileName: file.name
           })
         });
+
+        // --- STALE-EXTRACTION RACE GUARD ---
+        if (capturedAssetId && activeAssetRef.current !== capturedAssetId) {
+          const discardMsg = "Extraction discarded - asset changed";
+          setExtractError(discardMsg);
+          onError?.(discardMsg);
+          return;
+        }
 
         const result = (await res.json().catch(() => ({}))) as {
           success?: boolean;
@@ -100,9 +119,14 @@ export function OilVisionDropzone({
           const msg =
             result.message ||
             result.error ||
-            `Vision extraction failed (${res.status}).`;
+            `Vision extraction failed (${res.status}). Verify manually.`;
           setExtractError(msg);
           onError?.(msg);
+          return;
+        }
+
+        if (capturedAssetId && activeAssetRef.current !== capturedAssetId) {
+          onError?.("Extraction discarded - asset changed");
           return;
         }
 
@@ -111,12 +135,16 @@ export function OilVisionDropzone({
           `Auto-filled from ${result.data.formatDetected} report (confidence ${result.data.confidenceScore}%)`
         );
       } catch (err) {
+        if (capturedAssetId && activeAssetRef.current !== capturedAssetId) {
+          onError?.("Extraction discarded - asset changed");
+          return;
+        }
         const msg =
-          err instanceof Error ? err.message : "Failed to extract oil report.";
+          err instanceof Error ? err.message : "Failed to extract oil report. Verify manually.";
         setExtractError(msg);
         onError?.(msg);
       } finally {
-        setParsing(false);
+        notifyParsing(false);
       }
     },
     [disabled, parsing, onExtracted, onError]
@@ -142,12 +170,19 @@ export function OilVisionDropzone({
         <Upload className="h-5 w-5 text-cyan-400 shrink-0" aria-hidden />
       </div>
 
+      {parsing && (
+        <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Extracting Telemetry Data...
+        </div>
+      )}
       {!hasPreview ? (
         <div
           role="button"
-          tabIndex={0}
-          onClick={() => !disabled && fileRef.current?.click()}
+          tabIndex={parsing || disabled ? -1 : 0}
+          onClick={() => !(parsing || disabled) && fileRef.current?.click()}
           onKeyDown={(e) => {
+            if (parsing || disabled) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
               fileRef.current?.click();
@@ -155,23 +190,28 @@ export function OilVisionDropzone({
           }}
           onDragOver={(e) => {
             e.preventDefault();
-            if (!disabled) setDragOver(true);
+            if (parsing || disabled) return;
+            setDragOver(true);
           }}
           onDragLeave={() => setDragOver(false)}
           onDrop={(e) => {
             e.preventDefault();
             setDragOver(false);
+            if (parsing || disabled) return;
             void handleImage(e.dataTransfer.files?.[0]);
           }}
-          className={`w-full rounded-xl border border-dashed px-6 py-10 text-center cursor-pointer transition-colors ${
-            dragOver
-              ? "border-cyan-400 bg-cyan-500/10"
-              : "border-slate-600 hover:border-cyan-500/60 bg-slate-950/60 hover:bg-slate-950"
-          } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+          className={`w-full rounded-xl border border-dashed px-6 py-10 text-center transition-colors ${
+            parsing || disabled
+              ? "border-slate-700 bg-slate-900/40 opacity-50 cursor-not-allowed"
+              : dragOver
+                ? "border-cyan-400 bg-cyan-500/10 cursor-pointer"
+                : "border-slate-600 hover:border-cyan-500/60 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"
+          }`}
         >
-          <Upload className="h-8 w-8 text-cyan-400 mx-auto mb-3" />
-          <p className="text-sm font-bold text-white">
-            Drop oil lab report screenshot here
+          <Upload className={`h-8 w-8 mx-auto mb-3 ${parsing ? "text-slate-500" : "text-cyan-400"}`} />
+          <p className={`text-sm font-bold flex items-center justify-center gap-2 ${parsing ? "text-slate-500" : "text-white"}`}>
+            {parsing && <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />}
+            {parsing ? "Extracting Telemetry Data..." : "Drop oil lab report screenshot here"}
           </p>
           <p className="text-xs text-slate-500 mt-1">
             .png · .jpg · .webp — Polaris / TestOil / ALS / Bureau Veritas
@@ -184,7 +224,7 @@ export function OilVisionDropzone({
               {parsing ? (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-cyan-300">
                   <Loader2 className="h-6 w-6 animate-spin" />
-                  <span className="text-[10px] font-bold">Vision…</span>
+                  <span className="text-[10px] font-bold">Extracting Telemetry Data...</span>
                 </div>
               ) : uploadPreview ? (
                 <img
@@ -202,7 +242,7 @@ export function OilVisionDropzone({
                 <span className="text-slate-500">|</span>
                 <span className="text-cyan-300">
                   {parsing
-                    ? "Extracting…"
+                    ? "Extracting Telemetry Data..."
                     : extractBanner
                       ? "Fields auto-filled"
                       : "Ready"}

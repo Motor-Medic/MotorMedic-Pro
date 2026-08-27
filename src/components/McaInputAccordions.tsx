@@ -157,6 +157,19 @@ export interface McaInputAccordionsProps {
     hp?: number;
     rpm?: number;
   };
+  /** Notify parent when vision extraction starts/ends — disables Run button. */
+  onExtractionStatusChange?: (isExtracting: boolean) => void;
+}
+
+function sanitizeTempForMca(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < -50 || v > 200) return null;
+  return v;
+}
+function sanitizeRpmForMca(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < 100 || v > 10000) return null;
+  return v;
 }
 
 function optionalNum(raw: string): number | null {
@@ -168,7 +181,8 @@ function optionalNum(raw: string): number | null {
 export default function McaInputAccordions({
   onToast,
   onSnapshotChange,
-  equipment
+  equipment,
+  onExtractionStatusChange
 }: McaInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<McaAccordionSection[]>([]);
   const [mcaMode, setMcaMode] = useState<McaMode>("static");
@@ -243,6 +257,13 @@ export default function McaInputAccordions({
     confidenceScore: number | null;
   } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const equipmentRef = useRef(equipment);
+  useEffect(() => {
+    equipmentRef.current = equipment;
+  }, [equipment]);
+  useEffect(() => {
+    onExtractionStatusChange?.(extractParsing);
+  }, [extractParsing, onExtractionStatusChange]);
 
   const isOnline = mcaMode === "online";
   const isDynamic = mcaMode === "dynamic";
@@ -374,7 +395,9 @@ export default function McaInputAccordions({
       setHpKw(String(extracted.ratedHp));
     }
     if (extracted.windingTempC != null && Number.isFinite(extracted.windingTempC)) {
-      setWindingTemp(String(extracted.windingTempC));
+      const sane = sanitizeTempForMca(extracted.windingTempC);
+      if (sane != null) setWindingTemp(String(sane));
+      else onToast?.(`Verify manually — winding temp ${extracted.windingTempC}°C out of bounds (-50..200) discarded`, "warning");
     }
     if (extracted.insulationClass) {
       const map: Record<string, string> = {
@@ -547,10 +570,20 @@ export default function McaInputAccordions({
       });
     }
     setUploadName(file.name);
-
+    const capturedAssetId =
+      equipmentRef.current?.assetTag ||
+      equipmentRef.current?.assetLabel ||
+      (equipmentRef.current?.assetTag == null && equipmentRef.current?.assetLabel == null ? "" : String(equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel));
     setExtractParsing(true);
     try {
       const extracted = await extractMcaDataFromFile(file);
+      // --- STALE-EXTRACTION RACE GUARD ---
+      const currentAssetId =
+        equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+      if (capturedAssetId && currentAssetId !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
       const hasWinding =
         mcaTripletHasData(extracted.phaseR) ||
         mcaTripletHasData(extracted.phaseL) ||
@@ -563,13 +596,13 @@ export default function McaInputAccordions({
       if (!hasWinding && !hasGw && !hasRic) {
         setExtractError(
           isImage
-            ? "Vision model found no winding, groundwall, or RIC values — try a sharper full-screen PNG/JPEG or enter values manually."
-            : "No winding, groundwall, or RIC values found — check the PDF or enter values manually."
+            ? "Vision model found no winding, groundwall, or RIC values — try a sharper full-screen PNG/JPEG or enter values manually. Verify manually."
+            : "No winding, groundwall, or RIC values found — check the PDF or enter values manually. Verify manually."
         );
         onToast?.(
           isImage
-            ? "MCA vision extract found no measurable fields."
-            : "MCA extract found no measurable fields.",
+            ? "MCA vision extract found no measurable fields — Verify manually."
+            : "MCA extract found no measurable fields — Verify manually.",
           "warning"
         );
         return;
@@ -583,11 +616,17 @@ export default function McaInputAccordions({
         "success"
       );
     } catch (err) {
+      const currentAssetId2 =
+        equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+      if (capturedAssetId && currentAssetId2 !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
       console.warn("[McaInputAccordions] extract failed:", err);
       setExtractError(
-        err instanceof Error ? err.message : "Failed to parse MCA report."
+        err instanceof Error ? err.message : "Failed to parse MCA report. Verify manually."
       );
-      onToast?.("MCA extract failed.", "error");
+      onToast?.("MCA extract failed — Verify manually.", "error");
     } finally {
       setExtractParsing(false);
     }
@@ -643,20 +682,28 @@ export default function McaInputAccordions({
           <span className={fieldLabel}>
             Analyzer Report Upload (PDF preferred · ALL-TEST / Megger / Baker)
           </span>
+          {extractParsing && (
+            <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300 mb-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Extracting Telemetry Data...
+            </div>
+          )}
           {!hasUploadPreview ? (
             <button
               type="button"
-              onClick={() => fileRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
+              onClick={() => !extractParsing && fileRef.current?.click()}
+              onDragOver={(e) => { if (extractParsing) return; e.preventDefault(); }}
               onDrop={(e) => {
                 e.preventDefault();
+                if (extractParsing) return;
                 void handleFile(e.dataTransfer.files?.[0] ?? null);
               }}
-              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors"
+              disabled={extractParsing}
+              className={`w-full rounded-xl border border-dashed px-6 py-10 text-center transition-colors ${extractParsing ? "border-slate-700 bg-slate-900/40 opacity-50 cursor-not-allowed" : "border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"}`}
             >
-              <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
-              <p className="text-sm font-bold text-white">
-                Drop MCA PDF or analyzer screenshot here
+              <Upload className={`h-8 w-8 mx-auto mb-3 ${extractParsing ? "text-slate-500" : "text-yellow-400"}`} />
+              <p className={`text-sm font-bold ${extractParsing ? "text-slate-500" : "text-white"}`}>
+                {extractParsing ? "Extracting Telemetry Data..." : "Drop MCA PDF or analyzer screenshot here"}
               </p>
               <p className="text-xs text-slate-500 mt-1">
                 .pdf · .png / .jpg — text PDF or vision screenshot (GPT-4o / Qwen VL)
@@ -670,9 +717,7 @@ export default function McaInputAccordions({
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-amber-300">
                       <Loader2 className="h-6 w-6 animate-spin" />
                     <span className="text-[10px] font-bold">
-                      {/\.(png|jpe?g|webp|gif)$/i.test(uploadName || "")
-                        ? "Vision…"
-                        : "Parsing…"}
+                      Extracting Telemetry Data...
                     </span>
                     </div>
                   ) : uploadPreview ? (
@@ -695,7 +740,7 @@ export default function McaInputAccordions({
                     <span className="text-slate-500">|</span>
                     <span className="text-amber-300">
                       {extractParsing
-                        ? "Extracting…"
+                        ? "Extracting Telemetry Data..."
                         : extractBanner
                           ? "Fields auto-filled"
                           : "Ready"}

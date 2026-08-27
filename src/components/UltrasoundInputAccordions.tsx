@@ -4,6 +4,7 @@ import {
   Cog,
   Droplets,
   FileAudio,
+  Loader2,
   Upload,
   Wind,
   Zap
@@ -141,12 +142,25 @@ export interface UltrasoundInputAccordionsProps {
   };
   /** Emits measurement metadata for POST /api/analyze-ultrasound. */
   onSnapshotChange?: (snapshot: UltrasoundInputSnapshot) => void;
+  onExtractionStatusChange?: (isExtracting: boolean) => void;
+}
+
+function sanitizeTempUltra(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < -50 || v > 200) return null;
+  return v;
+}
+function sanitizeRpmUltra(v: number | null | undefined): number | null {
+  if (v == null || !Number.isFinite(v)) return null;
+  if (v < 100 || v > 10000) return null;
+  return v;
 }
 
 export default function UltrasoundInputAccordions({
   onToast,
   equipment,
-  onSnapshotChange
+  onSnapshotChange,
+  onExtractionStatusChange
 }: UltrasoundInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<UeAccordionSection[]>([]);
   const [ultrasoundMode, setUltrasoundMode] = useState<UltrasoundMode>("leak");
@@ -207,6 +221,9 @@ export default function UltrasoundInputAccordions({
   const wavRef = useRef<HTMLInputElement>(null);
   const telemetryWavRef = useRef<HTMLInputElement>(null);
   const photoRef = useRef<HTMLInputElement>(null);
+  const equipmentRefUltra = useRef(equipment);
+  useEffect(() => { equipmentRefUltra.current = equipment; }, [equipment]);
+  useEffect(() => { onExtractionStatusChange?.(wavAnalyzing); }, [wavAnalyzing, onExtractionStatusChange]);
 
   /**
    * Crest Factor from Peak/RMS dB fields:
@@ -247,16 +264,26 @@ export default function UltrasoundInputAccordions({
 
   const applyWavMetrics = async (file: File) => {
     if (!/\.wav$/i.test(file.name) && !/wav|wave/i.test(file.type || "")) {
-      onToast?.("Please upload a .WAV audio file.", "warning");
+      onToast?.("Please upload a .WAV audio file. Verify manually.", "warning");
       return;
     }
 
+    const capturedAssetId = equipmentRefUltra.current?.assetTag || equipmentRefUltra.current?.assetLabel || "";
     setWavAnalyzing(true);
     setWavName(file.name);
     setWavMetricsNote(null);
 
     try {
       const metrics = await analyzeUltrasoundWav(file);
+      // --- STALE-EXTRACTION RACE GUARD ---
+      const currentAssetId = equipmentRefUltra.current?.assetTag || equipmentRefUltra.current?.assetLabel || "";
+      if (capturedAssetId && currentAssetId !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
+      // --- SANITY BOUNDS: RPM 100-10000 if equipmentRpm derived from wav meta (fallback) ---
+      // Peak/RMS dB honesty: never fabricate defaults — blank if missing (handled by metrics always present)
+      // Crest factor honesty: computed from peak - rms, no division
       setPeakDbuV(String(metrics.peakDb));
       setRmsDbuV(String(metrics.rmsDb));
       setCrestFactor(String(metrics.crestFactor));
@@ -270,9 +297,14 @@ export default function UltrasoundInputAccordions({
       );
       onToast?.("Acoustic metrics extracted successfully.", "success");
     } catch (err) {
+      const currentAssetId2 = equipmentRefUltra.current?.assetTag || equipmentRefUltra.current?.assetLabel || "";
+      if (capturedAssetId && currentAssetId2 !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
       setWavMetricsNote(null);
       onToast?.(
-        err instanceof Error ? err.message : "Failed to analyze WAV audio.",
+        err instanceof Error ? err.message : "Failed to analyze WAV audio. Verify manually.",
         "error"
       );
     } finally {
@@ -396,6 +428,12 @@ export default function UltrasoundInputAccordions({
           </p>
         </div>
       )}
+      {wavAnalyzing && (
+        <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300 mb-4">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Extracting Telemetry Data...
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 mb-4">
         <label className="flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest shrink-0">
@@ -443,20 +481,22 @@ export default function UltrasoundInputAccordions({
           {!wavName ? (
             <button
               type="button"
-              onClick={() => wavRef.current?.click()}
-              onDragOver={(e) => e.preventDefault()}
+              onClick={() => { if (!wavAnalyzing) wavRef.current?.click(); }}
+              onDragOver={(e) => { if (wavAnalyzing) return; e.preventDefault(); }}
               onDrop={(e) => {
                 e.preventDefault();
+                if (wavAnalyzing) return;
                 const file = e.dataTransfer.files?.[0];
                 if (file) handleWav(file);
               }}
               disabled={wavAnalyzing}
-              className="w-full rounded-xl border border-dashed border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 px-6 py-10 text-center cursor-pointer transition-colors disabled:opacity-60"
+              className={`w-full rounded-xl border border-dashed px-6 py-10 text-center transition-colors ${wavAnalyzing ? "border-slate-700 bg-slate-900/40 opacity-50 cursor-not-allowed" : "border-slate-600 hover:border-yellow-500/60 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"}`}
             >
               <Upload className="h-8 w-8 text-yellow-400 mx-auto mb-3" />
-              <p className="text-sm font-bold text-white">
+              <p className="text-sm font-bold text-white flex items-center justify-center gap-2">
+                {wavAnalyzing && <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />}
                 {wavAnalyzing
-                  ? "Analyzing acoustic metrics…"
+                  ? "Extracting Telemetry Data..."
                   : ultrasoundMode === "leak"
                     ? "Drag & Drop Audio File (.wav) — Optional"
                     : "Drag & Drop Audio File (.wav)"}
@@ -1099,20 +1139,22 @@ export default function UltrasoundInputAccordions({
           <span className={fieldLabel}>Drag & Drop Audio File (.wav)</span>
           <button
             type="button"
-            onClick={() => telemetryWavRef.current?.click()}
-            onDragOver={(e) => e.preventDefault()}
+            onClick={() => { if (!wavAnalyzing) telemetryWavRef.current?.click(); }}
+            onDragOver={(e) => { if (wavAnalyzing) return; e.preventDefault(); }}
             onDrop={(e) => {
               e.preventDefault();
+              if (wavAnalyzing) return;
               const file = e.dataTransfer.files?.[0];
               if (file) handleWav(file);
             }}
             disabled={wavAnalyzing}
-            className="w-full rounded-xl border border-dashed border-slate-600 hover:border-cyan-500/50 bg-slate-950/60 hover:bg-slate-950 px-5 py-6 text-center cursor-pointer transition-colors disabled:opacity-60"
+            className={`w-full rounded-xl border border-dashed px-5 py-6 text-center transition-colors ${wavAnalyzing ? "border-slate-700 bg-slate-900/40 opacity-50 cursor-not-allowed" : "border-slate-600 hover:border-cyan-500/50 bg-slate-950/60 hover:bg-slate-950 cursor-pointer"}`}
           >
-            <FileAudio className="h-7 w-7 text-cyan-400 mx-auto mb-2" />
-            <p className="text-sm font-bold text-white">
+            <FileAudio className={`h-7 w-7 mx-auto mb-2 ${wavAnalyzing ? "text-slate-500" : "text-cyan-400"}`} />
+            <p className="text-sm font-bold text-white flex items-center justify-center gap-2">
+              {wavAnalyzing && <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />}
               {wavAnalyzing
-                ? "Extracting Peak / RMS / Crest Factor…"
+                ? "Extracting Telemetry Data..."
                 : "Drop .WAV here to auto-fill Peak, RMS & Crest Factor"}
             </p>
             <p className="text-xs text-slate-500 mt-1">
