@@ -72,6 +72,7 @@ import {
 } from "./src/lib/oilVisionExtractor";
 import { finalizeVibrationFromParses } from "./src/lib/vibrationVisionExtractor";
 import { finalizeMcaFromParses } from "./src/lib/mcaVisionExtractor";
+import { finalizeThermographyFromParses } from "./src/lib/thermographyVisionExtractor";
 
 dotenv.config();
 
@@ -1848,6 +1849,9 @@ app.post(OIL_VISION_API_PATH, async (req, res) => {
       outcome = finalizeMcaFromParses(parses, lastError, baseInput);
     }
     if (!outcome.success && outcome.error === "TECHNOLOGY_NOT_MCA") {
+      outcome = finalizeThermographyFromParses(parses, lastError, baseInput);
+    }
+    if (!outcome.success && outcome.error === "TECHNOLOGY_NOT_THERMOGRAPHY") {
       outcome = finalizeOilFromParses(parses, lastError, baseInput);
     }
 

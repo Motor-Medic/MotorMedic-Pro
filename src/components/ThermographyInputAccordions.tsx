@@ -12,6 +12,10 @@ import {
   convertTemp,
   type ThermalImageMetadata
 } from "../lib/extractThermalMetadata";
+import {
+  extractThermographyReportFromImage,
+  type ThermographyReportData
+} from "../lib/thermographyVisionExtractor";
 
 type IrAccordionSection = "physics" | "camera" | "telemetry";
 
@@ -52,6 +56,18 @@ export interface ThermographyTelemetrySnapshot {
   distance?: number;
   distanceUnit?: "ft" | "m";
   tempUnit?: "°F" | "°C";
+  /** Master-vision OCR of a thermography report image (unified vision pipeline). */
+  visionReport?: {
+    maxTempC: number | null;
+    referenceTempC: number | null;
+    deltaTK: number | null;
+    avgTempC: number | null;
+    ambientTempC: number | null;
+    emissivity: number | null;
+    relativeHumidityPct: number | null;
+    severityClass: string | null;
+    flaggedFields?: string[];
+  } | null;
 }
 
 /** Auto-fill provenance for Section 3 Data Review fields. */
@@ -410,9 +426,19 @@ export default function ThermographyInputAccordions({
     max_allowable_limit: setMaxAllowableLimit
   });
 
+  // ---- Master Vision OCR (thermography report image) — independent of thermal-engine/visual-reference state ----
+  const [thermoOcrParsing, setThermoOcrParsing] = useState(false);
+  const [thermoOcrError, setThermoOcrError] = useState<string | null>(null);
+  const [thermoOcrData, setThermoOcrData] = useState<ThermographyReportData | null>(null);
+  const [thermoOcrFlagged, setThermoOcrFlagged] = useState<string[]>([]);
+
   useEffect(() => {
     fieldSourcesRef.current = fieldSources;
   }, [fieldSources]);
+
+  useEffect(() => {
+    onExtractionStatusChange?.(thermoOcrParsing);
+  }, [thermoOcrParsing, onExtractionStatusChange]);
 
   /** Sync Section 3 assetType from top-header Select Component (and componentType fallback). */
   useEffect(() => {
@@ -722,7 +748,20 @@ export default function ThermographyInputAccordions({
       reflectedTemp,
       distance,
       distanceUnit,
-      tempUnit
+      tempUnit,
+      visionReport: thermoOcrData
+        ? {
+            maxTempC: thermoOcrData.maxTempC,
+            referenceTempC: thermoOcrData.referenceTempC,
+            deltaTK: thermoOcrData.deltaTK,
+            avgTempC: thermoOcrData.avgTempC,
+            ambientTempC: thermoOcrData.ambientTempC,
+            emissivity: thermoOcrData.emissivity,
+            relativeHumidityPct: thermoOcrData.relativeHumidityPct,
+            severityClass: thermoOcrData.severityClass,
+            flaggedFields: thermoOcrData.flaggedFields
+          }
+        : null
     });
   }, [
     onTelemetryChange,
@@ -744,7 +783,8 @@ export default function ThermographyInputAccordions({
     reflectedTemp,
     distance,
     distanceUnit,
-    tempUnit
+    tempUnit,
+    thermoOcrData
   ]);
 
   // Keep radiometric correction inputs live for analysis consumers
@@ -885,7 +925,8 @@ export default function ThermographyInputAccordions({
       if (!meta?.found) {
         setExifExtractStatus("none");
         setExifSources({});
-        onToast?.("Vision model found no thermography fields — Verify manually.", "warning");
+        // No duplicate amber toast: the master-vision OCR path already raises the
+        // single red "No readable report fields found - verify manually." toast.
         return;
       }
 
@@ -928,8 +969,87 @@ export default function ThermographyInputAccordions({
     setUploadedName(file.name);
     onThermalFileReady?.({ name: file.name, preview, file });
     onToast?.(`Thermal image ready: ${file.name}`, "success");
-    // Async EXIF extract — does not block upload / preview
+    // Consumer 1: thermal analysis engine / Visual Reference Match (existing)
     void extractExifFromFile(file);
+    // Consumer 2: master-vision OCR (unified pipeline) — independent state
+    void runThermoVisionOcr(file);
+  };
+
+  const runThermoVisionOcr = (file?: File | null) => {
+    if (!file) return;
+    // Proactive reset of OCR state only — never touches the thermal preview / engine state
+    setThermoOcrData(null);
+    setThermoOcrFlagged([]);
+    setThermoOcrError(null);
+
+    const capturedAssetId =
+      equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+    setThermoOcrParsing(true);
+    extractThermographyReportFromImage(file)
+      .then((report) => {
+        const currentAssetId =
+          equipmentRef.current?.assetTag ||
+          equipmentRef.current?.assetLabel ||
+          "";
+        if (capturedAssetId && currentAssetId !== capturedAssetId) {
+          onToast?.("Extraction discarded - asset changed", "warning");
+          return;
+        }
+        // Map overlapping physics fields into the form
+        if (report.emissivity != null) {
+          setEmissivityPreset("custom");
+          setEmissivityManual(String(report.emissivity));
+        }
+        if (report.ambientTempC != null) {
+          const ambC = report.ambientTempC;
+          const ambDisplay =
+            tempUnit === "°F" ? ambC * 9 / 5 + 32 : ambC;
+          setAmbientTemp(String(Math.round(ambDisplay * 10) / 10));
+        }
+        if (report.relativeHumidityPct != null) {
+          setHumidity(String(report.relativeHumidityPct));
+        }
+        setThermoOcrData(report);
+        setThermoOcrFlagged(report.flaggedFields ?? []);
+
+        const filled = [
+          report.maxTempC,
+          report.referenceTempC,
+          report.deltaTK,
+          report.avgTempC,
+          report.emissivity,
+          report.ambientTempC,
+          report.relativeHumidityPct,
+          report.severityClass
+        ].filter((v) => v != null && v !== "").length;
+        const flagged = report.flaggedFields?.length ?? 0;
+        onToast?.(`${filled} auto-filled, ${flagged} flagged`, "success");
+      })
+      .catch((err) => {
+        const currentAssetId =
+          equipmentRef.current?.assetTag ||
+          equipmentRef.current?.assetLabel ||
+          "";
+        if (capturedAssetId && currentAssetId !== capturedAssetId) {
+          onToast?.("Extraction discarded - asset changed", "warning");
+          return;
+        }
+        const raw =
+          err instanceof Error ? err.message : "Thermography OCR failed. Verify manually.";
+        // TASK 2: honest empty-image message on non-oil (thermography) tab —
+        // map server "no parse / unknown technology" to a clear, non-oil message.
+        const honestEmpty =
+          raw === "TECHNOLOGY_NOT_OIL" ||
+          /TECHNOLOGY_NOT_OIL|returned no data|empty raw_table|no readable/i.test(raw);
+        const display = honestEmpty
+          ? "No readable report fields found - verify manually."
+          : raw;
+        setThermoOcrError(display);
+        onToast?.(display, "error");
+      })
+      .finally(() => {
+        setThermoOcrParsing(false);
+      });
   };
 
   const handleVisualUpload = (file?: File | null) => {
@@ -1081,6 +1201,60 @@ export default function ThermographyInputAccordions({
                   </div>
                 </div>
               </div>
+
+              {/* Master Vision OCR status — independent of thermal-engine / visual-reference state */}
+              {thermoOcrParsing && (
+                <div className="flex items-center gap-2 rounded-lg border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-xs font-bold text-indigo-200">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Extracting report fields (Master Vision)…
+                </div>
+              )}
+              {thermoOcrError && (
+                <p className="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2">
+                  {thermoOcrError}
+                </p>
+              )}
+              {thermoOcrData && (
+                <div className="mt-1 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  {(
+                    [
+                      ["Max Temp (°C)", thermoOcrData.maxTempC],
+                      ["Reference (°C)", thermoOcrData.referenceTempC],
+                      ["ΔT (K)", thermoOcrData.deltaTK],
+                      ["Avg Temp (°C)", thermoOcrData.avgTempC],
+                      ["Emissivity", thermoOcrData.emissivity],
+                      ["Ambient (°C)", thermoOcrData.ambientTempC],
+                      ["Humidity (%)", thermoOcrData.relativeHumidityPct],
+                      ["Severity", thermoOcrData.severityClass]
+                    ] as const
+                  ).map(([label, value]) => {
+                    const filled = value != null && value !== "";
+                    const flagged = thermoOcrFlagged.includes(label);
+                    return (
+                      <div
+                        key={label}
+                        className={`rounded-lg border px-3 py-2 ${
+                          flagged
+                            ? "border-amber-500/60 bg-amber-950/30"
+                            : filled
+                              ? "border-emerald-700/50 bg-emerald-950/20"
+                              : "border-white/10 bg-slate-900/40"
+                        }`}
+                      >
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-slate-400">
+                          {label}
+                        </p>
+                        <p className="text-sm text-white truncate">
+                          {filled ? String(value) : "—"}
+                        </p>
+                        {flagged && (
+                          <p className="text-[9px] text-amber-300 mt-0.5">verify manually</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
           <input
