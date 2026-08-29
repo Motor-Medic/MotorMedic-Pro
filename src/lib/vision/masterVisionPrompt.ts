@@ -29,14 +29,17 @@ export const MASTER_VISION_PROMPT = `You are the Spectra CM Industrial Document 
 
 4. PER-TECHNOLOGY SCHEMAS (populate only the detected one)
 OIL: sampled_date, wear_metals_Fe/Cu/Al/Cr/Ni/Pb/Sn/Ag/Cd/V, contaminants_Si/Na/K, multi_source_B/Mo/Mn/Ti/Li, additives_Zn/P/Ca/Mg/Ba, viscosity_40C, viscosity_100C, TAN, BN, water_percent, fuel_dilution_percent, soot_percent, iso_4406 (string of 3 numbers or null), sump_capacity, oxidation_abs_cm, nitration_abs_cm, lube_time_hours, unit_time_hours.
-VIBRATION: overall_velocity_rms, acceleration, running_speed_rpm, amplitude_1X, peak_frequencies_array ([{"frequency_hz": number|null, "amplitude": number|null, "unit_as_read": string|null}]).
+VIBRATION: overall_velocity_rms (number|null — RMS velocity, e.g. 4.2 mm/s or 0.17 in/s, emit unit_as_read verbatim), peak_acceleration_g (number|null — peak acceleration in g), running_speed_rpm (number|null — machine running speed / RPM / CPM), amplitude_1x (number|null — 1X fundamental amplitude), peak_frequencies_array (array of numbers OR strings, e.g. [180.5, 360.1] or ["180.5 Hz", "360.1 Hz"] — the dominant spectral peaks), vibration_severity ("NORMAL"|"ALERT"|"CRITICAL"|null — overall alarm state as printed).
 THERMOGRAPHY: measured_temp, ambient_temp, reflected_temp, emissivity, delta_t_as_printed.
 ULTRASOUND: peak_dB, baseline_dB, crest_factor, acoustic_mode.
-MCA: phase_balance, resistance_phase_1/2/3, inductance, insulation_resistance, winding_temp, test_voltage, test_frequency.
+MCA: resistance_ab, resistance_bc, resistance_ca, resistance_imbalance_pct (Ohms), inductance_ab, inductance_bc, inductance_ca, inductance_imbalance_pct (mH), impedance_ab, impedance_bc, impedance_ca (Ohms), phase_angle_ab, phase_angle_bc, phase_angle_ca (Degrees), fi (fault index), insulation_resistance_mohm (MΩ).
 
-5. OIL TRANSCRIPTION-FIRST RULE (OVERRIDES KEY MAPPING FOR OIL)
-When detected_technology is "OIL", you MUST include a "raw_table" array. The code deterministically maps from raw_table to canonical fields; do NOT hand-map canonical keys in data.oil.
-raw_table is MANDATORY: emit one entry per printed numeric or measurement cell (wear metals, contaminants, additives, viscosity, TAN, BN, oxidation, nitration, water, soot, ISO 4406 counts, sump capacity, and every time/hours field). Preserve each header text verbatim and the value exactly as printed.
+5. OIL, VIBRATION & MCA TRANSCRIPTION-FIRST RULE (OVERRIDES KEY MAPPING)
+When detected_technology is "OIL", "VIBRATION", or "MCA", you MUST include a "raw_table" array. The code deterministically maps from raw_table to canonical fields; do NOT hand-map canonical keys in data.oil, data.vibration, or data.mca.
+raw_table is MANDATORY: emit one entry per printed numeric or measurement cell.
+- OIL: wear metals, contaminants, additives, viscosity, TAN, BN, oxidation, nitration, water, soot, ISO 4406 counts, sump capacity, and every time/hours field.
+- VIBRATION: overall velocity, peak acceleration, running speed/RPM, 1X amplitude, every printed spectral peak frequency/amplitude, and the printed severity/alarm/condition label. Preserve each header text verbatim and the value exactly as printed.
+- MCA: every printed phase-pair (U-V / V-W / W-U or A-B / B-C / C-A) measurement for Resistance (R), Inductance (L), Impedance (Z), and Phase Angle (∠Fi), the printed fault index / FI / I-F ratio, the insulation resistance (Megger) reading with its unit, and the imbalance percentages. Preserve each header text verbatim (e.g. "R 1-2", "Z T1-T2", "L 2-3", "∠Fi 1-2", "IR 500V", "FI") and the value exactly as printed.
 raw_table schema: [ { "header": "<exact printed header text>", "value": number|null, "unit_as_read": string|null, "operator": string|null } ].
 Row identifiers (Sample #, Lab #, Tracking #, Date, Time) are transcribed but excluded by code.
 Zero Rule: a printed "0" is a real measurement — emit value 0 with status "extracted". Only blank/unmeasured cells are value null with status "absent". Never drop a zero into extra or omit it.
@@ -106,16 +109,17 @@ export interface MasterOilSchema {
 
 export interface MasterVibrationSchema {
   overall_velocity_rms?: MasterField;
-  acceleration?: MasterField;
+  peak_acceleration_g?: MasterField;
   running_speed_rpm?: MasterField;
-  amplitude_1X?: MasterField;
+  amplitude_1x?: MasterField;
   peak_frequencies_array?: {
-    value: Array<{ frequency_hz: number | null; amplitude: number | null; unit_as_read: string | null }> | null;
+    value: Array<number | string> | null;
     unit_as_read: string | null;
     confidence: number;
     status: MasterFieldStatus;
     operator: string | null;
   };
+  vibration_severity?: MasterField;
   [key: string]: MasterField | unknown;
 }
 
@@ -137,12 +141,22 @@ export interface MasterUltrasoundSchema {
 }
 
 export interface MasterMcaSchema {
-  phase_balance?: MasterField;
-  resistance_phase_1?: MasterField;
-  resistance_phase_2?: MasterField;
-  resistance_phase_3?: MasterField;
-  inductance?: MasterField;
-  insulation_resistance?: MasterField;
+  resistance_ab?: MasterField;
+  resistance_bc?: MasterField;
+  resistance_ca?: MasterField;
+  resistance_imbalance_pct?: MasterField;
+  inductance_ab?: MasterField;
+  inductance_bc?: MasterField;
+  inductance_ca?: MasterField;
+  inductance_imbalance_pct?: MasterField;
+  impedance_ab?: MasterField;
+  impedance_bc?: MasterField;
+  impedance_ca?: MasterField;
+  phase_angle_ab?: MasterField;
+  phase_angle_bc?: MasterField;
+  phase_angle_ca?: MasterField;
+  fi?: MasterField;
+  insulation_resistance_mohm?: MasterField;
   winding_temp?: MasterField;
   test_voltage?: MasterField;
   test_frequency?: MasterField;

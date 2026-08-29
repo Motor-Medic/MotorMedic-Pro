@@ -67,8 +67,11 @@ import {
 } from "./src/lib/oilAnalysisPersistence";
 import {
   OIL_VISION_API_PATH,
-  extractOilReportFromImageBase64
+  runMasterVisionModelLoop,
+  finalizeOilFromParses
 } from "./src/lib/oilVisionExtractor";
+import { finalizeVibrationFromParses } from "./src/lib/vibrationVisionExtractor";
+import { finalizeMcaFromParses } from "./src/lib/mcaVisionExtractor";
 
 dotenv.config();
 
@@ -1803,11 +1806,12 @@ app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
 });
 
 app.post(OIL_VISION_API_PATH, async (req, res) => {
-  req.setTimeout(90_000);
-  res.setTimeout(90_000);
+  req.setTimeout(180_000);
+  res.setTimeout(180_000);
   try {
     const imageBase64 = req.body?.imageBase64 || req.body?.fileData;
     if (!imageBase64 || typeof imageBase64 !== "string") {
+      console.info("[vision] responding to client:", "n/a");
       return res.status(400).json({
         success: false,
         error: "INVALID_REQUEST",
@@ -1815,24 +1819,51 @@ app.post(OIL_VISION_API_PATH, async (req, res) => {
       });
     }
 
-    const outcome = await extractOilReportFromImageBase64({
+    const baseInput = {
       imageBase64,
       fileName:
         typeof req.body?.fileName === "string" ? req.body.fileName : null,
       models: Array.isArray(req.body?.models) ? req.body.models : undefined,
       maxTokens:
         typeof req.body?.maxTokens === "number" ? req.body.maxTokens : undefined
-    });
+    };
+
+    const { parses, lastError } = await runMasterVisionModelLoop(baseInput);
+
+    // Dispatch by detected technology: try vibration first, fall back to oil.
+    interface AnyVisionOutcome {
+      success: boolean;
+      data?: unknown;
+      model?: string;
+      error?: string;
+      message?: string;
+      httpStatus?: number;
+      detail?: string;
+      flaggedFields?: string[];
+      extractionMode?: "consensus" | "single";
+      consensusModels?: string[];
+    }
+    let outcome: AnyVisionOutcome = finalizeVibrationFromParses(parses, lastError, baseInput);
+    if (!outcome.success && outcome.error === "TECHNOLOGY_NOT_VIBRATION") {
+      outcome = finalizeMcaFromParses(parses, lastError, baseInput);
+    }
+    if (!outcome.success && outcome.error === "TECHNOLOGY_NOT_MCA") {
+      outcome = finalizeOilFromParses(parses, lastError, baseInput);
+    }
+
+    const technology =
+      (outcome.data as { detectedTechnology?: string | null } | undefined)
+        ?.detectedTechnology ?? null;
 
     console.info(
-      "[vision] model:",
+      "[vision] dispatched model(s):",
       outcome.success === false ? "n/a" : outcome.model,
       "route:",
-      OIL_VISION_API_PATH,
-      "raw logged by extractor"
+      OIL_VISION_API_PATH
     );
 
     if (outcome.success === false) {
+      console.info("[vision] responding to client:", technology ?? "n/a");
       return res.status(outcome.httpStatus).json({
         success: false,
         error: outcome.error,
@@ -1841,13 +1872,16 @@ app.post(OIL_VISION_API_PATH, async (req, res) => {
       });
     }
 
+    console.info("[vision] responding to client:", technology);
     return res.json({
       success: true,
       data: outcome.data,
       model: outcome.model,
+      technology,
       path: OIL_VISION_API_PATH
     });
   } catch (error: any) {
+    console.info("[vision] responding to client:", "n/a");
     console.error("[oil-analysis/vision-extract] POST error:", error);
     return res.status(500).json({
       success: false,

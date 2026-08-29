@@ -33,6 +33,7 @@ export async function POST(request: Request) {
   try {
     body = (await request.json()) as typeof body;
   } catch {
+    console.info("[vision] responding to client:", "n/a");
     return jsonResponse(
       {
         success: false,
@@ -45,6 +46,7 @@ export async function POST(request: Request) {
 
   const imageBase64 = body.imageBase64 || body.fileData;
   if (!imageBase64 || typeof imageBase64 !== "string") {
+    console.info("[vision] responding to client:", "n/a");
     return jsonResponse(
       {
         success: false,
@@ -63,6 +65,7 @@ export async function POST(request: Request) {
   });
 
   if (outcome.success === false) {
+    console.info("[vision] responding to client:", "n/a");
     return jsonResponse(
       {
         success: false,
@@ -74,6 +77,10 @@ export async function POST(request: Request) {
     );
   }
 
+  const technology =
+    (outcome.data as { detectedTechnology?: string | null } | undefined)
+      ?.detectedTechnology ?? "OIL";
+  console.info("[vision] responding to client:", technology);
   return jsonResponse({
     success: true,
     data: outcome.data,

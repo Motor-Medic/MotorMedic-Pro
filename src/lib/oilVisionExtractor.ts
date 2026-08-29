@@ -47,7 +47,7 @@ export const OIL_VISION_MODELS = [
   "google/gemini-2.0-flash-001"
 ] as const;
 
-const EXTRACTION_TIMEOUT_MS = 90_000;
+const EXTRACTION_TIMEOUT_MS = 180_000;
 
 /** Named constants for sump capacity conversion — 4 qt = 1 gal */
 export const QT_PER_GALLON = 4;
@@ -1045,218 +1045,19 @@ export async function extractOilReportFromImageBase64(input: {
     };
   }
 
-  const upstreamUrl = useLmStudio
-    ? process.env.LM_STUDIO_ENDPOINT!
-    : `${OPENROUTER_API_BASE}/chat/completions`;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json"
-  };
-  if (!useLmStudio) {
-    headers.Authorization = `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`;
-    Object.assign(headers, openRouterRefererHeaders());
-  }
-
-  const modelsToTry = (
-    useLmStudio
-      ? [process.env.LM_STUDIO_MODEL || OIL_VISION_MODELS[0]]
-      : input.models && input.models.length > 0
-        ? input.models
-        : [...OIL_VISION_MODELS]
-  ).filter((m, i, arr) => arr.indexOf(m) === i);
-
-  const maxTokens = input.maxTokens ?? 4500;
-  let lastError: unknown;
-  let usedModel = modelsToTry[0];
-
-  logPipelineSend("oilVisionExtractor", {
-    provider: useLmStudio ? "lm-studio-dev" : "openrouter",
-    models: modelsToTry
-  });
-
-  // Continuous fallback: try each model; attempt salvage + strict schema parse
-  // inside the loop. Collect up to two successful parses (gpt-4o + gemini) for
-  // dual-model per-field consensus. Any salvage/schema failure falls through.
-  const parses: { model: string; parsed: Record<string, unknown> }[] = [];
-
-  for (const tryModel of modelsToTry) {
-    usedModel = tryModel;
-    let text: string | null = null;
-    try {
-      const upstream = await fetch(upstreamUrl, {
-        method: "POST",
-        headers,
-        signal: AbortSignal.timeout(EXTRACTION_TIMEOUT_MS),
-        body: JSON.stringify({
-          model: tryModel,
-          max_tokens: maxTokens,
-          temperature: 0.0,
-          ...(useLmStudio ? {} : { response_format: { type: "json_object" } }),
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: imageUrl } },
-                { type: "text", text: MASTER_VISION_PROMPT }
-              ]
-            }
-          ]
-        })
-      });
-
-      const upstreamJson = (await upstream.json().catch(() => ({}))) as Record<
-        string,
-        unknown
-      >;
-
-      if (!upstream.ok) {
-        lastError = new Error(
-          (typeof upstreamJson.error === "string" && upstreamJson.error) ||
-            `Vision provider HTTP ${upstream.status} (${tryModel})`
-        );
-        console.warn(
-          `[oilVisionExtractor] Model ${tryModel} failed:`,
-          upstream.status,
-          upstreamJson
-        );
-        continue;
-      }
-
-      const choices = upstreamJson.choices;
-      const first =
-        Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
-          ? (choices[0] as { message?: { content?: string } })
-          : null;
-      const candidate =
-        first?.message?.content ||
-        (typeof upstreamJson.content === "string"
-          ? upstreamJson.content
-          : null);
-
-      if (!candidate || typeof candidate !== "string") {
-        lastError = new Error(`Vision model ${tryModel} returned no text content.`);
-        continue;
-      }
-      text = candidate;
-    } catch (fetchErr) {
-      lastError = fetchErr;
-      console.warn(`[oilVisionExtractor] Model ${tryModel} fetch error:`, fetchErr);
-      continue;
-    }
-
-    // --- Salvage + strict schema parse; fall through to next model on failure ---
-    try {
-      console.info("[vision] model:", usedModel, "raw:", text);
-      const cleanedJson = salvageJsonString(text!);
-      console.info("[vision] salvaged:", cleanedJson);
-      if (
-        !cleanedJson ||
-        !cleanedJson.startsWith("{") ||
-        !cleanedJson.endsWith("}")
-      ) {
-        throw new Error("no JSON object in vision response");
-      }
-      parses.push({
-        model: usedModel,
-        parsed: parseMasterJsonStrict(cleanedJson) as Record<string, unknown>
-      });
-      if (parses.length >= 2) break;
-    } catch (parseErr) {
-      lastError = parseErr;
-      console.warn(
-        `[vision] parse-fail on ${usedModel}, falling through to next model...`
-      );
-      continue;
-    }
-  }
-
-  if (parses.length === 0) {
-    logPipelineFail(
-      "oilVisionExtractor",
-      startTime,
-      lastError || new Error("no content")
-    );
+  try {
+    const { parses, lastError } = await runMasterVisionModelLoop(input);
+    return finalizeOilFromParses(parses, lastError, input);
+  } catch (err) {
+    logPipelineFail("oilVisionExtractor", startTime, err);
     return {
       success: false,
-      error: "PARSE_FAILED",
-      message: "Could not parse report format.",
-      httpStatus: 422,
-      detail:
-        lastError instanceof Error
-          ? lastError.message
-          : "All vision models failed to return a parseable report format."
+      error: "VISION_FAILED",
+      message:
+        err instanceof Error ? err.message : "Vision extraction failed.",
+      httpStatus: 500
     };
   }
-
-  const primary = parses[0];
-  const modelIds = parses.map((p) => p.model);
-  usedModel = primary.model;
-  console.info("[vision] extraction succeeded using model(s):", modelIds.join(" + "));
-
-  // --- Enforced technology gate (runs on the primary parse) ---
-  // Auto-fill ONLY when detected_technology === "OIL" OR code-side classification
-  // finds >= 3 oil markers in the raw_table. UNKNOWN + auto-fill is impossible.
-  const detectedTech = typeof primary.parsed.detected_technology === "string"
-    ? primary.parsed.detected_technology.toUpperCase()
-    : null;
-  const rawTableRows = (primary.parsed as Record<string, unknown>).raw_table;
-  const looksLikeOil = rawTableLooksLikeOil(rawTableRows);
-  const autoFillAllowed = detectedTech === "OIL" || looksLikeOil;
-  if (!autoFillAllowed) {
-    logPipelineFail(
-      "oilVisionExtractor:gate",
-      startTime,
-      new Error(
-        `technology not OIL (${primary.parsed.detected_technology}); oil markers=${rawTableLooksLikeOil(rawTableRows)}`
-      )
-    );
-    return {
-      success: false,
-      error: "TECHNOLOGY_NOT_OIL",
-      message: "Report type not recognized - enter values manually or re-upload.",
-      httpStatus: 422,
-      detail: `detected_technology=${String(primary.parsed.detected_technology)}`
-    };
-  }
-
-  // --- Dual-model per-field consensus ---
-  let mergedTx: OilTranscriptionResult | undefined;
-  let flaggedFields: string[] = [];
-  let extractionMode: "consensus" | "single" = "single";
-
-  if (parses.length >= 2) {
-    extractionMode = "consensus";
-    const txA = mapOilTranscription(
-      (parses[0].parsed as Record<string, unknown>).raw_table
-    );
-    const txB = mapOilTranscription(
-      (parses[1].parsed as Record<string, unknown>).raw_table
-    );
-    const merged = mergeConsensus(txA, txB);
-    mergedTx = merged.result;
-    flaggedFields = merged.flaggedFields;
-  } else {
-    extractionMode = "single";
-    const txA = mapOilTranscription(
-      (primary.parsed as Record<string, unknown>).raw_table
-    );
-    flaggedFields = flagAllFilled(txA);
-  }
-
-  const data = mapVisionJsonToOilReportData(primary.parsed, input.fileName, mergedTx);
-  (data as unknown as Record<string, unknown>).model = usedModel;
-  (data as unknown as Record<string, unknown>).detectedTechnology = detectedTech;
-  (data as unknown as Record<string, unknown>).flaggedFields = flaggedFields;
-  (data as unknown as Record<string, unknown>).extractionMode = extractionMode;
-  (data as unknown as Record<string, unknown>).consensusModels = modelIds;
-  logPipelineSuccess("oilVisionExtractor", startTime, {
-    confidence: data.confidenceScore,
-    model: usedModel,
-    format: data.formatDetected,
-    extractionMode
-  });
-
-  return { success: true, data, model: modelIds.join(" + ") };
 }
 
 /**
@@ -1304,7 +1105,7 @@ export async function extractOilReportFromImage(
       (err instanceof Error && err.name === "AbortError");
     if (aborted) {
       throw new Error(
-        "Oil vision extraction timed out. Try a clearer screenshot."
+        "Extraction timed out or failed. Please try again."
       );
     }
     throw err;
@@ -1324,6 +1125,13 @@ export async function extractOilReportFromImage(
     );
   }
 
+  // The unified endpoint may fall through to another technology's finalizer.
+  // From the oil tab we only accept an OIL result.
+  const technology = typeof result.technology === "string" ? result.technology : null;
+  if (technology && technology !== "OIL") {
+    throw new Error("Report type not recognized - enter values manually or re-upload.");
+  }
+
   if (result.data && typeof result.data === "object") {
     return mapVisionJsonToOilReportData(
       result.data as Record<string, unknown>,
@@ -1332,4 +1140,304 @@ export async function extractOilReportFromImage(
   }
 
   return mapVisionJsonToOilReportData(result, imageFile.name);
+}
+
+/* ------------------------------------------------------------------ */
+/* Shared model loop + dual-technology finalizers (oil + vibration)   */
+/* ------------------------------------------------------------------ */
+
+export interface MasterVisionParse {
+  model: string;
+  parsed: Record<string, unknown>;
+}
+export interface MasterVisionLoopResult {
+  parses: MasterVisionParse[];
+  lastError: unknown;
+  upstreamStatus: number | null;
+}
+
+/**
+ * Runs the master-vision model cascade once and returns every successful parse
+ * (up to two — gpt-4o + gemini) for downstream per-technology consensus. Shared
+ * by both the oil and vibration extractors so the model is only called once.
+ */
+export async function runMasterVisionModelLoop(input: {
+  imageBase64: string;
+  fileName?: string | null;
+  models?: string[];
+  maxTokens?: number;
+}): Promise<MasterVisionLoopResult> {
+  const startTime = logPipelineStart("masterVisionLoop", {
+    fileName: input.fileName || null
+  });
+  let imageUrl: string;
+  try {
+    imageUrl = normalizeImageUrl(input.imageBase64);
+  } catch (err) {
+    logPipelineFail("masterVisionLoop", startTime, err);
+    return { parses: [], lastError: err, upstreamStatus: null };
+  }
+  logPayloadSize("masterVisionLoop", imageUrl);
+
+  const useLmStudio = isLmStudioDevMode();
+  if (!useLmStudio && !hasOpenRouterKey()) {
+    const e = new Error("OPENROUTER_API_KEY missing");
+    logPipelineFail("masterVisionLoop", startTime, e);
+    return { parses: [], lastError: e, upstreamStatus: null };
+  }
+
+  const upstreamUrl = useLmStudio
+    ? process.env.LM_STUDIO_ENDPOINT!
+    : `${OPENROUTER_API_BASE}/chat/completions`;
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (!useLmStudio) {
+    headers.Authorization = `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`;
+    Object.assign(headers, openRouterRefererHeaders());
+  }
+  const modelsToTry = (
+    useLmStudio
+      ? [process.env.LM_STUDIO_MODEL || OIL_VISION_MODELS[0]]
+      : input.models && input.models.length > 0
+        ? input.models
+        : [...OIL_VISION_MODELS]
+  ).filter((m, i, arr) => arr.indexOf(m) === i);
+  const maxTokens = 6000;
+  const totalCandidates = modelsToTry.length;
+
+  // --- Race-to-two state machine (first-two-wins consensus) ---
+  // Each candidate runs as an independent worker with its own AbortController.
+  // The outer promise resolves as soon as 2 parses succeed (consensus) or as
+  // soon as only 1 can ever succeed (degraded fallback), canceling stragglers.
+  return new Promise<MasterVisionLoopResult>((resolve, reject) => {
+    const successes: MasterVisionParse[] = [];
+    const controllers = new Map<string, AbortController>();
+    let failureCount = 0;
+    let resolved = false;
+    let lastError: unknown;
+    let upstreamStatus: number | null = null;
+
+    const abortAllPending = () => {
+      for (const ctrl of controllers.values()) {
+        try {
+          ctrl.abort();
+        } catch {
+          /* noop */
+        }
+      }
+    };
+
+    if (totalCandidates === 0) {
+      resolved = true;
+      logPipelineFail(
+        "masterVisionLoop",
+        startTime,
+        new Error("no vision models configured")
+      );
+      reject(new Error("No vision models configured for extraction."));
+      return;
+    }
+
+    const evaluate = () => {
+      if (resolved) return;
+      if (successes.length === 2) {
+        resolved = true;
+        abortAllPending();
+        console.info(
+          `[vision] consensus locked: ${successes[0].model} + ${successes[1].model}; stragglers canceled`
+        );
+        resolve({ parses: successes, lastError, upstreamStatus });
+      } else if (successes.length === 1 && totalCandidates - failureCount < 2) {
+        resolved = true;
+        abortAllPending();
+        console.warn("[vision] degraded single-model fallback; stragglers canceled");
+        resolve({ parses: successes, lastError, upstreamStatus });
+      } else if (failureCount === totalCandidates) {
+        resolved = true;
+        logPipelineFail(
+          "masterVisionLoop",
+          startTime,
+          lastError || new Error("no content")
+        );
+        reject(
+          new Error(
+            lastError instanceof Error
+              ? `Vision extraction failed: ${lastError.message}`
+              : "All vision models failed to return a parseable report format."
+          )
+        );
+      }
+    };
+
+    const launchWorker = (tryModel: string) => {
+      const controller = new AbortController();
+      controllers.set(tryModel, controller);
+      (async () => {
+        let text: string | null = null;
+        try {
+          const upstream = await fetch(upstreamUrl, {
+            method: "POST",
+            headers,
+            signal: controller.signal,
+            body: JSON.stringify({
+              model: tryModel,
+              max_tokens: maxTokens,
+              temperature: 0.0,
+              ...(useLmStudio ? {} : { response_format: { type: "json_object" } }),
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    { type: "image_url", image_url: { url: imageUrl } },
+                    { type: "text", text: MASTER_VISION_PROMPT }
+                  ]
+                }
+              ]
+            })
+          });
+          upstreamStatus = upstream.status;
+          const upstreamJson = (await upstream.json().catch(() => ({}))) as Record<
+            string,
+            unknown
+          >;
+          if (!upstream.ok) {
+            throw new Error(
+              (typeof upstreamJson.error === "string" && upstreamJson.error) ||
+                `Vision provider HTTP ${upstream.status} (${tryModel})`
+            );
+          }
+          const choices = upstreamJson.choices;
+          const first =
+            Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+              ? (choices[0] as { message?: { content?: string } })
+              : null;
+          const candidate =
+            first?.message?.content ||
+            (typeof upstreamJson.content === "string" ? upstreamJson.content : null);
+          if (!candidate || typeof candidate !== "string") {
+            throw new Error(`Vision model ${tryModel} returned no text content.`);
+          }
+          text = candidate;
+          // Parse guard — only a successfully fetched AND parsed payload counts.
+          console.info("[vision] model:", tryModel, "raw:", text);
+          const cleanedJson = salvageJsonString(text);
+          console.info("[vision] salvaged:", cleanedJson);
+          if (
+            !cleanedJson ||
+            !cleanedJson.startsWith("{") ||
+            !cleanedJson.endsWith("}")
+          ) {
+            throw new Error("no JSON object in vision response");
+          }
+          successes.push({
+            model: tryModel,
+            parsed: parseMasterJsonStrict(cleanedJson) as Record<string, unknown>
+          });
+          evaluate();
+        } catch (err) {
+          // Error guard — silently swallow aborts (straggler cancellation),
+          // count genuine failures so the state machine can degrade/reject.
+          const aborted =
+            err instanceof Error &&
+            (err.name === "AbortError" || err.message.toLowerCase().includes("aborted"));
+          if (aborted) return;
+          failureCount += 1;
+          lastError = err;
+          console.warn(`[masterVisionLoop] Model ${tryModel} failed:`, err);
+          evaluate();
+        }
+      })().catch(() => {
+        /* errors handled inside the worker */
+      });
+    };
+
+    modelsToTry.forEach(launchWorker);
+  });
+}
+
+/** Oil finalizer — consumes a set of master parses and returns oil-shaped data. */
+export function finalizeOilFromParses(
+  parses: MasterVisionParse[],
+  lastError: unknown,
+  input: { imageBase64: string; fileName?: string | null; models?: string[]; maxTokens?: number }
+): OilVisionExtractResult {
+  const startTime = logPipelineStart("oilVisionExtractor", {
+    fileName: input.fileName || null
+  });
+  if (parses.length === 0) {
+    logPipelineFail(
+      "oilVisionExtractor",
+      startTime,
+      lastError || new Error("no content")
+    );
+    return {
+      success: false,
+      error: "PARSE_FAILED",
+      message: "Could not parse report format.",
+      httpStatus: 422,
+      detail:
+        lastError instanceof Error
+          ? lastError.message
+          : "All vision models failed to return a parseable report format."
+    };
+  }
+
+  const primary = parses[0];
+  const modelIds = parses.map((p) => p.model);
+  const usedModel = primary.model;
+  console.info("[vision] extraction succeeded using model(s):", modelIds.join(" + "));
+
+  const detectedTech = typeof primary.parsed.detected_technology === "string"
+    ? primary.parsed.detected_technology.toUpperCase()
+    : null;
+  const rawTableRows = (primary.parsed as Record<string, unknown>).raw_table;
+  const looksLikeOil = rawTableLooksLikeOil(rawTableRows);
+  const autoFillAllowed = detectedTech === "OIL" || looksLikeOil;
+  if (!autoFillAllowed) {
+    logPipelineFail(
+      "oilVisionExtractor:gate",
+      startTime,
+      new Error(
+        `technology not OIL (${primary.parsed.detected_technology}); oil markers=${rawTableLooksLikeOil(rawTableRows)}`
+      )
+    );
+    return {
+      success: false,
+      error: "TECHNOLOGY_NOT_OIL",
+      message: "Report type not recognized - enter values manually or re-upload.",
+      httpStatus: 422,
+      detail: `detected_technology=${String(primary.parsed.detected_technology)}`
+    };
+  }
+
+  let mergedTx: OilTranscriptionResult | undefined;
+  let flaggedFields: string[] = [];
+  let extractionMode: "consensus" | "single" = "single";
+
+  if (parses.length >= 2) {
+    extractionMode = "consensus";
+    const txA = mapOilTranscription((parses[0].parsed as Record<string, unknown>).raw_table);
+    const txB = mapOilTranscription((parses[1].parsed as Record<string, unknown>).raw_table);
+    const merged = mergeConsensus(txA, txB);
+    mergedTx = merged.result;
+    flaggedFields = merged.flaggedFields;
+  } else {
+    extractionMode = "single";
+    const txA = mapOilTranscription((primary.parsed as Record<string, unknown>).raw_table);
+    flaggedFields = flagAllFilled(txA);
+  }
+
+  const data = mapVisionJsonToOilReportData(primary.parsed, input.fileName, mergedTx);
+  (data as unknown as Record<string, unknown>).model = usedModel;
+  (data as unknown as Record<string, unknown>).detectedTechnology = "OIL";
+  (data as unknown as Record<string, unknown>).flaggedFields = flaggedFields;
+  (data as unknown as Record<string, unknown>).extractionMode = extractionMode;
+  (data as unknown as Record<string, unknown>).consensusModels = modelIds;
+  logPipelineSuccess("oilVisionExtractor", startTime, {
+    confidence: data.confidenceScore,
+    model: usedModel,
+    format: data.formatDetected,
+    extractionMode
+  });
+
+  return { success: true, data, model: modelIds.join(" + ") };
 }

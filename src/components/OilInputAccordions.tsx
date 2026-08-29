@@ -498,6 +498,37 @@ export default function OilInputAccordions({
     [onToast]
   );
 
+  const resetOilForm = useCallback(() => {
+    setAssetType("Hydraulic System");
+    setBrand("Mobil DTE 25");
+    setIsoGrade("ISO VG 46");
+    setBaseChemistry("Mineral");
+    setSystemCapacity("");
+    setCapacityUnit("Gallons");
+    setSumpFootnote(null);
+    setAssetHours("");
+    setFluidAgeHours("");
+    setMakeupOilAdded("");
+    setMakeupOilUnit("Gallons");
+    setSampleExtraction("Live Zone Minimess Valve");
+    setFilterHours("");
+    setBetaRating("β₁₀ ≥ 1000");
+    setPpm({});
+    setFlaggedFields([]);
+    setVisc40("");
+    setVisc100("");
+    setTan("");
+    setTbn("");
+    setFtirOxidation("");
+    setFtirNitration("");
+    setFtirSulfation("");
+    setFuelDilution("");
+    setSootContent("");
+    setWaterPpm("");
+    setIso4406Code("");
+    onSumpCapacityChange?.(null);
+  }, [onSumpCapacityChange]);
+
   const handleVisionExtracted = useCallback(
     (data: OilReportData, fileName: string) => {
       const captured = equipmentRefOil.current?.assetTag || equipmentRefOil.current?.assetLabel || "";
@@ -545,6 +576,7 @@ export default function OilInputAccordions({
         disabled={oilParsing}
         onExtracted={handleVisionExtracted}
         onError={(msg) => onToast?.(msg, "error")}
+        onReset={resetOilForm}
       />
 
       {/* SECTION 1 — Fluid Identity */}

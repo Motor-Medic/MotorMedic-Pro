@@ -16,6 +16,10 @@ import {
   type McaExtractedData,
   type RicDataPoint
 } from "../lib/mca/mcaPdfExtractor";
+import {
+  extractMcaReportFromImage,
+  type McaReportData
+} from "../lib/mcaVisionExtractor";
 import { mcaTripletHasData, type McaOperatorSnapshot } from "../lib/mca/mcaPersistence";
 
 type McaAccordionSection = "fingerprint" | "config" | "phase" | "insulation";
@@ -102,6 +106,30 @@ const inputCls =
   "bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full";
 const selectCls = `${inputCls} appearance-none cursor-pointer pr-10`;
 const helperCls = "mt-1.5 text-[11px] text-slate-500 leading-snug";
+
+const McaFlagContext = React.createContext<string[]>([]);
+
+function McaVerifyChip() {
+  return (
+    <span
+      title="Vision models disagreed — verify this value"
+      className="ml-1.5 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40 align-middle"
+    >
+      verify
+    </span>
+  );
+}
+
+const MCA_PHASE_CANONICAL: Record<string, Record<PhasePair, string>> = {
+  resistance: { uv: "resistanceAb", vw: "resistanceBc", wu: "resistanceCa" },
+  impedance: { uv: "impedanceAb", vw: "impedanceBc", wu: "impedanceCa" },
+  inductance: { uv: "inductanceAb", vw: "inductanceBc", wu: "inductanceCa" },
+  phaseAngle: { uv: "phaseAngleAb", vw: "phaseAngleBc", wu: "phaseAngleCa" }
+};
+
+function mcaPhaseKey(metric: keyof typeof MCA_PHASE_CANONICAL, id: PhasePair): string {
+  return MCA_PHASE_CANONICAL[metric][id];
+}
 
 function AccordionShell({
   id,
@@ -256,6 +284,7 @@ export default function McaInputAccordions({
     formatDetected: string | null;
     confidenceScore: number | null;
   } | null>(null);
+  const [mcaFlaggedFields, setMcaFlaggedFields] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const equipmentRef = useRef(equipment);
   useEffect(() => {
@@ -539,6 +568,93 @@ export default function McaInputAccordions({
     );
   };
 
+  /** Clear all extracted MCA inputs + verification chips before a new upload (Task 3). */
+  const resetMcaForm = () => {
+    setPhases({ uv: emptyPhase(), vw: emptyPhase(), wu: emptyPhase() });
+    setMegohms("");
+    setCapacitanceCg("");
+    setDissipationFactor("");
+    setReading1Min("");
+    setReading10Min("");
+    setReading30s("");
+    setReading60s("");
+    setIr15s("");
+    setRicData(null);
+    setReportPi(null);
+    setReportDar(null);
+    setExtractMeta(null);
+    setExtractBanner(null);
+    setExtractError(null);
+    setMcaFlaggedFields([]);
+  };
+
+  /** Apply unified master-vision MCA extraction result to the form (Task 3). */
+  const applyMcaVisionToForm = (mca: McaReportData, fileName: string) => {
+    setPhases({
+      uv: {
+        ...emptyPhase(),
+        resistance: fmtNum(mca.resistanceAb, 4),
+        inductance: fmtNum(mca.inductanceAb, 3),
+        impedance: fmtNum(mca.impedanceAb, 3),
+        phaseAngle: fmtNum(mca.phaseAngleAb, 2),
+        ifRatio: fmtNum(mca.fi, 3)
+      },
+      vw: {
+        ...emptyPhase(),
+        resistance: fmtNum(mca.resistanceBc, 4),
+        inductance: fmtNum(mca.inductanceBc, 3),
+        impedance: fmtNum(mca.impedanceBc, 3),
+        phaseAngle: fmtNum(mca.phaseAngleBc, 2),
+        ifRatio: fmtNum(mca.fi, 3)
+      },
+      wu: {
+        ...emptyPhase(),
+        resistance: fmtNum(mca.resistanceCa, 4),
+        inductance: fmtNum(mca.inductanceCa, 3),
+        impedance: fmtNum(mca.impedanceCa, 3),
+        phaseAngle: fmtNum(mca.phaseAngleCa, 2),
+        ifRatio: fmtNum(mca.fi, 3)
+      }
+    });
+
+    if (mca.insulationResistanceMohm != null) {
+      const v = fmtNum(mca.insulationResistanceMohm, 3);
+      setMegohms(v);
+      setReading1Min(v);
+      setReading60s(v);
+      setInsulationTestType("PI");
+    }
+
+    const flagged = mca.flaggedFields ?? [];
+    setMcaFlaggedFields(flagged);
+
+    const filled = [
+      mca.resistanceAb,
+      mca.resistanceBc,
+      mca.resistanceCa,
+      mca.inductanceAb,
+      mca.inductanceBc,
+      mca.inductanceCa,
+      mca.impedanceAb,
+      mca.impedanceBc,
+      mca.impedanceCa,
+      mca.phaseAngleAb,
+      mca.phaseAngleBc,
+      mca.phaseAngleCa,
+      mca.fi,
+      mca.insulationResistanceMohm
+    ].filter((x) => x != null).length;
+
+    setExtractMeta({ fileName, formatDetected: "MasterVision", confidenceScore: mca.confidenceScore });
+    setOpenSections((prev) => Array.from(new Set([...prev, "phase", "insulation"])));
+    onToast?.(
+      flagged.length
+        ? `MCA report extracted (${mca.confidenceScore}% confidence) · ${filled} fields auto-filled, ${flagged.length} flagged — verify highlighted values`
+        : `MCA report extracted (${mca.confidenceScore}% confidence) · ${filled} fields auto-filled`,
+      flagged.length ? "warning" : "success"
+    );
+  };
+
   const handleFile = async (file?: File | null) => {
     if (!file) return;
     const isPdf =
@@ -556,6 +672,8 @@ export default function McaInputAccordions({
 
     setExtractError(null);
     setExtractBanner(null);
+    // Full reset BEFORE making the API call (Task 3)
+    resetMcaForm();
 
     if (isImage) {
       const preview = URL.createObjectURL(file);
@@ -576,45 +694,48 @@ export default function McaInputAccordions({
       (equipmentRef.current?.assetTag == null && equipmentRef.current?.assetLabel == null ? "" : String(equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel));
     setExtractParsing(true);
     try {
-      const extracted = await extractMcaDataFromFile(file);
-      // --- STALE-EXTRACTION RACE GUARD ---
-      const currentAssetId =
-        equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
-      if (capturedAssetId && currentAssetId !== capturedAssetId) {
-        onToast?.("Extraction discarded - asset changed", "warning");
-        return;
-      }
-      const hasWinding =
-        mcaTripletHasData(extracted.phaseR) ||
-        mcaTripletHasData(extracted.phaseL) ||
-        mcaTripletHasData(extracted.phaseZ) ||
-        mcaTripletHasData(extracted.phaseFi) ||
-        mcaTripletHasData(extracted.phaseIF);
-      const hasGw = mcaExtractHasGroundwall(extracted);
-      const hasRic = Boolean(extracted.ricData && extracted.ricData.length > 0);
+      if (isImage) {
+        // Unified master-vision path (Task 3)
+        const mca = await extractMcaReportFromImage(file);
+        const currentAssetId =
+          equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+        if (capturedAssetId && currentAssetId !== capturedAssetId) {
+          onToast?.("Extraction discarded - asset changed", "warning");
+          return;
+        }
+        applyMcaVisionToForm(mca, file.name);
+      } else {
+        const extracted = await extractMcaDataFromFile(file);
+        // --- STALE-EXTRACTION RACE GUARD ---
+        const currentAssetId =
+          equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
+        if (capturedAssetId && currentAssetId !== capturedAssetId) {
+          onToast?.("Extraction discarded - asset changed", "warning");
+          return;
+        }
+        const hasWinding =
+          mcaTripletHasData(extracted.phaseR) ||
+          mcaTripletHasData(extracted.phaseL) ||
+          mcaTripletHasData(extracted.phaseZ) ||
+          mcaTripletHasData(extracted.phaseFi) ||
+          mcaTripletHasData(extracted.phaseIF);
+        const hasGw = mcaExtractHasGroundwall(extracted);
+        const hasRic = Boolean(extracted.ricData && extracted.ricData.length > 0);
 
-      if (!hasWinding && !hasGw && !hasRic) {
-        setExtractError(
-          isImage
-            ? "Vision model found no winding, groundwall, or RIC values — try a sharper full-screen PNG/JPEG or enter values manually. Verify manually."
-            : "No winding, groundwall, or RIC values found — check the PDF or enter values manually. Verify manually."
-        );
-        onToast?.(
-          isImage
-            ? "MCA vision extract found no measurable fields — Verify manually."
-            : "MCA extract found no measurable fields — Verify manually.",
-          "warning"
-        );
-        return;
-      }
+        if (!hasWinding && !hasGw && !hasRic) {
+          setExtractError(
+            "No winding, groundwall, or RIC values found — check the PDF or enter values manually. Verify manually."
+          );
+          onToast?.(
+            "MCA extract found no measurable fields — Verify manually.",
+            "warning"
+          );
+          return;
+        }
 
-      applyExtractedToForm(extracted, file.name);
-      onToast?.(
-        isImage
-          ? `MCA screenshot read by vision — form fields updated for review before Run.`
-          : `MCA report parsed — form fields updated for review before Run.`,
-        "success"
-      );
+        applyExtractedToForm(extracted, file.name);
+        onToast?.(`MCA report parsed — form fields updated for review before Run.`, "success");
+      }
     } catch (err) {
       const currentAssetId2 =
         equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
@@ -623,10 +744,10 @@ export default function McaInputAccordions({
         return;
       }
       console.warn("[McaInputAccordions] extract failed:", err);
-      setExtractError(
-        err instanceof Error ? err.message : "Failed to parse MCA report. Verify manually."
-      );
-      onToast?.("MCA extract failed — Verify manually.", "error");
+      const msg =
+        err instanceof Error ? err.message : "Failed to parse MCA report. Verify manually.";
+      setExtractError(msg);
+      onToast?.(msg, "error");
     } finally {
       setExtractParsing(false);
     }
@@ -647,7 +768,8 @@ export default function McaInputAccordions({
   const hasUploadPreview = Boolean(uploadPreview || uploadName);
 
   return (
-    <div className="space-y-0">
+    <McaFlagContext.Provider value={mcaFlaggedFields}>
+      <div className="space-y-0">
       {(equipment?.assetLabel || equipment?.assetTag || equipment?.component) && (
         <div className="mb-4 rounded-xl border border-white/10 bg-slate-900/50 px-4 py-3">
           <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
@@ -1150,6 +1272,7 @@ export default function McaInputAccordions({
                     <label className="block min-w-0">
                       <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                         Resistance (mΩ)
+                        {mcaFlaggedFields.includes(mcaPhaseKey("resistance", id)) && <McaVerifyChip />}
                       </span>
                       <input
                         type="number"
@@ -1162,6 +1285,7 @@ export default function McaInputAccordions({
                     <label className="block min-w-0">
                       <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                         Impedance (Z – Ω)
+                        {mcaFlaggedFields.includes(mcaPhaseKey("impedance", id)) && <McaVerifyChip />}
                       </span>
                       <input
                         type="number"
@@ -1177,6 +1301,7 @@ export default function McaInputAccordions({
                           <label className="block min-w-0">
                             <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                               Inductance Min (mH)
+                              {mcaFlaggedFields.includes(mcaPhaseKey("inductance", id)) && <McaVerifyChip />}
                             </span>
                             <input
                               type="number"
@@ -1191,6 +1316,7 @@ export default function McaInputAccordions({
                           <label className="block min-w-0">
                             <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                               Inductance Max (mH)
+                              {mcaFlaggedFields.includes(mcaPhaseKey("inductance", id)) && <McaVerifyChip />}
                             </span>
                             <input
                               type="number"
@@ -1212,6 +1338,7 @@ export default function McaInputAccordions({
                       <label className="block min-w-0">
                         <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                           Inductance (L – mH)
+                          {mcaFlaggedFields.includes(mcaPhaseKey("inductance", id)) && <McaVerifyChip />}
                         </span>
                         <input
                           type="number"
@@ -1225,6 +1352,7 @@ export default function McaInputAccordions({
                     <label className="block min-w-0">
                       <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                         Phase Angle (θ – °)
+                        {mcaFlaggedFields.includes(mcaPhaseKey("phaseAngle", id)) && <McaVerifyChip />}
                       </span>
                       <input
                         type="number"
@@ -1237,6 +1365,7 @@ export default function McaInputAccordions({
                     <label className="block min-w-0">
                       <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block">
                         I/F Ratio
+                        {mcaFlaggedFields.includes("fi") && <McaVerifyChip />}
                       </span>
                       <input
                         type="number"
@@ -1332,7 +1461,10 @@ export default function McaInputAccordions({
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <label className="block min-w-0">
-              <span className={fieldLabel}>Megohms (MΩ) @ Test Voltage</span>
+              <span className={fieldLabel}>
+                Megohms (MΩ) @ Test Voltage
+                {mcaFlaggedFields.includes("insulationResistanceMohm") && <McaVerifyChip />}
+              </span>
               <input
                 type="number"
                 step="any"
@@ -1574,6 +1706,7 @@ export default function McaInputAccordions({
           </div>
         </div>
       </AccordionShell>
-    </div>
+      </div>
+    </McaFlagContext.Provider>
   );
 }

@@ -28,6 +28,27 @@ const vibInput =
 const vibSelect = `${vibInput} appearance-none cursor-pointer pr-10`;
 const vibHelper = "mt-1.5 text-[11px] text-slate-500 leading-snug";
 
+const VIB_LABEL_TO_CANONICAL: Record<string, string> = {
+  "RMS Velocity (in/s)": "overallVelocityRms",
+  "Peak Acceleration (g)": "peakAccelerationG",
+  "Rated RPM": "runningSpeedRpm",
+  "1X Amplitude (mm/s)": "amplitude1x",
+  "Vibration Severity": "severity"
+};
+
+const VibFlagContext = React.createContext<string[]>([]);
+
+function VibVerifyChip() {
+  return (
+    <span
+      title="Vision models disagreed — verify this value"
+      className="ml-1.5 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40 align-middle"
+    >
+      verify
+    </span>
+  );
+}
+
 const ENVELOPING_BANDS = ["Low (gE)", "Medium (gE)", "High (gE)"] as const;
 const IMAGE_AXES = ["Horizontal", "Vertical", "Axial"] as const;
 const IMAGE_UNITS = [
@@ -131,6 +152,11 @@ export interface VibrationInputAccordionsProps {
   setPeakAcceleration: (v: string) => void;
   operatingTemp: string;
   setOperatingTemp: (v: string) => void;
+  /** Vibration severity (NORMAL | ALERT | CRITICAL) populated by master vision. */
+  vibSeverity: string;
+  setVibSeverity: (v: string) => void;
+  /** Canonical field keys flagged by vision consensus disagreement. */
+  flaggedFields?: string[];
 }
 
 const dbMatchedBadge =
@@ -270,7 +296,10 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
     peakAcceleration,
     setPeakAcceleration,
     operatingTemp,
-    setOperatingTemp
+    setOperatingTemp,
+    vibSeverity,
+    setVibSeverity,
+    flaggedFields = []
   } = props;
 
   const [localFileName, setLocalFileName] = useState<string | null>(null);
@@ -302,7 +331,8 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
   const fmaxLabel = (fmax || "10,000 Hz").replace(/\s*Hz$/i, "") + " Hz Fmax";
 
   return (
-    <div className="space-y-0">
+    <VibFlagContext.Provider value={flaggedFields}>
+      <div className="space-y-0">
       {/* Data Ingestion — permanently visible at top */}
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-4 hover:border-amber-500/30 transition-all space-y-5 shadow-xl">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -539,7 +569,10 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
               />
             </label>
             <label className="block">
-              <span className={vibFieldLabel}>1X Amplitude (mm/s)</span>
+              <span className={vibFieldLabel}>
+                1X Amplitude (mm/s)
+                {flaggedFields.includes(VIB_LABEL_TO_CANONICAL["1X Amplitude (mm/s)"]) && <VibVerifyChip />}
+              </span>
               <input
                 type="number"
                 step="0.1"
@@ -604,7 +637,10 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
             />
           </label>
           <label className="block min-w-0">
-            <span className={vibFieldLabel}>Rated RPM</span>
+            <span className={vibFieldLabel}>
+              Rated RPM
+              {flaggedFields.includes(VIB_LABEL_TO_CANONICAL["Rated RPM"]) && <VibVerifyChip />}
+            </span>
             <input
               type="number"
               min={1}
@@ -1038,7 +1074,10 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
       >
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <label className="block min-w-0">
-            <span className={vibFieldLabel}>RMS Velocity (in/s)</span>
+            <span className={vibFieldLabel}>
+              RMS Velocity (in/s)
+              {flaggedFields.includes(VIB_LABEL_TO_CANONICAL["RMS Velocity (in/s)"]) && <VibVerifyChip />}
+            </span>
             <input
               value={rmsVelocity}
               onChange={(e) => {
@@ -1050,7 +1089,10 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
             />
           </label>
           <label className="block min-w-0">
-            <span className={vibFieldLabel}>Peak Acceleration (g)</span>
+            <span className={vibFieldLabel}>
+              Peak Acceleration (g)
+              {flaggedFields.includes(VIB_LABEL_TO_CANONICAL["Peak Acceleration (g)"]) && <VibVerifyChip />}
+            </span>
             <input
               value={peakAcceleration}
               onChange={(e) => {
@@ -1069,6 +1111,29 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
               placeholder="165"
               className={vibInput}
             />
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <label className="block min-w-0">
+            <span className={vibFieldLabel}>
+              Vibration Severity
+              {flaggedFields.includes(VIB_LABEL_TO_CANONICAL["Vibration Severity"]) && <VibVerifyChip />}
+            </span>
+            <div className="relative">
+              <select
+                value={vibSeverity}
+                onChange={(e) => setVibSeverity(e.target.value)}
+                className={vibSelect}
+              >
+                {["", "NORMAL", "ALERT", "CRITICAL"].map((s) => (
+                  <option key={s} value={s}>
+                    {s === "" ? "Unknown" : s}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+            </div>
           </label>
         </div>
 
@@ -1148,6 +1213,7 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
           </div>
         </div>
       </AccordionShell>
-    </div>
+      </div>
+    </VibFlagContext.Provider>
   );
 }

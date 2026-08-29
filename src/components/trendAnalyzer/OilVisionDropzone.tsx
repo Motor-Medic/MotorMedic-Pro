@@ -15,6 +15,8 @@ export interface OilVisionDropzoneProps {
   onParsingChange?: (parsing: boolean) => void;
   onExtracted: (data: OilReportData, fileName: string) => void;
   onError?: (message: string) => void;
+  /** Proactive form reset fired at the start of every new upload (stale-state guard). */
+  onReset?: () => void;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -39,7 +41,8 @@ export function OilVisionDropzone({
   activeAssetId,
   onParsingChange,
   onExtracted,
-  onError
+  onError,
+  onReset
 }: OilVisionDropzoneProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -80,6 +83,8 @@ export function OilVisionDropzone({
       const capturedAssetId = activeAssetRef.current || "";
       setExtractError(null);
       setExtractBanner(null);
+      // Proactive form reset (stale-state guard) — matches MCA/vibration behavior
+      onReset?.();
       setUploadName(file.name);
 
       const preview = URL.createObjectURL(file);
@@ -89,16 +94,21 @@ export function OilVisionDropzone({
       });
 
       notifyParsing(true);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 180_000);
       try {
         const imageBase64 = await fileToBase64(file);
         const res = await fetch(OIL_VISION_API_PATH, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
           body: JSON.stringify({
             imageBase64,
             fileName: file.name
           })
         });
+
+        console.info("[vision] client received");
 
         // --- STALE-EXTRACTION RACE GUARD ---
         if (capturedAssetId && activeAssetRef.current !== capturedAssetId) {
@@ -113,6 +123,7 @@ export function OilVisionDropzone({
           data?: OilReportData;
           message?: string;
           error?: string;
+          technology?: string;
         };
 
         if (!res.ok || !result.success || !result.data) {
@@ -120,6 +131,15 @@ export function OilVisionDropzone({
             result.message ||
             result.error ||
             `Vision extraction failed (${res.status}). Verify manually.`;
+          setExtractError(msg);
+          onError?.(msg);
+          return;
+        }
+
+        // The unified endpoint may fall through to another technology's finalizer.
+        // From the oil tab we only accept an OIL result.
+        if (result.technology && result.technology !== "OIL") {
+          const msg = "Report type not recognized - enter values manually or re-upload.";
           setExtractError(msg);
           onError?.(msg);
           return;
@@ -139,15 +159,23 @@ export function OilVisionDropzone({
           `Auto-filled from ${fmt} report (confidence ${result.data.confidenceScore}%)`
         );
       } catch (err) {
+        clearTimeout(timeoutId);
         if (capturedAssetId && activeAssetRef.current !== capturedAssetId) {
           onError?.("Extraction discarded - asset changed");
           return;
         }
-        const msg =
-          err instanceof Error ? err.message : "Failed to extract oil report. Verify manually.";
+        const aborted =
+          (err instanceof DOMException && err.name === "AbortError") ||
+          (err instanceof Error && err.name === "AbortError");
+        const msg = aborted
+          ? "Extraction timed out or failed. Please try again."
+          : err instanceof Error
+            ? err.message
+            : "Failed to extract oil report. Verify manually.";
         setExtractError(msg);
         onError?.(msg);
       } finally {
+        clearTimeout(timeoutId);
         notifyParsing(false);
       }
     },

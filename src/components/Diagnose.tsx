@@ -77,10 +77,11 @@ import {
   fetchLatestMcaAnalysis
 } from "../lib/analysisPersistence";
 import type { McaOperatorSnapshot } from "../lib/mca/mcaPersistence";
+import { type ExtractedVibrationData } from "../lib/vibration/vibrationImageExtractor";
 import {
-  extractVibrationDataFromImage,
-  type ExtractedVibrationData
-} from "../lib/vibration/vibrationImageExtractor";
+  extractVibrationReportFromImage,
+  type VibrationReportData
+} from "../lib/vibrationVisionExtractor";
 import {
   SPECTRAL_EXTRACTION_FAILED_MSG,
   SPECTRAL_EXTRACTION_TIMEOUT_MSG,
@@ -1676,6 +1677,8 @@ export default function Diagnose({
     peakCount: number;
     confidence: number;
   } | null>(null);
+  const [vibSeverity, setVibSeverity] = useState<string>("");
+  const [vibFlaggedFields, setVibFlaggedFields] = useState<string[]>([]);
   const [currentMessageIndex, setCurrentMessageIndex] = useState(0);
   const [mcaExtracting, setMcaExtracting] = useState(false);
   const [oilExtracting, setOilExtracting] = useState(false);
@@ -3786,53 +3789,91 @@ useEffect(() => {
     selectedAsset?.label ||
     "pending-asset";
 
-  /** Qwen-VL / local vision extract — only from Run Diagnostics spectrum upload. */
+  /** Unified master-vision vibration extract — only from Run Diagnostics spectrum upload. */
   const runVibrationVisionExtraction = async (file: File) => {
     const capturedAssetId = resolveVibrationAssetKey();
+    
+    // --- COMPREHENSIVE FORM RESET (Task 2) ---
     setVibrationExtractStatus("extracting");
     setVibrationExtractError(null);
     setVibrationExtractSummary(null);
+    setVibFlaggedFields([]);
     vibrationExtractedRef.current = null;
     vibrationTrendRecordRef.current = null;
+    
+    // Reset all vibration measurement form fields
+    setRmsVelocity("");
+    setPeakAcceleration("");
+    setVibRpm("");
+    setManual1x("");
+    setManualOverall("");
+    setManualPeakVue("");
+    setManual2x("");
+    setVibSeverity("");
     const startTime = logPipelineStart("frontend-extract-vibration", {
       filename: file.name,
       sizeKb: (file.size / 1024).toFixed(1)
     });
     try {
-      logPipelineSend("frontend-extract-vibration", { mode: "full" });
-      const data = await extractVibrationDataFromImage(
-        file,
-        VISION_MODEL_CONFIG.endpoint,
-        "full"
-      );
+      logPipelineSend("frontend-extract-vibration", { mode: "master-vision" });
+      const vr: VibrationReportData = await extractVibrationReportFromImage(file);
+
       // --- STALE-EXTRACTION RACE GUARD ---
       if (capturedAssetId && resolveVibrationAssetKey() !== capturedAssetId) {
         toast("Extraction discarded - asset changed", "warning");
         setVibrationExtractStatus("idle");
         return;
       }
+
       // --- SANITY BOUNDS ---
-      if (data.rpm != null && Number.isFinite(data.rpm)) {
-        if (data.rpm < 100 || data.rpm > 10000) {
-          toast(`Verify manually — RPM ${data.rpm} out of bounds (100-10000) discarded`, "warning");
-          data.rpm = undefined as unknown as number;
+      if (vr.runningSpeedRpm != null && Number.isFinite(vr.runningSpeedRpm)) {
+        if (vr.runningSpeedRpm < 100 || vr.runningSpeedRpm > 10000) {
+          toast(`Verify manually — RPM ${vr.runningSpeedRpm} out of bounds (100-10000) discarded`, "warning");
+          vr.runningSpeedRpm = null;
         }
       }
-      if (data.overallVelocity != null && Number.isFinite(data.overallVelocity) && data.overallVelocity < 0) {
-        toast(`Verify manually — velocity ${data.overallVelocity} < 0 discarded`, "warning");
-        data.overallVelocity = undefined;
+      if (vr.overallVelocityRms != null && Number.isFinite(vr.overallVelocityRms) && vr.overallVelocityRms < 0) {
+        toast(`Verify manually — velocity ${vr.overallVelocityRms} < 0 discarded`, "warning");
+        vr.overallVelocityRms = null;
       }
-      if (!data.spectralPeaks.length) {
+
+      const filledKeys = [vr.overallVelocityRms, vr.peakAccelerationG, vr.runningSpeedRpm, vr.amplitude1x, vr.severity];
+      const filledCount = filledKeys.filter((x) => x != null).length;
+      const confidenceScore = Math.round((filledCount / 5) * 100);
+      vr.confidenceScore = confidenceScore;
+
+      if (filledCount === 0) {
         throw new Error(SPECTRAL_EXTRACTION_FAILED_MSG);
       }
-      logPipelineSuccess("frontend-extract-vibration", startTime, {
-        peakCount: data.spectralPeaks.length
-      });
 
-      vibrationExtractedRef.current = data;
+      const spectralPeaks = (vr.peakFrequencies ?? [])
+        .map((f) => ({ frequency: Number(f) || 0, amplitude: 0 }))
+        .filter((p) => p.frequency > 0);
+
+      const extracted: ExtractedVibrationData = {
+        overallVelocity: vr.overallVelocityRms ?? 0,
+        overallAcceleration: vr.peakAccelerationG ?? 0,
+        rpm: vr.runningSpeedRpm ?? undefined,
+        spectralPeaks,
+        envelopingPeaks: [],
+        sourceImage: file.name,
+        extractionConfidence: confidenceScore
+      };
+
+      // --- APPLY TO FORM FIELDS ---
+      if (vr.overallVelocityRms != null) setRmsVelocity(String(vr.overallVelocityRms));
+      if (vr.peakAccelerationG != null) setPeakAcceleration(String(vr.peakAccelerationG));
+      if (vr.runningSpeedRpm != null) setVibRpm(String(vr.runningSpeedRpm));
+      if (vr.amplitude1x != null) setManual1x(String(vr.amplitude1x));
+      if (vr.severity) setVibSeverity(vr.severity);
+      setVibFlaggedFields(vr.flaggedFields ?? []);
+
+      logPipelineSuccess("frontend-extract-vibration", startTime, { peakCount: spectralPeaks.length });
+
+      vibrationExtractedRef.current = extracted;
       const record = buildVibrationDiagnosticRecord({
         assetId: capturedAssetId,
-        extracted: data,
+        extracted,
         component: browseComponent || null,
         timestamp: new Date().toISOString()
       });
@@ -3849,14 +3890,14 @@ useEffect(() => {
         firstFewPeaks: record.spectral?.slice(0, 3)
       });
 
-      setVibrationExtractSummary({
-        peakCount: record.spectral.length,
-        confidence: data.extractionConfidence
-      });
+      const flagged = vr.flaggedFields ?? [];
+      setVibrationExtractSummary({ peakCount: record.spectral.length, confidence: confidenceScore });
       setVibrationExtractStatus("ready");
       toast(
-        `Vibration chart extracted (${data.extractionConfidence}% confidence) · ${record.spectral.length} spectral peaks`,
-        "success"
+        flagged.length
+          ? `Vibration report extracted (${confidenceScore}% confidence) · ${filledCount} fields auto-filled, ${flagged.length} flagged — verify highlighted values`
+          : `Vibration report extracted (${confidenceScore}% confidence) · ${filledCount} fields auto-filled`,
+        flagged.length ? "warning" : "success"
       );
     } catch (err) {
       // Re-check race on error path as well
@@ -3871,19 +3912,20 @@ useEffect(() => {
         elapsedSec: pipelineElapsedSec(startTime),
         ...pipelineErrorFields(err)
       });
-      const message =
-        err instanceof Error ? err.message : SPECTRAL_EXTRACTION_FAILED_MSG;
+      const aborted =
+        (err instanceof DOMException && err.name === "AbortError") ||
+        (err instanceof Error && err.name === "AbortError");
+      const message = aborted
+        ? "Extraction timed out or failed. Please try again."
+        : err instanceof Error
+          ? err.message
+          : SPECTRAL_EXTRACTION_FAILED_MSG;
       vibrationExtractedRef.current = null;
       vibrationTrendRecordRef.current = null;
       setVibrationExtractSummary(null);
       setVibrationExtractStatus("failed");
       setVibrationExtractError(message);
-      toast(
-        /timed out|timeout/i.test(message)
-          ? SPECTRAL_EXTRACTION_TIMEOUT_MSG
-          : message,
-        "warning"
-      );
+      toast(message, "warning");
     } finally {
       // Safety: if status somehow still stuck at extracting (e.g. early return path missed), release it
       // Use a microtask to avoid overwriting the intentional ready/failed/idle just set
@@ -4395,6 +4437,9 @@ useEffect(() => {
               setPeakAcceleration={setPeakAcceleration}
               operatingTemp={operatingTemp}
               setOperatingTemp={setOperatingTemp}
+              vibSeverity={vibSeverity}
+              setVibSeverity={setVibSeverity}
+              flaggedFields={vibFlaggedFields}
             />
           ) : activeTech === "ir" ? (
             <ThermographyInputAccordions
