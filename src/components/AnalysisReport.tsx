@@ -47,7 +47,7 @@ import {
 } from "../types/oilAnalysis";
 import { latestOfType, peakOfType, resolveTempUnit } from "../lib/diagnostics/sensorFusion";
 
-type ReportTab = 1 | 2 | 3;
+type ReportTab = 1 | 2 | 3 | 4;
 type ReportTechnology = "vibration" | "thermography" | "ultrasound" | "mca" | "oil";
 
 interface AnalysisReportProps {
@@ -72,35 +72,35 @@ const REPORT_TECH_CARDS: {
     title: "Vibration Analysis",
     subtitle: "FFT spectrum, waveform, bearing analysis",
     Icon: Activity,
-    iconClass: "text-yellow-400"
+    iconClass: "bg-yellow-500/15 border-yellow-500/40 text-yellow-400"
   },
   {
     id: "thermography",
     title: "Thermography Analysis",
     subtitle: "Thermal imaging, temperature analysis",
     Icon: Thermometer,
-    iconClass: "text-red-400"
+    iconClass: "bg-red-500/15 border-red-500/40 text-red-400"
   },
   {
     id: "ultrasound",
     title: "Ultrasound Analysis",
     subtitle: "Acoustic emissions, leak detection",
     Icon: AudioWaveform,
-    iconClass: "text-blue-400"
+    iconClass: "bg-sky-500/15 border-sky-500/40 text-sky-400"
   },
   {
     id: "mca",
     title: "Motor Circuit Analysis",
     subtitle: "Winding health, insulation testing",
     Icon: Zap,
-    iconClass: "text-yellow-400"
+    iconClass: "bg-yellow-500/15 border-yellow-500/40 text-yellow-400"
   },
   {
     id: "oil",
     title: "Oil Analysis",
     subtitle: "Wear metals, viscosity, contamination",
     Icon: Droplet,
-    iconClass: "text-cyan-400"
+    iconClass: "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
   }
 ];
 
@@ -123,6 +123,12 @@ type ReportAsset = (typeof MOCK_ASSETS)[number];
 
 const HIER_SELECT =
   "w-full min-h-[40px] px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 truncate disabled:opacity-50 focus:outline-none focus:border-amber-400/60";
+
+const sectionTitle = "text-sm font-bold text-white tracking-tight";
+const sectionHint = "text-xs text-slate-500 mt-0.5";
+const sectionLabel = "text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 block";
+const selectInputClass =
+  "w-full min-h-[38px] rounded-lg bg-slate-950/70 border border-slate-600 px-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-yellow-500 focus:border-yellow-500 transition-colors";
 
 /** Match an asset label (e.g. "Boiler Feed Pump A - P-101A") to a mock report asset. */
 /**
@@ -178,31 +184,36 @@ function resolveReportAsset(tag: string): ReportAsset | null {
 const TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Spectrum Library" },
-  { id: 3, label: "3. Repair & Actions" }
+  { id: 3, label: "3. Repair & Actions" },
+  { id: 4, label: "4. Multi-Tech Overview" }
 ];
 
 const THERMOGRAPHY_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" }
+  { id: 3, label: "3. Repair Actions" },
+  { id: 4, label: "4. Multi-Tech Overview" }
 ];
 
 const ULTRASOUND_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" }
+  { id: 3, label: "3. Repair Actions" },
+  { id: 4, label: "4. Multi-Tech Overview" }
 ];
 
 const MCA_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" }
+  { id: 3, label: "3. Repair Actions" },
+  { id: 4, label: "4. Multi-Tech Overview" }
 ];
 
 const OIL_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Lab Results" },
   { id: 2, label: "2. Sample Library" },
-  { id: 3, label: "3. Repair Actions" }
+  { id: 3, label: "3. Repair Actions" },
+  { id: 4, label: "4. Multi-Tech Overview" }
 ];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
@@ -753,6 +764,31 @@ const ISO_LIMIT_LINES = [
   { label: "Warning", mms: ISO_ZONES[1].from * IN_S_TO_MM_S, stroke: "#facc15" },
   { label: "Danger", mms: ISO_ZONES[2].from * IN_S_TO_MM_S, stroke: "#ef4444" }
 ];
+
+// ISO 10816-3 Group 2 velocity thresholds (mm/s RMS) — Medium machines 15–300 kW, rigid foundation.
+const ISO_10816_ZONES_MM = [
+  { zone: "A", label: "Good", from: 0, to: 2.3, bg: "bg-emerald-500", text: "text-emerald-400", border: "border-emerald-500/30", bgLight: "bg-emerald-500/10" },
+  { zone: "B", label: "Acceptable", from: 2.3, to: 4.5, bg: "bg-sky-500", text: "text-sky-400", border: "border-sky-500/30", bgLight: "bg-sky-500/10" },
+  { zone: "C", label: "Unsatisfactory", from: 4.5, to: 7.1, bg: "bg-amber-500", text: "text-amber-400", border: "border-amber-500/30", bgLight: "bg-amber-500/10" },
+  { zone: "D", label: "Unacceptable", from: 7.1, to: 12, bg: "bg-red-500", text: "text-red-400", border: "border-red-500/30", bgLight: "bg-red-500/10" },
+] as const;
+
+function resolveIso10816Zone(
+  vibrationRms: number | null | undefined,
+  healthScore: number | null | undefined,
+): { zone: string; label: string; rmsMmS: number | null; source: "vibration_rms" | "health_score" | "none" } {
+  if (vibrationRms != null && Number.isFinite(vibrationRms) && vibrationRms >= 0) {
+    const match = ISO_10816_ZONES_MM.find((z) => vibrationRms < z.to) ?? ISO_10816_ZONES_MM[3];
+    return { zone: match.zone, label: match.label, rmsMmS: vibrationRms, source: "vibration_rms" };
+  }
+  if (healthScore != null && Number.isFinite(healthScore)) {
+    if (healthScore >= 85) return { zone: "A", label: "Good", rmsMmS: null, source: "health_score" };
+    if (healthScore >= 70) return { zone: "B", label: "Acceptable", rmsMmS: null, source: "health_score" };
+    if (healthScore >= 50) return { zone: "C", label: "Unsatisfactory", rmsMmS: null, source: "health_score" };
+    return { zone: "D", label: "Unacceptable", rmsMmS: null, source: "health_score" };
+  }
+  return { zone: "—", label: "No stored RMS/Health metric available", rmsMmS: null, source: "none" };
+}
 
 type FaultSeverity = "Low" | "Medium" | "High";
 
@@ -8044,6 +8080,7 @@ export default function AnalysisReport({
   // Asset the live multi-technology assessment is built for. Null until the
   // saved records tell us which assets actually have telemetry.
   const [assessmentAssetId, setAssessmentAssetId] = useState<string | null>(null);
+  const [visibleLimit, setVisibleLimit] = useState(10);
 
   const initiateRcaFromReport = () => {
     if (onNavigateToRca) {
@@ -8464,199 +8501,618 @@ export default function AnalysisReport({
     );
   }
 
+  const currentTechTabs = selectedTech === "oil" ? OIL_TABS
+    : selectedTech === "thermography" ? THERMOGRAPHY_TABS
+    : selectedTech === "ultrasound" ? ULTRASOUND_TABS
+    : selectedTech === "mca" ? MCA_TABS
+    : TABS;
+
   return (
-    <div className="space-y-6 pb-28 bg-slate-950/80 rounded-2xl min-h-full">
+    <div className="min-h-screen flex flex-col gap-4 p-4 bg-slate-950">
 
-      {/* ===== Equipment selection — Trend Analyzer pattern ===== */}
-      <section className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 sm:p-4 space-y-3 overflow-visible shadow-xl">
-        <div className="space-y-2.5" ref={searchRef}>
-          <div className="relative w-full min-w-0">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 pointer-events-none" />
-            <input
-              type="search"
-              value={assetSearch}
-              onChange={(e) => {
-                setAssetSearch(e.target.value);
-                setSearchOpen(true);
-              }}
-              onFocus={() => setSearchOpen(true)}
-              placeholder="Search assets by name, tag, ID, or location..."
-              className="w-full min-h-[40px] pl-9 pr-3 rounded-xl bg-slate-900 border border-slate-700 text-sm text-slate-200 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
-            />
-            {searchOpen && (
-              <div className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950 shadow-2xl p-1.5 space-y-0.5">
-                {searchResults.length === 0 ? (
-                  <p className="text-xs text-slate-500 px-2 py-3">No matching assets.</p>
-                ) : (
-                  searchResults.map((asset) => {
-                    const on = selectedAsset === asset.tag;
-                    return (
-                      <button
-                        key={asset.id}
-                        type="button"
-                        onClick={() =>
-                          applyDraftSelection(asset.tag, asset.components[0]?.name ?? null)
-                        }
-                        className={`w-full text-left px-2.5 py-2 rounded-lg text-xs cursor-pointer ${
-                          on ? "bg-amber-400/10 text-amber-300" : "text-slate-300 hover:bg-slate-900"
-                        }`}
-                      >
-                        <span className="flex items-start gap-2">
-                          <span
-                            className={`mt-0.5 h-4 w-4 rounded border flex items-center justify-center shrink-0 ${
-                              on ? "bg-amber-400 border-amber-400 text-slate-950" : "border-slate-600"
-                            }`}
-                          >
-                            {on && <Check className="h-3 w-3" strokeWidth={3} />}
-                          </span>
-                          <span className="min-w-0">
-                            <span className="block font-bold truncate">
-                              {asset.name} · {asset.tag}
-                            </span>
-                            <span className="block text-[10px] text-slate-500 truncate mt-0.5">
-                              {asset.hierarchyPath}
-                            </span>
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })
-                )}
+      {/* ===== Technology Selector ===== */}
+      <div className="shrink-0 px-4 pt-4 pb-2 space-y-4">
+        <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">
+          <div>
+            <h2 className={sectionTitle}>Technology</h2>
+            <p className={sectionHint}>Select diagnostic modality</p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
+            {REPORT_TECH_CARDS.map(({ id, title, subtitle, Icon, iconClass }) => {
+              const active = selectedTech === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedTech(id);
+                    setActiveTab(1);
+                  }}
+                  className={`min-h-[160px] h-40 p-4 rounded-xl border flex flex-col items-center justify-center cursor-pointer transition-all ${
+                    active
+                      ? "border-yellow-500 bg-yellow-500/10"
+                      : "bg-slate-800/50 border-white/80 hover:border-yellow-500 hover:bg-slate-800"
+                  }`}
+                >
+                  <div className={`w-10 h-10 rounded-lg border flex items-center justify-center mb-2 mx-auto shrink-0 ${iconClass}`}>
+                    <Icon className="w-5 h-5" />
+                  </div>
+                  <p className="text-sm font-bold text-white text-center leading-tight">{title}</p>
+                  <p className="text-[11px] text-slate-400 text-center mt-1 leading-snug">{subtitle}</p>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ===== Equipment Selection ===== */}
+        <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">
+          <div>
+            <h2 className={sectionTitle}>Equipment Selection</h2>
+            <p className={sectionHint}>Route → Asset → Component</p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="block min-w-0">
+              <span className={sectionLabel}>Select Route</span>
+              <div className="relative">
+                <select
+                  value={selectedRoute}
+                  onChange={(e) => { setSelectedRoute(e.target.value); setSelectedAsset(""); setSelectedComponent(""); }}
+                  className={`${selectInputClass} appearance-none pr-10`}
+                >
+                  <option value="">Select Route</option>
+                  {routeOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
               </div>
-            )}
+            </label>
+            <label className="block min-w-0">
+              <span className={sectionLabel}>Select Asset</span>
+              <div className="relative">
+                <select
+                  value={selectedAsset}
+                  onChange={(e) => { setSelectedAsset(e.target.value); setSelectedComponent(""); }}
+                  disabled={!selectedRoute}
+                  className={`${selectInputClass} appearance-none pr-10 disabled:opacity-50`}
+                >
+                  <option value="">Select Asset</option>
+                  {assetOptions.map((a) => <option key={a.tag} value={a.tag}>{a.name} - {a.tag}</option>)}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
+            <label className="block min-w-0">
+              <span className={sectionLabel}>Select Component</span>
+              <div className="relative">
+                <select
+                  value={selectedComponent}
+                  onChange={(e) => setSelectedComponent(e.target.value)}
+                  disabled={!selectedAsset}
+                  className={`${selectInputClass} appearance-none pr-10 disabled:opacity-50`}
+                >
+                  <option value="">Select Component</option>
+                  {componentOptions.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+              </div>
+            </label>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 min-w-0">
-            <div className="min-w-0">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
-                Select Route
-              </label>
-              <select
-                value={selectedRoute}
-                onChange={(e) => {
-                  setSelectedRoute(e.target.value);
-                  setSelectedAsset("");
-                  setSelectedComponent("");
-                }}
-                className={HIER_SELECT}
-              >
-                <option value="">Select Route</option>
-                {routeOptions.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="min-w-0">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
-                Select Asset
-              </label>
-              <select
-                value={selectedAsset}
-                onChange={(e) => {
-                  setSelectedAsset(e.target.value);
-                  setSelectedComponent("");
-                }}
-                disabled={!selectedRoute}
-                className={HIER_SELECT}
-              >
-                <option value="">Select Asset</option>
-                {assetOptions.map((a) => (
-                  <option key={a.tag} value={a.tag}>
-                    {a.name} - {a.tag}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="min-w-0">
-              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">
-                Select Component
-              </label>
-              <select
-                value={selectedComponent}
-                onChange={(e) => setSelectedComponent(e.target.value)}
-                disabled={!selectedAsset}
-                className={HIER_SELECT}
-              >
-                <option value="">Select Component</option>
-                {componentOptions.map((c) => (
-                  <option key={c.id} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
+          {selectedAsset && (() => {
+            const equip = flatEquipment.find((a) => a.tag === selectedAsset);
+            return equip ? (
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-xs">
+                <span className="font-mono font-bold text-yellow-400">{equip.tag}</span>
+                <span className="text-slate-600">|</span>
+                <span className="text-slate-300 truncate">{equip.routeName}</span>
+                <span className="text-slate-600">|</span>
+                <span className="text-cyan-300 font-semibold">{selectedComponent || "—"}</span>
+              </div>
+            ) : null;
+          })()}
+          <div className="flex items-center gap-2 pt-1">
             <button
               type="button"
               onClick={handleLoadReport}
               disabled={isLoading || !selectedRoute || !selectedAsset}
-              className="inline-flex items-center justify-center gap-2 min-h-[40px] bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 font-bold px-6 py-2 rounded-lg cursor-pointer transition-colors"
+              className="inline-flex items-center gap-2 h-9 px-4 bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed text-slate-900 text-sm font-semibold rounded-lg cursor-pointer transition-colors shrink-0"
             >
-              {isLoading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading…
-                </>
-              ) : (
-                "Load Report"
-              )}
+              {isLoading ? <><Loader2 className="h-4 w-4 animate-spin" />Loading…</> : "Load Report"}
             </button>
-            <p className="text-[11px] text-slate-500">
-              Dropdown changes only update selection. Click Load Report to fetch data.
-            </p>
-          </div>
-
-          {reportAsset && (
-            <div className="flex flex-wrap gap-1.5 items-center pt-0.5">
+            {reportAsset && (
               <span
-                className="inline-flex max-w-full items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-amber-400/40 text-amber-300 text-[11px] font-bold"
+                className="inline-flex items-center gap-2 h-9 px-3 rounded-lg bg-slate-950 border border-amber-400/30 text-amber-300 text-sm font-semibold shrink-0"
                 title={`${reportAsset.name} · ${reportAsset.tag} · ${reportAsset.location}`}
               >
-                <span className="truncate">
-                  Loaded: {displayAssetLabel}
-                  {loadedComponent ? ` · ${loadedComponent}` : ""}
-                </span>
+                <span className="truncate max-w-[240px]">{displayAssetLabel}{loadedComponent ? ` · ${loadedComponent}` : ""}</span>
               </span>
-              {selectedEquip && (
-                <span className="inline-flex items-center px-2 py-1 rounded-lg bg-slate-950 border border-slate-700 text-[10px] text-slate-400">
-                  {selectedEquip.routeName}
-                </span>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {/* ===== Action Toolbar ===== */}
+      <div className="shrink-0 mx-4 mb-4 flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px]" ref={searchRef}>
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 pointer-events-none" />
+          <input
+            type="search"
+            value={assetSearch}
+            onChange={(e) => { setAssetSearch(e.target.value); setSearchOpen(true); }}
+            onFocus={() => setSearchOpen(true)}
+            placeholder="Search assets by name, tag, ID, or location…"
+            className="w-full h-9 pl-9 pr-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+          />
+          {searchOpen && (
+            <div className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-lg border border-slate-700 bg-slate-950 shadow-2xl p-1.5 space-y-0.5">
+              {searchResults.length === 0 ? (
+                <p className="text-sm text-slate-500 px-2 py-2.5">No matching assets.</p>
+              ) : (
+                searchResults.map((asset) => {
+                  const on = selectedAsset === asset.tag;
+                  return (
+                    <button
+                      key={asset.id}
+                      type="button"
+                      onClick={() => applyDraftSelection(asset.tag, asset.components[0]?.name ?? null)}
+                      className={`w-full text-left px-2.5 py-2 rounded-md text-sm cursor-pointer ${
+                        on ? "bg-amber-400/10 text-amber-300" : "text-slate-300 hover:bg-slate-900"
+                      }`}
+                    >
+                      <span className="block font-semibold truncate">{asset.name} · {asset.tag}</span>
+                      <span className="block text-xs text-slate-500 truncate mt-0.5">{asset.hierarchyPath}</span>
+                    </button>
+                  );
+                })
               )}
             </div>
           )}
         </div>
-      </section>
 
-      {/* Active report context — committed after Load Report */}
-      <div className="rounded-2xl border border-yellow-500/30 bg-yellow-500/5 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-yellow-500/80 mb-0.5">
-            Report Asset
-          </p>
-          <p className="text-sm sm:text-base font-bold text-white truncate" title={displayAssetLabel}>
-            {displayAssetLabel}
-          </p>
+        <span className="h-6 border-l border-slate-700 shrink-0" />
+
+        <label className="text-sm text-slate-400 shrink-0">From</label>
+        <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+          className="h-9 px-3 rounded-lg bg-slate-950 border border-slate-800 text-sm text-slate-200 focus:outline-none focus:border-yellow-400/60" />
+        <label className="text-sm text-slate-400 shrink-0">To</label>
+        <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+          className="h-9 px-3 rounded-lg bg-slate-950 border border-slate-800 text-sm text-slate-200 focus:outline-none focus:border-yellow-400/60" />
+
+        <span className="h-6 border-l border-slate-700 shrink-0" />
+
+        <button type="button" onClick={() => createWorkOrderAndGo("Work order staged — opening Maintenance Calendar.")}
+          className="flex items-center gap-1.5 h-9 px-3 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-sm font-semibold rounded-lg cursor-pointer transition-colors shrink-0">
+          <Wrench className="h-4 w-4" /><span>Create Work Order</span>
+        </button>
+
+        <div className="relative shrink-0" ref={exportRef}>
+          <button type="button" onClick={() => setExportOpen((p) => !p)} aria-haspopup="menu" aria-expanded={exportOpen}
+            className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-sm font-medium rounded-lg cursor-pointer transition-colors">
+            <Download className="h-4 w-4" /><span>Export Report</span>
+            <ChevronDown className={`h-4 w-4 transition-transform ${exportOpen ? "rotate-180" : ""}`} />
+          </button>
+          {exportOpen && (
+            <div role="menu" className="absolute right-0 top-full mt-1.5 w-52 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl p-1.5 z-30">
+              {EXPORT_FORMATS.map((format) => (
+                <button key={format.id} type="button" role="menuitem" onClick={() => handleExport(format.id)}
+                  className="w-full text-left px-2.5 py-2 rounded-md hover:bg-slate-950 cursor-pointer transition-colors group">
+                  <span className="text-sm font-semibold text-slate-200 group-hover:text-yellow-400 block">{format.label}</span>
+                  <span className="text-xs text-slate-500 block">{format.hint}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-        <p className="text-[11px] text-slate-400 shrink-0">
-          Tag{" "}
-          <span className="font-mono font-semibold text-slate-200">{reportAsset.tag}</span>
-          {loadedComponent ? (
-            <>
-              {" "}
-              · <span className="text-slate-300">{loadedComponent}</span>
-            </>
-          ) : null}
-        </p>
+
+        <button type="button" onClick={() => setShowInventory(true)}
+          className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-sm font-medium rounded-lg cursor-pointer transition-colors shrink-0">
+          <Search className="h-4 w-4" /><span>Parts Search</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setShowWorkOrder(true)}
+          disabled={!selectedAnalysis}
+          title={
+            selectedAnalysis
+              ? "Draft a work order from the selected saved analysis"
+              : "Select a saved analysis to draft a work order from it"
+          }
+          className={`flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 text-sm font-medium rounded-lg transition-colors shrink-0 ${
+            selectedAnalysis
+              ? "text-slate-300 hover:border-slate-700 hover:text-white cursor-pointer"
+              : "text-slate-500 cursor-not-allowed opacity-60"
+          }`}
+        >
+          <Wrench className="h-4 w-4" /><span>Work Order</span>
+        </button>
+
+        <button type="button" disabled title={PENDING_SCHEDULE}
+          className={`flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 text-slate-400 text-sm font-medium rounded-lg transition-colors shrink-0 cursor-not-allowed opacity-50`}>
+          <Calendar className="h-4 w-4" /><span>Schedule Re-test</span>
+        </button>
       </div>
 
-      <div className="relative">
+      {/* ===== Master-Detail Split ===== */}
+      {deepLinkReportId ? (
+        <div className="w-full p-4">
+          <div className="w-full">
+            <SavedReportViewer
+              reportId={deepLinkReportId}
+              knownAssetIds={assetsWithRecords}
+              onBack={closeReport}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-row gap-4 w-full items-start">
+
+          {/* ===== LEFT: Saved Analyses List ===== */}
+          <div className="w-80 shrink-0 h-fit bg-slate-900/60 rounded-xl border border-slate-800 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-white">Saved Analyses</h3>
+              <span className="text-xs text-slate-500">{loadedAnalyses.length} result{loadedAnalyses.length === 1 ? "" : "s"}</span>
+            </div>
+            {loadError && <p className="text-xs text-amber-400 mb-3">{loadError}</p>}
+            {loadedAnalyses.length === 0 ? (
+              <div className="flex flex-col items-center justify-center text-center py-10 px-2">
+                <FileText className="h-8 w-8 text-slate-600 mb-2" />
+                <p className="text-sm font-semibold text-slate-300">No data available</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-[220px]">
+                  No saved analyses yet. Complete a Run Diagnostics analysis to populate this list.
+                </p>
+              </div>
+            ) : (
+              <>
+              <div className="grid gap-2">
+                {loadedAnalyses.slice(0, visibleLimit).map((row) => {
+                  const on = selectedAnalysis?.id === row.id;
+                  const sevRaw = String(
+                    (Array.isArray(row.fault_list) && row.fault_list[0]?.severity) || ""
+                  ).toLowerCase();
+                  const sevBadge = sevRaw.includes("high") || sevRaw.includes("crit")
+                    ? "bg-red-500/15 text-red-400 border-red-500/30"
+                    : sevRaw.includes("low")
+                      ? "bg-green-500/15 text-green-400 border-green-500/30"
+                      : "bg-amber-500/15 text-amber-400 border-amber-500/30";
+                  return (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => setSelectedAnalysis(row)}
+                      className={`w-full text-left rounded-lg border p-3 transition-colors cursor-pointer ${
+                        on
+                          ? "border-amber-400/50 bg-amber-400/10"
+                          : "border-slate-800 bg-slate-950/50 hover:border-slate-600"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-white truncate">
+                          {row.primary_fault || "Analysis"}
+                        </p>
+                        {sevRaw && (
+                          <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${sevBadge}`}>
+                            {sevRaw.includes("high") || sevRaw.includes("crit") ? "HIGH" : sevRaw.includes("low") ? "LOW" : "MED"}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1 truncate">
+                        {row.component || "—"} · {row.asset_id || "—"}
+                      </p>
+                      <p className="text-xs text-slate-600 mt-1">
+                        {row.timestamp ? new Date(row.timestamp).toLocaleDateString() : ""}
+                        {row.health_score != null ? ` · Health ${row.health_score}` : ""}
+                        {row.is_baseline ? " · BASELINE" : ""}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+              {visibleLimit < loadedAnalyses.length && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleLimit((n) => n + 10)}
+                  className="w-full py-2 text-xs font-semibold text-amber-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg border border-slate-700/50 mt-3"
+                >
+                  Show More (+10)
+                </button>
+              )}
+              </>
+            )}
+          </div>
+
+          {/* ===== RIGHT: Tab Strip + Detail + FFT ===== */}
+          <div className="flex-1 min-w-0 h-fit bg-slate-900/40 rounded-xl border border-slate-800 p-6 gap-6 flex flex-col">
+
+            {/* Tab Navigation */}
+            <div className="flex gap-1 border-b border-slate-800 pb-2 shrink-0 overflow-x-auto scrollbar-none">
+              {currentTechTabs.map((tab) => {
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={`px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors cursor-pointer border-b-2 ${
+                      isActive
+                        ? "text-yellow-400 border-yellow-400"
+                        : "text-slate-400 hover:text-slate-200 border-transparent"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* ===== Selected Analysis Detail — Tab 1 ===== */}
+            {selectedAnalysis && activeTab === 1 && (() => {
+              const isoInfo = resolveIso10816Zone(
+                (selectedAnalysis.telemetry_data as Record<string, unknown> | null | undefined)?.overallVelocity as number | undefined,
+                selectedAnalysis.health_score,
+              );
+              const isoZoneMeta = ISO_10816_ZONES_MM.find((z) => z.zone === isoInfo.zone);
+              const faults = Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : [];
+              const hasHigh = faults.some((f) => String(f.severity ?? "").toUpperCase() === "HIGH");
+
+              return (
+                <div className="space-y-4">
+                  {/* -- ISO 10816 Severity Bar -- */}
+                  <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4 space-y-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Gauge className="h-4 w-4 text-amber-400" />
+                      <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">ISO 10816 Severity Assessment</h4>
+                    </div>
+                    {isoInfo.source === "none" ? (
+                      <p className="text-sm text-slate-500 italic">No stored RMS/Health metric available</p>
+                    ) : (
+                      <>
+                        {/* Zone indicator badge */}
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold ${isoZoneMeta?.bgLight ?? "bg-slate-800/50"} ${isoZoneMeta?.border ?? "border-slate-600"} ${isoZoneMeta?.text ?? "text-slate-300"}`}>
+                            <ShieldCheck className="h-3.5 w-3.5" />
+                            Zone {isoInfo.zone} — {isoInfo.label}
+                          </span>
+                          {isoInfo.rmsMmS != null && (
+                            <span className="text-xs text-slate-400 font-mono">
+                              {isoInfo.rmsMmS.toFixed(2)} mm/s RMS
+                            </span>
+                          )}
+                          {isoInfo.source === "health_score" && (
+                            <span className="text-[10px] text-slate-500 italic">
+                              (mapped from health score {selectedAnalysis.health_score})
+                            </span>
+                          )}
+                        </div>
+                        {/* 4-zone horizontal bar */}
+                        <div className="relative">
+                          <div className="flex w-full h-3 rounded-full overflow-hidden border border-slate-800">
+                            {ISO_10816_ZONES_MM.map((z) => (
+                              <div key={z.zone} className={`${z.bg} opacity-80`} style={{ width: `${((z.to - z.from) / 12) * 100}%` }} />
+                            ))}
+                          </div>
+                          {/* Marker */}
+                          {isoInfo.rmsMmS != null && (
+                            <div
+                              className="absolute top-0 h-3 w-0.5 bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)] rounded-full"
+                              style={{ left: `${Math.min((isoInfo.rmsMmS / 12) * 100, 100)}%`, transform: "translateX(-50%)" }}
+                            />
+                          )}
+                          {/* Zone labels under bar */}
+                          <div className="flex w-full mt-1.5">
+                            {ISO_10816_ZONES_MM.map((z) => (
+                              <div key={z.zone} className="text-center" style={{ width: `${((z.to - z.from) / 12) * 100}%` }}>
+                                <span className={`text-[9px] font-bold ${z.text}`}>{z.zone}</span>
+                                <span className="text-[8px] text-slate-600 block leading-tight">{z.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* -- Report Summary -- */}
+                  {(selectedAnalysis.summary || selectedAnalysis.primary_fault) && (
+                    <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
+                      <p className="text-sm text-slate-300 leading-relaxed">
+                        {selectedAnalysis.summary || selectedAnalysis.primary_fault}
+                      </p>
+                      {selectedAnalysis.component && (
+                        <p className="text-xs text-slate-500 mt-2">
+                          Component: <span className="text-slate-400 font-semibold">{selectedAnalysis.component}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* -- Fault Diagnosis Cards -- */}
+                  {faults.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="text-xs font-bold text-slate-500 uppercase tracking-widest">Fault Diagnoses</h4>
+                      <div className="grid gap-2">
+                        {faults.map((f, i) => {
+                          const sev = String(f.severity ?? "").toUpperCase();
+                          const sevStyle =
+                            sev === "HIGH" || sev === "CRITICAL"
+                              ? "bg-red-500/10 text-red-400 border-red-500/30"
+                              : sev === "LOW" || sev === "MINOR"
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                                : "bg-amber-500/10 text-amber-400 border-amber-500/30";
+                          const sevLabel =
+                            sev === "HIGH" || sev === "CRITICAL" ? "HIGH"
+                              : sev === "LOW" || sev === "MINOR" ? "LOW"
+                                : "MED";
+                          const confidence = f.confidencePercent ?? f.confidence;
+                          const proofLine = f.detail || f.description || "Standard Spectral Signature Detected";
+
+                          return (
+                            <div key={i} className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-sm font-bold text-slate-100">{f.title || `Fault ${i + 1}`}</p>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  {confidence != null && (
+                                    <span className="text-[10px] text-slate-400 font-mono">{confidence}% conf.</span>
+                                  )}
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${sevStyle}`}>
+                                    {sevLabel}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="text-xs text-slate-500 font-mono leading-relaxed">
+                                {proofLine}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* -- Recommendations & Safety -- */}
+                  {Array.isArray(selectedAnalysis.recommendations) && selectedAnalysis.recommendations.length > 0 && (
+                    <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4 space-y-3">
+                      <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Recommendations</h4>
+                      <ul className="space-y-2">
+                        {selectedAnalysis.recommendations.map((r, i) => (
+                          <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                            <Check className="h-4 w-4 text-amber-400 mt-0.5 shrink-0" />
+                            <span>{r}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {/* -- LOTO Safety Block (HIGH severity) -- */}
+                  {hasHigh && (
+                    <div className="rounded-xl border border-amber-500/50 bg-amber-950/20 p-4 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="h-4 w-4 text-amber-400" />
+                        <p className="text-sm font-bold text-amber-300">LOTO Required — High Severity Fault Detected</p>
+                      </div>
+                      <p className="text-xs text-amber-200/80 leading-relaxed">
+                        A high-severity fault has been identified. Lockout/Tagout (LOTO) procedures must be followed before
+                        any physical inspection or repair. Isolate all energy sources, apply personal locks, and verify zero
+                        energy state per OSHA 29 CFR 1910.147.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* -- No fault fallback -- */}
+                  {faults.length === 0 && !selectedAnalysis.summary && !selectedAnalysis.primary_fault && (
+                    <div className="text-center py-8 text-slate-500 text-sm">
+                      <Info className="h-5 w-5 mx-auto mb-2 text-slate-600" />
+                      <p>No detailed fault data available for this record.</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ===== Tab 1: Analysis Results (no selection) ===== */}
+            {activeTab === 1 && !selectedAnalysis && (
+              <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                <FileText className="h-8 w-8 text-slate-600 mb-3" />
+                <p className="text-sm font-semibold text-slate-300">Select an analysis from the list</p>
+                <p className="text-sm text-slate-500 mt-1 max-w-md">
+                  Click a saved analysis on the left to view its details, fault diagnoses, and recommendations.
+                </p>
+              </div>
+            )}
+
+            {/* ===== Tab 2: Spectrum / Data Library ===== */}
+            {activeTab === 2 && (
+              <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                <FileText className="h-8 w-8 text-slate-600 mb-3" />
+                <p className="text-sm font-semibold text-slate-300">No data available</p>
+                <p className="text-sm text-slate-500 mt-1 max-w-md">
+                  {selectedTech === "vibration"
+                    ? "Spectrum library will populate from saved diagnostic spectra. No spectrum data available yet."
+                    : `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.`}
+                </p>
+              </div>
+            )}
+
+            {/* ===== Tab 3: Repair & Actions ===== */}
+            {activeTab === 3 && (
+              <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                <FileText className="h-8 w-8 text-slate-600 mb-3" />
+                <p className="text-sm font-semibold text-slate-300">No data available</p>
+                <p className="text-sm text-slate-500 mt-1 max-w-md">
+                  Repair actions will appear when a saved analysis includes recommended parts and work.
+                </p>
+              </div>
+            )}
+
+            {/* ===== Tab 4: Multi-Tech Overview ===== */}
+            {activeTab === 4 && (
+              <>
+                {assetsWithRecords.length === 0 ? (
+                  <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6">
+                    <h3 className="text-base font-bold text-white mb-1">
+                      Multi-Technology Assessment
+                    </h3>
+                    <p className="text-sm text-slate-400">
+                      No saved condition-monitoring records found. Run and save an analysis
+                      from Run Diagnostics to build an assessment.
+                    </p>
+                  </section>
+                ) : (
+                  <div>
+                    <div className="mb-3 flex flex-wrap items-end gap-3">
+                      <div className="min-w-0">
+                        <label
+                          htmlFor="assessment-asset"
+                          className="text-xs font-semibold text-slate-500 uppercase tracking-widest block mb-1"
+                        >
+                          Assessment Asset
+                        </label>
+                        <select
+                          id="assessment-asset"
+                          value={assessmentAssetId ?? ""}
+                          onChange={(e) => setAssessmentAssetId(e.target.value)}
+                          className="h-9 min-w-[200px] px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-amber-400/60"
+                        >
+                          {assetsWithRecords.map((id) => (
+                            <option key={id} value={id}>
+                              {id}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <p className="text-sm text-slate-500 pb-2">
+                        Assets with saved records ({assetsWithRecords.length})
+                      </p>
+                    </div>
+                    {assessmentAssetId && (
+                      <MultiTechAssessment
+                        assetId={assessmentAssetId}
+                        assetLabel={assessmentAssetId}
+                        companyId={selectedCompanyId ?? null}
+                        onToast={toast}
+                        onOpenReport={openReport}
+                      />
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ===== FFT Chart — locked at bottom of right pane (vibration only) ===== */}
+            {selectedTech === "vibration" && reportVibrationRecord && (
+              <div className="shrink-0 min-h-[380px] w-full border-t border-slate-800 pt-4">
+                <SpectralFftWorkspace record={reportVibrationRecord} />
+              </div>
+            )}
+
+          </div>
+        </div>
+      )}
+
+      {/* ===== Loading Overlay ===== */}
       {isLoading && (
         <div
-          className="absolute inset-0 z-30 rounded-2xl bg-slate-950/70 backdrop-blur-[2px] flex flex-col items-center justify-center gap-3 min-h-[280px]"
+          className="absolute inset-0 z-30 rounded-2xl bg-slate-950/70 backdrop-blur-[2px] flex flex-col items-center justify-center gap-3"
           aria-busy="true"
           aria-live="polite"
         >
@@ -8670,395 +9126,7 @@ export default function AnalysisReport({
         </div>
       )}
 
-      {/* ===== Technology Selector ===== */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 mb-8">
-        {REPORT_TECH_CARDS.map(({ id, title, subtitle, Icon, iconClass }) => {
-          const active = selectedTech === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => {
-                setSelectedTech(id);
-                setActiveTab(1);
-              }}
-              className={`bg-transparent border border-white/30 hover:border-yellow-500 transition-all rounded-xl p-4 cursor-pointer flex flex-col items-center justify-center gap-2 text-center min-h-[140px] ${
-                active
-                  ? "border-yellow-500 bg-yellow-500/10 shadow-[0_0_15px_rgba(234,179,8,0.2)]"
-                  : ""
-              }`}
-            >
-              <Icon className={`h-6 w-6 shrink-0 ${iconClass}`} />
-              <span className="text-sm font-bold text-white leading-tight">{title}</span>
-              <span className="text-[11px] text-slate-400 leading-snug">{subtitle}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* ===== Saved report opened by deep link (?reportId=) ===== */}
-      {deepLinkReportId ? (
-        <SavedReportViewer
-          reportId={deepLinkReportId}
-          knownAssetIds={assetsWithRecords}
-          onBack={closeReport}
-        />
-      ) : /* ===== Live multi-technology assessment (database-backed) ===== */
-      assetsWithRecords.length === 0 ? (
-        <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-          <h3 className="text-lg font-bold text-white mb-1">
-            Multi-Technology Assessment
-          </h3>
-          <p className="text-sm text-slate-400">
-            No saved condition-monitoring records found. Run and save an analysis
-            from Run Diagnostics to build an assessment.
-          </p>
-        </section>
-      ) : (
-        <div className="mb-6">
-          <div className="mb-3 flex flex-wrap items-end gap-3">
-            <div className="min-w-0">
-              <label
-                htmlFor="assessment-asset"
-                className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1"
-              >
-                Assessment Asset
-              </label>
-              <select
-                id="assessment-asset"
-                value={assessmentAssetId ?? ""}
-                onChange={(e) => setAssessmentAssetId(e.target.value)}
-                className={HIER_SELECT}
-              >
-                {assetsWithRecords.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <p className="text-[11px] text-slate-500 pb-2.5">
-              Assets with saved records ({assetsWithRecords.length})
-            </p>
-          </div>
-          {assessmentAssetId && (
-            <MultiTechAssessment
-              assetId={assessmentAssetId}
-              assetLabel={assessmentAssetId}
-              companyId={selectedCompanyId ?? null}
-              onToast={toast}
-              onOpenReport={openReport}
-            />
-          )}
-        </div>
-      )}
-
-      {selectedTech === "vibration" && (
-      <>
-      {/* ===== A. Date range + actions ===== */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
-        <div className="flex flex-col xl:flex-row xl:items-end gap-4">
-          {/* Date Range Picker */}
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
-              <Calendar className="h-3 w-3 text-yellow-400" />
-              <span>Date Range</span>
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-yellow-400/60"
-              />
-              <span className="text-slate-600 text-xs font-bold">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-yellow-400/60"
-              />
-            </div>
-          </div>
-
-          {/* Primary Actions */}
-          <div className="space-y-1.5 xl:border-l xl:border-slate-800 xl:pl-4 flex-1">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">
-              Actions
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() =>
-                  createWorkOrderAndGo("Work order staged — opening Maintenance Calendar.")
-                }
-                className="flex items-center gap-1.5 px-3 py-2.5 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-xs font-bold rounded-xl cursor-pointer transition-colors"
-              >
-                <Wrench className="h-3.5 w-3.5" />
-                <span>Create Work Order</span>
-              </button>
-
-              {/* Export dropdown */}
-              <div className="relative" ref={exportRef}>
-                <button
-                  type="button"
-                  onClick={() => setExportOpen((prev) => !prev)}
-                  aria-haspopup="menu"
-                  aria-expanded={exportOpen}
-                  className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-xs font-bold rounded-xl cursor-pointer transition-colors"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  <span>Export Report</span>
-                  <ChevronDown
-                    className={`h-3.5 w-3.5 transition-transform ${exportOpen ? "rotate-180" : ""}`}
-                  />
-                </button>
-
-                {exportOpen && (
-                  <div
-                    role="menu"
-                    className="absolute right-0 top-full mt-1.5 w-48 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-1.5 z-30"
-                  >
-                    {EXPORT_FORMATS.map((format) => (
-                      <button
-                        key={format.id}
-                        type="button"
-                        role="menuitem"
-                        onClick={() => handleExport(format.id)}
-                        className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-950 cursor-pointer transition-colors group"
-                      >
-                        <span className="text-xs font-bold text-slate-200 group-hover:text-yellow-400 block">
-                          {format.label}
-                        </span>
-                        <span className="text-[10px] text-slate-500 block">{format.hint}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowInventory(true)}
-                className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-xs font-bold rounded-xl cursor-pointer transition-colors"
-              >
-                <Search className="h-3.5 w-3.5" />
-                <span>Parts Search</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowWorkOrder(true)}
-                disabled={!selectedAnalysis}
-                title={
-                  selectedAnalysis
-                    ? "Draft a work order from the selected saved analysis"
-                    : "Select a saved analysis below to draft a work order from it"
-                }
-                className={`flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 text-xs font-bold rounded-xl transition-colors ${
-                  selectedAnalysis
-                    ? "text-slate-300 hover:border-slate-700 hover:text-white cursor-pointer"
-                    : "text-slate-500 cursor-not-allowed opacity-60"
-                }`}
-              >
-                <Wrench className="h-3.5 w-3.5" />
-                <span>Work Order</span>
-              </button>
-
-              <button
-                type="button"
-                disabled
-                title={PENDING_SCHEDULE}
-                className={`flex items-center gap-1.5 px-3 py-2.5 bg-slate-950 border border-slate-800 text-slate-400 text-xs font-bold rounded-xl transition-colors ${PENDING_BTN}`}
-              >
-                <Calendar className="h-3.5 w-3.5" />
-                <span>Schedule Re-test</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ===== B. Main Content Area (Tabs) ===== */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden">
-
-        {/* Tab Navigation */}
-        <div className="flex gap-1 border-b border-slate-800 px-3 pt-3 overflow-x-auto scrollbar-none">
-          {TABS.map((tab) => {
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={`px-4 py-2.5 rounded-t-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer border-b-2 ${
-                  isActive
-                    ? "bg-slate-950/60 text-yellow-400 border-yellow-400"
-                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-950/30 border-transparent"
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Tab Panels — Vibration */}
-        <div className="p-6 min-h-[360px]">
-          {selectedTech === "vibration" && activeTab === 1 && (
-            <div className="space-y-5">
-              <section className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-bold text-white">Saved Analyses</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        From PostgreSQL · {loadedAnalyses.length} result
-                        {loadedAnalyses.length === 1 ? "" : "s"}
-                      </p>
-                    </div>
-                    {loadError && (
-                      <p className="text-xs text-amber-400">{loadError}</p>
-                    )}
-                  </div>
-                  {loadedAnalyses.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center text-center py-10 px-4">
-                      <FileText className="h-8 w-8 text-slate-600 mb-3" />
-                      <p className="text-sm font-semibold text-slate-300">No data available</p>
-                      <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                        No saved analyses yet. Complete a Run Diagnostics analysis to populate this list.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="grid gap-2">
-                      {loadedAnalyses.map((row) => {
-                        const on = selectedAnalysis?.id === row.id;
-                        return (
-                          <button
-                            key={row.id}
-                            type="button"
-                            onClick={() => setSelectedAnalysis(row)}
-                            className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors cursor-pointer ${
-                              on
-                                ? "border-amber-400/50 bg-amber-400/10"
-                                : "border-slate-800 bg-slate-900/70 hover:border-slate-600"
-                            }`}
-                          >
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <p className="text-sm font-semibold text-white truncate">
-                                {row.primary_fault || "Analysis"}
-                              </p>
-                              <span className="text-[10px] font-bold text-amber-300">
-                                Health {row.health_score ?? "—"}
-                                {row.is_baseline ? " · BASELINE" : ""}
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-500 mt-1">
-                              {row.component || "—"} · {row.asset_id || "—"} ·{" "}
-                              {row.timestamp
-                                ? new Date(row.timestamp).toLocaleString()
-                                : ""}
-                            </p>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {selectedAnalysis && (
-                    <div className="rounded-xl border border-slate-700 bg-slate-950 p-3 space-y-2">
-                      <p className="text-xs text-slate-300">
-                        {selectedAnalysis.summary ||
-                          selectedAnalysis.primary_fault ||
-                          "—"}
-                      </p>
-                      <ul className="text-xs text-slate-400 space-y-1 max-h-36 overflow-y-auto">
-                        {(Array.isArray(selectedAnalysis.fault_list)
-                          ? selectedAnalysis.fault_list
-                          : []
-                        ).map((f, i) => (
-                          <li key={i}>
-                            {f.title}
-                            {f.severity ? ` · ${f.severity}` : ""}
-                            {f.confidence != null ? ` · ${f.confidence}%` : ""}
-                          </li>
-                        ))}
-                      </ul>
-                      {Array.isArray(selectedAnalysis.recommendations) &&
-                        selectedAnalysis.recommendations.length > 0 && (
-                          <ul className="text-xs text-slate-300 space-y-1 pt-1 border-t border-slate-800">
-                            {selectedAnalysis.recommendations.map((r, i) => (
-                              <li key={i}>• {r}</li>
-                            ))}
-                          </ul>
-                        )}
-                    </div>
-                  )}
-                </section>
-                <SpectralFftWorkspace record={reportVibrationRecord} />
-            </div>
-          )}
-          {false && selectedTech !== "vibration" && activeTab === 1 && (
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                No {selectedTech} data available for this asset. Run a diagnostic to populate
-                reports.
-              </p>
-            </div>
-          )}
-          {false && selectedTech === "vibration" && activeTab === 1 && (
-            <div className="space-y-5">
-              <AnalysisResultsPanel
-                assetName={displayAssetLabel}
-                tagId={reportAsset.tag}
-                component={loadedComponent}
-                analysis={selectedAnalysis}
-              />
-            </div>
-          )}
-          {selectedTech === "vibration" && activeTab === 2 && (
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                Spectrum library will populate from saved diagnostic spectra. No spectrum data
-                available yet.
-              </p>
-            </div>
-          )}
-          {false && selectedTech === "vibration" && activeTab === 2 && (
-            <SpectrumLibraryPanel assetName={displayAssetLabel} tagId={reportAsset.tag} />
-          )}
-          {selectedTech === "vibration" && activeTab === 3 && (
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                Repair actions will appear when a saved analysis includes recommended parts
-                and work.
-              </p>
-            </div>
-          )}
-          {false && selectedTech === "vibration" && activeTab === 3 && (
-            <RepairActionsPanel
-              inventory={inventory}
-              reportParts={reportParts}
-              onOpenInventory={() => setShowInventory(true)}
-              onCreateWorkOrder={() =>
-                createWorkOrderAndGo("Work order staged — opening Maintenance Calendar.")
-              }
-              onChangeQuantity={changePartQuantity}
-              onRemovePart={removePartFromReport}
-              onInitiateRca={initiateRcaFromReport}
-              onExportPdf={handleExportPdf}
-              onExportCsv={handleExportCsv}
-              canExport={selectedAnalysis !== null}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* ===== C. Floating Quick Actions Bar ===== */}
+      {/* ===== Floating Quick Actions Bar ===== */}
       <div className="fixed bottom-24 lg:bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-wrap justify-center gap-2 bg-slate-900/95 backdrop-blur-md border border-slate-800 rounded-2xl px-3 py-2.5 shadow-2xl">
         <button
           type="button"
@@ -9078,238 +9146,6 @@ export default function AnalysisReport({
           <LineChart className="h-3.5 w-3.5" />
           <span>Compare Baseline</span>
         </button>
-      </div>
-      </>
-      )}
-
-      {selectedTech === "thermography" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden">
-          <div className="flex gap-1 border-b border-slate-800 px-3 pt-3 overflow-x-auto scrollbar-none">
-            {THERMOGRAPHY_TABS.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-4 py-2.5 rounded-t-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer border-b-2 ${
-                    isActive
-                      ? "bg-slate-950/60 text-yellow-400 border-yellow-400"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-950/30 border-transparent"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="p-6 min-h-[360px]">
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                No Thermography data available for this asset. Run a diagnostic to populate
-                reports.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-      {false && selectedTech === "thermography" && (
-        <div className="hidden">
-          <div className="p-6 min-h-[360px]">
-            {selectedTech === "thermography" && activeTab === 1 && (
-              <ThermographyAnalysisResults liveHotspot={liveHotspot} />
-            )}
-            {selectedTech === "thermography" && activeTab === 2 && (
-              <ThermographyDataLibrary />
-            )}
-            {selectedTech === "thermography" && activeTab === 3 && (
-              <ThermographyRepairActions
-                onCreateWorkOrder={() =>
-                  createWorkOrderAndGo(
-                    "Thermal repair work order staged — opening Maintenance Calendar."
-                  )
-                }
-                onExportPdf={handleExportPdf}
-              />
-            )}
-          </div>
-        </div>
-      )}
-      {selectedTech === "ultrasound" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden">
-          <div className="flex gap-1 border-b border-slate-800 px-3 pt-3 overflow-x-auto scrollbar-none">
-            {ULTRASOUND_TABS.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-4 py-2.5 rounded-t-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer border-b-2 ${
-                    isActive
-                      ? "bg-slate-950/60 text-yellow-400 border-yellow-400"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-950/30 border-transparent"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="p-6 min-h-[360px]">
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                No Ultrasound data available for this asset. Run a diagnostic to populate
-                reports.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-      {false && selectedTech === "ultrasound" && (
-        <div className="hidden">
-          <div className="p-6 min-h-[360px]">
-            {selectedTech === "ultrasound" && activeTab === 1 && <UltrasoundAnalysisResults />}
-            {selectedTech === "ultrasound" && activeTab === 2 && (
-              <UltrasoundDataLibrary />
-            )}
-            {selectedTech === "ultrasound" && activeTab === 3 && (
-              <UltrasoundRepairActions
-                onCreateLubeWo={() =>
-                  createWorkOrderAndGo(
-                    "Lubrication work order staged — opening Maintenance Calendar."
-                  )
-                }
-                onCreateLeakWo={() =>
-                  createWorkOrderAndGo(
-                    "Leak repair work order staged — opening Maintenance Calendar."
-                  )
-                }
-                onExportPdf={handleExportPdf}
-              />
-            )}
-          </div>
-        </div>
-      )}
-      {selectedTech === "mca" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden">
-          <div className="flex gap-1 border-b border-slate-800 px-3 pt-3 overflow-x-auto scrollbar-none">
-            {MCA_TABS.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-4 py-2.5 rounded-t-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer border-b-2 ${
-                    isActive
-                      ? "bg-slate-950/60 text-yellow-400 border-yellow-400"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-950/30 border-transparent"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="p-6 min-h-[360px]">
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                No MCA data available for this asset. Run a diagnostic to populate reports.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-      {false && selectedTech === "mca" && (
-        <div className="hidden">
-          <div className="p-6 min-h-[360px]">
-            {selectedTech === "mca" && activeTab === 1 && (
-              <McaAnalysisResults assetLabel={displayAssetLabel} />
-            )}
-            {selectedTech === "mca" && activeTab === 2 && (
-              <McaDataLibrary />
-            )}
-            {selectedTech === "mca" && activeTab === 3 && (
-              <McaRepairActions
-                onCreateRepairWo={() =>
-                  createWorkOrderAndGo(
-                    "Motor repair work order staged — opening Maintenance Calendar."
-                  )
-                }
-                onExportPdf={handleExportPdf}
-              />
-            )}
-          </div>
-        </div>
-      )}
-      {selectedTech === "oil" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden">
-          <div className="flex gap-1 border-b border-slate-800 px-3 pt-3 overflow-x-auto scrollbar-none">
-            {OIL_TABS.map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-4 py-2.5 rounded-t-lg text-xs font-bold whitespace-nowrap transition-all cursor-pointer border-b-2 ${
-                    isActive
-                      ? "bg-slate-950/60 text-yellow-400 border-yellow-400"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-slate-950/30 border-transparent"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="p-6 min-h-[360px]">
-            <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-              <FileText className="h-8 w-8 text-slate-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-300">No data available</p>
-              <p className="text-xs text-slate-500 mt-1 max-w-md">
-                No Oil Analysis data available for this asset. Run a diagnostic to populate
-                reports.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-      {false && selectedTech === "oil" && (
-        <div className="hidden">
-          <div className="p-6 min-h-[360px]">
-            {selectedTech === "oil" && activeTab === 1 && (
-              <OilAnalysisResults liveIsoCode={liveIsoCode} />
-            )}
-            {selectedTech === "oil" && activeTab === 2 && (
-              <OilDataLibrary samples={assessmentOilSamples} />
-            )}
-            {selectedTech === "oil" && activeTab === 3 && (
-              <OilRepairActions
-                onCreateFiltrationWo={() =>
-                  createWorkOrderAndGo(
-                    "Filtration work order staged — opening Maintenance Calendar."
-                  )
-                }
-                onExportLabReport={handleExportPdf}
-                liveIsoCode={liveIsoCode}
-              />
-            )}
-          </div>
-        </div>
-      )}
-
       </div>
 
       {/* ===== Modals ===== */}
