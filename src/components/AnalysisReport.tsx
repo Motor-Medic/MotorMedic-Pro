@@ -104,22 +104,7 @@ const REPORT_TECH_CARDS: {
   }
 ];
 
-/** Asset catalog aligned with Assets.tsx / Trend Analyzer mock data. */
-const MOCK_ASSETS = [
-  { id: "p-101a", name: "Boiler Feed Pump A", tag: "P-101A", location: "Powerhouse — Floor 1" },
-  { id: "p-101b", name: "Boiler Feed Pump B", tag: "P-101B", location: "Powerhouse — Floor 1" },
-  { id: "m-101a", name: "Drive Motor M-101A", tag: "M-101A", location: "Powerhouse — Floor 1" },
-  { id: "m-210", name: "Primary Induction Motor", tag: "M-210", location: "Drive Hall" },
-  { id: "fn-04", name: "Cooling Tower Fan 4", tag: "FN-04", location: "Roof Deck" },
-  { id: "cmp-37", name: "Screw Compressor RS37i", tag: "CMP-37", location: "Utility Pad" },
-  { id: "gb-302", name: "Extruder Gearbox GB-302", tag: "GB-302", location: "Polymer Line 3" },
-  { id: "p-402", name: "Slurry Recirc Pump P-402", tag: "P-402", location: "Chemical Unit 4" },
-  { id: "cv-gb3", name: "Conveyor Gearbox 3", tag: "CV-GB-3", location: "Conveyor Gallery" },
-  { id: "sub-2", name: "Substation 2 Bus", tag: "SUB-2", location: "Electrical Yard" },
-  { id: "hx-12", name: "Heat Exchanger Bundle 12", tag: "HX-12", location: "Process Area B" }
-] as const;
-
-type ReportAsset = (typeof MOCK_ASSETS)[number];
+type ReportAsset = { id: string; name: string; tag: string; location: string };
 
 const HIER_SELECT =
   "w-full min-h-[40px] px-3 rounded-xl bg-slate-900 border border-slate-700 text-xs text-slate-200 truncate disabled:opacity-50 focus:outline-none focus:border-amber-400/60";
@@ -180,6 +165,87 @@ function matchReportAssetFromLabel(label: string): ReportAsset | null {
 function resolveReportAsset(tag: string): ReportAsset | null {
   return MOCK_ASSETS.find((a) => a.tag === tag) ?? null;
 }
+
+// ===== Stub declarations for dead sub-components (previously removed mock data) =====
+const MOCK_ASSETS = [
+  { id: "p-101a", name: "Boiler Feed Pump A", tag: "P-101A", location: "Powerhouse — Floor 1" },
+  { id: "p-101b", name: "Boiler Feed Pump B", tag: "P-101B", location: "Powerhouse — Floor 1" },
+  { id: "m-101a", name: "Drive Motor M-101A", tag: "M-101A", location: "Powerhouse — Floor 1" },
+  { id: "m-210", name: "Primary Induction Motor", tag: "M-210", location: "Drive Hall" },
+  { id: "fn-04", name: "Cooling Tower Fan 4", tag: "FN-04", location: "Roof Deck" },
+  { id: "cmp-37", name: "Screw Compressor RS37i", tag: "CMP-37", location: "Utility Pad" },
+  { id: "gb-302", name: "Extruder Gearbox GB-302", tag: "GB-302", location: "Polymer Line 3" },
+  { id: "p-402", name: "Slurry Recirc Pump P-402", tag: "P-402", location: "Chemical Unit 4" },
+  { id: "cv-gb3", name: "Conveyor Gearbox 3", tag: "CV-GB-3", location: "Conveyor Gallery" },
+  { id: "sub-2", name: "Substation 2 Bus", tag: "SUB-2", location: "Electrical Yard" },
+  { id: "hx-12", name: "Heat Exchanger Bundle 12", tag: "HX-12", location: "Process Area B" }
+] as const;
+
+type PointGroup = "drive" | "nondrive" | "axial";
+
+interface SpectrumPeak { freq: number; amp: number; width?: number; }
+interface SpectrumRecord { id: number; date: string; time: string; point: string; pointGroup: PointGroup; overall: number; dominant: string; peaks: SpectrumPeak[]; }
+interface AnalysedPeak { hz: number; order: number; amplitude: number; share: number; code: string; fault: string; severity: FaultSeverity; }
+interface BearingModel { id: string; label: string; ftf: number; bpfo: number; bpfi: number; bsf: number; }
+interface BearingFrequency { key: "FTF" | "BSF" | "BPFO" | "BPFI"; name: string; order: number; hz: number; }
+
+const BEARINGS: BearingModel[] = [];
+function bearingFrequencies(_bearing: BearingModel, _rpm: number): BearingFrequency[] { return []; }
+function analysePeaks(_record: SpectrumRecord, _rpm: number, _bearing: BearingModel): AnalysedPeak[] { return []; }
+
+function formatSpectrumDate(iso: string) { return new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); }
+function overallBadgeStyle(overall: number) { if (overall >= 2.8) return "bg-red-500/15 text-red-400 border-red-500/30"; if (overall >= 2.2) return "bg-yellow-400/15 text-yellow-400 border-yellow-400/30"; return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"; }
+
+const ISO_SCALE_MAX = 0.43;
+const ISO_READING = 0.08;
+const ISO_ZONES = [
+  { label: "Nominal", zone: "A", from: 0, to: 0.08, bar: "bg-emerald-500", text: "text-emerald-400", badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25", criteria: "" },
+  { label: "Warning", zone: "B/C", from: 0.08, to: 0.28, bar: "bg-yellow-400", text: "text-yellow-400", badge: "bg-yellow-400/10 text-yellow-400 border-yellow-400/25", criteria: "" },
+  { label: "Danger", zone: "D", from: 0.28, to: ISO_SCALE_MAX, bar: "bg-red-500", text: "text-red-400", badge: "bg-red-500/10 text-red-400 border-red-500/25", criteria: "" }
+];
+const ISO_LIMIT_LINES = [
+  { label: "Warning", mms: 2.032, stroke: "#facc15" },
+  { label: "Danger", mms: 7.112, stroke: "#ef4444" }
+];
+
+const TREND_DATA: { date: string; value: number }[] = [];
+const TREND_MAX = 3;
+const REPORT_SUMMARY = { assetName: "", tagId: "", inspectionDate: "", topFaultCode: "", assessment: "" };
+const FAULT_MATRIX: { name: string; code: string; probability: number; severity: FaultSeverity }[] = [];
+const ACQUISITION = { analyst: "", measuredAt: "", analysedAt: "", route: "", loadPercent: 0, bearingTemp: "", aiConfidence: 0 };
+const DEFAULT_DATE_FILTER = "all";
+const DEMO_SPECTRA_SEED: SpectrumRecord[] = [];
+const DATE_FILTERS: { id: string; label: string; days: number | null }[] = [];
+const POINT_FILTERS: { id: PointGroup | "all"; label: string }[] = [];
+const LIBRARY_TODAY = new Date();
+
+const THERMAL_LIBRARY_IMAGES: { id: string; asset: string; location: string; date: string; maxTemp: number; deltaT: number; severity: string; gradient: string; hotspotPos?: string; hasIsotherm: boolean; }[] = [];
+const THERMAL_FAULT_HISTORY: { date: string; description: string; tone: "red" | "yellow" | "green"; }[] = [];
+
+const AI_RECOMMENDATIONS: { id: number; text: string; priority: string; rationale: string; }[] = [];
+const PRIORITY_STYLES: Record<string, string> = {
+  High: "bg-red-500/10 text-red-400 border-red-500/25",
+  Medium: "bg-yellow-400/10 text-yellow-400 border-yellow-400/25",
+  Low: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
+};
+
+const US_WAVEFORM_DATA: { ms: number; amp: number; }[] = [];
+const US_SPECTRUM_DATA: { khz: number; db: number; }[] = [];
+const US_TREND_DATA: { month: string; db: number; }[] = [];
+const US_LIBRARY_RECORDINGS: { id: string; asset: string; location: string; peakDb: number; classification: string; faultKey: string; date: string; duration: string; }[] = [];
+const US_AUDIO_WAVE_DATA: { t: number; amp: number; }[] = [];
+const US_SPECTROGRAM_BARS: number[] = [];
+
+const MCA_PHASE_RESISTANCE: { phase: string; value: number; fill: string; }[] = [];
+const MCA_PHASE_ANGLE: { phase: string; value: number; fill: string; }[] = [];
+const MCA_PI_TREND: { date: string; pi: number; }[] = [];
+const MCA_ACTION_PLAN: string[] = [];
+const MCA_LIBRARY_TESTS: { id: string; date: string; dateMs: number; motorId: string; location: string; testType: string; methodCategory: McaMethodCategory; insulationGohm: number; phaseBalancePct: number; pi: number; status: string; }[] = [];
+const MCA_MULTI_TREND: { date: string; ir40: number | null; imbalance: number | null; pi: number | null; fi: number | null; projection: number | null; }[] = [];
+const MCA_PHASE_HISTORY: { date: string; a: number; b: number; c: number; }[] = [];
+
+function SpectrumTrace(_props: { record: SpectrumRecord; className?: string }) { return null; }
+function SpectrumMetrics(_props: { record: SpectrumRecord }) { return null; }
 
 const TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
@@ -251,13 +317,6 @@ const OIL_ACTION_PLAN = [
 
 type OilAlertStatus = "NORMAL" | "WARNING" | "CRITICAL";
 
-/** MCA phase balance — absolute values for Resistance / Inductance / Impedance. */
-const MCA_PHASE_RESISTANCE = [
-  { phase: "Phase A", value: 0.42, fill: "#22d3ee" },
-  { phase: "Phase B", value: 0.44, fill: "#94a3b8" },
-  { phase: "Phase C", value: 0.46, fill: "#eab308" }
-];
-
 const MCA_PHASE_INDUCTANCE = [
   { phase: "Phase A", value: 12.5, fill: "#22d3ee" },
   { phase: "Phase B", value: 12.6, fill: "#94a3b8" },
@@ -270,29 +329,6 @@ const MCA_PHASE_IMPEDANCE = [
   { phase: "Phase C", value: 14.5, fill: "#eab308" }
 ];
 
-/** Phase Angle (Fi) / I/F mock values for MCA chart toggle. */
-const MCA_PHASE_ANGLE = [
-  { phase: "Phase A", value: 58.2, fill: "#22d3ee" },
-  { phase: "Phase B", value: 57.9, fill: "#94a3b8" },
-  { phase: "Phase C", value: 54.1, fill: "#eab308" }
-];
-
-/** Polarization Index history — progressive insulation decline. */
-const MCA_PI_TREND = [
-  { date: "Apr 22", pi: 4.1 },
-  { date: "Oct 22", pi: 3.8 },
-  { date: "Apr 23", pi: 3.5 },
-  { date: "Jul 23", pi: 3.2 },
-  { date: "Oct 23", pi: 2.9 }
-];
-
-const MCA_ACTION_PLAN = [
-  "Perform test directly at motor junction box (T-leads) to isolate cable/starter unbalance from internal stator windings.",
-  "Inspect motor cooling system and verify proper ventilation.",
-  "Plan motor rewind or replacement within 6 months based on PI degradation rate.",
-  "Increase vibration monitoring frequency to monthly until repair is completed."
-];
-
 type McaTestStatus = "PASS" | "WARNING" | "FAIL";
 type McaTestKind =
   | "Full MCA Test"
@@ -301,136 +337,6 @@ type McaTestKind =
   | "Polarization Index"
   | "Rotor Bar Test";
 type McaMethodCategory = "de_energized_mca" | "energized_esa" | "offline_surge";
-
-const MCA_LIBRARY_TESTS: {
-  id: string;
-  date: string;
-  dateMs: number;
-  motorId: string;
-  location: string;
-  testType: McaTestKind;
-  methodCategory: McaMethodCategory;
-  insulationGohm: number;
-  phaseBalancePct: number;
-  pi: number;
-  status: McaTestStatus;
-}[] = [
-  {
-    id: "mca-231026",
-    date: "Oct 26, 2023",
-    dateMs: Date.parse("2023-10-26"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Full MCA Test",
-    methodCategory: "de_energized_mca",
-    insulationGohm: 2.4,
-    phaseBalancePct: 6.82,
-    pi: 2.9,
-    status: "WARNING"
-  },
-  {
-    id: "mca-230715",
-    date: "Jul 15, 2023",
-    dateMs: Date.parse("2023-07-15"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Insulation Resistance",
-    methodCategory: "de_energized_mca",
-    insulationGohm: 3.8,
-    phaseBalancePct: 3.9,
-    pi: 3.2,
-    status: "WARNING"
-  },
-  {
-    id: "mca-230415",
-    date: "Apr 15, 2023",
-    dateMs: Date.parse("2023-04-15"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Full MCA Test",
-    methodCategory: "energized_esa",
-    insulationGohm: 3.8,
-    phaseBalancePct: 3.2,
-    pi: 3.5,
-    status: "WARNING"
-  },
-  {
-    id: "mca-230110",
-    date: "Jan 10, 2023",
-    dateMs: Date.parse("2023-01-10"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Polarization Index",
-    methodCategory: "de_energized_mca",
-    insulationGohm: 5.1,
-    phaseBalancePct: 2.8,
-    pi: 3.5,
-    status: "PASS"
-  },
-  {
-    id: "mca-221012",
-    date: "Oct 12, 2022",
-    dateMs: Date.parse("2022-10-12"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Full MCA Test",
-    methodCategory: "de_energized_mca",
-    insulationGohm: 6.5,
-    phaseBalancePct: 2.4,
-    pi: 3.8,
-    status: "PASS"
-  },
-  {
-    id: "mca-220708",
-    date: "Jul 8, 2022",
-    dateMs: Date.parse("2022-07-08"),
-    motorId: "M-210",
-    location: "Drive Hall",
-    testType: "Phase Balance",
-    methodCategory: "energized_esa",
-    insulationGohm: 6.8,
-    phaseBalancePct: 2.1,
-    pi: 3.9,
-    status: "PASS"
-  },
-  {
-    id: "mca-220120",
-    date: "Jan 20, 2022",
-    dateMs: Date.parse("2022-01-20"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Full MCA Test",
-    methodCategory: "de_energized_mca",
-    insulationGohm: 8.2,
-    phaseBalancePct: 1.8,
-    pi: 4.1,
-    status: "PASS"
-  },
-  {
-    id: "mca-211118",
-    date: "Nov 18, 2021",
-    dateMs: Date.parse("2021-11-18"),
-    motorId: "M-101A",
-    location: "Powerhouse — Floor 1",
-    testType: "Rotor Bar Test",
-    methodCategory: "offline_surge",
-    insulationGohm: 0.8,
-    phaseBalancePct: 6.2,
-    pi: 1.7,
-    status: "FAIL"
-  }
-];
-
-/** Multi-parameter MCA library trend (+ curve-fit failure projection tail). */
-const MCA_MULTI_TREND = [
-  { date: "Jan 22", ir40: 1.78, imbalance: 1.8, pi: 4.1, fi: 58.8, projection: null as number | null },
-  { date: "Jul 22", ir40: 1.41, imbalance: 2.1, pi: 3.9, fi: 58.2, projection: null as number | null },
-  { date: "Jan 23", ir40: 1.11, imbalance: 2.8, pi: 3.5, fi: 57.1, projection: null as number | null },
-  { date: "Apr 23", ir40: 0.85, imbalance: 3.2, pi: 3.5, fi: 56.4, projection: null as number | null },
-  { date: "Jul 23", ir40: 0.68, imbalance: 3.9, pi: 3.2, fi: 55.2, projection: null as number | null },
-  { date: "Oct 23", ir40: 0.52, imbalance: 6.82, pi: 2.9, fi: 54.1, projection: 0.52 as number | null },
-  { date: "+142d", ir40: null, imbalance: null, pi: null, fi: null, projection: 0.18 as number | null }
-];
 
 function mcaMethodBadge(category: McaMethodCategory) {
   if (category === "energized_esa") {
@@ -454,316 +360,16 @@ function mcaMethodBadge(category: McaMethodCategory) {
   };
 }
 
-const MCA_PHASE_HISTORY = [
-  { date: "Oct 12", a: 0.4, b: 0.41, c: 0.42 },
-  { date: "Jan 10", a: 0.41, b: 0.42, c: 0.43 },
-  { date: "Apr 15", a: 0.41, b: 0.42, c: 0.44 },
-  { date: "Jul 15", a: 0.42, b: 0.43, c: 0.45 },
-  { date: "Oct 26", a: 0.42, b: 0.44, c: 0.46 }
-];
-
-/** Heterodyne time waveform — noisy baseline with mid-window leak burst. */
-const US_WAVEFORM_DATA = Array.from({ length: 50 }, (_, i) => {
-  const ms = i * 2;
-  const noise = 22 + Math.sin(i * 0.7) * 3.5 + Math.cos(i * 1.3) * 1.8;
-  const burst =
-    i >= 22 && i <= 28
-      ? (1 - Math.abs(i - 25) / 6) * 26
-      : 0;
-  return { ms, amp: Number(Math.min(48.2, noise + burst).toFixed(1)) };
-});
-
-/** FFT spectrum peaking near the 40 kHz tuning band. */
-const US_SPECTRUM_DATA = [
-  { khz: 20, db: 14 },
-  { khz: 25, db: 18 },
-  { khz: 30, db: 24 },
-  { khz: 35, db: 36 },
-  { khz: 38, db: 44 },
-  { khz: 40, db: 48.2 },
-  { khz: 42, db: 41 },
-  { khz: 45, db: 28 },
-  { khz: 50, db: 19 },
-  { khz: 55, db: 14 },
-  { khz: 60, db: 11 }
-];
-
-const US_TREND_DATA = [
-  { month: "May", db: 25.0 },
-  { month: "Jun", db: 27.5 },
-  { month: "Jul", db: 31.0 },
-  { month: "Aug", db: 36.5 },
-  { month: "Sep", db: 42.0 },
-  { month: "Oct", db: 48.2 }
-];
-
 type UsClass = "LEAK" | "NORMAL" | "BEARING" | "ARCING" | "STEAM";
 
-const US_LIBRARY_RECORDINGS: {
-  id: string;
-  asset: string;
-  location: string;
-  peakDb: number;
-  classification: UsClass;
-  faultKey: string;
-  date: string;
-  duration: string;
-}[] = [
-  {
-    id: "us-1",
-    asset: "Valve Station 4 - Downstream",
-    location: "Compressed Air Header",
-    peakDb: 48.2,
-    classification: "LEAK",
-    faultKey: "leak",
-    date: "Oct 25, 2023",
-    duration: "0:45"
-  },
-  {
-    id: "us-2",
-    asset: "Motor DE Bearing - M-210",
-    location: "Drive Hall",
-    peakDb: 36.8,
-    classification: "BEARING",
-    faultKey: "bearing",
-    date: "Oct 22, 2023",
-    duration: "1:12"
-  },
-  {
-    id: "us-3",
-    asset: "Switchgear Cubicle 3A",
-    location: "Main Electrical Room",
-    peakDb: 41.5,
-    classification: "ARCING",
-    faultKey: "arcing",
-    date: "Oct 18, 2023",
-    duration: "0:38"
-  },
-  {
-    id: "us-4",
-    asset: "Steam Trap ST-12",
-    location: "Boiler House - Row 2",
-    peakDb: 29.1,
-    classification: "STEAM",
-    faultKey: "steam",
-    date: "Oct 12, 2023",
-    duration: "0:55"
-  },
-  {
-    id: "us-5",
-    asset: "Air Dryer Bypass Valve",
-    location: "Utility Pad",
-    peakDb: 22.4,
-    classification: "NORMAL",
-    faultKey: "normal",
-    date: "Oct 08, 2023",
-    duration: "0:30"
-  },
-  {
-    id: "us-6",
-    asset: "Valve Station 2 - Upstream",
-    location: "Compressed Air Header",
-    peakDb: 44.0,
-    classification: "LEAK",
-    faultKey: "leak",
-    date: "Sep 28, 2023",
-    duration: "1:05"
-  }
-];
-
-/** Mock audible heterodyne waveform for the featured player. */
-const US_AUDIO_WAVE_DATA = Array.from({ length: 60 }, (_, i) => {
-  const base = Math.sin(i * 0.55) * 12 + Math.cos(i * 1.1) * 6;
-  const hiss = (i % 3 === 0 ? 4 : 0) + Math.sin(i * 2.4) * 3;
-  const burst = i >= 28 && i <= 36 ? (1 - Math.abs(i - 32) / 8) * 18 : 0;
-  return { t: i, amp: Number((Math.abs(base + hiss) + burst + 8).toFixed(1)) };
-});
-
-/** Deterministic column heights for the mock spectrogram heatmap (time axis). */
-const US_SPECTROGRAM_BARS = Array.from({ length: 56 }, (_, i) => {
-  const envelope = 0.35 + 0.65 * Math.abs(Math.sin(i * 0.22));
-  const spike = i >= 30 && i <= 38 ? 0.25 : 0;
-  return Math.min(100, Math.round((envelope + spike) * 100));
-});
-
 type ThermalSeverity = "CRITICAL" | "WARNING" | "NORMAL";
-
-const THERMAL_LIBRARY_IMAGES: {
-  id: string;
-  asset: string;
-  location: string;
-  date: string;
-  maxTemp: number;
-  deltaT: number;
-  severity: ThermalSeverity;
-  gradient: string;
-  hotspotPos?: string;
-  hasIsotherm: boolean;
-}[] = [
-  {
-    id: "ir-1",
-    asset: "MCC Panel A - Phase B",
-    location: "Boiler House - Row 3",
-    date: "Oct 24",
-    maxTemp: 142,
-    deltaT: 58,
-    severity: "CRITICAL",
-    gradient: "from-blue-900 via-purple-900 to-red-600",
-    hotspotPos: "left-1/2 top-1/2",
-    hasIsotherm: true
-  },
-  {
-    id: "ir-2",
-    asset: "Transformer T-2 Bushing",
-    location: "Substation Yard",
-    date: "Oct 22",
-    maxTemp: 118,
-    deltaT: 32,
-    severity: "WARNING",
-    gradient: "from-indigo-950 via-fuchsia-900 to-red-500",
-    hotspotPos: "left-[40%] top-[35%]",
-    hasIsotherm: true
-  },
-  {
-    id: "ir-3",
-    asset: "VFD Cabinet Heat Sink",
-    location: "Drive Hall - Bay 2",
-    date: "Oct 20",
-    maxTemp: 104,
-    deltaT: 18,
-    severity: "WARNING",
-    gradient: "from-blue-950 via-violet-800 to-red-500",
-    hotspotPos: "left-[60%] top-[55%]",
-    hasIsotherm: true
-  },
-  {
-    id: "ir-4",
-    asset: "MCC Panel A - Phase A",
-    location: "Boiler House - Row 3",
-    date: "Oct 18",
-    maxTemp: 92,
-    deltaT: 8,
-    severity: "NORMAL",
-    gradient: "from-blue-950 via-blue-800 to-cyan-600",
-    hotspotPos: "left-[45%] top-[48%]",
-    hasIsotherm: false
-  },
-  {
-    id: "ir-5",
-    asset: "Breaker Cubicle 4B",
-    location: "Main Switchgear",
-    date: "Oct 15",
-    maxTemp: 135,
-    deltaT: 46,
-    severity: "CRITICAL",
-    gradient: "from-slate-900 via-purple-900 to-red-700",
-    hotspotPos: "left-[55%] top-[40%]",
-    hasIsotherm: true
-  },
-  {
-    id: "ir-6",
-    asset: "Motor Terminal Box M-210",
-    location: "Drive Hall",
-    date: "Oct 12",
-    maxTemp: 98,
-    deltaT: 14,
-    severity: "WARNING",
-    gradient: "from-blue-900 via-purple-800 to-red-500",
-    hotspotPos: "left-[50%] top-[60%]",
-    hasIsotherm: true
-  },
-  {
-    id: "ir-7",
-    asset: "Bus Duct Joint BD-12",
-    location: "Utility Corridor",
-    date: "Oct 10",
-    maxTemp: 108,
-    deltaT: 24,
-    severity: "WARNING",
-    gradient: "from-blue-950 via-indigo-800 to-red-500",
-    hotspotPos: "left-[48%] top-[42%]",
-    hasIsotherm: true
-  },
-  {
-    id: "ir-8",
-    asset: "Control Panel CP-7",
-    location: "Boiler House - Row 1",
-    date: "Oct 05",
-    maxTemp: 86,
-    deltaT: 4,
-    severity: "NORMAL",
-    gradient: "from-slate-950 via-blue-900 to-teal-600",
-    hotspotPos: "left-[52%] top-[50%]",
-    hasIsotherm: false
-  }
-];
-
-const THERMAL_FAULT_HISTORY: {
-  date: string;
-  description: string;
-  tone: "red" | "yellow" | "green";
-}[] = [
-  { date: "Oct 24", description: "Critical Overheat - 142°F (ΔT 58°F)", tone: "red" },
-  { date: "Oct 10", description: "Warning - 108°F (ΔT 24°F)", tone: "yellow" },
-  { date: "Sep 15", description: "Normal - 92°F (ΔT 8°F)", tone: "green" }
-];
-
-const REPORT_SUMMARY = {
-  assetName: "Pump Unit",
-  tagId: "PMP-1042-A",
-  inspectionDate: "Jul 24, 2026",
-  topFaultCode: "VIB-1X-UNB",
-  assessment:
-    "The analyzed spectrum demonstrates a Healthy Operations fault signature. Overall velocity remains inside ISO 20816 Zone A with a dominant 1X running-speed peak and no elevated bearing defect frequencies. Harmonic content is low and the noise floor is stable against the prior route, indicating no developing mechanical fault at this time."
-};
 
 // Shaft speed anchors every order calculation: 1X, its harmonics, and bearing defect tones.
 const SHAFT_RPM = 3550;
 const ONE_X_HZ = SHAFT_RPM / 60;
-// Top of the acquired analysis band. Normalised peak positions map onto 0..SPECTRUM_FMAX.
+// Top of the acquired analysis band.
 const SPECTRUM_FMAX = 500;
 const IN_S_TO_MM_S = 25.4;
-
-const ACQUISITION = {
-  analyst: "M. Delgado — Vibration Analyst II",
-  measuredAt: "Jul 24, 2026 · 09:14",
-  analysedAt: "Jul 24, 2026 · 09:21",
-  route: "Route 4 — Boiler House",
-  loadPercent: 88,
-  bearingTemp: "62 °C",
-  aiConfidence: 94
-};
-
-// ISO 20816 Group 2 velocity thresholds (in/s RMS) — Medium machines 15–300 kW, rigid foundation.
-// 0.08 / 0.28 / 0.43 in/s ≡ 2.0 / 7.1 / 11.0 mm/s (×25.4).
-const ISO_SCALE_MAX = 0.43;
-const ISO_READING = 0.08;
-const ISO_ZONES = [
-  {
-    label: "Nominal", zone: "A", from: 0, to: 0.08,
-    bar: "bg-emerald-500", text: "text-emerald-400",
-    badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
-    criteria: "Newly commissioned condition. No action beyond routine trending."
-  },
-  {
-    label: "Warning", zone: "B/C", from: 0.08, to: 0.28,
-    bar: "bg-yellow-400", text: "text-yellow-400",
-    badge: "bg-yellow-400/10 text-yellow-400 border-yellow-400/25",
-    criteria: "B is acceptable for unrestricted long-term duty; C is suitable only for limited-duration operation until repair."
-  },
-  {
-    label: "Danger", zone: "D", from: 0.28, to: ISO_SCALE_MAX,
-    bar: "bg-red-500", text: "text-red-400",
-    badge: "bg-red-500/10 text-red-400 border-red-500/25",
-    criteria: "Severe enough to cause damage. Restrict operation and intervene."
-  }
-];
-
-// Spectrum alarm overlay lines, derived from the zone boundaries above so they never drift apart.
-const ISO_LIMIT_LINES = [
-  { label: "Warning", mms: ISO_ZONES[1].from * IN_S_TO_MM_S, stroke: "#facc15" },
-  { label: "Danger", mms: ISO_ZONES[2].from * IN_S_TO_MM_S, stroke: "#ef4444" }
-];
 
 // ISO 10816-3 Group 2 velocity thresholds (mm/s RMS) — Medium machines 15–300 kW, rigid foundation.
 const ISO_10816_ZONES_MM = [
@@ -792,313 +398,15 @@ function resolveIso10816Zone(
 
 type FaultSeverity = "Low" | "Medium" | "High";
 
-const FAULT_MATRIX: { name: string; code: string; probability: number; severity: FaultSeverity }[] = [
-  { name: "Unbalance", code: "1X Radial", probability: 62, severity: "Medium" },
-  { name: "Misalignment", code: "2X Axial", probability: 38, severity: "Low" },
-  { name: "Bearing Defect", code: "BPFO", probability: 19, severity: "Low" },
-  { name: "Mechanical Looseness", code: "Sub-harmonic", probability: 11, severity: "Low" }
-];
-
 const SEVERITY_STYLES: Record<FaultSeverity, string> = {
   Low: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
   Medium: "bg-yellow-400/10 text-yellow-400 border-yellow-400/25",
   High: "bg-red-500/10 text-red-400 border-red-500/25"
 };
 
-// Overall velocity in mm/s RMS. 2.03 mm/s is the metric equivalent of the 0.08 in/s ISO reading.
-const TREND_DATA = [
-  { date: "Jul 18", value: 1.85 },
-  { date: "Jul 19", value: 1.92 },
-  { date: "Jul 20", value: 2.10 },
-  { date: "Jul 21", value: 1.98 },
-  { date: "Jul 22", value: 2.18 },
-  { date: "Jul 23", value: 2.05 },
-  { date: "Jul 24", value: 2.03 }
-];
-const TREND_MAX = 3;
-
-// ===== Spectrum Library data =====
-
-// Anchored to the report inspection date so the date-range filters stay deterministic.
-const LIBRARY_TODAY = new Date("2026-07-24T00:00:00");
-
-type PointGroup = "drive" | "nondrive" | "axial";
-
-interface SpectrumPeak {
-  freq: number; // normalised 0-1 position across the frequency axis
-  amp: number;  // normalised 0-1 height
-  width?: number;
-}
-
-interface SpectrumRecord {
-  id: number;
-  date: string;
-  time: string;
-  point: string;
-  pointGroup: PointGroup;
-  overall: number; // mm/s RMS
-  dominant: string;
-  peaks: SpectrumPeak[];
-}
-
-/** Demo-mode spectrum library seed — shown only when plant equipment is loaded. */
-const DEMO_SPECTRA_SEED: SpectrumRecord[] = [
-  { id: 1, date: "2026-07-24", time: "09:14", point: "Drive End Horizontal", pointGroup: "drive", overall: 2.03, dominant: "1X", peaks: [{ freq: 0.12, amp: 0.82 }, { freq: 0.24, amp: 0.24 }, { freq: 0.48, amp: 0.11 }] },
-  { id: 2, date: "2026-07-22", time: "10:02", point: "Drive End Vertical", pointGroup: "drive", overall: 2.18, dominant: "1X", peaks: [{ freq: 0.12, amp: 0.74 }, { freq: 0.24, amp: 0.31 }, { freq: 0.61, amp: 0.14 }] },
-  { id: 3, date: "2026-07-19", time: "14:37", point: "Non-Drive End Horizontal", pointGroup: "nondrive", overall: 1.86, dominant: "1X", peaks: [{ freq: 0.11, amp: 0.63 }, { freq: 0.33, amp: 0.18 }] },
-  { id: 4, date: "2026-07-11", time: "08:20", point: "Axial", pointGroup: "axial", overall: 2.41, dominant: "2X", peaks: [{ freq: 0.12, amp: 0.42 }, { freq: 0.25, amp: 0.68 }, { freq: 0.37, amp: 0.22 }] },
-  { id: 5, date: "2026-07-02", time: "11:55", point: "Drive End Horizontal", pointGroup: "drive", overall: 1.94, dominant: "1X", peaks: [{ freq: 0.12, amp: 0.70 }, { freq: 0.52, amp: 0.16 }] },
-  { id: 6, date: "2026-06-26", time: "15:41", point: "Non-Drive End Vertical", pointGroup: "nondrive", overall: 2.62, dominant: "BPFO", peaks: [{ freq: 0.13, amp: 0.44 }, { freq: 0.58, amp: 0.57 }, { freq: 0.66, amp: 0.38 }, { freq: 0.74, amp: 0.26 }] },
-  { id: 7, date: "2026-06-10", time: "09:08", point: "Drive End Horizontal", pointGroup: "drive", overall: 1.72, dominant: "1X", peaks: [{ freq: 0.12, amp: 0.58 }, { freq: 0.24, amp: 0.15 }] },
-  { id: 8, date: "2026-05-28", time: "13:26", point: "Axial", pointGroup: "axial", overall: 1.68, dominant: "1X", peaks: [{ freq: 0.12, amp: 0.55 }, { freq: 0.29, amp: 0.19 }] },
-  { id: 9, date: "2026-05-06", time: "10:49", point: "Non-Drive End Horizontal", pointGroup: "nondrive", overall: 1.55, dominant: "1X", peaks: [{ freq: 0.11, amp: 0.49 }, { freq: 0.41, amp: 0.13 }] },
-  { id: 10, date: "2026-04-02", time: "16:03", point: "Drive End Horizontal", pointGroup: "drive", overall: 1.48, dominant: "1X", peaks: [{ freq: 0.12, amp: 0.46 }] }
-];
-
-const DATE_FILTERS: { id: string; label: string; days: number | null }[] = [
-  { id: "7d", label: "Last 7 Days", days: 7 },
-  { id: "30d", label: "Last 30 Days", days: 30 },
-  { id: "90d", label: "Last 90 Days", days: 90 },
-  { id: "all", label: "All Time", days: null }
-];
-
-const POINT_FILTERS: { id: PointGroup | "all"; label: string }[] = [
-  { id: "all", label: "All Points" },
-  { id: "drive", label: "Drive End" },
-  { id: "nondrive", label: "Non-Drive End" },
-  { id: "axial", label: "Axial" }
-];
-
-const DEFAULT_DATE_FILTER = "all";
-
-function formatSpectrumDate(iso: string) {
-  return new Date(`${iso}T00:00:00`).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric"
-  });
-}
-
-function overallBadgeStyle(overall: number) {
-  if (overall >= 2.8) return "bg-red-500/15 text-red-400 border-red-500/30";
-  if (overall >= 2.2) return "bg-yellow-400/15 text-yellow-400 border-yellow-400/30";
-  return "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
-}
-
-// Builds a plausible FFT shape: gaussian peaks over a deterministic noise floor.
-// Seeded from the record id so the trace never changes between renders.
-function buildSpectrumPoints(peaks: SpectrumPeak[], seed: number, samples = 150) {
-  const points: { x: number; y: number }[] = [];
-  for (let i = 0; i < samples; i++) {
-    const x = i / (samples - 1);
-    let y = 0;
-    for (const peak of peaks) {
-      const width = peak.width ?? 0.014;
-      y += peak.amp * Math.exp(-((x - peak.freq) ** 2) / (2 * width * width));
-    }
-    const noise = Math.abs(Math.sin((i + 1) * (seed + 1) * 12.9898) * 43758.5453) % 1;
-    y += 0.03 + noise * 0.05;
-    points.push({ x, y: Math.min(y, 1) });
-  }
-  return points;
-}
-
-function SpectrumTrace({
-  record,
-  className = "w-full h-28"
-}: {
-  record: SpectrumRecord;
-  className?: string;
-}) {
-  // useId() contains colons, which are unsafe inside an SVG url(#...) reference.
-  const gradientId = `spectrum-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
-  const width = 300;
-  const height = 120;
-  const points = useMemo(() => buildSpectrumPoints(record.peaks, record.id), [record]);
-
-  const toX = (x: number) => x * width;
-  const toY = (y: number) => height - 4 - y * (height - 14);
-  const line = points
-    .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.x).toFixed(1)} ${toY(p.y).toFixed(1)}`)
-    .join(" ");
-  const area = `${line} L ${width} ${height} L 0 ${height} Z`;
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className={className} preserveAspectRatio="none" aria-hidden="true">
-      <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#facc15" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="#facc15" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {[0.25, 0.5, 0.75].map(g => (
-        <line
-          key={g}
-          x1={g * width}
-          y1="0"
-          x2={g * width}
-          y2={height}
-          stroke="#1e293b"
-          strokeWidth="1"
-          vectorEffect="non-scaling-stroke"
-        />
-      ))}
-      <path d={area} fill={`url(#${gradientId})`} />
-      <path d={line} fill="none" stroke="#facc15" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}
-
-function SpectrumMetrics({ record }: { record: SpectrumRecord }) {
-  return (
-    <div className="grid grid-cols-3 gap-2 text-center">
-      <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2">
-        <span className="text-[9px] text-slate-500 uppercase font-mono block">Overall</span>
-        <span className="text-xs font-bold text-white font-mono">{record.overall.toFixed(2)}</span>
-      </div>
-      <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2">
-        <span className="text-[9px] text-slate-500 uppercase font-mono block">Dominant</span>
-        <span className="text-xs font-bold text-yellow-400 font-mono">{record.dominant}</span>
-      </div>
-      <div className="bg-slate-950/60 border border-slate-800 rounded-lg py-2">
-        <span className="text-[9px] text-slate-500 uppercase font-mono block">Peaks</span>
-        <span className="text-xs font-bold text-slate-200 font-mono">{record.peaks.length}</span>
-      </div>
-    </div>
-  );
-}
-
-// ===== Order-based spectrum analysis =====
-
-/** Bearing defect frequencies expressed in orders of running speed. */
-interface BearingModel {
-  id: string;
-  label: string;
-  ftf: number;
-  bpfo: number;
-  bpfi: number;
-  bsf: number;
-}
-
-const BEARINGS: BearingModel[] = [
-  { id: "nu314", label: "NU 314 — 11 roller, cylindrical", ftf: 0.445, bpfo: 4.90, bpfi: 6.10, bsf: 2.48 },
-  { id: "6314", label: "SKF 6314 — 8 ball, deep groove", ftf: 0.383, bpfo: 3.06, bpfi: 4.94, bsf: 2.02 },
-  { id: "nj220", label: "NJ 220 — 13 roller, cylindrical", ftf: 0.421, bpfo: 5.47, bpfi: 7.53, bsf: 2.63 },
-  { id: "22218", label: "SKF 22218 — 15 roller, spherical", ftf: 0.440, bpfo: 6.61, bpfi: 8.39, bsf: 2.79 }
-];
-
-interface BearingFrequency {
-  key: "FTF" | "BSF" | "BPFO" | "BPFI";
-  name: string;
-  order: number;
-  hz: number;
-}
-
-function bearingFrequencies(bearing: BearingModel, rpm: number): BearingFrequency[] {
-  const oneX = rpm / 60;
-  return [
-    { key: "FTF", name: "Cage / train", order: bearing.ftf, hz: bearing.ftf * oneX },
-    { key: "BSF", name: "Rolling element spin", order: bearing.bsf, hz: bearing.bsf * oneX },
-    { key: "BPFO", name: "Outer race defect", order: bearing.bpfo, hz: bearing.bpfo * oneX },
-    { key: "BPFI", name: "Inner race defect", order: bearing.bpfi, hz: bearing.bpfi * oneX }
-  ];
-}
-
-interface AnalysedPeak {
-  hz: number;
-  order: number;
-  amplitude: number; // mm/s RMS
-  share: number;     // fraction of the overall reading
-  code: string;
-  fault: string;
-  severity: FaultSeverity;
-}
-
-const HARMONIC_TOLERANCE = 0.12;
-const BEARING_TOLERANCE = 0.05;
-// Bearing tones are impulsive and read low in velocity, so they are graded on their own amplitude
-// bands rather than against the overall ISO limit.
-const BEARING_HIGH_MMS = 1.2;
-const BEARING_LOW_MMS = 0.3;
-
-function attributePeak(
-  hz: number,
-  oneX: number,
-  bearings: BearingFrequency[],
-  share: number,
-  amplitude: number
-): { code: string; fault: string; severity: FaultSeverity } {
-  const order = hz / oneX;
-  const harmonic = Math.max(1, Math.round(order));
-  const harmonicError = Math.abs(hz - harmonic * oneX) / (harmonic * oneX);
-
-  const closest = bearings.reduce((best, candidate) =>
-    Math.abs(hz - candidate.hz) / candidate.hz < Math.abs(hz - best.hz) / best.hz ? candidate : best
-  );
-  const bearingError = Math.abs(hz - closest.hz) / closest.hz;
-
-  // A bearing tone only wins the peak when it explains it better than the nearest shaft harmonic.
-  if (bearingError <= BEARING_TOLERANCE && (harmonicError > HARMONIC_TOLERANCE || bearingError < harmonicError)) {
-    const severity: FaultSeverity =
-      share > 0.25 && amplitude >= BEARING_HIGH_MMS
-        ? "High"
-        : amplitude >= BEARING_LOW_MMS
-          ? "Medium"
-          : "Low";
-    return { code: closest.key, fault: `${closest.name} — ${closest.key}`, severity };
-  }
-
-  if (harmonicError <= HARMONIC_TOLERANCE) {
-    if (harmonic === 1) {
-      return { code: "1X", fault: "Unbalance or residual runout", severity: share > 0.6 ? "Medium" : "Low" };
-    }
-    if (harmonic === 2) {
-      return { code: "2X", fault: "Misalignment or coupling wear", severity: share > 0.35 ? "Medium" : "Low" };
-    }
-    if (harmonic === 3) {
-      return { code: "3X", fault: "Angular misalignment or bent shaft", severity: share > 0.3 ? "Medium" : "Low" };
-    }
-    return {
-      code: `${harmonic}X`,
-      fault: "Mechanical looseness — harmonic series",
-      severity: share > 0.3 ? "Medium" : "Low"
-    };
-  }
-
-  if (order > 0.35 && order < 0.65) {
-    return { code: "0.5X", fault: "Sub-harmonic — looseness or rotor rub", severity: "Medium" };
-  }
-
-  return { code: `${order.toFixed(2)}X`, fault: "Non-synchronous / broadband energy", severity: "Low" };
-}
-
-/**
- * Resolves each stored peak into engineering units. Component amplitudes are scaled so their
- * root-sum-square equals the recorded overall velocity, which keeps the table consistent with
- * the ISO reading shown on Tab 1.
- */
-function analysePeaks(record: SpectrumRecord, rpm: number, bearing: BearingModel): AnalysedPeak[] {
-  const oneX = rpm / 60;
-  const bearings = bearingFrequencies(bearing, rpm);
-  const rss = Math.sqrt(record.peaks.reduce((sum, peak) => sum + peak.amp ** 2, 0)) || 1;
-
-  return record.peaks
-    .map(peak => {
-      const hz = peak.freq * SPECTRUM_FMAX;
-      const amplitude = (peak.amp / rss) * record.overall;
-      const share = record.overall > 0 ? amplitude / record.overall : 0;
-      return {
-        hz,
-        order: hz / oneX,
-        amplitude,
-        share,
-        ...attributePeak(hz, oneX, bearings, share, amplitude)
-      };
-    })
-    .sort((a, b) => b.amplitude - a.amplitude);
-}
-
 type SpectrumDomain = "fft" | "psd" | "waveform";
+
+type RecommendationPriority = "HIGH" | "MEDIUM" | "LOW";
 
 const SPECTRUM_DOMAINS: { id: SpectrumDomain; label: string }[] = [
   { id: "fft", label: "FFT Velocity" },
@@ -1581,35 +889,6 @@ const INITIAL_REPORT_PARTS: ReportPart[] = [
   { partId: 2, quantity: 1 },
   { partId: 3, quantity: 4 }
 ];
-
-type RecommendationPriority = "High" | "Medium" | "Low";
-
-const AI_RECOMMENDATIONS: { id: number; text: string; priority: RecommendationPriority; rationale: string }[] = [
-  {
-    id: 1,
-    text: "Replace drive-end bearing within 30 days",
-    priority: "High",
-    rationale: "BPFO sidebands are rising against the June baseline."
-  },
-  {
-    id: 2,
-    text: "Perform precision laser shaft alignment at next shutdown",
-    priority: "Medium",
-    rationale: "Elevated 2X axial content suggests residual angular misalignment."
-  },
-  {
-    id: 3,
-    text: "Add unit to the monthly vibration route for trend confirmation",
-    priority: "Low",
-    rationale: "Thirty-day interval will confirm whether 1X amplitude stabilises."
-  }
-];
-
-const PRIORITY_STYLES: Record<RecommendationPriority, string> = {
-  High: "bg-red-500/10 text-red-400 border-red-500/25",
-  Medium: "bg-yellow-400/10 text-yellow-400 border-yellow-400/25",
-  Low: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25"
-};
 
 interface RepairActionsPanelProps {
   inventory: InventoryPart[];
@@ -8081,6 +7360,8 @@ export default function AnalysisReport({
   // saved records tell us which assets actually have telemetry.
   const [assessmentAssetId, setAssessmentAssetId] = useState<string | null>(null);
   const [visibleLimit, setVisibleLimit] = useState(10);
+  const [showBaseline, setShowBaseline] = useState(false);
+  const [tab2Rpm, setTab2Rpm] = useState(SHAFT_RPM);
 
   const initiateRcaFromReport = () => {
     if (onNavigateToRca) {
@@ -8240,6 +7521,36 @@ export default function AnalysisReport({
     }
     return null;
   }, [selectedAnalysis, loadedAnalyses]);
+
+  const baselineRecord = useMemo(() => {
+    return loadedAnalyses.find((a) => a.is_baseline) ?? null;
+  }, [loadedAnalyses]);
+
+  const baselineSpectrum = useMemo(() => {
+    if (!baselineRecord) return [];
+    const rec = extractVibrationRecordFromAnalysis(baselineRecord);
+    return rec?.spectral ?? [];
+  }, [baselineRecord]);
+
+  const tab2SpectrumData = useMemo(() => {
+    if (!reportVibrationRecord) return [];
+    const rpm = tab2Rpm || SHAFT_RPM;
+    const hz = rpm / 60;
+    if (hz <= 0) return reportVibrationRecord.spectral.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined }));
+    const current = reportVibrationRecord.spectral.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude }));
+    if (baselineSpectrum.length === 0) return current.map((p) => ({ ...p, baselineAmplitude: undefined as number | undefined }));
+    return current.map((p) => {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let j = 0; j < baselineSpectrum.length; j++) {
+        const d = Math.abs(baselineSpectrum[j].frequency - p.frequency);
+        if (d < bestDist) { bestDist = d; bestIdx = j; }
+      }
+      return { ...p, baselineAmplitude: bestDist < hz * 0.05 ? baselineSpectrum[bestIdx].amplitude : undefined };
+    });
+  }, [reportVibrationRecord, baselineSpectrum, tab2Rpm]);
+
+  const tab2RpmHz = tab2Rpm / 60;
 
   useEffect(() => {
     return () => {
@@ -9020,18 +8331,193 @@ export default function AnalysisReport({
               </div>
             )}
 
-            {/* ===== Tab 2: Spectrum / Data Library ===== */}
-            {activeTab === 2 && (
-              <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-                <FileText className="h-8 w-8 text-slate-600 mb-3" />
-                <p className="text-sm font-semibold text-slate-300">No data available</p>
-                <p className="text-sm text-slate-500 mt-1 max-w-md">
-                  {selectedTech === "vibration"
-                    ? "Spectrum library will populate from saved diagnostic spectra. No spectrum data available yet."
-                    : `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.`}
-                </p>
-              </div>
-            )}
+            {/* ===== Tab 2: Spectrum Library — Interactive FFT Workspace ===== */}
+            {activeTab === 2 && (() => {
+              if (selectedTech !== "vibration" || !reportVibrationRecord) {
+                return (
+                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                    <FileText className="h-8 w-8 text-slate-600 mb-3" />
+                    <p className="text-sm font-semibold text-slate-300">No data available</p>
+                    <p className="text-sm text-slate-500 mt-1 max-w-md">
+                      {selectedTech === "vibration"
+                        ? "No vibration spectrum data available for this asset. Run a diagnostic to populate reports."
+                        : `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.`}
+                    </p>
+                  </div>
+                );
+              }
+              const hasBaseline = baselineSpectrum.length > 0;
+              const topPeaks = [...tab2SpectrumData]
+                .sort((a, b) => b.amplitude - a.amplitude)
+                .slice(0, 5)
+                .sort((a, b) => a.frequency - b.frequency)
+                .map((p) => ({
+                  ...p,
+                  harmonicOrder: tab2RpmHz > 0 ? p.frequency / tab2RpmHz : 0,
+                  delta:
+                    p.baselineAmplitude != null && p.baselineAmplitude > 1e-6
+                      ? ((p.amplitude - p.baselineAmplitude) / p.baselineAmplitude) * 100
+                      : null,
+                }));
+              return (
+                <div className="space-y-4">
+                  {/* -- Baseline badge -- */}
+                  {showBaseline && !hasBaseline && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-2.5 text-xs text-amber-300 flex items-center gap-2">
+                      <Info className="h-3.5 w-3.5 shrink-0" />
+                      No stored baseline signature available for comparison
+                    </div>
+                  )}
+                  {showBaseline && hasBaseline && (
+                    <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 px-4 py-2.5 text-xs text-sky-300 flex items-center gap-2">
+                      <LineChart className="h-3.5 w-3.5 shrink-0" />
+                      Baseline overlay active — dashed trace comparison against saved baseline record
+                    </div>
+                  )}
+
+                  {/* -- Reference RPM slider -- */}
+                  <div className="flex items-center gap-4 p-4 bg-slate-900/60 border border-slate-700/80 rounded-xl">
+                    <span className="text-sm font-semibold text-slate-300 shrink-0">Reference RPM:</span>
+                    <input
+                      type="range"
+                      min={600}
+                      max={3600}
+                      step={10}
+                      value={tab2Rpm}
+                      onChange={(e) => setTab2Rpm(Number(e.target.value))}
+                      className="flex-1 accent-cyan-500 h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <span className="text-cyan-400 font-mono font-bold w-20 text-right tabular-nums">{tab2Rpm} RPM</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-mono">
+                    1X = {tab2RpmHz.toFixed(2)} Hz · 2X = {(tab2RpmHz * 2).toFixed(2)} Hz · 3X = {(tab2RpmHz * 3).toFixed(2)} Hz · 4X = {(tab2RpmHz * 4).toFixed(2)} Hz
+                  </p>
+
+                  {/* -- FFT Chart with harmonic cursors + optional baseline overlay -- */}
+                  <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">
+                      Velocity Spectrum (mm/s)
+                      {showBaseline && hasBaseline && <span className="ml-2 text-amber-400 normal-case tracking-normal">— dashed = baseline</span>}
+                    </h4>
+                    <div className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart
+                          data={tab2SpectrumData}
+                          margin={{ top: 28, right: 16, bottom: 28, left: 48 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                          <XAxis
+                            type="number"
+                            dataKey="frequency"
+                            domain={[0, "dataMax"]}
+                            stroke="#94a3b8"
+                            tick={{ fontSize: 10 }}
+                            label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }}
+                          />
+                          <YAxis
+                            stroke="#38bdf8"
+                            tick={{ fontSize: 10 }}
+                            label={{ value: "Amplitude (mm/s)", angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 11 }}
+                          />
+                          <Tooltip
+                            contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+                            formatter={(value, name) => {
+                              const val = Number(value);
+                              const label = name === "baselineAmplitude" ? "Baseline" : "Amplitude";
+                              return [`${val.toFixed(3)} mm/s`, label];
+                            }}
+                            labelFormatter={(label) => `${label} Hz`}
+                          />
+                          {/* Harmonic cursors 1X–4X */}
+                          <ReferenceLine x={tab2RpmHz} stroke="#f59e0b" strokeDasharray="6 3" label={{ value: "1X", fill: "#f59e0b", position: "top", fontSize: 11, fontWeight: 700 }} />
+                          <ReferenceLine x={tab2RpmHz * 2} stroke="#38bdf8" strokeDasharray="6 3" label={{ value: "2X", fill: "#38bdf8", position: "top", fontSize: 11, fontWeight: 700 }} />
+                          <ReferenceLine x={tab2RpmHz * 3} stroke="#a855f7" strokeDasharray="6 3" label={{ value: "3X", fill: "#a855f7", position: "top", fontSize: 11, fontWeight: 700 }} />
+                          <ReferenceLine x={tab2RpmHz * 4} stroke="#ef4444" strokeDasharray="6 3" label={{ value: "4X", fill: "#ef4444", position: "top", fontSize: 11, fontWeight: 700 }} />
+                          {/* Baseline trace (dashed, semi-transparent) */}
+                          {showBaseline && hasBaseline && (
+                            <Area
+                              type="monotone"
+                              dataKey="baselineAmplitude"
+                              stroke="#94a3b8"
+                              strokeWidth={1.5}
+                              strokeDasharray="5 5"
+                              fill="#94a3b8"
+                              fillOpacity={0.06}
+                              isAnimationActive={false}
+                              name="Baseline"
+                              connectNulls={false}
+                            />
+                          )}
+                          {/* Current trace */}
+                          <Area
+                            type="monotone"
+                            dataKey="amplitude"
+                            stroke="#38bdf8"
+                            fill="#38bdf8"
+                            fillOpacity={0.15}
+                            isAnimationActive={false}
+                            name="Amplitude"
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* -- Peak Analysis table with Delta column -- */}
+                  <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-semibold text-cyan-300">Peak Analysis</h4>
+                      <span className="text-[10px] text-slate-500 font-mono">Top 5 amplitude peaks · order = f / 1X</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
+                            <th className="px-4 py-2.5 font-bold">Freq (Hz)</th>
+                            <th className="px-4 py-2.5 font-bold">Amplitude (mm/s)</th>
+                            <th className="px-4 py-2.5 font-bold">Order</th>
+                            {showBaseline && hasBaseline && <th className="px-4 py-2.5 font-bold">Baseline</th>}
+                            {showBaseline && hasBaseline && <th className="px-4 py-2.5 font-bold">Delta vs Baseline</th>}
+                            <th className="px-4 py-2.5 font-bold">Diagnosis</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {topPeaks.map((peak, i) => (
+                            <tr key={`${peak.frequency}-${i}`} className="border-t border-slate-700/80">
+                              <td className="px-4 py-3 text-cyan-300 font-mono">{peak.frequency.toFixed(2)}</td>
+                              <td className="px-4 py-3 text-emerald-400 font-mono">{peak.amplitude.toFixed(3)}</td>
+                              <td className="px-4 py-3 text-yellow-400 font-mono font-semibold">{peak.harmonicOrder.toFixed(2)}×</td>
+                              {showBaseline && hasBaseline && (
+                                <td className="px-4 py-3 text-slate-400 font-mono">
+                                  {peak.baselineAmplitude != null ? peak.baselineAmplitude.toFixed(3) : "—"}
+                                </td>
+                              )}
+                              {showBaseline && hasBaseline && (
+                                <td className="px-4 py-3 font-mono font-semibold">
+                                  {peak.delta != null ? (
+                                    <span className={peak.delta <= 0 ? "text-emerald-400" : "text-red-400"}>
+                                      {peak.delta > 0 ? "+" : ""}{peak.delta.toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-600">n/a</span>
+                                  )}
+                                </td>
+                              )}
+                              <td className="px-4 py-3 text-slate-200 font-medium">
+                                {peak.harmonicOrder >= 0.9 && peak.harmonicOrder <= 1.1 && "Mass Unbalance"}
+                                {peak.harmonicOrder >= 1.9 && peak.harmonicOrder <= 2.1 && "Angular Misalignment"}
+                                {peak.harmonicOrder >= 2.9 && peak.harmonicOrder <= 3.1 && "Mechanical Looseness"}
+                                {(peak.harmonicOrder < 0.9 || (peak.harmonicOrder > 1.1 && peak.harmonicOrder < 1.9) || (peak.harmonicOrder > 2.1 && peak.harmonicOrder < 2.9) || (peak.harmonicOrder > 3.1)) && "Bearing Fault / Other"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ===== Tab 3: Repair & Actions ===== */}
             {activeTab === 3 && (
@@ -9098,8 +8584,8 @@ export default function AnalysisReport({
               </>
             )}
 
-            {/* ===== FFT Chart — locked at bottom of right pane (vibration only) ===== */}
-            {selectedTech === "vibration" && reportVibrationRecord && (
+            {/* ===== FFT Chart — locked at bottom of right pane (vibration only, hidden on Tab 2) ===== */}
+            {selectedTech === "vibration" && reportVibrationRecord && activeTab !== 2 && (
               <div className="shrink-0 min-h-[380px] w-full border-t border-slate-800 pt-4">
                 <SpectralFftWorkspace record={reportVibrationRecord} />
               </div>
@@ -9139,9 +8625,14 @@ export default function AnalysisReport({
         </button>
         <button
           type="button"
-          disabled
-          title="Baseline comparison is not built yet"
-          className={`flex items-center gap-1.5 px-3 py-2 bg-slate-950 border border-slate-800 text-slate-400 text-xs font-bold rounded-lg transition-colors ${PENDING_BTN}`}
+          disabled={activeTab !== 2 || selectedTech !== "vibration" || !selectedAnalysis}
+          title={!baselineRecord && activeTab === 2 && selectedTech === "vibration" ? "No stored baseline signature available for comparison" : activeTab !== 2 ? "Switch to Spectrum Library tab to enable" : "Toggle baseline overlay comparison"}
+          onClick={() => activeTab === 2 && setShowBaseline((v) => !v)}
+          className={`flex items-center gap-1.5 px-3 py-2 border text-xs font-bold rounded-lg transition-colors ${
+            showBaseline && activeTab === 2 && selectedTech === "vibration" && selectedAnalysis
+              ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+              : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
+          } ${(activeTab !== 2 || selectedTech !== "vibration" || !selectedAnalysis) ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
         >
           <LineChart className="h-3.5 w-3.5" />
           <span>Compare Baseline</span>
