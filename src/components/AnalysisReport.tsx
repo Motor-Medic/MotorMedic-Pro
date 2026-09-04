@@ -7317,6 +7317,27 @@ function OilRepairActions({
   );
 }
 
+function collectRawSpectral(row: SavedAnalysisResult | null): Array<{ frequency: number; amplitude: number }> {
+  const out: Array<{ frequency: number; amplitude: number }> = [];
+  const n = (v: unknown) => (typeof v === "number" || typeof v === "string") && Number.isFinite(Number(v)) ? Number(v) : NaN;
+  const walk = (v: unknown): void => {
+    if (!v || typeof v !== "object") return;
+    if (Array.isArray(v)) {
+      for (const it of v) walk(it);
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    const f = n(o.frequencyHz ?? o.frequency_hz ?? o.freqHz ?? o.freq_hz ?? o.frequency ?? o.freq ?? o.hz ?? o.count);
+    const a = n(o.amplitude ?? o.amp ?? o.value);
+    if (f > 0 && a > 0) { out.push({ frequency: f, amplitude: a }); return; }
+    for (const k of ["record", "telemetry_data", "telemetry", "vibration_trend_record", "spectral", "spectrum", "peaks", "fft_data", "vibration_peaks"]) {
+      if (o[k] != null) walk(o[k]);
+    }
+  };
+  walk(row);
+  return out;
+}
+
 export default function AnalysisReport({
   selectedCompanyId,
   onNavigateToCalendar,
@@ -7537,11 +7558,11 @@ export default function AnalysisReport({
   }, [baselineRecord]);
 
   const tab2SpectrumData = useMemo(() => {
-    if (!reportVibrationRecord) return [];
-    const rpm = tab2Rpm || SHAFT_RPM;
-    const hz = rpm / 60;
-    if (hz <= 0) return reportVibrationRecord.spectral.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined }));
-    const current = reportVibrationRecord.spectral.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude }));
+    const current = (reportVibrationRecord?.spectral?.length
+      ? reportVibrationRecord.spectral
+      : collectRawSpectral(selectedAnalysis)).map((p) => ({ frequency: p.frequency, amplitude: p.amplitude }));
+    if (current.length === 0) return [];
+    const hz = (tab2Rpm || SHAFT_RPM) / 60;
     if (baselineSpectrum.length === 0) return current.map((p) => ({ ...p, baselineAmplitude: undefined as number | undefined }));
     return current.map((p) => {
       let bestIdx = 0;
@@ -7552,18 +7573,28 @@ export default function AnalysisReport({
       }
       return { ...p, baselineAmplitude: bestDist < hz * 0.05 ? baselineSpectrum[bestIdx].amplitude : undefined };
     });
-  }, [reportVibrationRecord, baselineSpectrum, tab2Rpm]);
+  }, [reportVibrationRecord, baselineSpectrum, selectedAnalysis, tab2Rpm]);
 
   const tab2RpmHz = tab2Rpm / 60;
 
   const storedStemPeaks = useMemo(() => {
     const raw = selectedAnalysis?.peaks;
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-      .map((p) => ({ frequency: Number(p.frequency ?? p.freq ?? p.hz ?? p.count), amplitude: Number(p.amplitude ?? p.amp ?? p.value) }))
-      .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0);
+    if (Array.isArray(raw)) {
+      const direct = raw
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((p) => ({ frequency: Number(p.frequencyHz ?? p.frequency_hz ?? p.freqHz ?? p.freq_hz ?? p.frequency ?? p.freq ?? p.hz ?? p.count), amplitude: Number(p.amplitude ?? p.amp ?? p.value) }))
+        .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0);
+      if (direct.length) return direct;
+    }
+    return collectRawSpectral(selectedAnalysis);
   }, [selectedAnalysis]);
+
+  // Hoisted out of the interactive FFT workspace so the render gate (and the
+  // legacy SpectralFftWorkspace fallback below) can read the active chart mode.
+  const fullPts = tab2SpectrumData.length > 0 ? tab2SpectrumData : [];
+  const peakList = storedStemPeaks;
+  const mode: "stems" | "curve" | "empty" =
+    peakList.length > 0 ? "stems" : fullPts.length >= 8 ? "curve" : "empty";
 
   useEffect(() => {
     const speed = reportVibrationRecord?.rpm ?? reportVibrationRecord?.context?.motorSpeedRPM;
@@ -8359,23 +8390,20 @@ export default function AnalysisReport({
               </div>
             )}
 
-            {/* ===== Tab 2: Spectrum Library — Interactive FFT Workspace ===== */}
-            {activeTab === 2 && (() => {
-              const fullPts = tab2SpectrumData.length > 0 ? tab2SpectrumData : [];
-              const peakList = storedStemPeaks;
-              const mode = peakList.length > 0 ? "stems" : fullPts.length >= 8 ? "curve" : "empty";
-              if (selectedTech !== "vibration" || mode === "empty") {
-                const title = selectedTech !== "vibration" ? "No data available" : selectedAnalysis ? "No spectral data captured" : "No saved analyses for this asset yet";
-                const body = selectedTech !== "vibration" ? `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.` : selectedAnalysis ? "This record has no stored vibration spectrum. Run Diagnostics to capture data for this asset." : "Load a saved analysis report or run a diagnostic to populate the spectrum library.";
-                return (
-                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-                    <FileText className="h-8 w-8 text-slate-600 mb-3" />
-                    <p className="text-sm font-semibold text-slate-300">{title}</p>
-                    <p className="text-sm text-slate-500 mt-1 max-w-md">{body}</p>
-                  </div>
-                );
-              }
-              const hasBaseline = baselineSpectrum.length > 0;
+              {/* ===== Interactive FFT Workspace — live spectral chart block (also the Tab 2: Spectrum Library view) ===== */}
+              {(activeTab === 2 || (selectedTech === "vibration" && mode !== "empty")) && (() => {
+                if (selectedTech !== "vibration" || mode === "empty") {
+                  const title = selectedTech !== "vibration" ? "No data available" : selectedAnalysis ? "No spectral data captured" : "No saved analyses for this asset yet";
+                  const body = selectedTech !== "vibration" ? `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.` : selectedAnalysis ? "This record has no stored vibration spectrum. Run Diagnostics to capture data for this asset." : "Load a saved analysis report or run a diagnostic to populate the spectrum library.";
+                  return (
+                    <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                      <FileText className="h-8 w-8 text-slate-600 mb-3" />
+                      <p className="text-sm font-semibold text-slate-300">{title}</p>
+                      <p className="text-sm text-slate-500 mt-1 max-w-md">{body}</p>
+                    </div>
+                  );
+                }
+                const hasBaseline = baselineSpectrum.length > 0;
               const chartRows = mode === "curve" ? fullPts : peakList.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` }));
               const unitShort = tab2Unit === "acceleration" ? "g" : "mm/s";
               const unitLabel = tab2Unit === "acceleration" ? "Acceleration (g)" : "Velocity (mm/s)";
@@ -8673,8 +8701,10 @@ export default function AnalysisReport({
               </>
             )}
 
-            {/* ===== FFT Chart — locked at bottom of right pane (vibration only, hidden on Tab 2) ===== */}
-            {selectedTech === "vibration" && reportVibrationRecord && activeTab !== 2 && (
+            {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the
+                  live interactive workspace above has no spectrum/peaks to plot.
+                  Alternate view: NOT dead, NOT deleted — do not rewrite, replaced by props later. ===== */}
+            {selectedTech === "vibration" && reportVibrationRecord && activeTab !== 2 && mode === "empty" && (
               <div className="shrink-0 min-h-[380px] w-full border-t border-slate-800 pt-4">
                 <SpectralFftWorkspace record={reportVibrationRecord} />
               </div>
