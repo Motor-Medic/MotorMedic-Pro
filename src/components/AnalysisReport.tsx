@@ -8517,6 +8517,7 @@ export default function AnalysisReport({
                             domain={[0, xDomainMax]}
                             stroke="#94a3b8"
                             tick={{ fontSize: 10 }}
+                            tickFormatter={(v) => String(Math.round(Number(v)))}
                             label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }}
                           />
                           <YAxis
