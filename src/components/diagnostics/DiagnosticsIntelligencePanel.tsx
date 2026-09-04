@@ -15,7 +15,6 @@ import type { DiagnosisSignOff } from "../../lib/diagnostics/signOff";
 import SensorFusionMatrix from "./SensorFusionMatrix";
 import PrognosisPanel from "./PrognosisPanel";
 import EngineerSignOff from "./EngineerSignOff";
-import CmmsPayloadBridge from "./CmmsPayloadBridge";
 
 export interface DiagnosticsIntelligencePanelProps
   extends UseDiagnosticsIntelligenceInput {
@@ -72,7 +71,6 @@ export default function DiagnosticsIntelligencePanel({
         onToast={onToast}
         onDispatchWorkOrder={onDispatchWorkOrder}
       />
-      <CmmsPayloadBridge context={cmmsContext} onToast={onToast} />
     </>
   );
 }

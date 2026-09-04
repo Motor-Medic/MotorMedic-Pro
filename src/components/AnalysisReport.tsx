@@ -12,6 +12,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ComposedChart,
+  LabelList,
   Legend,
   Line,
   LineChart as RechartsLineChart,
@@ -47,7 +49,7 @@ import {
 } from "../types/oilAnalysis";
 import { latestOfType, peakOfType, resolveTempUnit } from "../lib/diagnostics/sensorFusion";
 
-type ReportTab = 1 | 2 | 3 | 4;
+type ReportTab = 0 | 1 | 2 | 3 | 4;
 type ReportTechnology = "vibration" | "thermography" | "ultrasound" | "mca" | "oil";
 
 interface AnalysisReportProps {
@@ -7362,6 +7364,8 @@ export default function AnalysisReport({
   const [visibleLimit, setVisibleLimit] = useState(10);
   const [showBaseline, setShowBaseline] = useState(false);
   const [tab2Rpm, setTab2Rpm] = useState(SHAFT_RPM);
+  const [tab2Domain, setTab2Domain] = useState<"fft" | "waveform">("fft");
+  const [tab2Unit, setTab2Unit] = useState<"velocity" | "acceleration">("velocity");
 
   const initiateRcaFromReport = () => {
     if (onNavigateToRca) {
@@ -7552,6 +7556,20 @@ export default function AnalysisReport({
 
   const tab2RpmHz = tab2Rpm / 60;
 
+  const storedStemPeaks = useMemo(() => {
+    const raw = selectedAnalysis?.peaks;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((p) => ({ frequency: Number(p.frequency ?? p.freq ?? p.hz ?? p.count), amplitude: Number(p.amplitude ?? p.amp ?? p.value) }))
+      .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0);
+  }, [selectedAnalysis]);
+
+  useEffect(() => {
+    const speed = reportVibrationRecord?.rpm ?? reportVibrationRecord?.context?.motorSpeedRPM;
+    if (speed != null && Number.isFinite(speed) && speed > 0) setTab2Rpm(Math.round(speed));
+  }, [reportVibrationRecord]);
+
   useEffect(() => {
     return () => {
       if (loadTimerRef.current != null) window.clearTimeout(loadTimerRef.current);
@@ -7710,8 +7728,9 @@ export default function AnalysisReport({
         if (byComponent.length) rows = byComponent;
       }
 
-      setLoadedAnalyses(rows);
-      setSelectedAnalysis(rows[0] ?? null);
+      const sorted = [...rows].sort((a, b) => new Date(b.timestamp || b.created_at || 0).getTime() - new Date(a.timestamp || a.created_at || 0).getTime());
+      setLoadedAnalyses(sorted);
+      setSelectedAnalysis(sorted[0] ?? null);
       setHasLoadedReport(true);
 
       if (rows.length === 0) {
@@ -8055,87 +8074,24 @@ export default function AnalysisReport({
           </div>
         </div>
       ) : (
-        <div className="flex flex-row gap-4 w-full items-start">
+        <div className="w-full">
 
-          {/* ===== LEFT: Saved Analyses List ===== */}
-          <div className="w-80 shrink-0 h-fit bg-slate-900/60 rounded-xl border border-slate-800 p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-semibold text-white">Saved Analyses</h3>
-              <span className="text-xs text-slate-500">{loadedAnalyses.length} result{loadedAnalyses.length === 1 ? "" : "s"}</span>
-            </div>
-            {loadError && <p className="text-xs text-amber-400 mb-3">{loadError}</p>}
-            {loadedAnalyses.length === 0 ? (
-              <div className="flex flex-col items-center justify-center text-center py-10 px-2">
-                <FileText className="h-8 w-8 text-slate-600 mb-2" />
-                <p className="text-sm font-semibold text-slate-300">No data available</p>
-                <p className="text-xs text-slate-500 mt-1 max-w-[220px]">
-                  No saved analyses yet. Complete a Run Diagnostics analysis to populate this list.
-                </p>
-              </div>
-            ) : (
-              <>
-              <div className="grid gap-2">
-                {loadedAnalyses.slice(0, visibleLimit).map((row) => {
-                  const on = selectedAnalysis?.id === row.id;
-                  const sevRaw = String(
-                    (Array.isArray(row.fault_list) && row.fault_list[0]?.severity) || ""
-                  ).toLowerCase();
-                  const sevBadge = sevRaw.includes("high") || sevRaw.includes("crit")
-                    ? "bg-red-500/15 text-red-400 border-red-500/30"
-                    : sevRaw.includes("low")
-                      ? "bg-green-500/15 text-green-400 border-green-500/30"
-                      : "bg-amber-500/15 text-amber-400 border-amber-500/30";
-                  return (
-                    <button
-                      key={row.id}
-                      type="button"
-                      onClick={() => setSelectedAnalysis(row)}
-                      className={`w-full text-left rounded-lg border p-3 transition-colors cursor-pointer ${
-                        on
-                          ? "border-amber-400/50 bg-amber-400/10"
-                          : "border-slate-800 bg-slate-950/50 hover:border-slate-600"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-white truncate">
-                          {row.primary_fault || "Analysis"}
-                        </p>
-                        {sevRaw && (
-                          <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${sevBadge}`}>
-                            {sevRaw.includes("high") || sevRaw.includes("crit") ? "HIGH" : sevRaw.includes("low") ? "LOW" : "MED"}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1 truncate">
-                        {row.component || "—"} · {row.asset_id || "—"}
-                      </p>
-                      <p className="text-xs text-slate-600 mt-1">
-                        {row.timestamp ? new Date(row.timestamp).toLocaleDateString() : ""}
-                        {row.health_score != null ? ` · Health ${row.health_score}` : ""}
-                        {row.is_baseline ? " · BASELINE" : ""}
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-              {visibleLimit < loadedAnalyses.length && (
-                <button
-                  type="button"
-                  onClick={() => setVisibleLimit((n) => n + 10)}
-                  className="w-full py-2 text-xs font-semibold text-amber-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg border border-slate-700/50 mt-3"
-                >
-                  Show More (+10)
-                </button>
-              )}
-              </>
-            )}
-          </div>
-
-          {/* ===== RIGHT: Tab Strip + Detail + FFT ===== */}
-          <div className="flex-1 min-w-0 h-fit bg-slate-900/40 rounded-xl border border-slate-800 p-6 gap-6 flex flex-col">
+          {/* ===== Tab Strip + Detail + FFT ===== */}
+          <div className="w-full h-fit bg-slate-900/40 rounded-xl border border-slate-800 p-6 gap-6 flex flex-col">
 
             {/* Tab Navigation */}
             <div className="flex gap-1 border-b border-slate-800 pb-2 shrink-0 overflow-x-auto scrollbar-none">
+              <button
+                type="button"
+                onClick={() => setActiveTab(0)}
+                className={`px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors cursor-pointer border-b-2 ${
+                  activeTab === 0
+                    ? "text-yellow-400 border-yellow-400"
+                    : "text-slate-400 hover:text-slate-200 border-transparent"
+                }`}
+              >
+                Saved Analyses ({loadedAnalyses.length})
+              </button>
               {currentTechTabs.map((tab) => {
                 const isActive = activeTab === tab.id;
                 return (
@@ -8154,6 +8110,78 @@ export default function AnalysisReport({
                 );
               })}
             </div>
+
+            {/* ===== Tab 0: Saved Analyses ===== */}
+            {activeTab === 0 && (
+              <div className="space-y-3">
+                {loadError && <p className="text-xs text-amber-400">{loadError}</p>}
+                {loadedAnalyses.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                    <FileText className="h-8 w-8 text-slate-600 mb-2" />
+                    <p className="text-sm font-semibold text-slate-300">No saved analyses for this asset yet</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Complete a Run Diagnostics analysis to populate this list.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                      {loadedAnalyses.slice(0, visibleLimit).map((row) => {
+                        const on = selectedAnalysis?.id === row.id;
+                        const sevRaw = String(
+                          (Array.isArray(row.fault_list) && row.fault_list[0]?.severity) || ""
+                        ).toLowerCase();
+                        const sevBadge = sevRaw.includes("high") || sevRaw.includes("crit")
+                          ? "bg-red-500/15 text-red-400 border-red-500/30"
+                          : sevRaw.includes("low")
+                            ? "bg-green-500/15 text-green-400 border-green-500/30"
+                            : "bg-amber-500/15 text-amber-400 border-amber-500/30";
+                        return (
+                          <button
+                            key={row.id}
+                            type="button"
+                            onClick={() => { setSelectedAnalysis(row); setActiveTab(1); }}
+                            className={`w-full text-left rounded-lg border p-3 transition-colors cursor-pointer ${
+                              on
+                                ? "border-amber-400/50 bg-amber-400/10"
+                                : "border-slate-800 bg-slate-950/50 hover:border-slate-600"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-sm font-semibold text-white truncate">
+                                {row.primary_fault || "Analysis"}
+                              </p>
+                              {sevRaw && (
+                                <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${sevBadge}`}>
+                                  {sevRaw.includes("high") || sevRaw.includes("crit") ? "HIGH" : sevRaw.includes("low") ? "LOW" : "MED"}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-slate-500 mt-1 truncate">
+                              {row.component || "—"} · {row.asset_id || "—"}
+                            </p>
+                            <p className="text-xs text-slate-600 mt-1">
+                              {row.timestamp ? new Date(row.timestamp).toLocaleDateString() : ""}
+                              {row.health_score != null ? ` · Health ${row.health_score}` : ""}
+                              {row.is_baseline ? " · BASELINE" : ""}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {visibleLimit < loadedAnalyses.length && (
+                      <button
+                        type="button"
+                        onClick={() => setVisibleLimit((n) => n + 10)}
+                        className="w-full py-2 text-xs font-semibold text-amber-400 bg-slate-800/50 hover:bg-slate-800 rounded-lg border border-slate-700/50"
+                      >
+                        Show More (+10)
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
             {/* ===== Selected Analysis Detail — Tab 1 ===== */}
             {selectedAnalysis && activeTab === 1 && (() => {
@@ -8333,21 +8361,35 @@ export default function AnalysisReport({
 
             {/* ===== Tab 2: Spectrum Library — Interactive FFT Workspace ===== */}
             {activeTab === 2 && (() => {
-              if (selectedTech !== "vibration" || !reportVibrationRecord) {
+              const fullPts = tab2SpectrumData.length > 0 ? tab2SpectrumData : [];
+              const peakList = storedStemPeaks;
+              const mode = peakList.length > 0 ? "stems" : fullPts.length >= 8 ? "curve" : "empty";
+              if (selectedTech !== "vibration" || mode === "empty") {
+                const title = selectedTech !== "vibration" ? "No data available" : selectedAnalysis ? "No spectral data captured" : "No saved analyses for this asset yet";
+                const body = selectedTech !== "vibration" ? `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.` : selectedAnalysis ? "This record has no stored vibration spectrum. Run Diagnostics to capture data for this asset." : "Load a saved analysis report or run a diagnostic to populate the spectrum library.";
                 return (
                   <div className="flex flex-col items-center justify-center text-center py-16 px-4">
                     <FileText className="h-8 w-8 text-slate-600 mb-3" />
-                    <p className="text-sm font-semibold text-slate-300">No data available</p>
-                    <p className="text-sm text-slate-500 mt-1 max-w-md">
-                      {selectedTech === "vibration"
-                        ? "No vibration spectrum data available for this asset. Run a diagnostic to populate reports."
-                        : `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.`}
-                    </p>
+                    <p className="text-sm font-semibold text-slate-300">{title}</p>
+                    <p className="text-sm text-slate-500 mt-1 max-w-md">{body}</p>
                   </div>
                 );
               }
               const hasBaseline = baselineSpectrum.length > 0;
-              const topPeaks = [...tab2SpectrumData]
+              const chartRows = mode === "curve" ? fullPts : peakList.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` }));
+              const unitShort = tab2Unit === "acceleration" ? "g" : "mm/s";
+              const unitLabel = tab2Unit === "acceleration" ? "Acceleration (g)" : "Velocity (mm/s)";
+              const toUnitAmp = (freq: number, amp: number) =>
+                tab2Unit === "acceleration" ? (amp * 2 * Math.PI * freq) / 9806.65 : amp;
+              const displayRows = chartRows.map((r) => ({
+                ...r,
+                amplitude: toUnitAmp(r.frequency, r.amplitude),
+                baselineAmplitude:
+                  r.baselineAmplitude != null ? toUnitAmp(r.frequency, r.baselineAmplitude) : undefined
+              }));
+              const waveformRows = reportVibrationRecord?.waveform ?? [];
+              const xDomainMax = Math.max(tab2RpmHz * 4, (chartRows.length ? Math.max(...chartRows.map((r) => r.frequency)) : 0) * 1.15);
+              const topPeaks = [...displayRows]
                 .sort((a, b) => b.amplitude - a.amplitude)
                 .slice(0, 5)
                 .sort((a, b) => a.frequency - b.frequency)
@@ -8389,27 +8431,62 @@ export default function AnalysisReport({
                     />
                     <span className="text-cyan-400 font-mono font-bold w-20 text-right tabular-nums">{tab2Rpm} RPM</span>
                   </div>
+                  {/* -- Spectral control row: domain / unit / baseline -- */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
+                      <button type="button" onClick={() => setTab2Domain("fft")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${tab2Domain === "fft" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>FFT Spectrum</button>
+                      <button type="button" onClick={() => setTab2Domain("waveform")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${tab2Domain === "waveform" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>Time Waveform</button>
+                    </div>
+                    <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
+                      <button type="button" onClick={() => setTab2Unit("velocity")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${tab2Unit === "velocity" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:text-slate-200"}`}>Velocity (mm/s)</button>
+                      <button type="button" onClick={() => setTab2Unit("acceleration")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${tab2Unit === "acceleration" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:text-slate-200"}`}>Acceleration (g)</button>
+                    </div>
+                    <button type="button" onClick={() => setShowBaseline((v) => !v)} className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors cursor-pointer ${showBaseline ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-slate-700 bg-slate-950 text-slate-400 hover:text-slate-200"}`}>Overlay Baseline</button>
+                  </div>
                   <p className="text-[10px] text-slate-500 font-mono">
                     1X = {tab2RpmHz.toFixed(2)} Hz · 2X = {(tab2RpmHz * 2).toFixed(2)} Hz · 3X = {(tab2RpmHz * 3).toFixed(2)} Hz · 4X = {(tab2RpmHz * 4).toFixed(2)} Hz
                   </p>
 
-                  {/* -- FFT Chart with harmonic cursors + optional baseline overlay -- */}
+                  {/* -- Chart: FFT Spectrum or Time Waveform -- */}
+                  {tab2Domain === "waveform" ? (
+                    waveformRows.length > 0 ? (
+                      <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Time Waveform</h4>
+                        <div className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <ComposedChart data={waveformRows} margin={{ top: 16, right: 16, bottom: 28, left: 48 }}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                              <XAxis type="number" dataKey="time" domain={[0, "dataMax"]} stroke="#94a3b8" tick={{ fontSize: 10 }} label={{ value: "Time (s)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }} />
+                              <YAxis stroke="#38bdf8" tick={{ fontSize: 10 }} label={{ value: "Amplitude (mm/s)", angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 11 }} />
+                              <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }} formatter={(value) => [`${Number(value).toFixed(3)} mm/s`, "Amplitude"]} labelFormatter={(label) => `${label} s`} />
+                              <Line type="monotone" dataKey="amplitude" stroke="#38bdf8" strokeWidth={1.5} dot={false} isAnimationActive={false} name="Amplitude" />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center text-center py-16 px-4 bg-slate-900/60 border border-slate-700/80 rounded-xl">
+                        <FileText className="h-8 w-8 text-slate-600 mb-2" />
+                        <p className="text-sm font-semibold text-slate-300">No time waveform captured</p>
+                      </div>
+                    )
+                  ) : (
                   <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">
-                      Velocity Spectrum (mm/s)
+                      {unitLabel}
                       {showBaseline && hasBaseline && <span className="ml-2 text-amber-400 normal-case tracking-normal">— dashed = baseline</span>}
                     </h4>
                     <div className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
                       <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
-                          data={tab2SpectrumData}
+                        <ComposedChart
+                          data={displayRows}
                           margin={{ top: 28, right: 16, bottom: 28, left: 48 }}
                         >
                           <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                           <XAxis
                             type="number"
                             dataKey="frequency"
-                            domain={[0, "dataMax"]}
+                            domain={[0, xDomainMax]}
                             stroke="#94a3b8"
                             tick={{ fontSize: 10 }}
                             label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }}
@@ -8417,14 +8494,14 @@ export default function AnalysisReport({
                           <YAxis
                             stroke="#38bdf8"
                             tick={{ fontSize: 10 }}
-                            label={{ value: "Amplitude (mm/s)", angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 11 }}
+                            label={{ value: `Amplitude (${unitShort})`, angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 11 }}
                           />
                           <Tooltip
                             contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
                             formatter={(value, name) => {
                               const val = Number(value);
                               const label = name === "baselineAmplitude" ? "Baseline" : "Amplitude";
-                              return [`${val.toFixed(3)} mm/s`, label];
+                              return [`${val.toFixed(tab2Unit === "acceleration" ? 6 : 3)} ${unitShort}`, label];
                             }}
                             labelFormatter={(label) => `${label} Hz`}
                           />
@@ -8448,20 +8525,32 @@ export default function AnalysisReport({
                               connectNulls={false}
                             />
                           )}
-                          {/* Current trace */}
-                          <Area
-                            type="monotone"
-                            dataKey="amplitude"
-                            stroke="#38bdf8"
-                            fill="#38bdf8"
-                            fillOpacity={0.15}
-                            isAnimationActive={false}
-                            name="Amplitude"
-                          />
-                        </AreaChart>
+                          {/* Full spectrum — continuous curve */}
+                          {mode === "curve" && (
+                            <Area
+                              type="monotone"
+                              dataKey="amplitude"
+                              stroke="#38bdf8"
+                              fill="#38bdf8"
+                              fillOpacity={0.15}
+                              isAnimationActive={false}
+                              name="Amplitude"
+                            />
+                          )}
+                          {/* Stored peaks only — thin vertical stems */}
+                          {mode === "stems" && (
+                            <Bar dataKey="amplitude" name="Stored Peak" barSize={3} fill="#38bdf8" isAnimationActive={false}>
+                              <LabelList dataKey="stemLabel" position="top" fill="#94a3b8" fontSize={9} />
+                            </Bar>
+                          )}
+                        </ComposedChart>
                       </ResponsiveContainer>
                     </div>
+                    {mode === "stems" && (
+                      <p className="text-[10px] text-slate-500 mt-2 px-1 font-mono">{peakList.length} stored peaks — full spectrum not captured</p>
+                    )}
                   </div>
+                  )}
 
                   {/* -- Peak Analysis table with Delta column -- */}
                   <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl overflow-hidden">
@@ -8474,7 +8563,7 @@ export default function AnalysisReport({
                         <thead>
                           <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
                             <th className="px-4 py-2.5 font-bold">Freq (Hz)</th>
-                            <th className="px-4 py-2.5 font-bold">Amplitude (mm/s)</th>
+                            <th className="px-4 py-2.5 font-bold">Amplitude ({unitShort})</th>
                             <th className="px-4 py-2.5 font-bold">Order</th>
                             {showBaseline && hasBaseline && <th className="px-4 py-2.5 font-bold">Baseline</th>}
                             {showBaseline && hasBaseline && <th className="px-4 py-2.5 font-bold">Delta vs Baseline</th>}
@@ -8485,11 +8574,11 @@ export default function AnalysisReport({
                           {topPeaks.map((peak, i) => (
                             <tr key={`${peak.frequency}-${i}`} className="border-t border-slate-700/80">
                               <td className="px-4 py-3 text-cyan-300 font-mono">{peak.frequency.toFixed(2)}</td>
-                              <td className="px-4 py-3 text-emerald-400 font-mono">{peak.amplitude.toFixed(3)}</td>
+                              <td className="px-4 py-3 text-emerald-400 font-mono">{tab2Unit === "acceleration" ? peak.amplitude.toExponential(3) : peak.amplitude.toFixed(3)}</td>
                               <td className="px-4 py-3 text-yellow-400 font-mono font-semibold">{peak.harmonicOrder.toFixed(2)}×</td>
                               {showBaseline && hasBaseline && (
                                 <td className="px-4 py-3 text-slate-400 font-mono">
-                                  {peak.baselineAmplitude != null ? peak.baselineAmplitude.toFixed(3) : "—"}
+                                  {peak.baselineAmplitude != null ? (tab2Unit === "acceleration" ? peak.baselineAmplitude.toExponential(3) : peak.baselineAmplitude.toFixed(3)) : "—"}
                                 </td>
                               )}
                               {showBaseline && hasBaseline && (
@@ -8622,20 +8711,6 @@ export default function AnalysisReport({
         >
           <Eye className="h-3.5 w-3.5" />
           <span>Watchlist</span>
-        </button>
-        <button
-          type="button"
-          disabled={activeTab !== 2 || selectedTech !== "vibration" || !selectedAnalysis}
-          title={!baselineRecord && activeTab === 2 && selectedTech === "vibration" ? "No stored baseline signature available for comparison" : activeTab !== 2 ? "Switch to Spectrum Library tab to enable" : "Toggle baseline overlay comparison"}
-          onClick={() => activeTab === 2 && setShowBaseline((v) => !v)}
-          className={`flex items-center gap-1.5 px-3 py-2 border text-xs font-bold rounded-lg transition-colors ${
-            showBaseline && activeTab === 2 && selectedTech === "vibration" && selectedAnalysis
-              ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
-              : "bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200"
-          } ${(activeTab !== 2 || selectedTech !== "vibration" || !selectedAnalysis) ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
-        >
-          <LineChart className="h-3.5 w-3.5" />
-          <span>Compare Baseline</span>
         </button>
       </div>
 
