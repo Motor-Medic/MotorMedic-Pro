@@ -161,10 +161,14 @@ export default function SpectrumLibraryTab({
     activeCursorHz.push(bearingHz.FTF.hz, bearingHz.BSF.hz, bearingHz.BPFO.hz, bearingHz.BPFI.hz);
   }
   const highestActiveCursorHz = activeCursorHz.length > 0 ? Math.max(...activeCursorHz) : rpmHz * 4;
-  const maxDataPeakHz = chartRows.length ? Math.max(...chartRows.map((r) => r.frequency)) : 0;
+  const allDataFreqs = [
+    ...chartRows.map((r) => r.frequency),
+    ...(showBaseline ? baselinePeaks.map((p) => p.frequency) : [])
+  ];
+  const maxDataPeakHz = allDataFreqs.length ? Math.max(...allDataFreqs) : highestActiveCursorHz;
   const xDomainMax = harmonicZoom
     ? highestActiveCursorHz * 1.15
-    : Math.max(highestActiveCursorHz, maxDataPeakHz) * 1.15;
+    : maxDataPeakHz * 1.25;
   // Count peaks whose frequency exceeds the zoomed domain
   const peaksOutsideZoom = peakList.filter((p) => p.frequency > highestActiveCursorHz).length;
   const topPeaks = [...displayRows]
