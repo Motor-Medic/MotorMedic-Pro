@@ -433,10 +433,17 @@ function coerceDetection(raw: unknown): SpectrumRegionDetection {
     .map((p) => {
       if (!p || typeof p !== "object") return null;
       const row = p as Record<string, unknown>;
-      const frequencyHz = Number(row.frequencyHz ?? row.frequency ?? row.hz ?? 0);
+      let frequencyHz = Number(row.frequencyHz ?? row.frequency ?? row.hz ?? 0);
       const amplitude = Number(row.amplitude ?? row.amp ?? 0);
       if (!Number.isFinite(frequencyHz) || frequencyHz <= 0) return null;
       const chartKey = row.chart != null ? mapRegionKey(String(row.chart)) : null;
+      // Mirror consensusEngine.ts Path A: convert CPM→Hz once, in code.
+      const xUnit = String(
+        (chartKey && axisRanges[chartKey]?.xUnit) || "Hz"
+      ).toUpperCase();
+      if (xUnit === "CPM" && frequencyHz > 0) {
+        frequencyHz = frequencyHz / 60;
+      }
       return {
         frequencyHz,
         amplitude: Number.isFinite(amplitude) ? amplitude : 0,
@@ -694,6 +701,9 @@ Return JSON with this exact schema:
   "peaks": [
     { "frequency": number, "amplitude": number, "label": string, "chart": "fft" | "envelope" }
   ],
+  // IMPORTANT: peak "frequency" values MUST be in the chart's native X-axis units
+  // (Hz if axis is Hz, CPM if axis is CPM). Do NOT convert units yourself.
+  // The code will convert CPM→Hz after extraction.
   "detectionConfidence": number,
   "notes": string
 }
