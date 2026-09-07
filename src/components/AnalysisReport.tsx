@@ -33,6 +33,7 @@ import {
 } from "../lib/analysisPersistence";
 import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
+import SpectrumLibraryTab from "./SpectrumLibraryTab";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -7488,9 +7489,21 @@ export default function AnalysisReport({
               </div>
             )}
 
-              {/* ===== Interactive FFT Workspace — live spectral chart block (also the Tab 2: Spectrum Library view) ===== */}
-              {(activeTab === 2 || (selectedAnalysis != null && selectedTech === "vibration" && mode !== "empty")) && (() => {
-                if (activeTab !== 2 && (selectedTech !== "vibration" || mode === "empty")) {
+              {/* ===== Tab 2: Spectrum Library (dedicated workspace component) ===== */}
+              {activeTab === 2 && (
+                <SpectrumLibraryTab
+                  selectedAnalysis={selectedAnalysis}
+                  peakList={peakList}
+                  fullPts={fullPts}
+                  mode={mode}
+                  baselineSpectrum={baselineSpectrum}
+                  reportVibrationRecord={reportVibrationRecord}
+                />
+              )}
+
+              {/* ===== Interactive FFT Workspace — live spectral chart block (Tab 1 only) ===== */}
+              {(activeTab === 1 && selectedAnalysis != null && selectedTech === "vibration" && mode !== "empty") && (() => {
+                if ((selectedTech !== "vibration" || (mode as "stems" | "curve" | "empty") === "empty")) {
                   const title = selectedTech !== "vibration" ? "No data available" : selectedAnalysis ? "No spectral data captured" : "No saved analyses for this asset yet";
                   const body = selectedTech !== "vibration" ? `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.` : selectedAnalysis ? "This record has no stored vibration spectrum. Run Diagnostics to capture data for this asset." : "Load a saved analysis report or run a diagnostic to populate the spectrum library.";
                   return (
@@ -7529,45 +7542,10 @@ export default function AnalysisReport({
                 }));
               return (
                 <div className="space-y-4">
-{/* -- Tab 2 structural shell: control bar — ALWAYS rendered on Tab 2 (UI only, no data binding yet) -- */}
-                  {activeTab === 2 && (
-                    <div className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4 space-y-3">
-                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Spectrum Library Controls</h4>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-                        <label className="block min-w-0">
-                          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest block mb-1">Bearing</span>
-                          <select
-                            value={tab2Bearing}
-                            onChange={(e) => setTab2Bearing(e.target.value as typeof tab2Bearing)}
-                            className={selectInputClass}
-                          >
-                            <option value="SKF 6210">SKF 6210</option>
-                            <option value="NSK 6312">NSK 6312</option>
-                            <option value="Custom">Custom</option>
-                          </select>
-                        </label>
-                        <label className="block min-w-0">
-                          <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest block mb-1">Baseline</span>
-                          <select
-                            value={tab2Baseline}
-                            onChange={(e) => setTab2Baseline(e.target.value as typeof tab2Baseline)}
-                            className={selectInputClass}
-                          >
-                            <option value="Initial Commissioning">Initial Commissioning</option>
-                            <option value="30-Day Average">30-Day Average</option>
-                            <option value="None">None</option>
-                          </select>
-                        </label>
-                        <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
-                          <button type="button" onClick={() => setTab2ViewMode("2D Overlay")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${tab2ViewMode === "2D Overlay" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>2D Overlay</button>
-                          <button type="button" onClick={() => setTab2ViewMode("Historical Waterfall")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${tab2ViewMode === "Historical Waterfall" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>Historical Waterfall</button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+{/* Tab 2 shell block removed — UI now owned by SpectrumLibraryTab component */}
 
                   {/* -- Inner Tab 2 chart gate: empty notice when nothing loaded, else the spectral workspace -- */}
-                  {activeTab === 2 && (selectedAnalysis == null || mode === "empty") ? (
+                  {activeTab === 2 && (selectedAnalysis == null || (mode as "stems" | "curve" | "empty") === "empty") ? (
                     <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
                       <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Spectrum Library workspace</h4>
                       <div className="h-[300px] bg-slate-950 rounded-xl border border-slate-700/80 p-3 flex items-center justify-center text-center">
