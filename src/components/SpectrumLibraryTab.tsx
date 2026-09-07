@@ -53,6 +53,7 @@ export default function SpectrumLibraryTab({
   const [baseline, setBaseline] = useState<"Initial Commissioning" | "30-Day Average" | "None">("Initial Commissioning");
   const [viewMode, setViewMode] = useState<"2D Overlay" | "Historical Waterfall">("2D Overlay");
   const [harmonicZoom, setHarmonicZoom] = useState(true);
+  const [showBearingCursors, setShowBearingCursors] = useState(true);
 
   const hasBaseline = baselineSpectrum.length > 0;
   const chartRows = mode === "curve" ? fullPts : peakList.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` }));
@@ -68,7 +69,35 @@ export default function SpectrumLibraryTab({
   }));
   const waveformRows = reportVibrationRecord?.waveform ?? [];
   const rpmHz = rpm / 60;
-  const activeCursorHz = [rpmHz, rpmHz * 2, rpmHz * 3, rpmHz * 4]; // 1X–4X shaft harmonics; fault cursors would be added here
+
+  // Bearing geometry catalog
+  const BEARING_GEOMETRY: Record<string, { n: number; bd: number; pd: number; angle: number }> = {
+    "SKF 6210": { n: 9, bd: 12.7, pd: 70.0, angle: 0 },
+    "NSK 6312": { n: 8, bd: 22.225, pd: 95.0, angle: 0 },
+  };
+
+  // Bearing fault characteristic orders (ISO 15242)
+  const bearingHz = (() => {
+    const geo = BEARING_GEOMETRY[bearing];
+    if (!geo) return null;
+    const r = (geo.bd / geo.pd) * Math.cos((geo.angle * Math.PI) / 180);
+    const bpfoOrder = (geo.n / 2) * (1 - r);
+    const bpfiOrder = (geo.n / 2) * (1 + r);
+    const bsfOrder = (geo.pd / (2 * geo.bd)) * (1 - r * r);
+    const ftfOrder = 0.5 * (1 - r);
+    const hz = (order: number) => order * rpmHz;
+    return {
+      BPFO: { order: bpfoOrder, hz: hz(bpfoOrder) },
+      BPFI: { order: bpfiOrder, hz: hz(bpfiOrder) },
+      BSF:  { order: bsfOrder,  hz: hz(bsfOrder) },
+      FTF:  { order: ftfOrder,  hz: hz(ftfOrder) },
+    };
+  })();
+
+  const activeCursorHz = [rpmHz, rpmHz * 2, rpmHz * 3, rpmHz * 4];
+  if (showBearingCursors && bearingHz) {
+    activeCursorHz.push(bearingHz.FTF.hz, bearingHz.BSF.hz, bearingHz.BPFO.hz, bearingHz.BPFI.hz);
+  }
   const highestActiveCursorHz = activeCursorHz.length > 0 ? Math.max(...activeCursorHz) : rpmHz * 4;
   const maxDataPeakHz = chartRows.length ? Math.max(...chartRows.map((r) => r.frequency)) : 0;
   const xDomainMax = harmonicZoom
@@ -186,7 +215,15 @@ export default function SpectrumLibraryTab({
               <span className="text-sm text-slate-300">Full Range</span>
             </label>
           </div>
-          {/* -- Spectral control row: domain / unit / baseline -- */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showBearingCursors}
+              onChange={() => setShowBearingCursors((v) => !v)}
+              className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
+            />
+            <span className="text-sm text-slate-300">Bearing Cursors</span>
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
               <button type="button" onClick={() => setDomain("fft")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${domain === "fft" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>FFT Spectrum</button>
@@ -267,6 +304,15 @@ export default function SpectrumLibraryTab({
                   <ReferenceLine x={rpmHz * 2} stroke="#38bdf8" strokeDasharray="6 3" label={{ value: "2X", fill: "#38bdf8", position: "top", fontSize: 11, fontWeight: 700 }} />
                   <ReferenceLine x={rpmHz * 3} stroke="#a855f7" strokeDasharray="6 3" label={{ value: "3X", fill: "#a855f7", position: "top", fontSize: 11, fontWeight: 700 }} />
                   <ReferenceLine x={rpmHz * 4} stroke="#ef4444" strokeDasharray="6 3" label={{ value: "4X", fill: "#ef4444", position: "top", fontSize: 11, fontWeight: 700 }} />
+                  {/* Bearing fault cursors */}
+                  {showBearingCursors && bearingHz && (
+                    <>
+                      <ReferenceLine x={bearingHz.FTF.hz} stroke="#fbbf24" strokeDasharray="4 4" label={{ value: `FTF ${bearingHz.FTF.hz.toFixed(1)} Hz`, fill: "#fbbf24", position: "top", fontSize: 10 }} />
+                      <ReferenceLine x={bearingHz.BSF.hz} stroke="#34d399" strokeDasharray="4 4" label={{ value: `BSF ${bearingHz.BSF.hz.toFixed(1)} Hz`, fill: "#34d399", position: "top", fontSize: 10 }} />
+                      <ReferenceLine x={bearingHz.BPFO.hz} stroke="#a78bfa" strokeDasharray="4 4" label={{ value: `BPFO ${bearingHz.BPFO.hz.toFixed(1)} Hz`, fill: "#a78bfa", position: "top", fontSize: 10 }} />
+                      <ReferenceLine x={bearingHz.BPFI.hz} stroke="#f472b6" strokeDasharray="4 4" label={{ value: `BPFI ${bearingHz.BPFI.hz.toFixed(1)} Hz`, fill: "#f472b6", position: "top", fontSize: 10 }} />
+                    </>
+                  )}
                   {/* Baseline trace (dashed, semi-transparent) */}
                   {showBaseline && hasBaseline && (
                     <Area
