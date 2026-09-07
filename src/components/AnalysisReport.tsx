@@ -6498,6 +6498,9 @@ export default function AnalysisReport({
   // Analyses list, but never auto-restores a selection when the equipment
   // selectors are still empty — the user must pick a report explicitly.
   useEffect(() => {
+    // Bust any stale client-side caches so the API is always the source of truth.
+    try { localStorage.removeItem("analysis-report-list"); } catch {}
+    try { sessionStorage.removeItem("active-analysis-selection"); } catch {}
     let cancelled = false;
     (async () => {
       try {
@@ -6874,6 +6877,10 @@ export default function AnalysisReport({
       } else {
         toast(`Loaded ${rows.length} analysis result${rows.length === 1 ? "" : "s"} for ${label}.`, "success");
       }
+
+      // Keep the sidebar list synced — a diagnostic may have inserted new
+      // rows between the initial mount fetch and this explicit load.
+      fetchAnalysisResults({ limit: 200 }).then(setLoadedAnalyses);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to load analysis results";
