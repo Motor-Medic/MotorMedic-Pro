@@ -52,6 +52,7 @@ export default function SpectrumLibraryTab({
   const [bearing, setBearing] = useState<"SKF 6210" | "NSK 6312" | "Custom">("SKF 6210");
   const [baseline, setBaseline] = useState<"Initial Commissioning" | "30-Day Average" | "None">("Initial Commissioning");
   const [viewMode, setViewMode] = useState<"2D Overlay" | "Historical Waterfall">("2D Overlay");
+  const [harmonicZoom, setHarmonicZoom] = useState(true);
 
   const hasBaseline = baselineSpectrum.length > 0;
   const chartRows = mode === "curve" ? fullPts : peakList.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` }));
@@ -67,7 +68,14 @@ export default function SpectrumLibraryTab({
   }));
   const waveformRows = reportVibrationRecord?.waveform ?? [];
   const rpmHz = rpm / 60;
-  const xDomainMax = Math.max(rpmHz * 4, (chartRows.length ? Math.max(...chartRows.map((r) => r.frequency)) : 0) * 1.15);
+  const activeCursorHz = [rpmHz, rpmHz * 2, rpmHz * 3, rpmHz * 4]; // 1X–4X shaft harmonics; fault cursors would be added here
+  const highestActiveCursorHz = activeCursorHz.length > 0 ? Math.max(...activeCursorHz) : rpmHz * 4;
+  const maxDataPeakHz = chartRows.length ? Math.max(...chartRows.map((r) => r.frequency)) : 0;
+  const xDomainMax = harmonicZoom
+    ? highestActiveCursorHz * 1.15
+    : Math.max(highestActiveCursorHz, maxDataPeakHz) * 1.15;
+  // Count peaks whose frequency exceeds the zoomed domain
+  const peaksOutsideZoom = peakList.filter((p) => p.frequency > highestActiveCursorHz).length;
   const topPeaks = [...displayRows]
     .sort((a, b) => b.amplitude - a.amplitude)
     .slice(0, 5)
@@ -155,6 +163,29 @@ export default function SpectrumLibraryTab({
             />
             <span className="text-cyan-400 font-mono font-bold w-20 text-right tabular-nums">{rpm} RPM</span>
           </div>
+          {/* -- Harmonic Zoom toggle -- */}
+          <div className="flex items-center gap-2">
+            <label>
+              <input
+                type="radio"
+                name="zoom-mode"
+                checked={harmonicZoom}
+                onChange={() => setHarmonicZoom(true)}
+                className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
+              />
+              <span className="text-sm text-slate-300">Harmonic Zoom</span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="zoom-mode"
+                checked={!harmonicZoom}
+                onChange={() => setHarmonicZoom(false)}
+                className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
+              />
+              <span className="text-sm text-slate-300">Full Range</span>
+            </label>
+          </div>
           {/* -- Spectral control row: domain / unit / baseline -- */}
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
@@ -200,17 +231,18 @@ export default function SpectrumLibraryTab({
               {unitLabel}
               {showBaseline && hasBaseline && <span className="ml-2 text-amber-400 normal-case tracking-normal">— dashed = baseline</span>}
             </h4>
-            <div className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart
-                  data={displayRows}
-                  margin={{ top: 28, right: 16, bottom: 28, left: 48 }}
-                >
+            <div key={harmonicZoom ? "zoom" : "full"} className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart
+                      data={displayRows}
+                      margin={{ top: 28, right: 16, bottom: 28, left: 48 }}
+                    >
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                   <XAxis
                     type="number"
                     dataKey="frequency"
                     domain={[0, xDomainMax]}
+                    allowDataOverflow={true}
                     stroke="#94a3b8"
                     tick={{ fontSize: 10 }}
                     tickFormatter={(v) => String(Math.round(Number(v)))}
@@ -271,6 +303,11 @@ export default function SpectrumLibraryTab({
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
+            {harmonicZoom && peaksOutsideZoom > 0 && (
+              <p className="text-[10px] text-slate-500 mt-2 px-1 font-mono">
+                {peaksOutsideZoom} peaks exist outside zoomed range - switch to Full Range to view.
+              </p>
+            )}
             {mode === "stems" && (
               <p className="text-[10px] text-slate-500 mt-2 px-1 font-mono">{peakList.length} stored peaks — full spectrum not captured</p>
             )}
