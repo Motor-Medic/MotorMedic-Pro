@@ -7505,6 +7505,7 @@ export default function AnalysisReport({
                   mode={mode}
                   baselineSpectrum={baselineSpectrum}
                   reportVibrationRecord={reportVibrationRecord}
+                  allAnalyses={loadedAnalyses}
                 />
               )}
 

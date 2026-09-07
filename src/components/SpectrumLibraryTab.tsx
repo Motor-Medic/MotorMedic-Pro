@@ -29,6 +29,7 @@ export interface SpectrumLibraryTabProps {
   mode: "stems" | "curve" | "empty";
   baselineSpectrum: VibrationTrendPoint[];
   reportVibrationRecord: VibrationDiagnosticRecord | null;
+  allAnalyses?: SavedAnalysisResult[];
 }
 
 /**
@@ -43,7 +44,8 @@ export default function SpectrumLibraryTab({
   fullPts,
   mode,
   baselineSpectrum,
-  reportVibrationRecord
+  reportVibrationRecord,
+  allAnalyses = []
 }: SpectrumLibraryTabProps) {
   const [rpm, setRpm] = useState(3530);
   const [unit, setUnit] = useState<"velocity" | "acceleration">("velocity");
@@ -55,8 +57,68 @@ export default function SpectrumLibraryTab({
   const [harmonicZoom, setHarmonicZoom] = useState(true);
   const [showBearingCursors, setShowBearingCursors] = useState(true);
 
-  const hasBaseline = baselineSpectrum.length > 0;
-  const chartRows = mode === "curve" ? fullPts : peakList.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` }));
+  // Extract peaks from a SavedAnalysisResult into canonical {frequency, amplitude}[]
+  const extractPeaks = (row: SavedAnalysisResult): { frequency: number; amplitude: number }[] => {
+    const raw = row.peaks;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      .map((p) => ({
+        frequency: Number(p.frequencyHz ?? p.frequency_hz ?? p.freqHz ?? p.freq_hz ?? p.frequency ?? p.freq ?? p.hz ?? p.count),
+        amplitude: Number(p.amplitude ?? p.amp ?? p.value),
+      }))
+      .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0);
+  };
+
+  // Compute baseline peaks based on selected baseline mode
+  const baselinePeaks = (() => {
+    if (baseline === "None") return [];
+    if (allAnalyses.length === 0) return [];
+
+    if (baseline === "Initial Commissioning") {
+      // Use the record flagged as baseline, or fall back to the oldest record
+      const baseRow = allAnalyses.find((a) => a.is_baseline) ?? [...allAnalyses].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())[0];
+      return baseRow ? extractPeaks(baseRow) : [];
+    }
+
+    // 30-Day Average: average amplitude across all analyses within 30 days, binned at 2 Hz
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recent = allAnalyses.filter((a) => new Date(a.timestamp).getTime() >= cutoff);
+    if (recent.length === 0) return [];
+
+    const bins = new Map<number, { sum: number; count: number }>();
+    for (const row of recent) {
+      for (const p of extractPeaks(row)) {
+        const binKey = Math.round(p.frequency / 2) * 2; // 2 Hz bins
+        const existing = bins.get(binKey);
+        if (existing) {
+          existing.sum += p.amplitude;
+          existing.count += 1;
+        } else {
+          bins.set(binKey, { sum: p.amplitude, count: 1 });
+        }
+      }
+    }
+    return Array.from(bins.entries())
+      .map(([freq, { sum, count }]) => ({ frequency: freq, amplitude: sum / count }))
+      .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0)
+      .sort((a, b) => a.frequency - b.frequency);
+  })();
+
+  const hasBaseline = baselineSpectrum.length > 0 || baselinePeaks.length > 0;
+  const chartRows = mode === "curve"
+    ? fullPts
+    : peakList.map((p) => {
+        const match = baselinePeaks.length > 0
+          ? baselinePeaks.reduce<{ frequency: number; amplitude: number; dist: number } | null>((best, bp) => {
+              const dist = Math.abs(bp.frequency - p.frequency);
+              if (!best || dist < best.dist) return { ...bp, dist };
+              return best;
+            }, null)
+          : null;
+        const baselineAmp = match && match.dist < 2 ? match.amplitude : undefined;
+        return { frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: baselineAmp as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` };
+      });
   const unitShort = unit === "acceleration" ? "g" : "mm/s";
   const unitLabel = unit === "acceleration" ? "Acceleration (g)" : "Velocity (mm/s)";
   const toUnitAmp = (freq: number, amp: number) =>
@@ -292,10 +354,17 @@ export default function SpectrumLibraryTab({
                   />
                   <Tooltip
                     contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value, name) => {
+                    formatter={(value, name, props) => {
                       const val = Number(value);
-                      const label = name === "baselineAmplitude" ? "Baseline" : "Amplitude";
-                      return [`${val.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}`, label];
+                      if (name === "baselineAmplitude") {
+                        return [`${val.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}`, "Baseline"];
+                      }
+                      const base = props.payload?.baselineAmplitude;
+                      const delta = base != null && base > 1e-6
+                        ? (((val - base) / base) * 100)
+                        : null;
+                      const deltaStr = delta != null ? ` (${delta > 0 ? "+" : ""}${delta.toFixed(1)}% vs baseline)` : "";
+                      return [`${val.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}${deltaStr}`, "Amplitude"];
                     }}
                     labelFormatter={(label) => `${label} Hz`}
                   />
@@ -339,6 +408,10 @@ export default function SpectrumLibraryTab({
                       isAnimationActive={false}
                       name="Amplitude"
                     />
+                  )}
+                  {/* Baseline ghost stems (behind live stems) */}
+                  {showBaseline && hasBaseline && mode === "stems" && (
+                    <Bar dataKey="baselineAmplitude" name="Baseline" barSize={6} fill="#94a3b8" fillOpacity={0.25} isAnimationActive={false} />
                   )}
                   {/* Stored peaks only — thin vertical stems */}
                   {mode === "stems" && (
