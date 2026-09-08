@@ -56,6 +56,7 @@ export default function SpectrumLibraryTab({
   const [viewMode, setViewMode] = useState<"2D Overlay" | "Historical Waterfall">("2D Overlay");
   const [harmonicZoom, setHarmonicZoom] = useState(true);
   const [showBearingCursors, setShowBearingCursors] = useState(true);
+  const [showBearingHarmonics, setShowBearingHarmonics] = useState(false);
 
   // Extract peaks from a SavedAnalysisResult into canonical {frequency, amplitude}[]
   const extractPeaks = (row: SavedAnalysisResult): { frequency: number; amplitude: number }[] => {
@@ -69,6 +70,36 @@ export default function SpectrumLibraryTab({
       }))
       .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0);
   };
+
+  // Waterfall data prep: filter to vibration, sort chronologically, take last 6
+  const waterfallRuns = (() => {
+    const vibrationRows = allAnalyses
+      .filter((a) => a.analysis_type === "vibration")
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      .slice(-6);
+    return vibrationRows.map((row) => ({
+      date: new Date(row.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      peaks: extractPeaks(row),
+    }));
+  })();
+
+  // Build unified waterfall data array with vertical offsets
+  const waterfallData = (() => {
+    if (waterfallRuns.length === 0) return { rows: [], offset: 1, maxFreq: 0 };
+    const allFreqs = [...new Set(waterfallRuns.flatMap((r) => r.peaks.map((p) => p.frequency)))].sort((a, b) => a - b);
+    const maxAmp = Math.max(...waterfallRuns.flatMap((r) => r.peaks.map((p) => p.amplitude)), 0.001);
+    const offset = 1.2 * maxAmp;
+    const rows = allFreqs.map((freq) => {
+      const row: Record<string, number | null> = { frequency: freq };
+      waterfallRuns.forEach((run, i) => {
+        const match = run.peaks.find((p) => Math.abs(p.frequency - freq) < 0.5);
+        row[`run_${i}`] = match ? match.amplitude + i * offset : null;
+      });
+      return row;
+    });
+    const maxFreq = allFreqs.length > 0 ? Math.max(...allFreqs) : 0;
+    return { rows, offset, maxFreq };
+  })();
 
   // Compute baseline peaks based on selected baseline mode
   const baselinePeaks = (() => {
@@ -155,6 +186,23 @@ export default function SpectrumLibraryTab({
       FTF:  { order: ftfOrder,  hz: hz(ftfOrder) },
     };
   })();
+
+  // Bearing harmonic multiples + 1X sidebands (label, x, sideband flag)
+  const bearingHarmonicLines: { x: number; label: string; sideband: boolean }[] = [];
+  if (bearingHz) {
+    const bpfo = bearingHz.BPFO.hz;
+    const bpfi = bearingHz.BPFI.hz;
+    bearingHarmonicLines.push(
+      { x: bpfo * 2, label: "2xBPFO", sideband: false },
+      { x: bpfo * 3, label: "3xBPFO", sideband: false },
+      { x: bpfi * 2, label: "2xBPFI", sideband: false },
+      { x: bpfi * 3, label: "3xBPFI", sideband: false },
+      { x: bpfo - rpmHz, label: "BPFO-1X", sideband: true },
+      { x: bpfo + rpmHz, label: "BPFO+1X", sideband: true },
+      { x: bpfi - rpmHz, label: "BPFI-1X", sideband: true },
+      { x: bpfi + rpmHz, label: "BPFI+1X", sideband: true }
+    );
+  }
 
   const activeCursorHz = [rpmHz, rpmHz * 2, rpmHz * 3, rpmHz * 4];
   if (showBearingCursors && bearingHz) {
@@ -290,6 +338,15 @@ export default function SpectrumLibraryTab({
             />
             <span className="text-sm text-slate-300">Bearing Cursors</span>
           </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showBearingHarmonics}
+              onChange={() => setShowBearingHarmonics((v) => !v)}
+              className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
+            />
+            <span className="text-sm text-slate-300">Bearing harmonics & sidebands</span>
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
               <button type="button" onClick={() => setDomain("fft")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${domain === "fft" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>FFT Spectrum</button>
@@ -328,6 +385,86 @@ export default function SpectrumLibraryTab({
                 <p className="text-sm font-semibold text-slate-300">No time waveform captured</p>
               </div>
             )
+          ) : viewMode === "Historical Waterfall" ? (
+          <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
+            <div className="flex gap-3">
+              {/* Side gutter: date labels */}
+              <div className="flex flex-col justify-between py-[28px] pl-1" style={{ height: 380 }}>
+                {waterfallRuns.map((run, i) => {
+                  const waterfallColors = ["#475569", "#64748b", "#94a3b8", "#22d3ee", "#06b6d4", "#0891b2"];
+                  return (
+                    <span key={i} className="text-[10px] font-mono leading-none" style={{ color: waterfallColors[i] ?? "#0891b2" }}>
+                      {run.date}
+                    </span>
+                  );
+                })}
+              </div>
+              {/* Chart area */}
+              <div key={harmonicZoom ? "zoom" : "full"} className="flex-1 h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={waterfallData.rows} margin={{ top: 28, right: 16, bottom: 28, left: 48 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                    <XAxis type="number" dataKey="frequency" domain={[0, waterfallData.maxFreq * 1.25]} allowDataOverflow={true} stroke="#94a3b8" tick={{ fontSize: 10 }} tickFormatter={(v) => String(Math.round(Number(v)))} label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }} />
+                    <YAxis stroke="#94a3b8" tick={false} axisLine={false} label={{ value: `Amplitude (${unitShort})`, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 11 }} />
+                    <Tooltip
+                      contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+                      formatter={(value: number, name: string, props: { payload?: Record<string, unknown> }) => {
+                        if (value == null) return [];
+                        const runIdx = Number(name.replace("run_", ""));
+                        const date = waterfallRuns[runIdx]?.date ?? "";
+                        const freq = Number(props.payload?.frequency ?? 0);
+                        return [`${value.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}`, `${date} · ${freq.toFixed(1)} Hz`];
+                      }}
+                      labelFormatter={(label) => `${label} Hz`}
+                    />
+                    {/* Harmonic cursors 1X–4X */}
+                    <ReferenceLine x={rpmHz} stroke="#f59e0b" strokeDasharray="6 3" label={{ value: "1X", fill: "#f59e0b", position: "top", fontSize: 11, fontWeight: 700 }} />
+                    <ReferenceLine x={rpmHz * 2} stroke="#38bdf8" strokeDasharray="6 3" label={{ value: "2X", fill: "#38bdf8", position: "top", fontSize: 11, fontWeight: 700 }} />
+                    <ReferenceLine x={rpmHz * 3} stroke="#a855f7" strokeDasharray="6 3" label={{ value: "3X", fill: "#a855f7", position: "top", fontSize: 11, fontWeight: 700 }} />
+                    <ReferenceLine x={rpmHz * 4} stroke="#ef4444" strokeDasharray="6 3" label={{ value: "4X", fill: "#ef4444", position: "top", fontSize: 11, fontWeight: 700 }} />
+                    {/* Bearing fault cursors */}
+                    {showBearingCursors && bearingHz && (
+                      <>
+                        <ReferenceLine x={bearingHz.FTF.hz} stroke="#fbbf24" strokeDasharray="4 4" label={{ value: `FTF ${bearingHz.FTF.hz.toFixed(1)} Hz`, fill: "#fbbf24", position: "top", fontSize: 10 }} />
+                        <ReferenceLine x={bearingHz.BSF.hz} stroke="#34d399" strokeDasharray="4 4" label={{ value: `BSF ${bearingHz.BSF.hz.toFixed(1)} Hz`, fill: "#34d399", position: "top", fontSize: 10 }} />
+                        <ReferenceLine x={bearingHz.BPFO.hz} stroke="#a78bfa" strokeDasharray="4 4" label={{ value: `BPFO ${bearingHz.BPFO.hz.toFixed(1)} Hz`, fill: "#a78bfa", position: "top", fontSize: 10 }} />
+                        <ReferenceLine x={bearingHz.BPFI.hz} stroke="#f472b6" strokeDasharray="4 4" label={{ value: `BPFI ${bearingHz.BPFI.hz.toFixed(1)} Hz`, fill: "#f472b6", position: "top", fontSize: 10 }} />
+                        {showBearingHarmonics && bearingHarmonicLines.map((l) => (
+                          <ReferenceLine
+                            key={l.label}
+                            x={l.x}
+                            stroke={l.sideband ? "#7c3aed" : "#a78bfa"}
+                            strokeDasharray="2 4"
+                            strokeWidth={l.sideband ? 0.75 : 1}
+                            opacity={l.sideband ? 0.3 : 0.45}
+                            label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: l.sideband ? 8 : 9 }}
+                          />
+                        ))}
+                      </>
+                    )}
+                    {/* One Line per run — oldest at back (slate), newest at front (cyan) */}
+                    {waterfallRuns.map((_, i) => {
+                      const waterfallColors = ["#475569", "#64748b", "#94a3b8", "#22d3ee", "#06b6d4", "#0891b2"];
+                      return (
+                        <Line
+                          key={i}
+                          type="monotone"
+                          dataKey={`run_${i}`}
+                          stroke={waterfallColors[i] ?? "#0891b2"}
+                          strokeWidth={1.5}
+                          dot={false}
+                          connectNulls
+                          isAnimationActive={false}
+                          name={`run_${i}`}
+                        />
+                      );
+                    })}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
           ) : (
           <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">
@@ -384,6 +521,17 @@ export default function SpectrumLibraryTab({
                       <ReferenceLine x={bearingHz.BSF.hz} stroke="#34d399" strokeDasharray="4 4" label={{ value: `BSF ${bearingHz.BSF.hz.toFixed(1)} Hz`, fill: "#34d399", position: "top", fontSize: 10 }} />
                       <ReferenceLine x={bearingHz.BPFO.hz} stroke="#a78bfa" strokeDasharray="4 4" label={{ value: `BPFO ${bearingHz.BPFO.hz.toFixed(1)} Hz`, fill: "#a78bfa", position: "top", fontSize: 10 }} />
                       <ReferenceLine x={bearingHz.BPFI.hz} stroke="#f472b6" strokeDasharray="4 4" label={{ value: `BPFI ${bearingHz.BPFI.hz.toFixed(1)} Hz`, fill: "#f472b6", position: "top", fontSize: 10 }} />
+                      {showBearingHarmonics && bearingHarmonicLines.map((l) => (
+                        <ReferenceLine
+                          key={l.label}
+                          x={l.x}
+                          stroke={l.sideband ? "#7c3aed" : "#a78bfa"}
+                          strokeDasharray="2 4"
+                          strokeWidth={l.sideband ? 0.75 : 1}
+                          opacity={l.sideband ? 0.3 : 0.45}
+                          label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: l.sideband ? 8 : 9 }}
+                        />
+                      ))}
                     </>
                   )}
                   {/* Baseline trace (dashed, semi-transparent) */}
