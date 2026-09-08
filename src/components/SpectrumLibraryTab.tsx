@@ -83,23 +83,10 @@ export default function SpectrumLibraryTab({
     }));
   })();
 
-  // Build unified waterfall data array with vertical offsets
-  const waterfallData = (() => {
-    if (waterfallRuns.length === 0) return { rows: [], offset: 1, maxFreq: 0 };
-    const allFreqs = [...new Set(waterfallRuns.flatMap((r) => r.peaks.map((p) => p.frequency)))].sort((a, b) => a - b);
-    const maxAmp = Math.max(...waterfallRuns.flatMap((r) => r.peaks.map((p) => p.amplitude)), 0.001);
-    const offset = 1.2 * maxAmp;
-    const rows = allFreqs.map((freq) => {
-      const row: Record<string, number | null> = { frequency: freq };
-      waterfallRuns.forEach((run, i) => {
-        const match = run.peaks.find((p) => Math.abs(p.frequency - freq) < 0.5);
-        row[`run_${i}`] = match ? match.amplitude + i * offset : null;
-      });
-      return row;
-    });
-    const maxFreq = allFreqs.length > 0 ? Math.max(...allFreqs) : 0;
-    return { rows, offset, maxFreq };
-  })();
+  // Shared waterfall domains + color ramp (kept across mini-chart strips)
+  const waterfallMaxAmp = Math.max(...waterfallRuns.flatMap((r) => r.peaks.map((p) => p.amplitude)), 0.001);
+  const waterfallMaxFreq = Math.max(...waterfallRuns.flatMap((r) => r.peaks.map((p) => p.frequency)), 1);
+  const waterfallColors = ["#475569", "#64748b", "#94a3b8", "#22d3ee", "#06b6d4", "#0891b2"];
 
   // Compute baseline peaks based on selected baseline mode
   const baselinePeaks = (() => {
@@ -202,6 +189,28 @@ export default function SpectrumLibraryTab({
       { x: bpfi - rpmHz, label: "BPFI-1X", sideband: true },
       { x: bpfi + rpmHz, label: "BPFI+1X", sideband: true }
     );
+  }
+
+  // Cursor set duplicated across every strip so verticals read continuously
+  const waterfallCursorLines: { x: number; stroke: string; dash: string; width: number; opacity: number; label: string }[] = [];
+  waterfallCursorLines.push(
+    { x: rpmHz, stroke: "#f59e0b", dash: "6 3", width: 1, opacity: 1, label: "1X" },
+    { x: rpmHz * 2, stroke: "#38bdf8", dash: "6 3", width: 1, opacity: 1, label: "2X" },
+    { x: rpmHz * 3, stroke: "#a855f7", dash: "6 3", width: 1, opacity: 1, label: "3X" },
+    { x: rpmHz * 4, stroke: "#ef4444", dash: "6 3", width: 1, opacity: 1, label: "4X" }
+  );
+  if (showBearingCursors && bearingHz) {
+    waterfallCursorLines.push(
+      { x: bearingHz.FTF.hz, stroke: "#fbbf24", dash: "4 4", width: 1, opacity: 1, label: `FTF ${bearingHz.FTF.hz.toFixed(1)}` },
+      { x: bearingHz.BSF.hz, stroke: "#34d399", dash: "4 4", width: 1, opacity: 1, label: `BSF ${bearingHz.BSF.hz.toFixed(1)}` },
+      { x: bearingHz.BPFO.hz, stroke: "#a78bfa", dash: "4 4", width: 1, opacity: 1, label: `BPFO ${bearingHz.BPFO.hz.toFixed(1)}` },
+      { x: bearingHz.BPFI.hz, stroke: "#f472b6", dash: "4 4", width: 1, opacity: 1, label: `BPFI ${bearingHz.BPFI.hz.toFixed(1)}` }
+    );
+    if (showBearingHarmonics) {
+      for (const l of bearingHarmonicLines) {
+        waterfallCursorLines.push({ x: l.x, stroke: l.sideband ? "#7c3aed" : "#a78bfa", dash: "2 4", width: l.sideband ? 0.75 : 1, opacity: l.sideband ? 0.3 : 0.45, label: l.label });
+      }
+    }
   }
 
   const activeCursorHz = [rpmHz, rpmHz * 2, rpmHz * 3, rpmHz * 4];
@@ -389,88 +398,64 @@ export default function SpectrumLibraryTab({
               </div>
             )
           ) : viewMode === "Historical Waterfall" ? (
-          <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
-            <div className="flex items-center justify-between gap-2 px-1 mb-3">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
-              {viewModeControls}
-            </div>
-            <div className="flex gap-3">
-              {/* Side gutter: date labels */}
-              <div className="flex flex-col justify-between py-[28px] pl-1" style={{ height: 380 }}>
-                {waterfallRuns.map((run, i) => {
-                  const waterfallColors = ["#475569", "#64748b", "#94a3b8", "#22d3ee", "#06b6d4", "#0891b2"];
-                  return (
-                    <span key={i} className="text-[10px] font-mono leading-none" style={{ color: waterfallColors[i] ?? "#0891b2" }}>
-                      {run.date}
-                    </span>
-                  );
-                })}
-              </div>
-              {/* Chart area */}
-              <div key={harmonicZoom ? "zoom" : "full"} className="flex-1 h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={waterfallData.rows} margin={{ top: 28, right: 16, bottom: 28, left: 48 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis type="number" dataKey="frequency" domain={[0, waterfallData.maxFreq * 1.25]} allowDataOverflow={true} stroke="#94a3b8" tick={{ fontSize: 10 }} tickFormatter={(v) => String(Math.round(Number(v)))} label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }} />
-                    <YAxis stroke="#94a3b8" tick={false} axisLine={false} label={{ value: `Amplitude (${unitShort})`, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 11 }} />
-                    <Tooltip
-                      contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
-                      formatter={(value: number, name: string, props: { payload?: Record<string, unknown> }) => {
-                        if (value == null) return [];
-                        const runIdx = Number(name.replace("run_", ""));
-                        const date = waterfallRuns[runIdx]?.date ?? "";
-                        const freq = Number(props.payload?.frequency ?? 0);
-                        return [`${value.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}`, `${date} · ${freq.toFixed(1)} Hz`];
-                      }}
-                      labelFormatter={(label) => `${label} Hz`}
-                    />
-                    {/* Harmonic cursors 1X–4X */}
-                    <ReferenceLine x={rpmHz} stroke="#f59e0b" strokeDasharray="6 3" label={{ value: "1X", fill: "#f59e0b", position: "top", fontSize: 11, fontWeight: 700 }} />
-                    <ReferenceLine x={rpmHz * 2} stroke="#38bdf8" strokeDasharray="6 3" label={{ value: "2X", fill: "#38bdf8", position: "top", fontSize: 11, fontWeight: 700 }} />
-                    <ReferenceLine x={rpmHz * 3} stroke="#a855f7" strokeDasharray="6 3" label={{ value: "3X", fill: "#a855f7", position: "top", fontSize: 11, fontWeight: 700 }} />
-                    <ReferenceLine x={rpmHz * 4} stroke="#ef4444" strokeDasharray="6 3" label={{ value: "4X", fill: "#ef4444", position: "top", fontSize: 11, fontWeight: 700 }} />
-                    {/* Bearing fault cursors */}
-                    {showBearingCursors && bearingHz && (
-                      <>
-                        <ReferenceLine x={bearingHz.FTF.hz} stroke="#fbbf24" strokeDasharray="4 4" label={{ value: `FTF ${bearingHz.FTF.hz.toFixed(1)} Hz`, fill: "#fbbf24", position: "top", fontSize: 10 }} />
-                        <ReferenceLine x={bearingHz.BSF.hz} stroke="#34d399" strokeDasharray="4 4" label={{ value: `BSF ${bearingHz.BSF.hz.toFixed(1)} Hz`, fill: "#34d399", position: "top", fontSize: 10 }} />
-                        <ReferenceLine x={bearingHz.BPFO.hz} stroke="#a78bfa" strokeDasharray="4 4" label={{ value: `BPFO ${bearingHz.BPFO.hz.toFixed(1)} Hz`, fill: "#a78bfa", position: "top", fontSize: 10 }} />
-                        <ReferenceLine x={bearingHz.BPFI.hz} stroke="#f472b6" strokeDasharray="4 4" label={{ value: `BPFI ${bearingHz.BPFI.hz.toFixed(1)} Hz`, fill: "#f472b6", position: "top", fontSize: 10 }} />
-                        {showBearingHarmonics && bearingHarmonicLines.map((l) => (
-                          <ReferenceLine
-                            key={l.label}
-                            x={l.x}
-                            stroke={l.sideband ? "#7c3aed" : "#a78bfa"}
-                            strokeDasharray="2 4"
-                            strokeWidth={l.sideband ? 0.75 : 1}
-                            opacity={l.sideband ? 0.3 : 0.45}
-                            label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: l.sideband ? 8 : 9 }}
-                          />
+          (() => {
+            const wfXMax = waterfallMaxFreq * 1.25;
+            const freqToX = (f: number) => (f / wfXMax) * 800;
+            const yBase = (i: number) => 35 + i * 45;
+            const ampToHeight = (a: number) => (a / waterfallMaxAmp) * 30;
+            const xLabels = [0, wfXMax / 4, wfXMax / 2, (3 * wfXMax) / 4, wfXMax].map((v) => Math.round(Number(v)));
+            return (
+              <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+                <div className="flex items-center justify-between gap-2 px-1 mb-3">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
+                  {viewModeControls}
+                </div>
+                <div className="flex w-full h-[400px] bg-slate-950/80 rounded-lg p-4 border border-slate-800">
+                  {/* Left gutter: date labels, oldest top */}
+                  <div className="w-24 border-r border-slate-800/60 pr-2 flex flex-col justify-between py-4">
+                    {waterfallRuns.map((run, i) => (
+                      <span key={i} className="text-[10px] font-mono leading-none" style={{ color: waterfallColors[i] ?? "#0891b2" }}>
+                        {run.date}
+                      </span>
+                    ))}
+                  </div>
+                  {/* Right canvas */}
+                  <div className="flex-1 relative flex flex-col">
+                    <div className="flex-1 relative w-full h-full">
+                      <svg viewBox="0 0 800 320" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                        {/* Cursors — continuous verticals across all rows */}
+                        {waterfallCursorLines.map((c) => (
+                          <line key={c.label} x1={freqToX(c.x)} x2={freqToX(c.x)} y1={10} y2={295} stroke={c.stroke} strokeDasharray={c.dash} strokeWidth={c.width} opacity={c.opacity} vectorEffect="non-scaling-stroke" />
                         ))}
-                      </>
-                    )}
-                    {/* One Line per run — oldest at back (slate), newest at front (cyan) */}
-                    {waterfallRuns.map((_, i) => {
-                      const waterfallColors = ["#475569", "#64748b", "#94a3b8", "#22d3ee", "#06b6d4", "#0891b2"];
-                      return (
-                        <Line
-                          key={i}
-                          type="monotone"
-                          dataKey={`run_${i}`}
-                          stroke={waterfallColors[i] ?? "#0891b2"}
-                          strokeWidth={1.5}
-                          dot={false}
-                          connectNulls
-                          isAnimationActive={false}
-                          name={`run_${i}`}
-                        />
-                      );
-                    })}
-                  </ComposedChart>
-                </ResponsiveContainer>
+                        {/* Rows */}
+                        {waterfallRuns.map((run, i) => {
+                          const color = waterfallColors[i] ?? "#0891b2";
+                          const base = yBase(i);
+                          return (
+                            <React.Fragment key={i}>
+                              <line key={`rowbase_${i}`} x1={0} x2={800} y1={base} y2={base} stroke={color} strokeOpacity={0.4} strokeDasharray="4 4" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                              {run.peaks.map((p, j) => (
+                                <g key={`row_${i}_peak_${j}`}>
+                                  <title>{`${run.date} | ${p.frequency.toFixed(1)} Hz | ${p.amplitude.toFixed(2)} ${unitShort}`}</title>
+                                  <line x1={freqToX(p.frequency)} x2={freqToX(p.frequency)} y1={base} y2={base - ampToHeight(p.amplitude)} stroke={color} strokeWidth={3} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+                                </g>
+                              ))}
+                            </React.Fragment>
+                          );
+                        })}
+                      </svg>
+                    </div>
+                    {/* HTML x-axis row: quarters of xMax */}
+                    <div className="relative w-full h-6 border-t border-slate-800 mt-1 flex justify-between text-xs text-slate-400 pt-1 px-1">
+                      {xLabels.map((v) => (
+                        <span key={v}>{v}</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            );
+          })()
           ) : (
           <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
             <div className="flex items-center justify-between gap-2 px-1 mb-3">
