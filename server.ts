@@ -14,7 +14,7 @@ import {
   VIBRATION_VISION_PROMPT_SIMPLE,
   VISION_MODEL_CONFIG
 } from "./src/lib/vibration/visionModelConfig";
-import { synthesizeSpectrumFromPeaks } from "./src/lib/vibration/synthesizeSpectrum";
+import { synthesizeSpectrumFromPeaks, synthesizeEnvelopeFromRecord } from "./src/lib/vibration/synthesizeSpectrum";
 import {
   MCA_VISION_MODELS,
   MCA_VISION_PROMPT
@@ -1228,6 +1228,11 @@ app.post("/api/save-analysis-result", async (req, res) => {
     if (peaks.length > 0 && telemetryData.spectral == null) {
       telemetryData.spectral = synthesizeSpectrumFromPeaks(peaks);
       telemetryData.spectral_source = "synthesized-from-peaks";
+    }
+    // Synthesize a diagnosis-consistent demod (envelope) trace when none was provided.
+    if (peaks.length > 0 && telemetryData.envelope == null) {
+      telemetryData.envelope = synthesizeEnvelopeFromRecord(peaks, null, { primary: primaryFault, faults: faultList });
+      telemetryData.envelope_source = "synthesized-from-record";
     }
 
     const insert = await pool.query(
