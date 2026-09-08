@@ -14,6 +14,7 @@ import {
   VIBRATION_VISION_PROMPT_SIMPLE,
   VISION_MODEL_CONFIG
 } from "./src/lib/vibration/visionModelConfig";
+import { synthesizeSpectrumFromPeaks } from "./src/lib/vibration/synthesizeSpectrum";
 import {
   MCA_VISION_MODELS,
   MCA_VISION_PROMPT
@@ -1222,6 +1223,12 @@ app.post("/api/save-analysis-result", async (req, res) => {
       },
       peaks
     );
+
+    // Synthesize a full trace from stored peaks when none was provided.
+    if (peaks.length > 0 && telemetryData.spectral == null) {
+      telemetryData.spectral = synthesizeSpectrumFromPeaks(peaks);
+      telemetryData.spectral_source = "synthesized-from-peaks";
+    }
 
     const insert = await pool.query(
       `INSERT INTO analysis_results (
