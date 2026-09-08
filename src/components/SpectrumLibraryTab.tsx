@@ -232,12 +232,19 @@ export default function SpectrumLibraryTab({
           : null,
     }));
 
+  const viewModeControls = (
+    <div className="flex rounded-md border border-slate-700 bg-slate-900/80 p-1">
+      <button type="button" onClick={() => setViewMode("2D Overlay")} className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer ${viewMode === "2D Overlay" ? "bg-cyan-600 text-white font-medium" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"}`}>2D Overlay</button>
+      <button type="button" onClick={() => setViewMode("Historical Waterfall")} className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer ${viewMode === "Historical Waterfall" ? "bg-cyan-600 text-white font-medium" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"}`}>Historical Waterfall</button>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       {/* -- Tab 2 structural shell: control bar -- */}
       <div className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4 space-y-3">
         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Spectrum Library Controls</h4>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
           <label className="block min-w-0">
             <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest block mb-1">Bearing</span>
             <select
@@ -262,10 +269,6 @@ export default function SpectrumLibraryTab({
               <option value="None">None</option>
             </select>
           </label>
-          <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
-            <button type="button" onClick={() => setViewMode("2D Overlay")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${viewMode === "2D Overlay" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>2D Overlay</button>
-            <button type="button" onClick={() => setViewMode("Historical Waterfall")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${viewMode === "Historical Waterfall" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>Historical Waterfall</button>
-          </div>
         </div>
       </div>
 
@@ -387,7 +390,10 @@ export default function SpectrumLibraryTab({
             )
           ) : viewMode === "Historical Waterfall" ? (
           <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
-            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
+            <div className="flex items-center justify-between gap-2 px-1 mb-3">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
+              {viewModeControls}
+            </div>
             <div className="flex gap-3">
               {/* Side gutter: date labels */}
               <div className="flex flex-col justify-between py-[28px] pl-1" style={{ height: 380 }}>
@@ -467,10 +473,13 @@ export default function SpectrumLibraryTab({
           </div>
           ) : (
           <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
-            <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">
+            <div className="flex items-center justify-between gap-2 px-1 mb-3">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
               {unitLabel}
               {showBaseline && hasBaseline && <span className="ml-2 text-amber-400 normal-case tracking-normal">— dashed = baseline</span>}
             </h4>
+              {viewModeControls}
+            </div>
             <div key={harmonicZoom ? "zoom" : "full"} className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
                   <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart
