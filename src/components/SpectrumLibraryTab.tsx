@@ -191,28 +191,6 @@ export default function SpectrumLibraryTab({
     );
   }
 
-  // Cursor set duplicated across every strip so verticals read continuously
-  const waterfallCursorLines: { x: number; stroke: string; dash: string; width: number; opacity: number; label: string }[] = [];
-  waterfallCursorLines.push(
-    { x: rpmHz, stroke: "#f59e0b", dash: "6 3", width: 1, opacity: 1, label: "1X" },
-    { x: rpmHz * 2, stroke: "#38bdf8", dash: "6 3", width: 1, opacity: 1, label: "2X" },
-    { x: rpmHz * 3, stroke: "#a855f7", dash: "6 3", width: 1, opacity: 1, label: "3X" },
-    { x: rpmHz * 4, stroke: "#ef4444", dash: "6 3", width: 1, opacity: 1, label: "4X" }
-  );
-  if (showBearingCursors && bearingHz) {
-    waterfallCursorLines.push(
-      { x: bearingHz.FTF.hz, stroke: "#fbbf24", dash: "4 4", width: 1, opacity: 1, label: `FTF ${bearingHz.FTF.hz.toFixed(1)}` },
-      { x: bearingHz.BSF.hz, stroke: "#34d399", dash: "4 4", width: 1, opacity: 1, label: `BSF ${bearingHz.BSF.hz.toFixed(1)}` },
-      { x: bearingHz.BPFO.hz, stroke: "#a78bfa", dash: "4 4", width: 1, opacity: 1, label: `BPFO ${bearingHz.BPFO.hz.toFixed(1)}` },
-      { x: bearingHz.BPFI.hz, stroke: "#f472b6", dash: "4 4", width: 1, opacity: 1, label: `BPFI ${bearingHz.BPFI.hz.toFixed(1)}` }
-    );
-    if (showBearingHarmonics) {
-      for (const l of bearingHarmonicLines) {
-        waterfallCursorLines.push({ x: l.x, stroke: l.sideband ? "#7c3aed" : "#a78bfa", dash: "2 4", width: l.sideband ? 0.75 : 1, opacity: l.sideband ? 0.3 : 0.45, label: l.label });
-      }
-    }
-  }
-
   const activeCursorHz = [rpmHz, rpmHz * 2, rpmHz * 3, rpmHz * 4];
   if (showBearingCursors && bearingHz) {
     activeCursorHz.push(bearingHz.FTF.hz, bearingHz.BSF.hz, bearingHz.BPFO.hz, bearingHz.BPFI.hz);
@@ -399,58 +377,67 @@ export default function SpectrumLibraryTab({
             )
           ) : viewMode === "Historical Waterfall" ? (
           (() => {
-            const wfXMax = waterfallMaxFreq * 1.25;
-            const freqToX = (f: number) => (f / wfXMax) * 800;
-            const yBase = (i: number) => 35 + i * 45;
-            const ampToHeight = (a: number) => (a / waterfallMaxAmp) * 30;
-            const xLabels = [0, wfXMax / 4, wfXMax / 2, (3 * wfXMax) / 4, wfXMax].map((v) => Math.round(Number(v)));
+            const traceWidth = 620;
+            const xMax = waterfallMaxFreq * 1.25;
+            const freqToX = (f: number) => (f / xMax) * traceWidth;
+            const ampToHeight = (a: number) => (a / waterfallMaxAmp) * 45;
+            const xLabels = [0, xMax / 4, xMax / 2, (3 * xMax) / 4, xMax].map((v) => Math.round(Number(v)));
             return (
               <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
-                <div className="flex items-center justify-between gap-2 px-1 mb-3">
+                <div className="flex items-center justify-between gap-2 px-1 mb-2">
                   <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
                   {viewModeControls}
                 </div>
-                <div className="flex w-full h-[400px] bg-slate-950/80 rounded-lg p-4 border border-slate-800">
-                  {/* Left gutter: date labels, oldest top */}
-                  <div className="w-24 border-r border-slate-800/60 pr-2 flex flex-col justify-between py-4">
+                <p className="text-xs text-slate-400 px-1 mb-2">peak-list traces - full spectrum not captured</p>
+                <div className="flex flex-col w-full h-[420px] bg-slate-950/90 rounded-lg p-4 border border-slate-800">
+                  <p className="text-[10px] font-mono text-slate-400 mb-1">Max Amp: {waterfallMaxAmp.toFixed(2)} {unitShort} (shared scale)</p>
+                  <div className="relative flex-1 min-h-0 w-full">
+                    <svg viewBox="0 0 850 320" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                      {waterfallRuns.map((run, i) => {
+                        const color = waterfallColors[i] ?? "#0891b2";
+                        const sorted = [...run.peaks].sort((a, b) => a.frequency - b.frequency);
+                        const pathD = sorted.reduce((acc, p) => {
+                          const x = freqToX(p.frequency);
+                          const h = ampToHeight(p.amplitude);
+                          return `${acc} L ${x} 0 L ${x} ${-h} L ${x} 0`;
+                        }, "M 0 0") + " L 620 0";
+                        return (
+                          <g key={i} transform={`translate(${i * 22}, ${270 - i * 32})`}>
+                            <line x1={0} x2={620} y1={0} y2={0} stroke={color} strokeOpacity={0.5} vectorEffect="non-scaling-stroke" />
+                            <path d={pathD} stroke={color} strokeWidth={1.5} fill="none" vectorEffect="non-scaling-stroke" />
+                            {sorted.map((p, j) => {
+                              const x = freqToX(p.frequency);
+                              const h = ampToHeight(p.amplitude);
+                              return (
+                                <rect key={j} x={x - 3} y={-h} width={6} height={h + 1} fill="transparent">
+                                  <title>{`${run.date} | ${p.frequency.toFixed(1)} Hz | ${p.amplitude.toFixed(2)} ${unitShort}`}</title>
+                                </rect>
+                              );
+                            })}
+                          </g>
+                        );
+                      })}
+                    </svg>
+                    {/* Date labels — HTML spans, not stretched SVG text */}
                     {waterfallRuns.map((run, i) => (
-                      <span key={i} className="text-[10px] font-mono leading-none" style={{ color: waterfallColors[i] ?? "#0891b2" }}>
+                      <span
+                        key={`date_${i}`}
+                        className="absolute text-[10px] font-mono leading-none -translate-y-1/2 pointer-events-none"
+                        style={{
+                          left: `${((i * 22 + 630) / 850) * 100}%`,
+                          top: `${((270 - i * 32) / 320) * 100}%`,
+                          color: waterfallColors[i] ?? "#0891b2",
+                        }}
+                      >
                         {run.date}
                       </span>
                     ))}
                   </div>
-                  {/* Right canvas */}
-                  <div className="flex-1 relative flex flex-col">
-                    <div className="flex-1 relative w-full h-full">
-                      <svg viewBox="0 0 800 320" preserveAspectRatio="none" className="w-full h-full overflow-visible">
-                        {/* Cursors — continuous verticals across all rows */}
-                        {waterfallCursorLines.map((c) => (
-                          <line key={c.label} x1={freqToX(c.x)} x2={freqToX(c.x)} y1={10} y2={295} stroke={c.stroke} strokeDasharray={c.dash} strokeWidth={c.width} opacity={c.opacity} vectorEffect="non-scaling-stroke" />
-                        ))}
-                        {/* Rows */}
-                        {waterfallRuns.map((run, i) => {
-                          const color = waterfallColors[i] ?? "#0891b2";
-                          const base = yBase(i);
-                          return (
-                            <React.Fragment key={i}>
-                              <line key={`rowbase_${i}`} x1={0} x2={800} y1={base} y2={base} stroke={color} strokeOpacity={0.4} strokeDasharray="4 4" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-                              {run.peaks.map((p, j) => (
-                                <g key={`row_${i}_peak_${j}`}>
-                                  <title>{`${run.date} | ${p.frequency.toFixed(1)} Hz | ${p.amplitude.toFixed(2)} ${unitShort}`}</title>
-                                  <line x1={freqToX(p.frequency)} x2={freqToX(p.frequency)} y1={base} y2={base - ampToHeight(p.amplitude)} stroke={color} strokeWidth={3} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-                                </g>
-                              ))}
-                            </React.Fragment>
-                          );
-                        })}
-                      </svg>
-                    </div>
-                    {/* HTML x-axis row: quarters of xMax */}
-                    <div className="relative w-full h-6 border-t border-slate-800 mt-1 flex justify-between text-xs text-slate-400 pt-1 px-1">
-                      {xLabels.map((v) => (
-                        <span key={v}>{v}</span>
-                      ))}
-                    </div>
+                  {/* Frequency ticks — aligned to the front trace (620/850) */}
+                  <div className="relative w-[72.9%] h-6 border-t border-slate-800 mt-1 flex justify-between text-xs text-slate-400 pt-1">
+                    {xLabels.map((v) => (
+                      <span key={v}>{v}</span>
+                    ))}
                   </div>
                 </div>
               </div>
