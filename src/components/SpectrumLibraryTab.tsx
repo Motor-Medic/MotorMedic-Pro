@@ -303,6 +303,8 @@ export default function SpectrumLibraryTab({
             </div>
           )}
 
+          {viewMode !== "Historical Waterfall" && (
+          <>
           {/* -- Reference RPM slider -- */}
           <div className="flex items-center gap-4 p-4 bg-slate-900/60 border border-slate-700/80 rounded-xl">
             <span className="text-sm font-semibold text-slate-300 shrink-0">Reference RPM:</span>
@@ -372,6 +374,8 @@ export default function SpectrumLibraryTab({
           <p className="text-[10px] text-slate-500 font-mono">
             1X = {rpmHz.toFixed(2)} Hz · 2X = {(rpmHz * 2).toFixed(2)} Hz · 3X = {(rpmHz * 3).toFixed(2)} Hz · 4X = {(rpmHz * 4).toFixed(2)} Hz
           </p>
+          </>
+          )}
 
           {/* -- Chart: FFT Spectrum or Time Waveform -- */}
           {domain === "waveform" ? (
@@ -414,7 +418,7 @@ export default function SpectrumLibraryTab({
                   {allSpectral ? "continuous traces - SIM rows synthesized from stored peaks" : "peak-list traces - full spectrum not captured"}
                 </p>
                 <div className="flex flex-col w-full h-[420px] bg-slate-950/90 rounded-lg p-4 border border-slate-800">
-                  <p className="text-[10px] font-mono text-slate-400 mb-1">Max Amp: {waterfallMaxAmp.toFixed(2)} {unitShort} (shared scale)</p>
+                  <p className="text-[10px] font-mono text-slate-400 mb-1">Max Amp: {waterfallMaxAmp.toFixed(2)} mm/s (shared scale)</p>
                   <div className="relative flex-1 min-h-0 w-full">
                     <svg viewBox="0 0 850 320" preserveAspectRatio="none" className="w-full h-full overflow-visible">
                       {waterfallRuns.map((run, i) => {
@@ -448,7 +452,7 @@ export default function SpectrumLibraryTab({
                               const h = ampToHeight(p.amplitude);
                               return (
                                 <rect key={j} x={x - 3} y={-h} width={6} height={h + 1} fill="transparent">
-                                  <title>{`${run.date} | ${p.frequency.toFixed(1)} Hz | ${p.amplitude.toFixed(2)} ${unitShort}`}</title>
+                                  <title>{`${run.date} | ${p.frequency.toFixed(1)} Hz | ${p.amplitude.toFixed(2)} mm/s`}</title>
                                 </rect>
                               );
                             })}
