@@ -71,6 +71,25 @@ export default function SpectrumLibraryTab({
       .filter((p) => Number.isFinite(p.frequency) && p.frequency > 0 && Number.isFinite(p.amplitude) && p.amplitude > 0);
   };
 
+  // Extract a full telemetry_data.spectral trace from a SavedAnalysisResult.
+  const extractSpectral = (row: SavedAnalysisResult): { frequency: number; amplitude: number }[] => {
+    const td = row.telemetry_data;
+    if (!td || typeof td !== "object") return [];
+    const s = (td as Record<string, unknown>).spectral;
+    if (!Array.isArray(s)) return [];
+    return s
+      .filter((p): p is Record<string, unknown> => Boolean(p) && typeof p === "object")
+      .map((p) => ({ frequency: Number(p.frequency ?? p.f), amplitude: Number(p.amplitude ?? p.a) }))
+      .filter((p) => Number.isFinite(p.frequency) && p.frequency >= 0 && Number.isFinite(p.amplitude) && p.amplitude >= 0);
+  };
+
+  const extractSpectralSource = (row: SavedAnalysisResult): string | null => {
+    const td = row.telemetry_data;
+    if (!td || typeof td !== "object") return null;
+    const s = (td as Record<string, unknown>).spectral_source;
+    return typeof s === "string" ? s : null;
+  };
+
   // Waterfall data prep: filter to vibration, sort chronologically, take last 6
   const waterfallRuns = (() => {
     const vibrationRows = allAnalyses
@@ -80,6 +99,8 @@ export default function SpectrumLibraryTab({
     return vibrationRows.map((row) => ({
       date: new Date(row.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
       peaks: extractPeaks(row),
+      spectral: extractSpectral(row),
+      spectralSource: extractSpectralSource(row),
     }));
   })();
 
@@ -382,13 +403,16 @@ export default function SpectrumLibraryTab({
             const freqToX = (f: number) => (f / xMax) * traceWidth;
             const ampToHeight = (a: number) => (a / waterfallMaxAmp) * 45;
             const xLabels = [0, xMax / 4, xMax / 2, (3 * xMax) / 4, xMax].map((v) => Math.round(Number(v)));
+            const allSpectral = waterfallRuns.length > 0 && waterfallRuns.every((r) => r.spectral.length > 0);
             return (
               <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
                 <div className="flex items-center justify-between gap-2 px-1 mb-2">
                   <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
                   {viewModeControls}
                 </div>
-                <p className="text-xs text-slate-400 px-1 mb-2">peak-list traces - full spectrum not captured</p>
+                <p className="text-xs text-slate-400 px-1 mb-2">
+                  {allSpectral ? "continuous traces - SIM rows synthesized from stored peaks" : "peak-list traces - full spectrum not captured"}
+                </p>
                 <div className="flex flex-col w-full h-[420px] bg-slate-950/90 rounded-lg p-4 border border-slate-800">
                   <p className="text-[10px] font-mono text-slate-400 mb-1">Max Amp: {waterfallMaxAmp.toFixed(2)} {unitShort} (shared scale)</p>
                   <div className="relative flex-1 min-h-0 w-full">
@@ -401,10 +425,24 @@ export default function SpectrumLibraryTab({
                           const h = ampToHeight(p.amplitude);
                           return `${acc} L ${x} 0 L ${x} ${-h} L ${x} 0`;
                         }, "M 0 0") + " L 620 0";
+                        let traceD = "";
+                        if (run.spectral.length > 0) {
+                          const step = 2;
+                          for (let k = 0; k < run.spectral.length; k += step) {
+                            const sp = run.spectral[k];
+                            const x = freqToX(sp.frequency);
+                            if (x > traceWidth) break;
+                            traceD += `${k === 0 ? "M" : "L"}${x.toFixed(1)} ${(-ampToHeight(sp.amplitude)).toFixed(2)} `;
+                          }
+                        }
                         return (
                           <g key={i} transform={`translate(${i * 22}, ${270 - i * 32})`}>
                             <line x1={0} x2={620} y1={0} y2={0} stroke={color} strokeOpacity={0.5} vectorEffect="non-scaling-stroke" />
-                            <path d={pathD} stroke={color} strokeWidth={1.5} fill="none" vectorEffect="non-scaling-stroke" />
+                            {traceD ? (
+                              <path d={traceD.trim()} stroke={color} strokeWidth={1.25} fill="none" vectorEffect="non-scaling-stroke" />
+                            ) : (
+                              <path d={pathD} stroke={color} strokeWidth={1.5} fill="none" vectorEffect="non-scaling-stroke" />
+                            )}
                             {sorted.map((p, j) => {
                               const x = freqToX(p.frequency);
                               const h = ampToHeight(p.amplitude);
@@ -422,14 +460,20 @@ export default function SpectrumLibraryTab({
                     {waterfallRuns.map((run, i) => (
                       <span
                         key={`date_${i}`}
-                        className="absolute text-[10px] font-mono leading-none -translate-y-1/2 pointer-events-none"
+                        className="absolute text-[10px] font-mono leading-none -translate-y-1/2 pointer-events-none flex items-center gap-1"
                         style={{
                           left: `${((i * 22 + 630) / 850) * 100}%`,
                           top: `${((270 - i * 32) / 320) * 100}%`,
                           color: waterfallColors[i] ?? "#0891b2",
                         }}
                       >
-                        {run.date}
+                        <span>{run.date}</span>
+                        {run.spectralSource === "synthesized-from-peaks" && (
+                          <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400">SIM</span>
+                        )}
+                        {run.spectral.length === 0 && (
+                          <span className="text-[9px] border rounded px-1 border-slate-600 text-slate-400">PEAKS ONLY</span>
+                        )}
                       </span>
                     ))}
                   </div>
