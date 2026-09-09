@@ -10143,6 +10143,51 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
   }
 });
 
+// GET planning_config for an asset (by tag_number)
+app.get(["/api/assets/:tag/planning-config", "/api/equipment/:tag/planning-config"], async (req, res) => {
+  try {
+    const tag = req.params.tag;
+    if (!tag) return res.status(400).json({ error: "Missing tag parameter" });
+    if (pool) {
+      const result = await pool.query("SELECT planning_config FROM assets WHERE tag_number = $1", [tag]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Asset not found" });
+      return res.json(result.rows[0].planning_config || null);
+    } else {
+      const asset = memoryAssets.find(e => (e as any).tag_number === tag);
+      if (!asset) return res.status(404).json({ error: "Asset not found" });
+      return res.json((asset as any).planning_config || null);
+    }
+  } catch (error: any) {
+    console.error("GET planning_config failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to read planning config" });
+  }
+});
+
+// PATCH planning_config for an asset (by tag_number)
+app.patch(["/api/assets/:tag/planning-config", "/api/equipment/:tag/planning-config"], async (req, res) => {
+  try {
+    const tag = req.params.tag;
+    if (!tag) return res.status(400).json({ error: "Missing tag parameter" });
+    const config = req.body;
+    if (pool) {
+      const result = await pool.query(
+        "UPDATE assets SET planning_config = $1 WHERE tag_number = $2 RETURNING planning_config",
+        [JSON.stringify(config), tag]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Asset not found" });
+      return res.json(result.rows[0].planning_config);
+    } else {
+      const asset = memoryAssets.find(e => (e as any).tag_number === tag);
+      if (!asset) return res.status(404).json({ error: "Asset not found" });
+      (asset as any).planning_config = config;
+      return res.json(config);
+    }
+  } catch (error: any) {
+    console.error("PATCH planning_config failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to save planning config" });
+  }
+});
+
 // DELETE delete asset/equipment
 app.delete(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async (req, res) => {
   try {
@@ -11869,6 +11914,7 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS bearing_specs JSONB NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS voltage_rating DOUBLE PRECISION NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS horsepower DOUBLE PRECISION NULL;");
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS planning_config JSONB NULL;");
 
     // Check components table
     const componentsExistsQuery = await pool.query(`
