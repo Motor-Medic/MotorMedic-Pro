@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { FileText, ArrowUp, ArrowDown, Minus, Save } from "lucide-react";
+import { FileText, ArrowUp, ArrowDown, Minus, Save, Check } from "lucide-react";
 import { getPrescription, DICTIONARY_VERSION, type PrescriptivePackage } from "../lib/maintenance/prescriptiveDictionary";
 import type { SavedAnalysisResult, SavedFaultItem } from "../lib/analysisPersistence";
 
@@ -54,11 +54,11 @@ function computeTiming(trend: { first: number; last: number; delta: number } | n
   let recommendation: string; let costText: string | null = null;
   if (shutdownDate <= execDate && shutdownDate > now) {
     const daysDeferred = Math.round((shutdownDate.getTime() - now.getTime()) / 86400000);
-    costText = `$${inputs.downtimeCostPerDay}/day x ${daysDeferred} days = $${(inputs.downtimeCostPerDay * daysDeferred).toFixed(0)}`;
+    costText = `max exposure if failure occurs today: $${inputs.downtimeCostPerDay}/day x ${daysDeferred} days = $${(inputs.downtimeCostPerDay * daysDeferred).toFixed(0)} (defer window to shutdown)`;
     recommendation = `defer to shutdown ${inputs.nextShutdownDate}`;
   } else {
     const arrivalWindow = Math.round(daysToAlarm * 0.8);
-    costText = `$${inputs.downtimeCostPerDay}/day x ${arrivalWindow} days = $${(inputs.downtimeCostPerDay * arrivalWindow).toFixed(0)}`;
+    costText = `max exposure if failure occurs today: $${inputs.downtimeCostPerDay}/day x ${arrivalWindow} days = $${(inputs.downtimeCostPerDay * arrivalWindow).toFixed(0)}`;
     recommendation = `execute within ${inputs.leadTimeDays} days of parts arrival`;
   }
   return { executeBy, method: "linear trend extrapolation", recommendation, costOfWait: costText };
@@ -133,7 +133,7 @@ function FaultCard({ fault, prescription, amplitude, trend, timing }: {
             ) : <span className="text-slate-500">No stored trend</span>}
           </div>
           {timing && (
-            <div className="text-[11px] border-t border-slate-800 pt-2 space-y-1">
+            <div className="text-sm border-t border-slate-800 pt-2 mt-2 space-y-1">
               {timing.executeBy && <div><span className="text-slate-400">Execute by: </span><span className="text-amber-300 font-medium">{timing.executeBy}</span><span className="text-slate-600 ml-1">({timing.method} – not a failure model)</span></div>}
               {!timing.executeBy && timing.method === "no growth" && <div className="text-emerald-400">{timing.recommendation}</div>}
               {!timing.executeBy && timing.method !== "no growth" && <div className="text-red-400">{timing.recommendation}</div>}
@@ -141,7 +141,7 @@ function FaultCard({ fault, prescription, amplitude, trend, timing }: {
               {timing.costOfWait && <div className="text-slate-500">{timing.costOfWait}</div>}
             </div>
           )}
-          {!timing && <div className="text-[11px] text-slate-500 border-t border-slate-800 pt-2">enter planning inputs to compute timing</div>}
+          {!timing && <div className="text-sm text-slate-500 border-t border-slate-800 pt-2 mt-2">enter planning inputs to compute timing</div>}
         </>
       ) : (
         <div className="space-y-2">
@@ -159,6 +159,7 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   const [planningInputs, setPlanningInputs] = useState<PlanningInputs | null>(null);
   const [draftInputs, setDraftInputs] = useState<PlanningInputs>({ leadTimeDays: null, nextShutdownDate: null, downtimeCostPerDay: null });
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     if (!assetId) { setLoaded(true); return; }
@@ -196,8 +197,8 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   }, [faults, currentPeaks, historyPeaks]);
   const hasInputs = planningInputs != null && planningInputs.leadTimeDays != null && planningInputs.nextShutdownDate != null && planningInputs.downtimeCostPerDay != null;
   const saveInputs = async () => {
-    if (!assetId) return; setSaving(true);
-    try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draftInputs) }); setPlanningInputs({ ...draftInputs }); } finally { setSaving(false); }
+    if (!assetId) return; setSaving(true); setSaved(false);
+    try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draftInputs) }); setPlanningInputs({ ...draftInputs }); setSaved(true); setTimeout(() => setSaved(false), 3000); } finally { setSaving(false); }
   };
 
   // ── Conditional guards (AFTER all hooks) ──────────────────────────────
@@ -221,6 +222,7 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
             <button onClick={saveInputs} disabled={saving} className="h-7 px-3 rounded bg-amber-600 hover:bg-amber-500 text-[11px] font-semibold text-white flex items-center gap-1 disabled:opacity-50">
               <Save className="h-3 w-3" />{saving ? "Saving…" : "Save"}
             </button>
+            {saved && <span className="text-[11px] text-emerald-400 flex items-center gap-1"><Check className="h-3 w-3" />saved ✓</span>}
           </div>
         </div>
       )}
