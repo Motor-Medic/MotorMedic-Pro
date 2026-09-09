@@ -134,6 +134,12 @@ export default function SpectrumLibraryTab({
   })();
   const effectiveRpm = rowRpm ?? contextRpm ?? assetRpm ?? manualRefRpm;
   const rpmSource: "record" | "context" | "asset" | "manual" = rowRpm != null ? "record" : contextRpm != null ? "context" : assetRpm != null ? "asset" : "manual";
+  const isVisionRpm = (() => {
+    const td = selectedAnalysis?.telemetry_data;
+    if (!td || typeof td !== "object") return false;
+    const o = td as Record<string, unknown>;
+    return o.rpm_source === "vision-extracted";
+  })();
   const rpmHz = effectiveRpm / 60;
   const hasRpm = effectiveRpm != null;
 
@@ -303,13 +309,15 @@ export default function SpectrumLibraryTab({
   // Caption assembly: energy + RPM source + geometry
   const rpmSourceNote = useRecordedFaultAnchor
     ? "row RPM not stored - cursors anchored to recorded fault frequency"
-    : rpmSource === "record"
-      ? "record RPM"
-      : rpmSource === "context"
-        ? "record RPM (context)"
-        : rpmSource === "asset"
-          ? "asset nameplate RPM"
-          : "manual reference RPM";
+    : rpmSource === "record" && isVisionRpm
+      ? "record RPM (vision-extracted)"
+      : rpmSource === "record"
+        ? "record RPM"
+        : rpmSource === "context"
+          ? "record RPM (context)"
+          : rpmSource === "asset"
+            ? "asset nameplate RPM"
+            : "manual reference RPM";
   const geometryNote = `geometry: ${geometryModel}`;
   const energyNote = hasBearingEnergy
     ? "bearing family energy present (SIM)"
@@ -350,7 +358,7 @@ export default function SpectrumLibraryTab({
                 <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
                   Ref RPM
                   {rpmSource === "record" || rpmSource === "context" || rpmSource === "asset" ? (
-                    <span title={`source: ${rpmSource === "record" ? "record RPM" : rpmSource === "context" ? "record RPM (context)" : "asset nameplate RPM"}`} className="text-cyan-400 cursor-help">{effectiveRpm}</span>
+                    <span title={`source: ${rpmSource === "record" ? (isVisionRpm ? "record RPM (vision-extracted)" : "record RPM") : rpmSource === "context" ? "record RPM (context)" : "asset nameplate RPM"}`} className="text-cyan-400 cursor-help">{effectiveRpm}</span>
                   ) : (
                     <input
                       type="number"
