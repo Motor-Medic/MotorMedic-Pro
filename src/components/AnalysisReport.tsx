@@ -6668,6 +6668,7 @@ export default function AnalysisReport({
         rpm: (r.telemetry_data as Record<string, unknown> | null)?.rpm as number | null ?? null,
         primaryFault: r.primary_fault,
         peakCount: Array.isArray(r.peaks) ? r.peaks.length : 0,
+        analysis_type: r.analysis_type,
       } as RunHistoryRun));
   }, [selectedAnalysis, loadedAnalyses]);
 
@@ -7539,6 +7540,7 @@ export default function AnalysisReport({
                   baselineSpectrum={baselineSpectrum}
                   reportVibrationRecord={reportVibrationRecord}
                   allAnalyses={loadedAnalyses}
+                  onSelectAnalysis={setSelectedAnalysis}
                 />
               )}
 

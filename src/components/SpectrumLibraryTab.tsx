@@ -38,6 +38,7 @@ export interface SpectrumLibraryTabProps {
   baselineSpectrum: VibrationTrendPoint[];
   reportVibrationRecord: VibrationDiagnosticRecord | null;
   allAnalyses?: SavedAnalysisResult[];
+  onSelectAnalysis?: (analysis: SavedAnalysisResult) => void;
 }
 
 /**
@@ -53,10 +54,18 @@ export default function SpectrumLibraryTab({
   mode,
   baselineSpectrum,
   reportVibrationRecord,
-  allAnalyses = []
+  allAnalyses = [],
+  onSelectAnalysis
 }: SpectrumLibraryTabProps) {
   const [showBearingHarmonics, setShowBearingHarmonics] = useState(false);
   const [manualRefRpm, setManualRefRpm] = useState(3530);
+
+  // Determine modality of the selected run
+  const selectedModality = selectedAnalysis?.analysis_type ?? "vibration";
+  const isVibrationSelected = selectedModality === "vibration";
+
+  // Latest vibration run for the "jump to" button
+  const latestVibrationRun = allAnalyses.filter((a) => a.analysis_type === "vibration").sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] ?? null;
 
   // Extract peaks from a SavedAnalysisResult into canonical {frequency, amplitude}[]
   const extractPeaks = (row: SavedAnalysisResult): { frequency: number; amplitude: number }[] => {
@@ -177,10 +186,12 @@ export default function SpectrumLibraryTab({
     };
   })();
 
-  // Waterfall data prep: filter to vibration, sort chronologically, take last 6
+  // Waterfall data prep: filter to vibration, apply as-of cutoff, sort chronologically, take last 6
+  const selectedTs = selectedAnalysis ? new Date(selectedAnalysis.timestamp).getTime() : Infinity;
   const waterfallRuns = (() => {
     const vibrationRows = allAnalyses
       .filter((a) => a.analysis_type === "vibration")
+      .filter((a) => new Date(a.timestamp).getTime() <= selectedTs)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
       .slice(-6);
     return vibrationRows.map((row) => ({
@@ -190,6 +201,9 @@ export default function SpectrumLibraryTab({
       spectralSource: extractSpectralSource(row),
     }));
   })();
+  const hasLaterVibrationRuns = selectedAnalysis != null && allAnalyses.some(
+    (a) => a.analysis_type === "vibration" && new Date(a.timestamp).getTime() > selectedTs
+  );
 
   // Shared waterfall domains + color ramp (kept across mini-chart strips)
   const waterfallMaxAmp = Math.max(...waterfallRuns.flatMap((r) => r.peaks.map((p) => p.amplitude)), 0.001);
@@ -329,7 +343,17 @@ export default function SpectrumLibraryTab({
         <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
           <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Spectrum Library workspace</h4>
           <div className="h-[300px] bg-slate-950 rounded-xl border border-slate-700/80 p-3 flex items-center justify-center text-center">
-            <p className="text-slate-500 text-sm max-w-md">No report loaded - select and click Load Report, or pick a Saved Analysis</p>
+            {selectedAnalysis != null && !isVibrationSelected ? (
+              <div className="flex flex-col items-center gap-2 max-w-md">
+                <p className="text-slate-300 text-sm">{new Date(selectedAnalysis.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} run is a {selectedModality?.toUpperCase() ?? "non-vibration"} test — no vibration spectrum captured.</p>
+                {latestVibrationRun && <>
+                  <p className="text-slate-500 text-xs">Latest vibration run: {new Date(latestVibrationRun.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                  <button type="button" onClick={() => onSelectAnalysis?.(latestVibrationRun)} className="px-3 py-1.5 text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white rounded transition-colors">View latest vibration run</button>
+                </>}
+              </div>
+            ) : (
+              <p className="text-slate-500 text-sm max-w-md">No report loaded - select and click Load Report, or pick a Saved Analysis</p>
+            )}
           </div>
         </div>
       ) : (
@@ -437,6 +461,11 @@ export default function SpectrumLibraryTab({
               <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
                 <div className="flex items-center justify-between gap-2 px-1 mb-2">
                   <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall — Last {waterfallRuns.length} Runs</h4>
+                  {hasLaterVibrationRuns && (
+                    <span className="text-[10px] text-amber-400/80 font-mono">
+                      as of {selectedAnalysis ? new Date(selectedAnalysis.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : ""} — later runs hidden
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400 px-1 mb-2">
                   {allSpectral ? "continuous traces - SIM rows synthesized from stored peaks" : "peak-list traces - full spectrum not captured"}

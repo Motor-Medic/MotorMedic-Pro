@@ -7,6 +7,7 @@ export interface RunHistoryRun {
   rpm: number | null;
   primaryFault: string | null;
   peakCount: number;
+  analysis_type?: string | null;
 }
 
 export interface RunHistoryPopoverProps {
@@ -90,6 +91,7 @@ export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, c
               <thead className="sticky top-0 bg-slate-900">
                 <tr className="text-slate-400 border-b border-slate-700">
                   <th className="px-4 py-2 text-left font-medium">Date</th>
+                  <th className="px-4 py-2 text-left font-medium">Type</th>
                   <th className="px-4 py-2 text-right font-medium">RPM</th>
                   <th className="px-4 py-2 text-left font-medium">Top diagnosis</th>
                   <th className="px-4 py-2 text-right font-medium">Peaks</th>
@@ -100,6 +102,7 @@ export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, c
                   <tr key={run.id} onClick={() => { onSelect(run); onClose(); }}
                     className={`cursor-pointer border-b border-slate-800 transition-colors ${run.id === selectedId ? "bg-cyan-500/10 text-cyan-300" : "hover:bg-slate-800/50 text-slate-300"}`}>
                     <td className="px-4 py-2">{new Date(run.timestamp).toLocaleDateString()}</td>
+                    <td className="px-4 py-2 text-xs font-mono uppercase">{(run.analysis_type ?? "vibration").slice(0, 4)}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{run.rpm ?? "—"}</td>
                     <td className="px-4 py-2 truncate max-w-[200px]">{run.primaryFault ?? "—"}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{run.peakCount}</td>
