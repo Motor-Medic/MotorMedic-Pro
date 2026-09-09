@@ -34,6 +34,7 @@ import {
 import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
+import RepairActionsTab from "./RepairActionsTab";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -7772,15 +7773,7 @@ export default function AnalysisReport({
             })()}
 
             {/* ===== Tab 3: Repair & Actions ===== */}
-            {activeTab === 3 && (
-              <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-                <FileText className="h-8 w-8 text-slate-600 mb-3" />
-                <p className="text-sm font-semibold text-slate-300">No data available</p>
-                <p className="text-sm text-slate-500 mt-1 max-w-md">
-                  Repair actions will appear when a saved analysis includes recommended parts and work.
-                </p>
-              </div>
-            )}
+            <RepairActionsTab isActive={activeTab === 3} />
 
             {/* ===== Tab 4: Multi-Tech Overview ===== */}
             {activeTab === 4 && (
