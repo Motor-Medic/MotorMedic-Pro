@@ -39,6 +39,7 @@ import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
 import WorkOrderGenerator from "./WorkOrderGenerator";
+import { RunHistoryTrigger, RunHistoryPopover, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 import MultiTechAssessment from "./reports/MultiTechAssessment";
 import SavedReportViewer from "./reports/SavedReportViewer";
@@ -6470,6 +6471,7 @@ export default function AnalysisReport({
   const [showInventory, setShowInventory] = useState(false);
 
   const [showWorkOrder, setShowWorkOrder] = useState(false);
+  const [runHistoryOpen, setRunHistoryOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
   const [equipTick, setEquipTick] = useState(0);
@@ -6652,6 +6654,27 @@ export default function AnalysisReport({
     }
     return null;
   }, [selectedAnalysis, loadedAnalyses]);
+
+  const tab1Runs = useMemo(() => {
+    const assetId = selectedAnalysis?.asset_id;
+    const component = selectedAnalysis?.component;
+    if (!assetId) return [];
+    return loadedAnalyses
+      .filter((r) => r.asset_id === assetId && (!component || r.component === component))
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+      .map((r) => ({
+        id: r.id,
+        timestamp: r.timestamp,
+        rpm: (r.telemetry_data as Record<string, unknown> | null)?.rpm as number | null ?? null,
+        primaryFault: r.primary_fault,
+        peakCount: Array.isArray(r.peaks) ? r.peaks.length : 0,
+      } as RunHistoryRun));
+  }, [selectedAnalysis, loadedAnalyses]);
+
+  const tab1LatestRunDate = useMemo(() => {
+    if (tab1Runs.length === 0) return null;
+    return new Date(tab1Runs[0].timestamp).getTime();
+  }, [tab1Runs]);
 
   const baselineRecord = useMemo(() => {
     return loadedAnalyses.find((a) => a.is_baseline) ?? null;
@@ -7251,6 +7274,15 @@ export default function AnalysisReport({
                 );
               })}
             </div>
+            {hasLoadedReport && selectedAnalysis && (
+              <div className="flex mt-2 mb-2 justify-start">
+                <RunHistoryTrigger
+                  onClick={() => setRunHistoryOpen(true)}
+                  viewDate={new Date(selectedAnalysis.timestamp).toLocaleDateString()}
+                  isLatest={tab1LatestRunDate == null || new Date(selectedAnalysis.timestamp).getTime() >= tab1LatestRunDate}
+                />
+              </div>
+            )}
 
             {/* ===== Tab 0: Saved Analyses ===== */}
             {activeTab === 0 && (
@@ -7913,6 +7945,19 @@ export default function AnalysisReport({
           onClose={() => setShowWorkOrder(false)}
         />
       )}
+
+      <RunHistoryPopover
+        open={runHistoryOpen}
+        onClose={() => setRunHistoryOpen(false)}
+        runs={tab1Runs}
+        selectedId={selectedAnalysis?.id ?? null}
+        onSelect={(run) => {
+          const match = loadedAnalyses.find((a) => a.id === run.id);
+          if (match) setSelectedAnalysis(match);
+          setRunHistoryOpen(false);
+        }}
+        componentLabel={selectedAnalysis?.component || loadedComponent || "Analysis"}
+      />
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import { Clock, X } from "lucide-react";
+import { ChevronDown, Clock, X } from "lucide-react";
 
 export interface RunHistoryRun {
   id: string;
@@ -18,11 +18,28 @@ export interface RunHistoryPopoverProps {
   componentLabel: string;
 }
 
-export function RunHistoryTrigger({ onClick }: { onClick: () => void }) {
+export function RunHistoryTrigger({ onClick, viewDate, isLatest }: { onClick: () => void; viewDate: string; isLatest: boolean }) {
   return (
-    <button type="button" onClick={onClick} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-300 border border-slate-600 rounded hover:bg-slate-800 hover:text-white transition-colors">
-      <Clock className="w-3.5 h-3.5" /> Run history
-    </button>
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={onClick}
+        title="Open run history"
+        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border rounded transition-colors ${
+          isLatest
+            ? "bg-slate-800 hover:bg-slate-700 border-slate-600 text-slate-100"
+            : "bg-amber-500/10 border-amber-500 text-amber-300"
+        }`}
+      >
+        <Clock className="w-4 h-4" />
+        Run history: {viewDate}{isLatest ? "" : " - not latest"}
+        <ChevronDown className="w-3.5 h-3.5" />
+      </button>
+      <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded border ${isLatest ? "border-emerald-500/50 text-emerald-400" : "border-amber-500/50 text-amber-400"}`}>
+        {isLatest ? "LATEST RUN" : "PAST RUN"}
+      </span>
+      <span className="text-xs text-slate-400">Browse earlier analysis runs for this component - every tab follows the selected date.</span>
+    </div>
   );
 }
 
