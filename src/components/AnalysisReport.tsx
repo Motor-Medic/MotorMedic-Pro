@@ -7773,7 +7773,7 @@ export default function AnalysisReport({
             })()}
 
             {/* ===== Tab 3: Repair & Actions ===== */}
-            <RepairActionsTab isActive={activeTab === 3} />
+            <RepairActionsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
 
             {/* ===== Tab 4: Multi-Tech Overview ===== */}
             {activeTab === 4 && (
