@@ -136,17 +136,29 @@ export function synthesizeEnvelopeFromRecord(
     }
   }
 
-  const out: SynthesizedPoint[] = [];
-  for (let f = 0; f <= fMax; f += binHz) {
+  const bins = Math.floor(fMax / binHz) + 1;
+  const rawFloors: number[] = [];
+  for (let i = 0; i < bins; i++) {
+    const f = i * binHz;
     // Quiet floor 0.5-1.5% of max peak amp, 1/f tilted; flat for healthy rows.
     const tilt = 1 - 0.5 * Math.min(1, f / fMax);
-    const floor = maxAmp * (0.005 + 0.01 * tilt) * (0.5 + 0.5 * rand());
+    rawFloors.push(maxAmp * (0.005 + 0.01 * tilt) * (0.5 + 0.5 * rand()));
+  }
+  // 3-point moving average smooths floor jitter (edge-clamped).
+  const smoothFloor = rawFloors.map((v, i) => {
+    const lo = i > 0 ? rawFloors[i - 1] : v;
+    const hi = i < rawFloors.length - 1 ? rawFloors[i + 1] : v;
+    return (lo + v + hi) / 3;
+  });
+  const out: SynthesizedPoint[] = [];
+  for (let i = 0; i < bins; i++) {
+    const f = i * binHz;
     let a = 0;
     for (const b of bumps) {
       const d = f - b.f;
       a += b.amp * Math.exp(-(d * d) / (2 * SIGMA * SIGMA));
     }
-    out.push({ frequency: Math.round(f * 100) / 100, amplitude: Math.round(Math.max(floor, a) * 10000) / 10000 });
+    out.push({ frequency: Math.round(f * 100) / 100, amplitude: Math.round(Math.max(smoothFloor[i], a) * 10000) / 10000 });
   }
   return out;
 }

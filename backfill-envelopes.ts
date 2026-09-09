@@ -47,6 +47,9 @@ async function main() {
 
   let updated = 0;
   for (const r of peakRows) {
+    const td = r.telemetry_data;
+    const hasSynthEnvelope = td && typeof td === "object" && (td as Record<string, unknown>).envelope_source === "synthesized-from-record";
+    if (!hasSynthEnvelope) continue;
     const envelope = synthesizeEnvelopeFromRecord(r.peaks, null, {
       primary: r.primary_fault,
       faults: r.fault_list,
@@ -61,7 +64,7 @@ async function main() {
     updated++;
   }
 
-  console.log(`Updated rows (non-empty peaks): ${updated}`);
+  console.log(`Rewritten rows: ${updated}`);
 
   const { rows: remainingRows } = await pool.query(
     `SELECT id, peaks, telemetry_data FROM analysis_results`
