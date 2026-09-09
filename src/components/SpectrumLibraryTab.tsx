@@ -22,6 +22,21 @@ import type {
 const selectInputClass =
   "w-full min-h-[38px] rounded-lg bg-slate-950/70 border border-slate-600 px-3 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-yellow-500 focus:border-yellow-500 transition-colors";
 
+// Downsample by MAX-per-bucket (never first/mean) so bump heights and
+// positions survive (the max point keeps its own frequency).
+function downsampleMax(
+  pts: { frequency: number; amplitude: number }[],
+  bucket = 3
+): { frequency: number; amplitude: number }[] {
+  const out: { frequency: number; amplitude: number }[] = [];
+  for (let i = 0; i < pts.length; i += bucket) {
+    const slice = pts.slice(i, i + bucket);
+    if (!slice.length) continue;
+    out.push(slice.reduce((m, p) => (p.amplitude > m.amplitude ? p : m), slice[0]));
+  }
+  return out;
+}
+
 export interface SpectrumLibraryTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
   peakList: { frequency: number; amplitude: number }[];
@@ -88,6 +103,33 @@ export default function SpectrumLibraryTab({
     if (!td || typeof td !== "object") return null;
     const s = (td as Record<string, unknown>).spectral_source;
     return typeof s === "string" ? s : null;
+  };
+
+  const extractEnvelope = (row: SavedAnalysisResult): { frequency: number; amplitude: number }[] => {
+    const td = row.telemetry_data;
+    if (!td || typeof td !== "object") return [];
+    const e = (td as Record<string, unknown>).envelope;
+    if (!Array.isArray(e)) return [];
+    return e
+      .filter((p): p is Record<string, unknown> => Boolean(p) && typeof p === "object")
+      .map((p) => ({ frequency: Number(p.frequency ?? p.f), amplitude: Number(p.amplitude ?? p.a) }))
+      .filter((p) => Number.isFinite(p.frequency) && p.frequency >= 0 && Number.isFinite(p.amplitude) && p.amplitude >= 0);
+  };
+
+  const extractEnvelopeSource = (row: SavedAnalysisResult): string | null => {
+    const td = row.telemetry_data;
+    if (!td || typeof td !== "object") return null;
+    const s = (td as Record<string, unknown>).envelope_source;
+    return typeof s === "string" ? s : null;
+  };
+
+  const extractRowRpm = (row: SavedAnalysisResult): number | null => {
+    const td = row.telemetry_data;
+    if (!td || typeof td !== "object") return null;
+    const o = td as Record<string, unknown>;
+    const vtr = o.vibration_trend_record as Record<string, unknown> | undefined;
+    const r = Number(o.rpm ?? o.running_speed_rpm ?? (vtr ? vtr.rpm : null));
+    return Number.isFinite(r) && r > 0 ? r : null;
   };
 
   // Waterfall data prep: filter to vibration, sort chronologically, take last 6
@@ -240,9 +282,91 @@ export default function SpectrumLibraryTab({
           : null,
     }));
 
+  // ==== Envelope / demod primary view ====
+  const DEMOD_GEOMETRY = { n: 9, bd: 12.7, pd: 70.0 };
+  const selectedEnvelope = selectedAnalysis ? extractEnvelope(selectedAnalysis) : [];
+  const envelopeRows = downsampleMax(selectedEnvelope, 3);
+  const envelopeFloor = (() => {
+    if (!selectedEnvelope.length) return 0;
+    const amps = selectedEnvelope.map((p) => p.amplitude).sort((a, b) => a - b);
+    return amps[Math.floor(amps.length / 2)];
+  })();
+  const envelopeLocalMaxima = envelopeRows.filter(
+    (p, i, a) => i > 0 && i < a.length - 1 && p.amplitude > a[i - 1].amplitude && p.amplitude >= a[i + 1].amplitude
+  );
+  const envelopePeaks = envelopeLocalMaxima.filter((p) => envelopeFloor > 0 && p.amplitude > envelopeFloor * 5);
+  const hasBearingEnergy = envelopePeaks.length > 0;
+
+  // R4: demod bearing cursors match the synthesis convention (fixed geometry).
+  const demodBearing = (() => {
+    const ratio = DEMOD_GEOMETRY.bd / DEMOD_GEOMETRY.pd;
+    const bpfoOrder = (DEMOD_GEOMETRY.n / 2) * (1 - ratio);
+    const bpfiOrder = (DEMOD_GEOMETRY.n / 2) * (1 + ratio);
+    const bsfOrder = (DEMOD_GEOMETRY.pd / (2 * DEMOD_GEOMETRY.bd)) * (1 - ratio * ratio);
+    const ftfOrder = 0.5 * (1 - ratio);
+    const rowRpm = selectedAnalysis ? extractRowRpm(selectedAnalysis) : null;
+    const peaks = selectedAnalysis ? extractPeaks(selectedAnalysis) : [];
+    const dominant = peaks.reduce((m, p) => (p.amplitude > m.amplitude ? p : m), { frequency: 0, amplitude: 0 });
+    const bpfo = rowRpm && rowRpm > 0 ? bpfoOrder * (rowRpm / 60) : dominant.frequency;
+    return {
+      rpm: rowRpm,
+      BPFO: { order: bpfoOrder, hz: bpfo },
+      BPFI: { order: bpfiOrder, hz: bpfo * (bpfiOrder / bpfoOrder) },
+      BSF: { order: bsfOrder, hz: bpfo * (bsfOrder / bpfoOrder) },
+      FTF: { order: ftfOrder, hz: bpfo * (ftfOrder / bpfoOrder) },
+    };
+  })();
+  const demodShaftHz =
+    demodBearing.rpm && demodBearing.rpm > 0 ? demodBearing.rpm / 60 : demodBearing.BPFO.hz / demodBearing.BPFO.order;
+
+  const demodHarmonicLines: { x: number; label: string; sideband: boolean }[] = (() => {
+    const bpfo = demodBearing.BPFO.hz;
+    const bpfi = demodBearing.BPFI.hz;
+    const s = demodShaftHz;
+    return [
+      { x: bpfo * 2, label: "2xBPFO", sideband: false },
+      { x: bpfo * 3, label: "3xBPFO", sideband: false },
+      { x: bpfi * 2, label: "2xBPFI", sideband: false },
+      { x: bpfi * 3, label: "3xBPFI", sideband: false },
+      { x: bpfo - s, label: "BPFO-1X", sideband: true },
+      { x: bpfo + s, label: "BPFO+1X", sideband: true },
+      { x: bpfi - s, label: "BPFI-1X", sideband: true },
+      { x: bpfi + s, label: "BPFI+1X", sideband: true },
+    ];
+  })();
+
+  // Baseline ghost = oldest other row's envelope for this component.
+  const baselineEnvelopeRows = (() => {
+    const oldest = [...allAnalyses]
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      .find((a) => a.id !== selectedAnalysis?.id);
+    return oldest ? downsampleMax(extractEnvelope(oldest), 3) : [];
+  })();
+  const envelopeChartRows = envelopeRows.map((p, i) => ({
+    ...p,
+    baselineAmp: baselineEnvelopeRows[i]?.amplitude ?? undefined,
+  }));
+
+  // Family labeling for the table (R5): only +/-3 Hz of a family frequency.
+  const familyFreqs = [
+    { name: "BPFO", base: demodBearing.BPFO.hz },
+    { name: "BPFI", base: demodBearing.BPFI.hz },
+    { name: "BSF", base: demodBearing.BSF.hz },
+    { name: "FTF", base: demodBearing.FTF.hz },
+  ];
+  const assignFamily = (f: number): string => {
+    for (const fam of familyFreqs) {
+      for (let m = 1; m <= 3; m++) {
+        if (Math.abs(f - fam.base * m) <= 3) return `${(f / fam.base).toFixed(2)}x ${fam.name}`;
+      }
+    }
+    return "unassigned";
+  };
+  const envelopeTablePeaks = envelopePeaks.map((p) => ({ ...p, family: assignFamily(p.frequency) }));
+
   const viewModeControls = (
     <div className="flex rounded-md border border-slate-700 bg-slate-900/80 p-1">
-      <button type="button" onClick={() => setViewMode("2D Overlay")} className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer ${viewMode === "2D Overlay" ? "bg-cyan-600 text-white font-medium" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"}`}>2D Overlay</button>
+      <button type="button" onClick={() => setViewMode("2D Overlay")} className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer ${viewMode === "2D Overlay" ? "bg-cyan-600 text-white font-medium" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"}`}>Demod Overlay</button>
       <button type="button" onClick={() => setViewMode("Historical Waterfall")} className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors cursor-pointer ${viewMode === "Historical Waterfall" ? "bg-cyan-600 text-white font-medium" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"}`}>Historical Waterfall</button>
     </div>
   );
@@ -319,29 +443,6 @@ export default function SpectrumLibraryTab({
             />
             <span className="text-cyan-400 font-mono font-bold w-20 text-right tabular-nums">{rpm} RPM</span>
           </div>
-          {/* -- Harmonic Zoom toggle -- */}
-          <div className="flex items-center gap-2">
-            <label>
-              <input
-                type="radio"
-                name="zoom-mode"
-                checked={harmonicZoom}
-                onChange={() => setHarmonicZoom(true)}
-                className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
-              />
-              <span className="text-sm text-slate-300">Harmonic Zoom</span>
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="zoom-mode"
-                checked={!harmonicZoom}
-                onChange={() => setHarmonicZoom(false)}
-                className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
-              />
-              <span className="text-sm text-slate-300">Full Range</span>
-            </label>
-          </div>
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -362,12 +463,8 @@ export default function SpectrumLibraryTab({
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
-              <button type="button" onClick={() => setDomain("fft")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${domain === "fft" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>FFT Spectrum</button>
+              <button type="button" onClick={() => setDomain("fft")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${domain === "fft" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>Demod Spectrum</button>
               <button type="button" onClick={() => setDomain("waveform")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${domain === "waveform" ? "bg-cyan-500/20 text-cyan-300" : "text-slate-400 hover:text-slate-200"}`}>Time Waveform</button>
-            </div>
-            <div className="flex rounded-lg border border-slate-700 bg-slate-950 p-1">
-              <button type="button" onClick={() => setUnit("velocity")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${unit === "velocity" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:text-slate-200"}`}>Velocity (mm/s)</button>
-              <button type="button" onClick={() => setUnit("acceleration")} className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${unit === "acceleration" ? "bg-amber-500/20 text-amber-300" : "text-slate-400 hover:text-slate-200"}`}>Acceleration (g)</button>
             </div>
             <button type="button" onClick={() => setShowBaseline((v) => !v)} className={`px-3 py-1.5 text-xs font-semibold rounded-md border transition-colors cursor-pointer ${showBaseline ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-slate-700 bg-slate-950 text-slate-400 hover:text-slate-200"}`}>Overlay Baseline</button>
           </div>
@@ -492,176 +589,100 @@ export default function SpectrumLibraryTab({
             );
           })()
           ) : (
-          <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
-            <div className="flex items-center justify-between gap-2 px-1 mb-3">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
-              {unitLabel}
-              {showBaseline && hasBaseline && <span className="ml-2 text-amber-400 normal-case tracking-normal">— dashed = baseline</span>}
-            </h4>
-              {viewModeControls}
-            </div>
-            <div key={harmonicZoom ? "zoom" : "full"} className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
+          (() => {
+            const hasEnvelope = envelopeRows.length > 0;
+            const energyCaption = hasBearingEnergy
+              ? "bearing family energy present (SIM)"
+              : "quiet demod band - no bearing fault energy in this record (SIM floor)";
+            const rpmNote = demodBearing.rpm
+              ? `cursors at record RPM ${demodBearing.rpm}`
+              : "row RPM not stored - cursors anchored to recorded fault frequency";
+            const title = (
+              <div className="flex items-center justify-between gap-2 px-1 mb-3">
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  ENVELOPE / DEMOD - {bearing}
+                  <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400 normal-case tracking-normal">SIM</span>
+                </h4>
+                {viewModeControls}
+              </div>
+            );
+            if (!hasEnvelope) {
+              return (
+                <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+                  {title}
+                  <div className="h-[300px] bg-slate-950 rounded-xl border border-slate-700/80 p-3 flex items-center justify-center text-center">
+                    <p className="text-slate-500 text-sm max-w-md">No envelope stored for this record</p>
+                  </div>
+                </div>
+              );
+            }
+            const ghostNote =
+              showBaseline && baselineEnvelopeRows.length === 0
+                ? " · no stored baseline envelope to overlay"
+                : "";
+            return (
+              <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+                {title}
+                <p className="text-xs text-slate-400 px-1 mb-2">{energyCaption} · {rpmNote}{ghostNote}</p>
+                <div className="h-[380px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
                   <ResponsiveContainer width="100%" height="100%">
-                    <ComposedChart
-                      data={displayRows}
-                      margin={{ top: 28, right: 16, bottom: 28, left: 48 }}
-                    >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis
-                    type="number"
-                    dataKey="frequency"
-                    domain={[0, xDomainMax]}
-                    allowDataOverflow={true}
-                    stroke="#94a3b8"
-                    tick={{ fontSize: 10 }}
-                    tickFormatter={(v) => String(Math.round(Number(v)))}
-                    label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }}
-                  />
-                  <YAxis
-                    stroke="#38bdf8"
-                    tick={{ fontSize: 10 }}
-                    label={{ value: `Amplitude (${unitShort})`, angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 11 }}
-                  />
-                  <Tooltip
-                    contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value, name, props) => {
-                      const val = Number(value);
-                      if (name === "baselineAmplitude") {
-                        return [`${val.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}`, "Baseline"];
-                      }
-                      const base = props.payload?.baselineAmplitude;
-                      const delta = base != null && base > 1e-6
-                        ? (((val - base) / base) * 100)
-                        : null;
-                      const deltaStr = delta != null ? ` (${delta > 0 ? "+" : ""}${delta.toFixed(1)}% vs baseline)` : "";
-                      return [`${val.toFixed(unit === "acceleration" ? 6 : 3)} ${unitShort}${deltaStr}`, "Amplitude"];
-                    }}
-                    labelFormatter={(label) => `${label} Hz`}
-                  />
-                  {/* Harmonic cursors 1X–4X */}
-                  <ReferenceLine x={rpmHz} stroke="#f59e0b" strokeDasharray="6 3" label={{ value: "1X", fill: "#f59e0b", position: "top", fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceLine x={rpmHz * 2} stroke="#38bdf8" strokeDasharray="6 3" label={{ value: "2X", fill: "#38bdf8", position: "top", fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceLine x={rpmHz * 3} stroke="#a855f7" strokeDasharray="6 3" label={{ value: "3X", fill: "#a855f7", position: "top", fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceLine x={rpmHz * 4} stroke="#ef4444" strokeDasharray="6 3" label={{ value: "4X", fill: "#ef4444", position: "top", fontSize: 11, fontWeight: 700 }} />
-                  {/* Bearing fault cursors */}
-                  {showBearingCursors && bearingHz && (
-                    <>
-                      <ReferenceLine x={bearingHz.FTF.hz} stroke="#fbbf24" strokeDasharray="4 4" label={{ value: `FTF ${bearingHz.FTF.hz.toFixed(1)} Hz`, fill: "#fbbf24", position: "top", fontSize: 10 }} />
-                      <ReferenceLine x={bearingHz.BSF.hz} stroke="#34d399" strokeDasharray="4 4" label={{ value: `BSF ${bearingHz.BSF.hz.toFixed(1)} Hz`, fill: "#34d399", position: "top", fontSize: 10 }} />
-                      <ReferenceLine x={bearingHz.BPFO.hz} stroke="#a78bfa" strokeDasharray="4 4" label={{ value: `BPFO ${bearingHz.BPFO.hz.toFixed(1)} Hz`, fill: "#a78bfa", position: "top", fontSize: 10 }} />
-                      <ReferenceLine x={bearingHz.BPFI.hz} stroke="#f472b6" strokeDasharray="4 4" label={{ value: `BPFI ${bearingHz.BPFI.hz.toFixed(1)} Hz`, fill: "#f472b6", position: "top", fontSize: 10 }} />
-                      {showBearingHarmonics && bearingHarmonicLines.map((l) => (
-                        <ReferenceLine
-                          key={l.label}
-                          x={l.x}
-                          stroke={l.sideband ? "#7c3aed" : "#a78bfa"}
-                          strokeDasharray="2 4"
-                          strokeWidth={l.sideband ? 0.75 : 1}
-                          opacity={l.sideband ? 0.3 : 0.45}
-                          label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: l.sideband ? 8 : 9 }}
-                        />
-                      ))}
-                    </>
-                  )}
-                  {/* Baseline trace (dashed, semi-transparent) */}
-                  {showBaseline && hasBaseline && (
-                    <Area
-                      type="monotone"
-                      dataKey="baselineAmplitude"
-                      stroke="#94a3b8"
-                      strokeWidth={1.5}
-                      strokeDasharray="5 5"
-                      fill="#94a3b8"
-                      fillOpacity={0.06}
-                      isAnimationActive={false}
-                      name="Baseline"
-                      connectNulls={false}
-                    />
-                  )}
-                  {/* Full spectrum — continuous curve */}
-                  {mode === "curve" && (
-                    <Area
-                      type="monotone"
-                      dataKey="amplitude"
-                      stroke="#38bdf8"
-                      fill="#38bdf8"
-                      fillOpacity={0.15}
-                      isAnimationActive={false}
-                      name="Amplitude"
-                    />
-                  )}
-                  {/* Baseline ghost stems (behind live stems) */}
-                  {showBaseline && hasBaseline && mode === "stems" && (
-                    <Bar dataKey="baselineAmplitude" name="Baseline" barSize={6} fill="#94a3b8" fillOpacity={0.25} isAnimationActive={false} />
-                  )}
-                  {/* Stored peaks only — thin vertical stems */}
-                  {mode === "stems" && (
-                    <Bar dataKey="amplitude" name="Stored Peak" barSize={3} fill="#38bdf8" isAnimationActive={false}>
-                      <LabelList dataKey="stemLabel" position="top" fill="#94a3b8" fontSize={9} />
-                    </Bar>
-                  )}
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            {harmonicZoom && peaksOutsideZoom > 0 && (
-              <p className="text-[10px] text-slate-500 mt-2 px-1 font-mono">
-                {peaksOutsideZoom} peaks exist outside zoomed range - switch to Full Range to view.
-              </p>
-            )}
-            {mode === "stems" && (
-              <p className="text-[10px] text-slate-500 mt-2 px-1 font-mono">{peakList.length} stored peaks — full spectrum not captured</p>
-            )}
-          </div>
+                    <ComposedChart data={envelopeChartRows} margin={{ top: 28, right: 16, bottom: 28, left: 48 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis type="number" dataKey="frequency" domain={[0, 1000]} stroke="#94a3b8" tick={{ fontSize: 10 }} tickFormatter={(v) => String(Math.round(Number(v)))} label={{ value: "Frequency (Hz)", position: "insideBottom", offset: -12, fill: "#64748b", fontSize: 11 }} />
+                      <YAxis stroke="#38bdf8" tick={{ fontSize: 10 }} label={{ value: "Demod amplitude (SIM)", angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 11 }} />
+                      <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }} formatter={(value) => [`${Number(value).toFixed(5)} SIM`, "Demod amplitude"]} labelFormatter={(label) => `${label} Hz`} />
+                      {showBaseline && baselineEnvelopeRows.length > 0 && (
+                        <Line type="monotone" dataKey="baselineAmp" stroke="#64748b" strokeWidth={1} opacity={0.3} dot={false} isAnimationActive={false} name="Baseline" />
+                      )}
+                      <Area type="monotone" dataKey="amplitude" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.2} isAnimationActive={false} name="Demod" />
+                      {showBearingCursors && (
+                        <>
+                          <ReferenceLine x={demodBearing.FTF.hz} stroke="#fbbf24" strokeDasharray="4 4" label={{ value: `FTF ${demodBearing.FTF.hz.toFixed(1)} Hz`, fill: "#fbbf24", position: "top", fontSize: 10 }} />
+                          <ReferenceLine x={demodBearing.BSF.hz} stroke="#34d399" strokeDasharray="4 4" label={{ value: `BSF ${demodBearing.BSF.hz.toFixed(1)} Hz`, fill: "#34d399", position: "top", fontSize: 10 }} />
+                          <ReferenceLine x={demodBearing.BPFO.hz} stroke="#a78bfa" strokeDasharray="4 4" label={{ value: `BPFO ${demodBearing.BPFO.hz.toFixed(1)} Hz`, fill: "#a78bfa", position: "top", fontSize: 10 }} />
+                          <ReferenceLine x={demodBearing.BPFI.hz} stroke="#f472b6" strokeDasharray="4 4" label={{ value: `BPFI ${demodBearing.BPFI.hz.toFixed(1)} Hz`, fill: "#f472b6", position: "top", fontSize: 10 }} />
+                          {showBearingHarmonics && demodHarmonicLines.map((l) => (
+                            <ReferenceLine key={l.label} x={l.x} stroke={l.sideband ? "#7c3aed" : "#a78bfa"} strokeDasharray="2 4" strokeWidth={l.sideband ? 0.75 : 1} opacity={l.sideband ? 0.3 : 0.45} label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: l.sideband ? 8 : 9 }} />
+                          ))}
+                        </>
+                      )}
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            );
+          })()
           )}
 
-          {/* -- Peak Analysis table with Delta column -- */}
+          {/* -- Envelope peak table -- */}
           <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2">
-              <h4 className="text-sm font-semibold text-cyan-300">Peak Analysis</h4>
-              <span className="text-[10px] text-slate-500 font-mono">Top 5 amplitude peaks · order = f / 1X</span>
+              <h4 className="text-sm font-semibold text-cyan-300">Envelope Peaks</h4>
+              <span className="text-[10px] text-slate-500 font-mono">local maxima &gt; 5x demod floor</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
                     <th className="px-4 py-2.5 font-bold">Freq (Hz)</th>
-                    <th className="px-4 py-2.5 font-bold">Amplitude ({unitShort})</th>
-                    <th className="px-4 py-2.5 font-bold">Order</th>
-                    {showBaseline && hasBaseline && <th className="px-4 py-2.5 font-bold">Baseline</th>}
-                    {showBaseline && hasBaseline && <th className="px-4 py-2.5 font-bold">Delta vs Baseline</th>}
-                    <th className="px-4 py-2.5 font-bold">Diagnosis</th>
+                    <th className="px-4 py-2.5 font-bold">Amp (SIM)</th>
+                    <th className="px-4 py-2.5 font-bold">Family</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {topPeaks.map((peak, i) => (
-                    <tr key={`${peak.frequency}-${i}`} className="border-t border-slate-700/80">
-                      <td className="px-4 py-3 text-cyan-300 font-mono">{peak.frequency.toFixed(2)}</td>
-                      <td className="px-4 py-3 text-emerald-400 font-mono">{unit === "acceleration" ? peak.amplitude.toExponential(3) : peak.amplitude.toFixed(3)}</td>
-                      <td className="px-4 py-3 text-yellow-400 font-mono font-semibold">{peak.harmonicOrder.toFixed(2)}×</td>
-                      {showBaseline && hasBaseline && (
-                        <td className="px-4 py-3 text-slate-400 font-mono">
-                          {peak.baselineAmplitude != null ? (unit === "acceleration" ? peak.baselineAmplitude.toExponential(3) : peak.baselineAmplitude.toFixed(3)) : "—"}
-                        </td>
-                      )}
-                      {showBaseline && hasBaseline && (
-                        <td className="px-4 py-3 font-mono font-semibold">
-                          {peak.delta != null ? (
-                            <span className={peak.delta <= 0 ? "text-emerald-400" : "text-red-400"}>
-                              {peak.delta > 0 ? "+" : ""}{peak.delta.toFixed(1)}%
-                            </span>
-                          ) : (
-                            <span className="text-slate-600">n/a</span>
-                          )}
-                        </td>
-                      )}
-                      <td className="px-4 py-3 text-slate-200 font-medium">
-                        {peak.harmonicOrder >= 0.9 && peak.harmonicOrder <= 1.1 && "Mass Unbalance"}
-                        {peak.harmonicOrder >= 1.9 && peak.harmonicOrder <= 2.1 && "Angular Misalignment"}
-                        {peak.harmonicOrder >= 2.9 && peak.harmonicOrder <= 3.1 && "Mechanical Looseness"}
-                        {(peak.harmonicOrder < 0.9 || (peak.harmonicOrder > 1.1 && peak.harmonicOrder < 1.9) || (peak.harmonicOrder > 2.1 && peak.harmonicOrder < 2.9) || (peak.harmonicOrder > 3.1)) && "Bearing Fault / Other"}
-                      </td>
+                  {envelopeTablePeaks.length === 0 ? (
+                    <tr className="border-t border-slate-700/80">
+                      <td colSpan={3} className="px-4 py-6 text-center text-slate-500 text-sm">no envelope peaks above 5x floor</td>
                     </tr>
-                  ))}
+                  ) : (
+                    envelopeTablePeaks.map((peak, i) => (
+                      <tr key={`${peak.frequency}-${i}`} className="border-t border-slate-700/80">
+                        <td className="px-4 py-3 text-cyan-300 font-mono">{peak.frequency.toFixed(1)}</td>
+                        <td className="px-4 py-3 text-emerald-400 font-mono">{peak.amplitude.toFixed(5)}</td>
+                        <td className="px-4 py-3 text-yellow-400 font-mono font-semibold">{peak.family}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
