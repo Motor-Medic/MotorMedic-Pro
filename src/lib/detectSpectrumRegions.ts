@@ -464,11 +464,17 @@ function coerceDetection(raw: unknown): SpectrumRegionDetection {
       (Object.keys(regions).length ? 70 : 0)
   );
 
+  const rawRpm = Number(root.rpm);
+  const rpm = Number.isFinite(rawRpm) && rawRpm > 0 ? rawRpm : null;
+  const rpm_source: "vision-extracted" | null =
+    rpm != null && root.rpm_source === "vision-extracted" ? "vision-extracted" : null;
+
   return correctFftEnvelopeAssignment({
     regions,
     peaks,
     ...(Object.keys(axisRanges).length ? { axisRanges } : {}),
     ...(xTickCounts ? { xTickCounts } : {}),
+    ...(rpm != null ? { rpm, rpm_source } : {}),
     detectionConfidence: Number.isFinite(detectionConfidence)
       ? Math.max(0, Math.min(100, detectionConfidence))
       : 0,
@@ -685,6 +691,8 @@ For each of "fft" and "envelope", count the visible x-axis numeric labels and re
 Coordinates MUST be normalized fractions of the full image (0.0–1.0):
 x = left edge, y = top edge, width, height.
 
+Also extract the machine RPM if explicitly stated as text in the image (caption, label, axis annotation, status bar — e.g. "RPM: 3530", "RMS - RPM: 3530 (filtering...)"). Read the numeric value only. Inferring RPM from peak spacing is FORBIDDEN — return null if no RPM text is visible.
+
 Return JSON with this exact schema:
 {
   "regions": {
@@ -704,6 +712,8 @@ Return JSON with this exact schema:
   // IMPORTANT: peak "frequency" values MUST be in the chart's native X-axis units
   // (Hz if axis is Hz, CPM if axis is CPM). Do NOT convert units yourself.
   // The code will convert CPM→Hz after extraction.
+  "rpm": number or null,
+  "rpm_source": "vision-extracted" or null,
   "detectionConfidence": number,
   "notes": string
 }

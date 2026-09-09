@@ -2593,6 +2593,8 @@ useEffect(() => {
                 schema_version: 1,
                 captured_at: new Date().toISOString(),
                 analysis_type: "vibration",
+                rpm: chartRegionDetection?.rpm ?? null,
+                rpm_source: chartRegionDetection?.rpm_source ?? null,
                 vibration_trend_record: vibrationTrendRecord,
                 spectral: vibrationTrendRecord.spectral || [],
                 extraction_confidence:

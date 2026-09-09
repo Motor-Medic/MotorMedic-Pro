@@ -1224,6 +1224,17 @@ app.post("/api/save-analysis-result", async (req, res) => {
       peaks
     );
 
+    // Vision-extracted RPM: if the spectrum-region detection returned rpm,
+    // ensure it is persisted into telemetry_data so Tab 2 can read it.
+    const visionRpm = optionalNumeric(telemetryData.rpm);
+    const visionRpmSource = telemetryData.rpm_source;
+    if (visionRpm != null && visionRpmSource === "vision-extracted") {
+      console.log("[save-analysis-result] Vision-extracted RPM:", {
+        rpm: visionRpm,
+        rpm_source: visionRpmSource
+      });
+    }
+
     // Synthesize a full trace from stored peaks when none was provided.
     if (peaks.length > 0 && telemetryData.spectral == null) {
       telemetryData.spectral = synthesizeSpectrumFromPeaks(peaks);

@@ -39,6 +39,9 @@ export interface SpectrumRegionDetection {
   axisRanges?: Partial<Record<ChartRegionKind, ChartAxisRange>>;
   /** Visible x-axis numeric tick labels per spectral panel (FFT denser than D-Mod). */
   xTickCounts?: Partial<Record<"fft" | "envelope", number>>;
+  /** Explicit RPM text read from the image (caption, label, axis annotation). null = none visible. */
+  rpm?: number | null;
+  rpm_source?: "vision-extracted" | null;
   detectionConfidence: number;
   notes?: string;
 }
