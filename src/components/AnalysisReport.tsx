@@ -35,7 +35,6 @@ import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDi
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
 import RepairActionsTab from "./RepairActionsTab";
-import AnalysisHistoryBrowser from "./AnalysisHistoryBrowser";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -6537,16 +6536,6 @@ export default function AnalysisReport({
     return [...ids].sort();
   }, [loadedAnalyses]);
 
-  const latestRunDate = useMemo(() => {
-    if (loadedAnalyses.length === 0) return null;
-    let latest: string | null = null;
-    for (const row of loadedAnalyses) {
-      const ts = row.timestamp || row.created_at;
-      if (ts && (!latest || new Date(ts).getTime() > new Date(latest).getTime())) latest = ts;
-    }
-    return latest;
-  }, [loadedAnalyses]);
-
   /**
    * Deep links. `?reportId=` opens one persisted report by id; `?assetId=`
    * lands on a particular asset's live assessment, which is what the alert and
@@ -7228,15 +7217,6 @@ export default function AnalysisReport({
       ) : (
         <div className="w-full">
 
-          {/* ===== History Browser ===== */}
-          {activeTab !== 0 && (
-            <AnalysisHistoryBrowser
-              analyses={loadedAnalyses}
-              selectedId={selectedAnalysis?.id ?? null}
-              onSelect={(row) => { setSelectedAnalysis(row); }}
-            />
-          )}
-
           {/* ===== Tab Strip + Detail + FFT ===== */}
           <div className="w-full h-fit bg-slate-900/40 rounded-xl border border-slate-800 p-6 gap-6 flex flex-col">
 
@@ -7271,25 +7251,6 @@ export default function AnalysisReport({
                 );
               })}
             </div>
-
-            {/* ===== As-of Banner ===== */}
-            {selectedAnalysis && activeTab !== 0 && latestRunDate && selectedAnalysis.timestamp !== latestRunDate && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs">
-                <span className="text-amber-300">
-                  Viewing {new Date(selectedAnalysis.timestamp).toLocaleDateString()} — latest is {new Date(latestRunDate).toLocaleDateString()}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const latest = loadedAnalyses.find((r) => r.timestamp === latestRunDate);
-                    if (latest) { setSelectedAnalysis(latest); }
-                  }}
-                  className="ml-auto px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 font-medium transition-colors"
-                >
-                  Jump to latest
-                </button>
-              </div>
-            )}
 
             {/* ===== Tab 0: Saved Analyses ===== */}
             {activeTab === 0 && (
