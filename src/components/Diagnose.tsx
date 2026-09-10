@@ -61,6 +61,7 @@ import {
 import {
   applyTickDensityRoleCorrection,
   cropAllChartRegions,
+  determineFftEnvelopeRoles,
   peakXPercent,
   peakYPercent,
   requestSpectrumRegionDetection,
@@ -68,6 +69,7 @@ import {
   type ChartRegionDetectStatus,
   type ChartRegionKind,
   type CroppedChartRegions,
+  type RoleDecision,
   type SpectrumChartPeak,
   type SpectrumRegionDetection
 } from "../lib/spectrumChartRegions";
@@ -1629,6 +1631,25 @@ export default function Diagnose({
   const [croppedCharts, setCroppedCharts] = useState<CroppedChartRegions>({});
   const [chartRegionError, setChartRegionError] = useState<string | null>(null);
 
+  const [manualRoleSwaps, setManualRoleSwaps] = useState<Partial<Record<"fft" | "envelope", boolean>>>({});
+
+  const { swappedDetection, displayCroppedCharts } = useMemo(() => {
+    const s = manualRoleSwaps;
+    if (!chartRegionDetection || (!s.fft && !s.envelope)) return { swappedDetection: chartRegionDetection, displayCroppedCharts: croppedCharts };
+    const { regions: r, axisRanges: a, peaks: p, xTickCounts: x } = chartRegionDetection;
+    const regions = { ...r }; const ax = { ...(a || {}) }; const peaks = [...(p || [])]; const xc = x ? { ...x } : undefined;
+    if (s.fft && regions.fft && regions.envelope) {
+      const t = regions.fft; regions.fft = regions.envelope; regions.envelope = t;
+      if (xc) { const tt = xc.fft; xc.fft = xc.envelope; xc.envelope = tt; }
+      if (ax.fft !== undefined || ax.envelope !== undefined) { const ta = ax.fft; ax.fft = ax.envelope; ax.envelope = ta; }
+      for (let i = 0; i < peaks.length; i++) { const c = peaks[i].chart; if (c === "fft") peaks[i] = { ...peaks[i], chart: "envelope" as const }; else if (c === "envelope") peaks[i] = { ...peaks[i], chart: "fft" as const }; }
+    }
+    return {
+      swappedDetection: { ...chartRegionDetection, regions, axisRanges: ax, peaks, xTickCounts: xc },
+      displayCroppedCharts: s.fft ? { ...croppedCharts, fft: croppedCharts.envelope, envelope: croppedCharts.fft } : croppedCharts,
+    };
+  }, [chartRegionDetection, manualRoleSwaps, croppedCharts]);
+
   // Spectral data state management — honest empty/error/sample modes
   const [spectralHasData, setSpectralHasData] = useState(false);
   const [spectralIsExtractionError, setSpectralIsExtractionError] = useState(false);
@@ -1880,9 +1901,9 @@ export default function Diagnose({
   const componentOptions = selectedAsset?.components ?? [];
   const hasSpectrumImage = Boolean(spectrumUpload?.preview);
   const hasThermalImage = Boolean(thermalUpload?.preview);
-  const useCroppedFft = Boolean(croppedCharts.fft);
-  const useCroppedTwf = Boolean(croppedCharts.twf);
-  const useCroppedEnvelope = Boolean(croppedCharts.envelope);
+  const useCroppedFft = Boolean(displayCroppedCharts.fft);
+  const useCroppedTwf = Boolean(displayCroppedCharts.twf);
+  const useCroppedEnvelope = Boolean(displayCroppedCharts.envelope);
   const chartOverlayPeaks = useMemo(() => {
     const fromVision = chartRegionDetection?.peaks || [];
     if (fromVision.length > 0) return fromVision;
@@ -2244,6 +2265,12 @@ useEffect(() => {
     },
     []
   );
+
+  useEffect(() => {
+    const k = `chart-role-swaps-${savedAnalysisId || browseAssetTag || "latest"}`;
+    if (chartRegionDetection && !Object.keys(manualRoleSwaps).length) { try { const r = localStorage.getItem(k); if (r) setManualRoleSwaps(JSON.parse(r)); } catch {} }
+    if (chartRegionDetection) { try { if (manualRoleSwaps.fft || manualRoleSwaps.envelope) localStorage.setItem(k, JSON.stringify(manualRoleSwaps)); else localStorage.removeItem(k); } catch {} }
+  }, [manualRoleSwaps, chartRegionDetection, savedAnalysisId, browseAssetTag]);
 
   // Animate health gauge when results appear
   useEffect(() => {
@@ -6083,22 +6110,34 @@ useEffect(() => {
                       Locating FFT panel…
                     </div>
                   )}
-                  {useCroppedFft && croppedCharts.fft ? (
+                  {useCroppedFft && swappedDetection?.regions.fft ? (
+                    <>
                     <CroppedChartPanel
                       title="Cropped FFT Spectrum"
-                      imageUrl={croppedCharts.fft}
+                      imageUrl={displayCroppedCharts.fft!}
                       peaks={chartOverlayPeaks}
                       regionKind="fft"
-                      axis={chartRegionDetection?.axisRanges?.fft}
+                      axis={swappedDetection?.axisRanges?.fft}
                       className="h-64"
                       onExpand={() =>
                         setExpandedCrop({
                           kind: "fft",
                           title: "FFT Spectrum (expanded)",
-                          imageUrl: croppedCharts.fft!
+                          imageUrl: displayCroppedCharts.fft!
                         })
                       }
                     />
+                    {(() => {
+                      const d = swappedDetection ? determineFftEnvelopeRoles(swappedDetection.regions.fft, swappedDetection.regions.envelope, swappedDetection.xTickCounts?.fft, swappedDetection.xTickCounts?.envelope) : null;
+                      if (!d || !swappedDetection?.regions.fft) return null;
+                      return (
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${d.borderline ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-700/50 text-slate-400'}`}>role: fft via wider-panel rule ({Math.round(d.fftWidth * 100)}%, {d.fftTicks} labels)</span>
+                          {d.borderline && <button type="button" onClick={() => setManualRoleSwaps(p => ({ ...p, fft: !p.fft }))} className="text-[10px] text-amber-400 hover:text-amber-300 underline cursor-pointer">Swap FFT / Envelope</button>}
+                        </div>
+                      );
+                    })()}
+                    </>
 ) : (
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart
@@ -6274,22 +6313,34 @@ useEffect(() => {
 
                 <h4 className="text-sm font-bold text-white pt-1">Demodulated / Enveloped Spectrum</h4>
                 <div className="h-40 w-full relative">
-                  {useCroppedEnvelope && croppedCharts.envelope ? (
+                  {useCroppedEnvelope && swappedDetection?.regions.envelope ? (
+                    <>
                     <CroppedChartPanel
                       title="Cropped Envelope Spectrum"
-                      imageUrl={croppedCharts.envelope}
+                      imageUrl={displayCroppedCharts.envelope!}
                       peaks={chartOverlayPeaks}
                       regionKind="envelope"
-                      axis={chartRegionDetection?.axisRanges?.envelope}
+                      axis={swappedDetection?.axisRanges?.envelope}
                       className="h-40"
                       onExpand={() =>
                         setExpandedCrop({
                           kind: "envelope",
                           title: "Demodulated / Enveloped Spectrum (expanded)",
-                          imageUrl: croppedCharts.envelope!
+                          imageUrl: displayCroppedCharts.envelope!
                         })
                       }
                     />
+                    {(() => {
+                      const d = swappedDetection ? determineFftEnvelopeRoles(swappedDetection.regions.fft, swappedDetection.regions.envelope, swappedDetection.xTickCounts?.fft, swappedDetection.xTickCounts?.envelope) : null;
+                      if (!d || !swappedDetection?.regions.envelope) return null;
+                      return (
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${d.borderline ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-700/50 text-slate-400'}`}>role: envelope via wider-panel rule ({Math.round(d.envWidth * 100)}%, {d.envTicks} labels)</span>
+                          {d.borderline && <button type="button" onClick={() => setManualRoleSwaps(p => ({ ...p, envelope: !p.envelope }))} className="text-[10px] text-amber-400 hover:text-amber-300 underline cursor-pointer">Swap FFT / Envelope</button>}
+                        </div>
+                      );
+                    })()}
+                    </>
                   ) : (
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={ENVELOPE_DATA} margin={{ top: 8, right: 72, left: 0, bottom: 0 }}>
@@ -6731,7 +6782,7 @@ useEffect(() => {
           imageUrl={expandedCrop.imageUrl}
           peaks={chartOverlayPeaks}
           regionKind={expandedCrop.kind}
-          axis={chartRegionDetection?.axisRanges?.[expandedCrop.kind]}
+          axis={swappedDetection?.axisRanges?.[expandedCrop.kind]}
           onClose={() => setExpandedCrop(null)}
         />
       )}
