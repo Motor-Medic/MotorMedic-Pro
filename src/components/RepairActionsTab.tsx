@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useCallback } from "react";
-import { FileText, ArrowUp, ArrowDown, Minus, Save, Check, Copy } from "lucide-react";
+import { FileText, ArrowUp, ArrowDown, Minus, Save, Check, Copy, Lock, Shield } from "lucide-react";
 import { getPrescription, DICTIONARY_VERSION, type PrescriptivePackage } from "../lib/maintenance/prescriptiveDictionary";
 import type { SavedAnalysisResult, SavedFaultItem } from "../lib/analysisPersistence";
 
@@ -109,12 +109,12 @@ function computePriorityScore(amplitude: number | null, trend: { delta: number }
 }
 
 // ── Ranked Fault Card ──────────────────────────────────────────────────────
-function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, replacementCost, onRepairCostChange, onReplacementCostChange, rulDays, intervalLabel }: {
+function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, replacementCost, onRepairCostChange, onReplacementCostChange, rulDays, intervalLabel, planningInputs }: {
   key?: React.Key; fault: SavedFaultItem; prescription: PrescriptivePackage; amplitude: number | null;
   trend: { first: number; last: number; delta: number } | null; timing: TimingResult | null;
   repairCost: number | null; replacementCost: number | null;
   onRepairCostChange: (v: number | null) => void; onReplacementCostChange: (v: number | null) => void;
-  rulDays: number | null; intervalLabel: string;
+  rulDays: number | null; intervalLabel: string; planningInputs: PlanningInputs | null;
 }) {
   const { severityZones } = prescription;
   const barMax = severityZones.dangerMmS * 1.3;
@@ -130,6 +130,20 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
       </div>
       {prescription.isMapped ? (
         <>
+          {(prescription.safety.loto.length > 0 || prescription.safety.ppe) && (
+            <div className="flex flex-wrap gap-1.5">
+              {prescription.safety.loto.map((entry, i) => (
+                <span key={`loto-${i}`} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  <Lock className="h-2.5 w-2.5" />{entry}
+                </span>
+              ))}
+              {prescription.safety.ppe && (
+                <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 border border-red-500/30">
+                  <Shield className="h-2.5 w-2.5" />{prescription.safety.ppe}
+                </span>
+              )}
+            </div>
+          )}
           {prescription.procedure.length > 0 && (
             <div>
               <h5 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Procedure</h5>
@@ -186,6 +200,20 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
               {!timing.executeBy && timing.method !== "no growth" && <div className="text-red-400">{timing.recommendation}</div>}
               <div className="text-slate-300">{timing.recommendation}</div>
               {timing.costOfWait && <div className="text-slate-500">{timing.costOfWait}</div>}
+              {timing.executeBy && planningInputs?.leadTimeDays != null && planningInputs?.nextShutdownDate != null && planningInputs?.downtimeCostPerDay != null && (() => {
+                const daysToShutdown = Math.round((new Date(planningInputs.nextShutdownDate!).getTime() - Date.now()) / 86400000);
+                const lead = planningInputs.leadTimeDays!;
+                if (daysToShutdown > 0 && daysToShutdown < lead) {
+                  const gap = lead - daysToShutdown;
+                  const cost = planningInputs.downtimeCostPerDay!;
+                  return (
+                    <div className="text-[11px] px-2 py-1 rounded bg-red-500/15 text-red-300 border border-red-500/30 mt-1">
+                      High Risk: part lead time ({lead}d) exceeds window to next shutdown ({daysToShutdown}d) — ${cost.toLocaleString()}/day x {gap}d gap = ${(cost * gap).toLocaleString()} exposure
+                    </div>
+                  );
+                }
+                return null;
+              })()}
             </div>
           )}
           {!timing && <div className="text-sm text-slate-500 border-t border-slate-800 pt-2 mt-2">enter planning inputs to compute timing</div>}
@@ -215,8 +243,8 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
                 <div className="pt-1 font-semibold text-sm">
                   {rulDays != null ? (
                     repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD && rulDays < REPLACE_RUL_THRESHOLD_DAYS
-                      ? <span className="text-red-400">Recommend: REPLACE</span>
-                      : <span className="text-emerald-400">Recommend: REPAIR</span>
+                      ? <span className="text-red-400">Evaluate Capital Replacement</span>
+                      : <span className="text-emerald-400">Proceed with Planned Repair</span>
                   ) : (
                     <span className="text-slate-300">not time-critical - choose on cost (cheaper: <span className="font-mono">{repairCost <= replacementCost ? `repair $${repairCost.toLocaleString()}` : `replace $${replacementCost.toLocaleString()}`}</span>)</span>
                   )}
@@ -376,7 +404,8 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
               repairCost={entry.repair} replacementCost={entry.replacement}
               onRepairCostChange={(v) => setRepairCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], repair: v } }))}
               onReplacementCostChange={(v) => setRepairCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], replacement: v } }))}
-              rulDays={rul.days} intervalLabel={rul.label || (hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback)?.intervalLabel ?? "" : "")} />
+              rulDays={rul.days} intervalLabel={rul.label || (hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback)?.intervalLabel ?? "" : "")}
+              planningInputs={planningInputs} />
           );
         })}
       </div>
