@@ -18,6 +18,8 @@ import {
   type EvidenceGroup,
   type PriorityCode
 } from "./workOrderText";
+import { getPrescription, DICTIONARY_VERSION } from "../maintenance/prescriptiveDictionary";
+import type { SavedAnalysisResult, SavedFaultItem } from "../analysisPersistence";
 
 export type CmmsTargetId =
   | "sap"
@@ -592,4 +594,199 @@ function getValueFromContext(ctx: CmmsPayloadContext, path: string): unknown {
   }
 
   return current;
+}
+
+// ---------------------------------------------------------------------------
+// buildBridgeContext — assembles CmmsPayloadContext from a SavedAnalysisResult
+// ---------------------------------------------------------------------------
+
+/** Re-exported from prescriptiveDictionary for convenience. */
+export { DICTIONARY_VERSION } from "../maintenance/prescriptiveDictionary";
+
+function _n(v: unknown): number {
+  return (typeof v === "number" || typeof v === "string") && Number.isFinite(Number(v)) ? Number(v) : NaN;
+}
+
+function _parsePeaks(row: SavedAnalysisResult | null): Array<{ frequency: number; amplitude: number }> {
+  if (!row) return [];
+  const out: Array<{ frequency: number; amplitude: number }> = [];
+  const walk = (v: unknown): void => {
+    if (!v || typeof v !== "object") return;
+    if (Array.isArray(v)) { for (const it of v) walk(it); return; }
+    const o = v as Record<string, unknown>;
+    const f = _n(o.frequencyHz ?? o.frequency_hz ?? o.freqHz ?? o.freq_hz ?? o.frequency ?? o.freq ?? o.hz ?? o.count);
+    const a = _n(o.amplitude ?? o.amp ?? o.value);
+    if (f > 0 && a > 0) { out.push({ frequency: f, amplitude: a }); return; }
+    for (const k of ["record", "telemetry_data", "telemetry", "vibration_trend_record", "spectral", "spectrum", "peaks", "fft_data", "vibration_peaks"]) {
+      if (o[k] != null) walk(o[k]);
+    }
+  };
+  walk(row);
+  return out;
+}
+
+function _findAmplitude(peaks: Array<{ frequency: number; amplitude: number }>, targetHz: number, tolHz = 2): number | null {
+  let best: number | null = null; let bestDist = Infinity;
+  for (const p of peaks) { const d = Math.abs(p.frequency - targetHz); if (d <= tolHz && d < bestDist) { bestDist = d; best = p.amplitude; } }
+  return best;
+}
+
+function _faultFreq(fault: SavedFaultItem): number | null {
+  const hz = fault.frequencyHz ?? (typeof fault.frequency === "number" ? fault.frequency : typeof fault.frequency === "string" ? Number(fault.frequency) : NaN);
+  return Number.isFinite(hz) && hz > 0 ? hz : null;
+}
+
+function _avgIntervalDays(timestamps: string[]): { days: number; fallback: boolean } {
+  if (timestamps.length < 2) return { days: 30, fallback: true };
+  const sorted = [...timestamps].sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+  let total = 0;
+  for (let i = 1; i < sorted.length; i++) { total += (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / 86400000; }
+  const avg = total / (sorted.length - 1);
+  return { days: Math.round(avg) || 30, fallback: false };
+}
+
+const _WEIGHTS = { severity: 0.4, trend: 0.3, downtime: 0.2, base: 0.1 } as const;
+
+export interface BuildBridgeOpts {
+  planningInputs: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null;
+  loadedAnalyses?: SavedAnalysisResult[];
+}
+
+/**
+ * Build a full `CmmsPayloadContext` from a saved analysis, including
+ * prescriptive enrichment (procedure, safety, timing, priority, breakeven).
+ *
+ * This is the single assembly point that AnalysisReport and RepairActionsTab
+ * both call so the bridge receives identical payloads regardless of origin.
+ */
+export function buildBridgeContext(
+  analysis: SavedAnalysisResult | null,
+  opts: BuildBridgeOpts
+): CmmsPayloadContext {
+  const a = analysis;
+  const faults: SavedFaultItem[] = a?.fault_list ?? [];
+  const rpm = a?.telemetry_data && typeof a.telemetry_data === "object"
+    ? (a.telemetry_data as Record<string, unknown>).rpm ?? null
+    : null;
+
+  // History peaks (same logic as RepairActionsTab)
+  const historyPeaks = (opts.loadedAnalyses ?? [])
+    .filter((r) => r.id !== a?.id && r.asset_id === a?.asset_id && r.component === a?.component
+      && (r.analysis_type ?? "vibration") === (a?.analysis_type ?? "vibration")
+      && new Date(r.timestamp).getTime() <= new Date(a?.timestamp ?? 0).getTime())
+    .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime())
+    .map((r) => ({ timestamp: r.timestamp, peaks: _parsePeaks(r) }));
+
+  const allTimestamps = historyPeaks.map((h) => h.timestamp);
+  if (a?.timestamp) allTimestamps.push(a.timestamp);
+  const avgInterval = _avgIntervalDays(allTimestamps);
+
+  // Pick top fault (first in list, same as ranked[0])
+  const topFault = faults[0] ?? null;
+  const topRx = topFault ? getPrescription(topFault.title) : null;
+  const topHz = topFault ? _faultFreq(topFault) : null;
+  const topAmplitude = topHz != null ? _findAmplitude(_parsePeaks(a), topHz) : null;
+
+  // Trend for top fault
+  let topTrend: { first: number; last: number; delta: number } | null = null;
+  if (topHz != null && topAmplitude != null) {
+    const series: number[] = [];
+    for (const hp of historyPeaks) { const am = _findAmplitude(hp.peaks, topHz); if (am != null) series.push(am); }
+    series.push(topAmplitude);
+    if (series.length >= 2) {
+      topTrend = { first: series[0], last: series[series.length - 1], delta: series[series.length - 1] - series[0] };
+    }
+  }
+
+  // Timing for top fault
+  const pi = opts.planningInputs;
+  const hasInputs = pi != null && pi.leadTimeDays != null && pi.nextShutdownDate != null && pi.downtimeCostPerDay != null;
+  let topTiming: { executeBy: string | null; recommendation: string } | null = null;
+  if (hasInputs && topRx && topTrend) {
+    const alarmMmS = topRx.severityZones.alarmMmS;
+    if (topTrend.delta > 0.005) {
+      const runsToAlarm = (alarmMmS - topTrend.last) / topTrend.delta;
+      if (Number.isFinite(runsToAlarm) && runsToAlarm > 0) {
+        const daysToAlarm = Math.round(runsToAlarm * avgInterval.days);
+        const execDate = new Date(); execDate.setDate(execDate.getDate() + daysToAlarm);
+        topTiming = { executeBy: execDate.toISOString().slice(0, 10), recommendation: `execute within ${pi!.leadTimeDays} days of parts arrival` };
+      } else {
+        topTiming = { executeBy: null, recommendation: "amplitude at or above alarm - execute immediately" };
+      }
+    } else {
+      topTiming = { executeBy: null, recommendation: "no growth trend - schedule at convenience" };
+    }
+  }
+
+  // Priority score for top fault
+  let topPriority: { score: number; breakdown: string } | null = null;
+  if (topRx) {
+    const sevRatio = topAmplitude != null ? Math.min(topAmplitude / topRx.severityZones.dangerMmS, 1) : 0;
+    const trendRatio = topTrend != null && topAmplitude != null && topAmplitude > 0 ? Math.min(Math.max(topTrend.delta, 0) / topAmplitude, 1) : 0;
+    const dtRatio = pi?.downtimeCostPerDay != null ? Math.min(pi.downtimeCostPerDay / 10000, 1) : 0;
+    const baseRatio = (6 - topRx.defaultPriority) / 5;
+    const rawSum = _WEIGHTS.severity * sevRatio + _WEIGHTS.trend * trendRatio + _WEIGHTS.downtime * dtRatio + _WEIGHTS.base * baseRatio;
+    const score = Math.round(rawSum * 100);
+    const fmt = (v: number) => v.toFixed(4);
+    topPriority = { score, breakdown: `sev: ${fmt(sevRatio)} x ${_WEIGHTS.severity} | trend: ${fmt(trendRatio)} x ${_WEIGHTS.trend} | dt: ${fmt(dtRatio)} x ${_WEIGHTS.downtime} | base: ${fmt(baseRatio)} x ${_WEIGHTS.base}` };
+  }
+
+  // Breakeven for top fault
+  let topBreakeven: { verdict: string } | null = null;
+  if (topRx && topTrend) {
+    const rulRate = topTrend.delta;
+    if (rulRate > 0.005) {
+      const runsToAlarm = (topRx.severityZones.alarmMmS - topTrend.last) / rulRate;
+      if (Number.isFinite(runsToAlarm) && runsToAlarm > 0) {
+        const rulDays = Math.round(runsToAlarm * avgInterval.days);
+        topBreakeven = { verdict: rulDays < 365 ? "REPAIR" : "not time-critical" };
+      } else {
+        topBreakeven = { verdict: "REPAIR" };
+      }
+    }
+  }
+
+  // Confidence from fault
+  const confidencePercent = topFault?.confidencePercent ?? (topFault?.confidence != null ? topFault.confidence * 100 : null);
+
+  const rawFaults = Array.isArray(a?.fault_list) ? a!.fault_list : [];
+  const mappedFaults = rawFaults.filter((f) => f.title && getPrescription(f.title).isMapped);
+  const faultTitles = mappedFaults.length > 0 ? mappedFaults.map((f) => f.title) : (a?.primary_fault ? [a.primary_fault] : []);
+
+  return {
+    assetTag: a?.asset_id ?? "",
+    component: a?.component ?? "",
+    faultTitle: faultTitles[0] ?? "Unspecified fault",
+    severity: _mapSeverity(a?.severity),
+    confidencePercent,
+    healthScore: a?.health_score ?? null,
+    horizonHours: null,
+    horizonDriver: null,
+    horizonBasis: null,
+    corroborationPercent: null,
+    technologiesWithData: a?.analysis_type ? [a.analysis_type] : [],
+    signOffStatus: a?.primary_fault ? "approved" : "pending",
+    signOffEngineer: null,
+    signOffAt: a?.created_at ?? a?.timestamp ?? null,
+    recommendations: Array.isArray(a?.recommendations) ? a!.recommendations.map(String) : [],
+    diagnosisId: a?.id ?? null,
+    diagnosisAt: a?.timestamp ?? null,
+    requiredParts: topRx?.parts?.map((p) => `${p.name} (${p.spec}) x${p.qty}`) ?? [],
+    rationale: a?.summary ?? null,
+    evidence: undefined,
+    prescriptions: topRx ? [{ procedure: topRx.procedure, parts: topRx.parts, tools: topRx.tools, laborHours: topRx.laborHours }] : undefined,
+    safety: topRx ? [topRx.safety] : undefined,
+    timing: topTiming ? [topTiming] : undefined,
+    priority: topPriority ?? undefined,
+    breakeven: topBreakeven,
+    planningInputs: pi,
+    dictionaryVersion: DICTIONARY_VERSION,
+  };
+}
+
+function _mapSeverity(raw: string | null | undefined): DiagnosisSeverity {
+  const s = String(raw ?? "").toLowerCase();
+  if (s.includes("high") || s.includes("crit") || s.includes("danger")) return "CRITICAL";
+  if (s.includes("low") || s.includes("normal") || s.includes("good")) return "NORMAL";
+  return "ANOMALY";
 }

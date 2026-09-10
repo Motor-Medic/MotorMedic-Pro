@@ -1,7 +1,10 @@
 import React, { useMemo, useState, useEffect, useCallback } from "react";
-import { FileText, ArrowUp, ArrowDown, Minus, Save, Check, Copy, Lock, Shield } from "lucide-react";
+import { FileText, ArrowUp, ArrowDown, Minus, Save, Check, Lock, Shield, Wrench } from "lucide-react";
 import { getPrescription, DICTIONARY_VERSION, type PrescriptivePackage } from "../lib/maintenance/prescriptiveDictionary";
 import type { SavedAnalysisResult, SavedFaultItem } from "../lib/analysisPersistence";
+import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
+import { buildBridgeContext } from "../lib/diagnostics/cmmsPayload";
+import { useToast } from "./Toast";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function parsePeaks(row: SavedAnalysisResult | null): Array<{ frequency: number; amplitude: number }> {
@@ -273,7 +276,8 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [showBridge, setShowBridge] = useState(false);
+  const { toast } = useToast();
   useEffect(() => {
     if (!assetId) { setLoaded(true); return; }
     setLoaded(false);
@@ -325,47 +329,6 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
     const payload = { ...draftInputs, repairCosts };
     try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); setPlanningInputs({ ...payload }); setSaved(true); setTimeout(() => setSaved(false), 3000); } finally { setSaving(false); }
   };
-  const payloadJson = useMemo(() => {
-    const a = selectedAnalysis;
-    const p = planningInputs;
-    return JSON.stringify({
-      asset: a?.asset_id ?? null, component: a?.component ?? null,
-      analysis: (() => {
-        const rpm = a?.telemetry_data && typeof a.telemetry_data === "object" ? (a.telemetry_data as Record<string, unknown>).rpm ?? null : null;
-        return { id: a?.id ?? null, date: a?.timestamp ?? null, rpm, rpm_source: rpm != null ? "telemetry_data" : null };
-      })(),
-      priority: (() => {
-        const top = ranked[0]; if (!top) return { score: 0, rawSum: 0, weights: WEIGHTS, breakdown: "" };
-        const sc = computePriorityScore(top.amplitude, top.trend, top.prescription.severityZones.dangerMmS, top.prescription.defaultPriority, p?.downtimeCostPerDay ?? null);
-        return { score: sc.score, rawSum: sc.rawSum, weights: WEIGHTS, breakdown: sc.breakdown };
-      })(),
-      faults: ranked.map(({ fault, prescription, amplitude, trend }) => {
-        const entry = repairCosts[fault.title] ?? { repair: null, replacement: null };
-        const timing = hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, p, avgInterval.days, avgInterval.fallback) : null;
-        const rul = computeRulDays(trend, prescription.severityZones.alarmMmS, avgInterval.days, avgInterval.fallback);
-        const hasCosts = entry.repair != null && entry.replacement != null && entry.replacement! > 0;
-        let breakeven: { verdict: string; ratio: number | null; rulDays: number | null } | null = null;
-        if (hasCosts) {
-          const ratio = entry.repair! / entry.replacement!;
-          const verdict = rul.days != null ? (ratio >= REPLACE_RATIO_THRESHOLD && rul.days < REPLACE_RUL_THRESHOLD_DAYS ? "REPLACE" : "REPAIR") : "not time-critical";
-          breakeven = { verdict, ratio: +ratio.toFixed(4), rulDays: rul.days };
-        } else {
-          breakeven = { verdict: "not entered", ratio: null, rulDays: rul.days };
-        }
-        return {
-          diagnosis: fault.title, isMapped: prescription.isMapped, defaultPriority: prescription.defaultPriority,
-          procedure: prescription.procedure, parts: prescription.parts, tools: prescription.tools, laborHours: prescription.laborHours,
-          severity: { measured: amplitude, alarm: prescription.severityZones.alarmMmS, danger: prescription.severityZones.dangerMmS },
-          timing: timing ? { executeBy: timing.executeBy, recommendation: timing.recommendation, avgIntervalDays: avgInterval.days } : { executeBy: null, recommendation: "missing planning inputs", avgIntervalDays: avgInterval.days },
-          breakeven,
-        };
-      }),
-      planning: { leadTimeDays: p?.leadTimeDays ?? null, nextShutdown: p?.nextShutdownDate ?? null, downtimeCostPerDay: p?.downtimeCostPerDay ?? null },
-      dictionaryVersion: DICTIONARY_VERSION,
-    }, null, 2);
-  }, [selectedAnalysis, planningInputs, ranked, repairCosts, hasInputs, avgInterval]);
-  const copyPayload = useCallback(() => { navigator.clipboard.writeText(payloadJson).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }, [payloadJson]);
-
   // ── Conditional guards (AFTER all hooks) ──────────────────────────────
   if (!isActive) return null;
   if (faults.length === 0) {
@@ -373,7 +336,12 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   }
   return (
     <div className="space-y-4 p-4">
-      <h3 className="text-base font-semibold text-slate-200">Prescriptive Action Plan</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-semibold text-slate-200">Prescriptive Action Plan</h3>
+        <button onClick={() => setShowBridge(true)} className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded bg-amber-600/80 hover:bg-amber-500 text-white font-semibold transition-colors">
+          <Wrench className="h-3 w-3" />Open Work Order Bridge
+        </button>
+      </div>
       {hasLaterSameModality && (
         <p className="text-[11px] text-amber-400/80">as of {new Date(selectedAnalysis!.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} - later runs excluded from trends</p>
       )}
@@ -409,16 +377,22 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
           );
         })}
       </div>
-      <div className="bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">CMMS Work Order Payload</div>
-          <button onClick={copyPayload} className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
-            <Copy className="w-3 h-3" />{copied ? "copied ✓" : "Copy"}
-          </button>
-        </div>
-        <pre className="text-[10px] text-slate-300 bg-slate-900/80 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap">{payloadJson}</pre>
-      </div>
       <p className="text-[10px] text-slate-600 text-center pt-2">Prescriptions from prescriptiveDictionary v{DICTIONARY_VERSION} – deterministic, curated content</p>
+      {showBridge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowBridge(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-white">CMMS Work Order Bridge</h2>
+              <button onClick={() => setShowBridge(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
+            </div>
+            <CmmsWorkOrderBridge
+              context={buildBridgeContext(selectedAnalysis, { planningInputs, loadedAnalyses })}
+              sectionId="repair-actions-bridge"
+              onToast={toast}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

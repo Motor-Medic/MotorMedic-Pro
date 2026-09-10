@@ -38,7 +38,8 @@ import RepairActionsTab from "./RepairActionsTab";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
-import WorkOrderGenerator from "./WorkOrderGenerator";
+import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
+import { buildBridgeContext } from "../lib/diagnostics/cmmsPayload";
 import { RunHistoryTrigger, RunHistoryPopover, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 import MultiTechAssessment from "./reports/MultiTechAssessment";
@@ -7174,8 +7175,9 @@ export default function AnalysisReport({
 
         <span className="h-6 border-l border-slate-700 shrink-0" />
 
-        <button type="button" onClick={() => createWorkOrderAndGo("Work order staged — opening Maintenance Calendar.")}
-          className="flex items-center gap-1.5 h-9 px-3 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-sm font-semibold rounded-lg cursor-pointer transition-colors shrink-0">
+        <button type="button" onClick={() => selectedAnalysis && setShowWorkOrder(true)}
+          disabled={!selectedAnalysis}
+          className="flex items-center gap-1.5 h-9 px-3 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-sm font-semibold rounded-lg cursor-pointer transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed">
           <Wrench className="h-4 w-4" /><span>Create Work Order</span>
         </button>
 
@@ -7918,34 +7920,21 @@ export default function AnalysisReport({
       )}
 
       {showWorkOrder && (
-        <WorkOrderGenerator
-          assetName={loadedAssetLabel || selectedAnalysis?.asset_id || reportAsset.name}
-          tagId={selectedAnalysis?.asset_id || reportAsset.tag}
-          faultCode={
-            selectedAnalysis?.primary_fault ||
-            (Array.isArray(selectedAnalysis?.fault_list) &&
-            selectedAnalysis.fault_list[0]?.title
-              ? String(selectedAnalysis.fault_list[0].title)
-              : "—")
-          }
-          faultSeverity={(() => {
-            const raw = String(
-              (Array.isArray(selectedAnalysis?.fault_list) &&
-                selectedAnalysis.fault_list[0]?.severity) ||
-                ""
-            ).toLowerCase();
-            if (raw.includes("high") || raw.includes("crit")) return "High";
-            if (raw.includes("low")) return "Low";
-            return "Medium";
-          })()}
-          recommendations={(Array.isArray(selectedAnalysis?.recommendations)
-            ? selectedAnalysis.recommendations
-            : []
-          ).map((r) => ({ text: String(r), priority: "Medium" as const }))}
-          parts={workOrderParts}
-          estimatedHours={0}
-          onClose={() => setShowWorkOrder(false)}
-        />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowWorkOrder(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-bold text-white">CMMS Work Order Bridge</h2>
+              <button onClick={() => setShowWorkOrder(false)} className="text-slate-400 hover:text-white transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <CmmsWorkOrderBridge
+              context={buildBridgeContext(selectedAnalysis, { planningInputs: null, loadedAnalyses })}
+              sectionId="analysis-report-bridge"
+              onToast={toast}
+            />
+          </div>
+        </div>
       )}
 
       <RunHistoryPopover
