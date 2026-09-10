@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useEffect } from "react";
-import { FileText, ArrowUp, ArrowDown, Minus, Save, Check } from "lucide-react";
+import React, { useMemo, useState, useEffect, useCallback } from "react";
+import { FileText, ArrowUp, ArrowDown, Minus, Save, Check, Copy } from "lucide-react";
 import { getPrescription, DICTIONARY_VERSION, type PrescriptivePackage } from "../lib/maintenance/prescriptiveDictionary";
 import type { SavedAnalysisResult, SavedFaultItem } from "../lib/analysisPersistence";
 
@@ -84,6 +84,28 @@ function computeRulDays(trend: { first: number; last: number; delta: number } | 
   const runsToAlarm = (alarmMmS - trend.last) / ratePerRun;
   if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { days: 0, label: "" };
   return { days: Math.round(runsToAlarm * avgDays), label: intervalFallback ? "linear trend extrapolation - not a failure model; avg run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; avg run interval ${avgDays} days` };
+}
+
+// ── Priority Score ─────────────────────────────────────────────────────────
+// Weights: severity 0.4, trend 0.3, downtime 0.2, base 0.1
+// Example: resting unbalance (sev 0.0223, trend 0.92, downtime 0, base 0.8)
+//   => rawSum 0.36493 => score 36
+const WEIGHTS = { severity: 0.4, trend: 0.3, downtime: 0.2, base: 0.1 } as const;
+function computePriorityScore(amplitude: number | null, trend: { delta: number } | null, dangerMmS: number, defaultPriority: 1 | 2 | 3 | 4 | 5, downtimeCostPerDay: number | null): { score: number; rawSum: number; breakdown: string } {
+  const sevRatio = amplitude != null ? Math.min(amplitude / dangerMmS, 1) : 0;
+  const trendRatio = trend != null && amplitude != null && amplitude > 0 ? Math.min(Math.max(trend.delta, 0) / amplitude, 1) : 0;
+  const dtRatio = downtimeCostPerDay != null ? Math.min(downtimeCostPerDay / 10000, 1) : 0;
+  const baseRatio = (6 - defaultPriority) / 5;
+  const sevTerm = WEIGHTS.severity * sevRatio;
+  const trendTerm = WEIGHTS.trend * trendRatio;
+  const dtTerm = WEIGHTS.downtime * dtRatio;
+  const baseTerm = WEIGHTS.base * baseRatio;
+  const rawSum = sevTerm + trendTerm + dtTerm + baseTerm;
+  const score = Math.round(rawSum * 100);
+  const fmt = (v: number) => v.toFixed(4);
+  const dtLabel = downtimeCostPerDay != null ? "entered" : "not entered";
+  const breakdown = `sev: ${fmt(sevRatio)} x ${WEIGHTS.severity} = ${fmt(sevTerm)} | trend: ${fmt(trendRatio)} x ${WEIGHTS.trend} = ${fmt(trendTerm)} | dt: ${fmt(dtRatio)} x ${WEIGHTS.downtime} = ${fmt(dtTerm)} [${dtLabel}] | base: ${fmt(baseRatio)} x ${WEIGHTS.base} = ${fmt(baseTerm)}`;
+  return { score, rawSum, breakdown };
 }
 
 // ── Ranked Fault Card ──────────────────────────────────────────────────────
@@ -223,6 +245,7 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!assetId) { setLoaded(true); return; }
     setLoaded(false);
@@ -274,6 +297,46 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
     const payload = { ...draftInputs, repairCosts };
     try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); setPlanningInputs({ ...payload }); setSaved(true); setTimeout(() => setSaved(false), 3000); } finally { setSaving(false); }
   };
+  const payloadJson = useMemo(() => {
+    const a = selectedAnalysis;
+    const p = planningInputs;
+    return JSON.stringify({
+      asset: a?.asset_id ?? null, component: a?.component ?? null,
+      analysis: (() => {
+        const rpm = a?.telemetry_data && typeof a.telemetry_data === "object" ? (a.telemetry_data as Record<string, unknown>).rpm ?? null : null;
+        return { id: a?.id ?? null, date: a?.timestamp ?? null, rpm, rpm_source: rpm != null ? "telemetry_data" : null };
+      })(),
+      priority: (() => {
+        const top = ranked[0]; if (!top) return { score: 0, rawSum: 0, weights: WEIGHTS, breakdown: "" };
+        const sc = computePriorityScore(top.amplitude, top.trend, top.prescription.severityZones.dangerMmS, top.prescription.defaultPriority, p?.downtimeCostPerDay ?? null);
+        return { score: sc.score, rawSum: sc.rawSum, weights: WEIGHTS, breakdown: sc.breakdown };
+      })(),
+      faults: ranked.map(({ fault, prescription, amplitude, trend }) => {
+        const entry = repairCosts[fault.title] ?? { repair: null, replacement: null };
+        const timing = hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, p, avgInterval.days, avgInterval.fallback) : null;
+        const rul = computeRulDays(trend, prescription.severityZones.alarmMmS, avgInterval.days, avgInterval.fallback);
+        const hasCosts = entry.repair != null && entry.replacement != null && entry.replacement! > 0;
+        let breakeven: { verdict: string; ratio: number | null; rulDays: number | null } | null = null;
+        if (hasCosts) {
+          const ratio = entry.repair! / entry.replacement!;
+          const verdict = rul.days != null ? (ratio >= REPLACE_RATIO_THRESHOLD && rul.days < REPLACE_RUL_THRESHOLD_DAYS ? "REPLACE" : "REPAIR") : "not time-critical";
+          breakeven = { verdict, ratio: +ratio.toFixed(4), rulDays: rul.days };
+        } else {
+          breakeven = { verdict: "not entered", ratio: null, rulDays: rul.days };
+        }
+        return {
+          diagnosis: fault.title, isMapped: prescription.isMapped, defaultPriority: prescription.defaultPriority,
+          procedure: prescription.procedure, parts: prescription.parts, tools: prescription.tools, laborHours: prescription.laborHours,
+          severity: { measured: amplitude, alarm: prescription.severityZones.alarmMmS, danger: prescription.severityZones.dangerMmS },
+          timing: timing ? { executeBy: timing.executeBy, recommendation: timing.recommendation, avgIntervalDays: avgInterval.days } : { executeBy: null, recommendation: "missing planning inputs", avgIntervalDays: avgInterval.days },
+          breakeven,
+        };
+      }),
+      planning: { leadTimeDays: p?.leadTimeDays ?? null, nextShutdown: p?.nextShutdownDate ?? null, downtimeCostPerDay: p?.downtimeCostPerDay ?? null },
+      dictionaryVersion: DICTIONARY_VERSION,
+    }, null, 2);
+  }, [selectedAnalysis, planningInputs, ranked, repairCosts, hasInputs, avgInterval]);
+  const copyPayload = useCallback(() => { navigator.clipboard.writeText(payloadJson).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); }, [payloadJson]);
 
   // ── Conditional guards (AFTER all hooks) ──────────────────────────────
   if (!isActive) return null;
@@ -316,6 +379,15 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
               rulDays={rul.days} intervalLabel={rul.label || (hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback)?.intervalLabel ?? "" : "")} />
           );
         })}
+      </div>
+      <div className="bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">CMMS Work Order Payload</div>
+          <button onClick={copyPayload} className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors">
+            <Copy className="w-3 h-3" />{copied ? "copied ✓" : "Copy"}
+          </button>
+        </div>
+        <pre className="text-[10px] text-slate-300 bg-slate-900/80 rounded p-2 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap">{payloadJson}</pre>
       </div>
       <p className="text-[10px] text-slate-600 text-center pt-2">Prescriptions from prescriptiveDictionary v{DICTIONARY_VERSION} – deterministic, curated content</p>
     </div>
