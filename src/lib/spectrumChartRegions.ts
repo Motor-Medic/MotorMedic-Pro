@@ -52,6 +52,48 @@ export interface CroppedChartRegions {
   envelope?: string;
 }
 
+export type RoleSource = "label" | "tick-density" | "position-fallback";
+
+export interface RoleDecision {
+  swap: boolean;
+  source: RoleSource;
+  borderline: boolean;
+  fftWidth: number;
+  envWidth: number;
+  fftTicks: number;
+  envTicks: number;
+}
+
+/**
+ * Relative-width role rule: FFT panel is always the WIDER spectral region.
+ * Tie-break: more x-axis tick labels. Borderline when widths within 5% AND counts equal.
+ */
+export function determineFftEnvelopeRoles(
+  fftBox: NormalizedBox | undefined,
+  envBox: NormalizedBox | undefined,
+  fftTicks: number | undefined,
+  envTicks: number | undefined
+): RoleDecision {
+  const fw = fftBox?.width ?? 0;
+  const ew = envBox?.width ?? 0;
+  const ft = fftTicks ?? 0;
+  const et = envTicks ?? 0;
+  if (fw === 0 && ew === 0) return { swap: false, source: "label", borderline: false, fftWidth: 0, envWidth: 0, fftTicks: ft, envTicks: et };
+  const ratio = fw > 0 && ew > 0 ? Math.min(fw, ew) / Math.max(fw, ew) : 0;
+  const within5pct = ratio >= 0.95;
+  const countsEqual = ft === et;
+  const borderline = within5pct && countsEqual && fw > 0 && ew > 0;
+  if (!within5pct) {
+    const swap = ew > fw;
+    return { swap, source: "tick-density", borderline: false, fftWidth: fw, envWidth: ew, fftTicks: ft, envTicks: et };
+  }
+  if (!countsEqual) {
+    const swap = et > ft;
+    return { swap, source: "tick-density", borderline: false, fftWidth: fw, envWidth: ew, fftTicks: ft, envTicks: et };
+  }
+  return { swap: false, source: "tick-density", borderline: true, fftWidth: fw, envWidth: ew, fftTicks: ft, envTicks: et };
+}
+
 export type ChartRegionDetectStatus =
   | "idle"
   | "detecting"
@@ -196,26 +238,19 @@ export async function cropAllChartRegions(
 }
 
 /**
- * Client-side safety: if envelope reports more x-axis ticks than fft, swap roles.
- * FFT typically has 8–12 tick labels; D-Mod/Envelope typically has 4–6.
+ * Client-side safety: re-check fft/envelope roles using the relative-width rule.
  */
 export function applyTickDensityRoleCorrection(
   detection: SpectrumRegionDetection
 ): SpectrumRegionDetection {
-  const fftTicks = Number(detection.xTickCounts?.fft);
-  const envTicks = Number(detection.xTickCounts?.envelope);
-  if (!Number.isFinite(fftTicks) || !Number.isFinite(envTicks)) {
-    return detection;
-  }
-
-  const shouldSwap =
-    envTicks >= fftTicks + 2 || (envTicks >= 8 && fftTicks <= 6) || (fftTicks <= 6 && envTicks >= 7);
-
-  if (!shouldSwap) return detection;
-  if (!detection.regions.fft && !detection.regions.envelope) return detection;
+  const decision = determineFftEnvelopeRoles(
+    detection.regions.fft, detection.regions.envelope,
+    detection.xTickCounts?.fft, detection.xTickCounts?.envelope
+  );
+  if (!decision.swap || (!detection.regions.fft && !detection.regions.envelope)) return detection;
 
   console.log(
-    `[spectrumChartRegions] Client swap fft↔envelope (ticks fft=${fftTicks}, envelope=${envTicks})`
+    `[spectrumChartRegions] Client swap fft↔envelope (wider-panel rule: fft=${decision.fftWidth.toFixed(3)}, env=${decision.envWidth.toFixed(3)})`
   );
 
   const regions = { ...detection.regions };
@@ -245,7 +280,7 @@ export function applyTickDensityRoleCorrection(
     axisRanges,
     xTickCounts,
     peaks,
-    notes: [detection.notes, `client tick-density swap (fft=${fftTicks}→env, env=${envTicks}→fft)`]
+    notes: [detection.notes, `client wider-panel swap (fft=${decision.fftWidth.toFixed(3)}→env, env=${decision.envWidth.toFixed(3)}→fft)`]
       .filter(Boolean)
       .join(" | ")
   };

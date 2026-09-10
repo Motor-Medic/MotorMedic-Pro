@@ -11,6 +11,7 @@
 import OpenAI from "openai";
 import {
   normalizeBox,
+  determineFftEnvelopeRoles,
   type ChartAxisRange,
   type ChartRegionKind,
   type NormalizedBox,
@@ -156,61 +157,7 @@ function swapFftEnvelopeFields(detection: {
 }
 
 /**
- * Decide whether labeled fft/envelope roles should be swapped.
- * Tick density wins: MORE x-axis numeric labels → FFT; FEWER → D-Mod/Envelope.
- */
-function shouldSwapByTickDensity(
-  fftTicks: number | undefined,
-  envTicks: number | undefined
-): { swap: boolean; reason: string } | null {
-  if (
-    !Number.isFinite(fftTicks as number) ||
-    !Number.isFinite(envTicks as number)
-  ) {
-    return null;
-  }
-  const f = Number(fftTicks);
-  const e = Number(envTicks);
-
-  // Clear inversion: envelope panel has denser ticks than fft panel.
-  if (e >= f + 2) {
-    return {
-      swap: true,
-      reason: `tick density inverted (fft=${f}, envelope=${e})`
-    };
-  }
-  // Envelope looks like FFT (8+) while fft looks like D-Mod (≤6).
-  if (e >= 8 && f <= 6) {
-    return {
-      swap: true,
-      reason: `envelope has FFT-like ticks (${e}) vs fft (${f})`
-    };
-  }
-  // Labeled fft is sparse (D-Mod-like) and envelope is denser or mid.
-  if (f <= 6 && e >= 7) {
-    return {
-      swap: true,
-      reason: `fft too sparse (${f}) vs envelope (${e})`
-    };
-  }
-  // Already correct density pattern.
-  if (f >= 8 && e <= 6) {
-    return {
-      swap: false,
-      reason: `tick density OK (fft=${f}, envelope=${e})`
-    };
-  }
-  if (f > e) {
-    return {
-      swap: false,
-      reason: `tick density favors current labels (fft=${f}, envelope=${e})`
-    };
-  }
-  return null;
-}
-
-/**
- * Correct FFT ↔ Envelope using tick density first, then position.
+ * Correct FFT ↔ Envelope using relative-width rule first, then position.
  */
 function correctFftEnvelopeAssignment(
   detection: SpectrumRegionDetection
@@ -229,20 +176,18 @@ function correctFftEnvelopeAssignment(
   const fftBox = regions.fft;
   const envBox = regions.envelope;
 
-  // --- 1) Tick-density correction (primary) ---
-  const tickDecision = shouldSwapByTickDensity(
-    xTickCounts?.fft,
-    xTickCounts?.envelope
-  );
-  if (tickDecision?.swap) {
+  // --- 1) Relative-width rule (primary) ---
+  const widthDecision = determineFftEnvelopeRoles(fftBox, envBox, xTickCounts?.fft, xTickCounts?.envelope);
+  if (widthDecision.swap) {
     console.log(
-      `[detect-spectrum-regions] Swapping fft ↔ envelope (${tickDecision.reason}).`
+      `[detect-spectrum-regions] Swapping fft ↔ envelope (wider-panel rule: fft=${widthDecision.fftWidth.toFixed(3)}, env=${widthDecision.envWidth.toFixed(3)}).`
     );
     swapFftEnvelopeFields(state);
-    notes.push(`swapped by ${tickDecision.reason}`);
-  } else if (tickDecision && !tickDecision.swap) {
-    console.log(`[detect-spectrum-regions] ${tickDecision.reason}`);
-    notes.push(tickDecision.reason);
+    notes.push(`swapped by wider-panel rule (fft=${widthDecision.fftWidth.toFixed(3)}, env=${widthDecision.envWidth.toFixed(3)})`);
+  } else if (!widthDecision.borderline) {
+    const reason = `wider-panel OK (fft=${widthDecision.fftWidth.toFixed(3)}, env=${widthDecision.envWidth.toFixed(3)})`;
+    console.log(`[detect-spectrum-regions] ${reason}`);
+    notes.push(reason);
   } else if (fftBox && envBox) {
     // --- 2) Position fallback when ticks unavailable ---
     const fftC = centerOf(fftBox);
