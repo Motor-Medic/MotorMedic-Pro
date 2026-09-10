@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle, Bell, BellOff, BellRing, Check, CheckCircle2, Clipboard, Clock, Copy,
-  ExternalLink, Loader2, Lock, Microscope, Plus, Search, Settings, Shield, Sparkles,
-  TrendingUp, Upload, Wand2, Webhook, X, Zap
+  AlertTriangle, Bell, BellOff, BellRing, Check, CheckCircle2, Clock,
+  ExternalLink, Lock, Microscope, Plus, Search, Settings, Shield, Sparkles,
+  TrendingUp, Wand2, Webhook, X, Zap
 } from "lucide-react";
 import { navigateToTab } from "../navigation";
 import {
@@ -11,6 +11,8 @@ import {
 } from "recharts";
 import { getEquipmentData, getFlatEquipment, type EquipComponent } from "../data/equipmentDb";
 import { useToast } from "./Toast";
+import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
+import type { CmmsPayloadContext } from "./CmmsWorkOrderBridge";
 import {
   acknowledgeAlert,
   fetchAlerts,
@@ -51,7 +53,6 @@ type CmmsPriority =
   | "Low Priority - Inspect Next Round";
 type BatchScope = "plant" | "boiler" | "selected5";
 type MachineClassId = "rigid-gt15" | "rigid-lte15" | "flex-gt15" | "flex-lte15";
-type AlertsCmmsId = CmmsTarget;
 
 interface AlertAsset {
   id: string;
@@ -146,24 +147,6 @@ const SHELVE_DURATIONS: { id: ShelveDurationId; label: string; hours: number | n
   { id: "24h", label: "24 Hours", hours: 24 },
   { id: "custom", label: "Custom Date", hours: null }
 ];
-
-const CMMS_TARGETS: { id: AlertsCmmsId; label: string }[] = [
-  { id: "SAP PM / S4/HANA Asset Management", label: "SAP PM / S4/HANA Asset Management" },
-  { id: "IBM Maximo Enterprise", label: "IBM Maximo Enterprise" },
-  { id: "MaintainX", label: "MaintainX" },
-  { id: "Fiix CMMS", label: "Fiix CMMS" },
-  { id: "Infor EAM / Hexagon", label: "Infor EAM / Hexagon" },
-  { id: "Other", label: "Other (Custom / Legacy CMMS)" }
-];
-
-const CMMS_EXTRACTED_FIELDS = [
-  "Equipment_ID",
-  "Order_Type",
-  "Malfunction_Desc",
-  "Priority_Code",
-  "Parts_Required",
-  "Tech_Notes"
-] as const;
 
 const CMMS_PRIORITIES: CmmsPriority[] = [
   "High Priority - Emergency PM",
@@ -1388,81 +1371,6 @@ function EscalationSettingsPanel({
 /* CMMS / ERP Integration Panel                                               */
 /* ========================================================================== */
 
-function buildAlertsCmmsBridgeFields(
-  system: AlertsCmmsId,
-  asset: AlertAsset,
-  customName: string
-): { label: string; value: string }[] {
-  const equipId = `${asset.tag}-MotorDE`;
-  const start = "2026-08-06 14:06";
-  const diagnosis =
-    asset.currentVib >= 4.5
-      ? `Outer Race Bearing Defect (BPFO) @ 152 Hz - Amplitude ${asset.currentVib.toFixed(1)} mm/s RMS`
-      : `ISO 20816 threshold exceedance on ${asset.name} — ${asset.currentVib.toFixed(2)} mm/s RMS (Warn ${asset.warningLimit} / Crit ${asset.criticalLimit})`;
-  const parts = "PART_NO: SKF_6320_C3_QTY_2 | SHIM_KIT_NEMA_400";
-  const priority =
-    asset.currentVib >= asset.criticalLimit || asset.currentVib >= 4.5
-      ? "1 — Very High"
-      : "2 — High";
-
-  switch (system) {
-    case "IBM Maximo Enterprise":
-      return [
-        { label: "NOTIFICATION / WO TYPE", value: "CM — Corrective Maintenance" },
-        { label: "EQUIPMENT ID", value: equipId },
-        { label: "MALFUNCTION START", value: start },
-        { label: "LONG TEXT / DIAGNOSIS", value: diagnosis },
-        { label: "PRIORITY", value: priority },
-        { label: "REQUIRED PARTS", value: parts }
-      ];
-    case "MaintainX":
-      return [
-        { label: "NOTIFICATION / WO TYPE", value: "Corrective — Vibration Alarm" },
-        { label: "EQUIPMENT ID", value: `${asset.name} · ${asset.tag}` },
-        { label: "MALFUNCTION START", value: start },
-        { label: "LONG TEXT / DIAGNOSIS", value: diagnosis },
-        { label: "PRIORITY", value: asset.currentVib >= 4.5 ? "Critical" : "High" },
-        { label: "REQUIRED PARTS", value: parts }
-      ];
-    case "Fiix CMMS":
-      return [
-        { label: "NOTIFICATION / WO TYPE", value: "Corrective Work Order" },
-        { label: "EQUIPMENT ID", value: equipId },
-        { label: "MALFUNCTION START", value: start },
-        { label: "LONG TEXT / DIAGNOSIS", value: diagnosis },
-        { label: "PRIORITY", value: priority },
-        { label: "REQUIRED PARTS", value: parts }
-      ];
-    case "Infor EAM / Hexagon":
-      return [
-        { label: "NOTIFICATION / WO TYPE", value: "BR — Breakdown Report" },
-        { label: "EQUIPMENT ID", value: equipId },
-        { label: "MALFUNCTION START", value: start },
-        { label: "LONG TEXT / DIAGNOSIS", value: diagnosis },
-        { label: "PRIORITY", value: priority },
-        { label: "REQUIRED PARTS", value: parts }
-      ];
-    case "Other":
-      return [
-        { label: "NOTIFICATION / WO TYPE", value: `WO — ${customName.trim() || "Custom CMMS"} Malfunction` },
-        { label: "EQUIPMENT ID", value: equipId },
-        { label: "MALFUNCTION START", value: start },
-        { label: "LONG TEXT / DIAGNOSIS", value: diagnosis },
-        { label: "PRIORITY", value: priority },
-        { label: "REQUIRED PARTS", value: parts }
-      ];
-    default:
-      return [
-        { label: "NOTIFICATION / WO TYPE", value: "M2 — Malfunction Report" },
-        { label: "EQUIPMENT ID", value: equipId },
-        { label: "MALFUNCTION START", value: start },
-        { label: "LONG TEXT / DIAGNOSIS", value: diagnosis },
-        { label: "PRIORITY", value: priority },
-        { label: "REQUIRED PARTS", value: parts }
-      ];
-  }
-}
-
 function CmmsIntegrationPanel({
   asset,
   notify,
@@ -1473,42 +1381,35 @@ function CmmsIntegrationPanel({
   onChangeNotify: (patch: Partial<NotifyConfig>) => void;
 }) {
   const { toast } = useToast();
-  const [selectedCmms, setSelectedCmms] = useState<AlertsCmmsId>(
-    () => (notify.cmmsTarget as AlertsCmmsId) || "SAP PM / S4/HANA Asset Management"
-  );
-  const [customCmmsName, setCustomCmmsName] = useState("");
   const [autoGenerateWo, setAutoGenerateWo] = useState(false);
-  const [visionAnalyzing, setVisionAnalyzing] = useState(false);
-  const [schemaExtracted, setSchemaExtracted] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const bridgeFields = useMemo(
-    () => buildAlertsCmmsBridgeFields(selectedCmms, asset, customCmmsName),
-    [selectedCmms, asset, customCmmsName]
+  const cmmsContext: CmmsPayloadContext = useMemo(
+    () => ({
+      assetTag: asset.tag,
+      component: `${asset.name} · Motor DE`,
+      faultTitle:
+        asset.currentVib >= asset.criticalLimit || asset.currentVib >= 4.5
+          ? `Outer Race Bearing Defect (BPFO) @ 152 Hz - Amplitude ${asset.currentVib.toFixed(1)} mm/s RMS`
+          : `ISO 20816 threshold exceedance on ${asset.name} — ${asset.currentVib.toFixed(2)} mm/s RMS (Warn ${asset.warningLimit} / Crit ${asset.criticalLimit})`,
+      severity:
+        asset.currentVib >= asset.criticalLimit || asset.currentVib >= 4.5
+          ? "CRITICAL"
+          : "ANOMALY",
+      confidencePercent: null,
+      healthScore: null,
+      horizonHours: null,
+      horizonDriver: null,
+      horizonBasis: null,
+      corroborationPercent: null,
+      technologiesWithData: ["Vibration"],
+      signOffStatus: "pending",
+      signOffEngineer: null,
+      signOffAt: null,
+      recommendations: [],
+      diagnosisId: null,
+    }),
+    [asset]
   );
-  const fullPayload = bridgeFields.map((f) => `${f.label}: ${f.value}`).join("\n");
-  const dispatchTarget =
-    selectedCmms === "Other"
-      ? customCmmsName.trim() || "Custom / Legacy CMMS"
-      : selectedCmms;
-  const showBridge = selectedCmms !== "Other" || schemaExtracted;
-
-  const copyValue = (label: string, value: string) => {
-    void navigator.clipboard.writeText(value).then(
-      () => toast(`Copied ${label} to clipboard`, "success"),
-      () => toast(`Copied ${label} to clipboard`, "success")
-    );
-  };
-
-  const runVisionDemo = () => {
-    setVisionAnalyzing(true);
-    setSchemaExtracted(false);
-    window.setTimeout(() => {
-      setVisionAnalyzing(false);
-      setSchemaExtracted(true);
-      toast("✓ 6 Schema Fields Extracted & Saved to Cloud Database", "success");
-    }, 1500);
-  };
 
   return (
     <div className="max-w-4xl space-y-4">
@@ -1519,234 +1420,44 @@ function CmmsIntegrationPanel({
         </p>
       </div>
 
-      <div className="rounded-2xl border border-cyan-400/25 bg-cyan-400/[0.04] p-4 sm:p-5 space-y-5">
-        <div>
-          <h3 className="text-base font-bold text-white inline-flex items-center gap-2">
-            <Webhook className="h-4 w-4 text-[#00E5FF]" />
-            Universal CMMS Data Bridge
-          </h3>
-          <p className="text-xs text-slate-500 mt-1">
-            Auto-formatted work order payload for your plant CMMS / ERP
-          </p>
-        </div>
+      <CmmsWorkOrderBridge
+        context={cmmsContext}
+        sectionId="alerts-cmms-data-bridge"
+        onToast={(msg, type) => toast(msg, type ?? "info")}
+      />
 
-        <label className="block space-y-1.5">
-          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-            Step 1: Choose Your System
+      {/* Automation & trigger settings */}
+      <div className="rounded-xl border border-slate-800 bg-[#0A0E1A] p-3.5 space-y-3">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+          Automation &amp; Trigger Settings
+        </p>
+        <label className="flex items-start justify-between gap-2 text-xs text-slate-200 cursor-pointer">
+          <span>
+            Auto-Generate Work Order on Critical Severity (&gt; {notify.cmmsCriticalMms.toFixed(1)} mm/s)
           </span>
+          <Toggle
+            on={autoGenerateWo}
+            onChange={(v) => {
+              setAutoGenerateWo(v);
+              onChangeNotify({ cmmsAutoWo: v, cmmsWebhook: v || notify.cmmsWebhook });
+            }}
+            label="Auto-generate WO"
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Priority Mapping</span>
           <select
             className={SELECT}
-            value={selectedCmms}
-            onChange={(e) => {
-              const next = e.target.value as AlertsCmmsId;
-              setSelectedCmms(next);
-              setSchemaExtracted(false);
-              setVisionAnalyzing(false);
-              onChangeNotify({ cmmsTarget: next, cmmsWebhook: true });
-            }}
+            value={notify.cmmsPriority}
+            onChange={(e) => onChangeNotify({ cmmsPriority: e.target.value as CmmsPriority })}
           >
-            {CMMS_TARGETS.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
+            {CMMS_PRIORITIES.map((p) => (
+              <option key={p} value={p}>
+                {p}
               </option>
             ))}
           </select>
         </label>
-
-        {/* Other / Custom workflow */}
-        <div
-          className={`overflow-hidden transition-all duration-300 ${
-            selectedCmms === "Other" ? "max-h-[720px] opacity-100" : "max-h-0 opacity-0 pointer-events-none"
-          }`}
-        >
-          {selectedCmms === "Other" && (
-            <div className="space-y-4 pb-1">
-              <label className="block space-y-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                  Custom Program Name
-                </span>
-                <input
-                  className={INPUT}
-                  value={customCmmsName}
-                  onChange={(e) => setCustomCmmsName(e.target.value)}
-                  placeholder='Enter Custom CMMS / Software Name (e.g. "eMaint v3", "MP2", "Maintenance Connection")'
-                />
-              </label>
-
-              <div className="rounded-xl border border-dashed border-slate-600 bg-[#0A0E1A] p-4 space-y-3">
-                <div>
-                  <p className="text-sm font-bold text-white inline-flex items-center gap-1.5">
-                    <Sparkles className="h-4 w-4 text-[#FFC700]" />
-                    AI Vision Screenshot Schema Extractor
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Upload a screenshot of your CMMS Work Order creation screen
-                  </p>
-                </div>
-
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={() => {
-                    toast("Screenshot staged for AI vision analysis.", "info");
-                  }}
-                />
-
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full min-h-[120px] rounded-xl border-2 border-dashed border-slate-600 hover:border-[#FFC700]/60 bg-slate-950/60 px-4 py-6 text-center cursor-pointer transition-colors"
-                >
-                  <Upload className="h-6 w-6 text-slate-500 mx-auto mb-2" />
-                  <p className="text-sm text-slate-300 font-semibold">
-                    Drag &amp; Drop Upload Zone
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    Upload a screenshot of your CMMS Work Order creation screen
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  disabled={visionAnalyzing}
-                  onClick={runVisionDemo}
-                  className="w-full min-h-[42px] rounded-xl bg-[#FFC700] text-slate-950 text-sm font-bold cursor-pointer inline-flex items-center justify-center gap-1.5 disabled:opacity-60"
-                >
-                  {visionAnalyzing ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Analyzing CMMS form layout &amp; extracting schema fields...
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="h-4 w-4" />
-                      Demo AI Vision Field Extraction
-                    </>
-                  )}
-                </button>
-
-                {schemaExtracted && (
-                  <div className="space-y-2.5">
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-[11px] font-bold text-emerald-300">
-                      <CheckCircle2 className="h-3.5 w-3.5" />
-                      ✓ 6 Schema Fields Extracted &amp; Saved to Cloud Database
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {CMMS_EXTRACTED_FIELDS.map((field) => (
-                        <span
-                          key={field}
-                          className="inline-flex px-2 py-1 rounded-lg border border-[#00E5FF]/35 bg-[#00E5FF]/10 text-[10px] font-mono font-bold text-[#00E5FF]"
-                        >
-                          {field}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Multi-field data bridge */}
-        <div
-          className={`transition-all duration-300 ${
-            showBridge ? "opacity-100" : "opacity-40 pointer-events-none"
-          }`}
-        >
-          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-            Step 2: Pre-Formatted Multi-Field Data Bridge
-            {selectedCmms === "Other" && schemaExtracted && customCmmsName.trim()
-              ? ` · Mapped to ${customCmmsName.trim()}`
-              : ""}
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {bridgeFields.map((field) => (
-              <div key={field.label} className="min-w-0 space-y-1">
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
-                  {field.label}
-                </span>
-                <div className="flex gap-2 items-stretch">
-                  <input
-                    type="text"
-                    readOnly
-                    value={field.value}
-                    className={`${INPUT} flex-1 min-w-0 font-mono`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => copyValue(field.label, field.value)}
-                    className="min-h-[36px] px-2.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:border-[#FFC700]/50 hover:text-[#FFC700] cursor-pointer transition-colors shrink-0 inline-flex items-center"
-                    title={`Copy ${field.label}`}
-                    aria-label={`Copy ${field.label}`}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-4 flex flex-col sm:flex-row gap-2">
-            <button
-              type="button"
-              onClick={() => copyValue("Full Multi-Field Payload", fullPayload)}
-              className="flex-1 min-h-[44px] rounded-xl bg-[#FFC700] text-slate-950 text-sm font-bold cursor-pointer inline-flex items-center justify-center gap-1.5 hover:bg-[#e6b400] transition-colors"
-            >
-              <Clipboard className="h-4 w-4" />
-              Copy Full Multi-Field Payload to Clipboard
-            </button>
-            <button
-              type="button"
-              disabled
-              title={`CMMS dispatch pending — no ${dispatchTarget} endpoint is connected. Use the copy button to move the payload manually.`}
-              className="flex-1 min-h-[44px] rounded-xl bg-slate-800/60 border border-slate-700 text-slate-500 text-sm font-bold cursor-not-allowed inline-flex items-center justify-center gap-1.5"
-            >
-              <Zap className="h-4 w-4" />
-              Test CMMS Dispatch
-            </button>
-          </div>
-
-          <p className="mt-3 text-[11px] text-[#00E5FF] font-semibold">
-            ✨ Admin Time Saved: 23 minutes this month | AI Schema Library: Verified
-          </p>
-        </div>
-
-        {/* Automation & trigger settings */}
-        <div className="rounded-xl border border-slate-800 bg-[#0A0E1A] p-3.5 space-y-3">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-            Automation &amp; Trigger Settings
-          </p>
-          <label className="flex items-start justify-between gap-2 text-xs text-slate-200 cursor-pointer">
-            <span>
-              Auto-Generate Work Order on Critical Severity (&gt; {notify.cmmsCriticalMms.toFixed(1)} mm/s)
-            </span>
-            <Toggle
-              on={autoGenerateWo}
-              onChange={(v) => {
-                setAutoGenerateWo(v);
-                onChangeNotify({ cmmsAutoWo: v, cmmsWebhook: v || notify.cmmsWebhook });
-              }}
-              label="Auto-generate WO"
-            />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Priority Mapping</span>
-            <select
-              className={SELECT}
-              value={notify.cmmsPriority}
-              onChange={(e) => onChangeNotify({ cmmsPriority: e.target.value as CmmsPriority })}
-            >
-              {CMMS_PRIORITIES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
       </div>
     </div>
   );

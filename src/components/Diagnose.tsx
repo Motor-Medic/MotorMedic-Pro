@@ -144,7 +144,7 @@ import { mergeMcaOperatorSnapshots } from "../lib/mca/mcaSsot";
 import McaResultsDashboard from "./McaResultsDashboard";
 import OilInputAccordions from "./OilInputAccordions";
 import OilResultsDashboard from "./OilResultsDashboard";
-import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
+import { CmmsWorkOrderBridge as CmmsPayloadBridge } from "./CmmsWorkOrderBridge";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 
