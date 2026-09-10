@@ -386,7 +386,7 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
               <button onClick={() => setShowBridge(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
             </div>
             <CmmsWorkOrderBridge
-              context={buildBridgeContext(selectedAnalysis, { planningInputs, loadedAnalyses })}
+              context={buildBridgeContext(selectedAnalysis, { planningInputs, loadedAnalyses, repairCosts })}
               sectionId="repair-actions-bridge"
               onToast={toast}
             />

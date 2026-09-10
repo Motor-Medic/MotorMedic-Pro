@@ -650,6 +650,7 @@ const _WEIGHTS = { severity: 0.4, trend: 0.3, downtime: 0.2, base: 0.1 } as cons
 export interface BuildBridgeOpts {
   planningInputs: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null;
   loadedAnalyses?: SavedAnalysisResult[];
+  repairCosts?: Record<string, { repair: number | null; replacement: number | null }>;
 }
 
 /**
@@ -731,18 +732,21 @@ export function buildBridgeContext(
     topPriority = { score, breakdown: `sev: ${fmt(sevRatio)} x ${_WEIGHTS.severity} | trend: ${fmt(trendRatio)} x ${_WEIGHTS.trend} | dt: ${fmt(dtRatio)} x ${_WEIGHTS.downtime} | base: ${fmt(baseRatio)} x ${_WEIGHTS.base}` };
   }
 
-  // Breakeven for top fault
+  // Breakeven for top fault — uses repairCosts when available (matches card logic)
   let topBreakeven: { verdict: string } | null = null;
-  if (topRx && topTrend) {
-    const rulRate = topTrend.delta;
-    if (rulRate > 0.005) {
-      const runsToAlarm = (topRx.severityZones.alarmMmS - topTrend.last) / rulRate;
-      if (Number.isFinite(runsToAlarm) && runsToAlarm > 0) {
-        const rulDays = Math.round(runsToAlarm * avgInterval.days);
-        topBreakeven = { verdict: rulDays < 365 ? "REPAIR" : "not time-critical" };
-      } else {
-        topBreakeven = { verdict: "REPAIR" };
-      }
+  if (topRx) {
+    const entry = opts.repairCosts?.[topFault?.title ?? ""] ?? null;
+    const hasCosts = entry != null && entry.repair != null && entry.replacement != null && entry.replacement > 0;
+    let rulDays: number | null = null;
+    if (topTrend && topTrend.delta > 0.005) {
+      const runsToAlarm = (topRx.severityZones.alarmMmS - topTrend.last) / topTrend.delta;
+      if (Number.isFinite(runsToAlarm) && runsToAlarm > 0) rulDays = Math.round(runsToAlarm * avgInterval.days);
+    }
+    if (hasCosts) {
+      const ratio = entry!.repair! / entry!.replacement!;
+      topBreakeven = { verdict: rulDays != null ? (ratio >= 0.5 && rulDays < 365 ? "REPLACE" : "REPAIR") : "not time-critical" };
+    } else if (rulDays != null) {
+      topBreakeven = { verdict: rulDays < 365 ? "REPAIR" : "not time-critical" };
     }
   }
 
