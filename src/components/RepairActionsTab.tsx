@@ -36,18 +36,29 @@ function severityColor(ratio: number): string {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────
-interface PlanningInputs { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null; }
+interface RepairCostEntry { repair: number | null; replacement: number | null; }
+interface PlanningInputs { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null; repairCosts?: Record<string, RepairCostEntry>; }
 export interface RepairActionsTabProps { isActive: boolean; selectedAnalysis: SavedAnalysisResult | null; loadedAnalyses: SavedAnalysisResult[]; assetId?: string | null; }
 
+// ── Avg run interval ───────────────────────────────────────────────────────
+function computeAvgIntervalDays(timestamps: string[]): { days: number; fallback: boolean } {
+  if (timestamps.length < 2) return { days: 30, fallback: true };
+  const sorted = [...timestamps].sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+  let total = 0;
+  for (let i = 1; i < sorted.length; i++) { total += (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / 86400000; }
+  const avg = total / (sorted.length - 1);
+  return { days: Math.round(avg) || 30, fallback: false };
+}
+
 // ── Timing ─────────────────────────────────────────────────────────────────
-interface TimingResult { executeBy: string | null; method: string; recommendation: string; costOfWait: string | null; }
-function computeTiming(trend: { first: number; last: number; delta: number } | null, alarmMmS: number, inputs: PlanningInputs | null): TimingResult | null {
+interface TimingResult { executeBy: string | null; method: string; recommendation: string; costOfWait: string | null; intervalLabel: string; }
+function computeTiming(trend: { first: number; last: number; delta: number } | null, alarmMmS: number, inputs: PlanningInputs | null, avgDays: number, intervalFallback: boolean): TimingResult | null {
   if (!inputs || inputs.leadTimeDays == null || inputs.nextShutdownDate == null || inputs.downtimeCostPerDay == null) return null;
-  if (!trend || trend.delta <= 0.005) return { executeBy: null, method: "no growth", recommendation: "no growth trend - schedule at convenience", costOfWait: null };
+  if (!trend || trend.delta <= 0.005) return { executeBy: null, method: "no growth", recommendation: "no growth trend - schedule at convenience", costOfWait: null, intervalLabel: "" };
   const ratePerRun = trend.delta;
   const runsToAlarm = (alarmMmS - trend.last) / ratePerRun;
-  if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { executeBy: null, method: "already past alarm", recommendation: "amplitude at or above alarm - execute immediately", costOfWait: null };
-  const daysToAlarm = Math.round(runsToAlarm * 30);
+  if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { executeBy: null, method: "already past alarm", recommendation: "amplitude at or above alarm - execute immediately", costOfWait: null, intervalLabel: "" };
+  const daysToAlarm = Math.round(runsToAlarm * avgDays);
   const execDate = new Date(); execDate.setDate(execDate.getDate() + daysToAlarm);
   const executeBy = execDate.toISOString().slice(0, 10);
   const shutdownDate = new Date(inputs.nextShutdownDate); const now = new Date();
@@ -61,13 +72,27 @@ function computeTiming(trend: { first: number; last: number; delta: number } | n
     costText = `max exposure if failure occurs today: $${inputs.downtimeCostPerDay}/day x ${arrivalWindow} days = $${(inputs.downtimeCostPerDay * arrivalWindow).toFixed(0)}`;
     recommendation = `execute within ${inputs.leadTimeDays} days of parts arrival`;
   }
-  return { executeBy, method: "linear trend extrapolation", recommendation, costOfWait: costText };
+  return { executeBy, method: "linear trend extrapolation", recommendation, costOfWait: costText, intervalLabel: intervalFallback ? "linear trend extrapolation - not a failure model; avg run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; avg run interval ${avgDays} days` };
+}
+
+// ── RUL ────────────────────────────────────────────────────────────────────
+const REPLACE_RATIO_THRESHOLD = 0.5;
+const REPLACE_RUL_THRESHOLD_DAYS = 365;
+function computeRulDays(trend: { first: number; last: number; delta: number } | null, alarmMmS: number, avgDays: number, intervalFallback: boolean): { days: number | null; label: string } {
+  if (!trend || trend.delta <= 0.005) return { days: null, label: "" };
+  const ratePerRun = trend.delta;
+  const runsToAlarm = (alarmMmS - trend.last) / ratePerRun;
+  if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { days: 0, label: "" };
+  return { days: Math.round(runsToAlarm * avgDays), label: intervalFallback ? "linear trend extrapolation - not a failure model; avg run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; avg run interval ${avgDays} days` };
 }
 
 // ── Ranked Fault Card ──────────────────────────────────────────────────────
-function FaultCard({ fault, prescription, amplitude, trend, timing }: {
+function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, replacementCost, onRepairCostChange, onReplacementCostChange, rulDays, intervalLabel }: {
   key?: React.Key; fault: SavedFaultItem; prescription: PrescriptivePackage; amplitude: number | null;
   trend: { first: number; last: number; delta: number } | null; timing: TimingResult | null;
+  repairCost: number | null; replacementCost: number | null;
+  onRepairCostChange: (v: number | null) => void; onReplacementCostChange: (v: number | null) => void;
+  rulDays: number | null; intervalLabel: string;
 }) {
   const { severityZones } = prescription;
   const barMax = severityZones.dangerMmS * 1.3;
@@ -134,7 +159,7 @@ function FaultCard({ fault, prescription, amplitude, trend, timing }: {
           </div>
           {timing && (
             <div className="text-sm border-t border-slate-800 pt-2 mt-2 space-y-1">
-              {timing.executeBy && <div><span className="text-slate-400">Execute by: </span><span className="text-amber-300 font-medium">{timing.executeBy}</span><span className="text-slate-600 ml-1">({timing.method} – not a failure model)</span></div>}
+              {timing.executeBy && <div><span className="text-slate-400">Execute by: </span><span className="text-amber-300 font-medium">{timing.executeBy}</span><span className="text-slate-600 ml-1">({timing.intervalLabel})</span></div>}
               {!timing.executeBy && timing.method === "no growth" && <div className="text-emerald-400">{timing.recommendation}</div>}
               {!timing.executeBy && timing.method !== "no growth" && <div className="text-red-400">{timing.recommendation}</div>}
               <div className="text-slate-300">{timing.recommendation}</div>
@@ -142,6 +167,42 @@ function FaultCard({ fault, prescription, amplitude, trend, timing }: {
             </div>
           )}
           {!timing && <div className="text-sm text-slate-500 border-t border-slate-800 pt-2 mt-2">enter planning inputs to compute timing</div>}
+          <div className="border-t border-slate-800 pt-2 mt-2 space-y-2">
+            <h5 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Repair vs Replace</h5>
+            <div className="flex gap-3">
+              <div><label className="text-[10px] text-slate-500 block mb-0.5">Repair cost $</label>
+                <input type="number" min={0} value={repairCost ?? ""} onChange={(e) => onRepairCostChange(e.target.value ? Number(e.target.value) : null)} className="h-7 w-24 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60" /></div>
+              <div><label className="text-[10px] text-slate-500 block mb-0.5">Replacement cost $</label>
+                <input type="number" min={0} value={replacementCost ?? ""} onChange={(e) => onReplacementCostChange(e.target.value ? Number(e.target.value) : null)} className="h-7 w-24 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60" /></div>
+            </div>
+            {repairCost != null && replacementCost != null && replacementCost > 0 && (
+              <div className="text-[11px] space-y-1">
+                <div className="text-slate-300">
+                  ratio = <span className="font-mono">${repairCost.toLocaleString()}</span> / <span className="font-mono">${replacementCost.toLocaleString()}</span> = <span className="font-mono font-medium">{(repairCost / replacementCost).toFixed(2)}</span>
+                </div>
+                <div className="text-slate-300">
+                  rul = <span className="font-mono">{rulDays != null ? `${rulDays} days` : "not estimable"}</span>
+                  <span className="text-slate-500 ml-1">({intervalLabel})</span>
+                </div>
+                {rulDays != null && (
+                  <div className="space-y-0.5">
+                    <div className="text-slate-400">ratio ≥ 0.5: <span className={repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD ? "text-emerald-400" : "text-slate-500"}>{repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD ? "TRUE" : "FALSE"}</span> ({(repairCost / replacementCost).toFixed(2)} ≥ 0.5)</div>
+                    <div className="text-slate-400">rul &lt; 365 days: <span className={rulDays < REPLACE_RUL_THRESHOLD_DAYS ? "text-emerald-400" : "text-slate-500"}>{rulDays < REPLACE_RUL_THRESHOLD_DAYS ? "TRUE" : "FALSE"}</span> ({rulDays} &lt; 365)</div>
+                  </div>
+                )}
+                <div className="pt-1 font-semibold text-sm">
+                  {rulDays != null ? (
+                    repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD && rulDays < REPLACE_RUL_THRESHOLD_DAYS
+                      ? <span className="text-red-400">Recommend: REPLACE</span>
+                      : <span className="text-emerald-400">Recommend: REPAIR</span>
+                  ) : (
+                    <span className="text-slate-300">not time-critical - choose on cost (cheaper: <span className="font-mono">{repairCost <= replacementCost ? `repair $${repairCost.toLocaleString()}` : `replace $${replacementCost.toLocaleString()}`}</span>)</span>
+                  )}
+                </div>
+              </div>
+            )}
+            {(repairCost == null || replacementCost == null) && <div className="text-[10px] text-slate-500 italic">enter both costs to see repair-vs-replace recommendation</div>}
+          </div>
         </>
       ) : (
         <div className="space-y-2">
@@ -158,6 +219,7 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   // ── ALL hooks FIRST (unconditional) ───────────────────────────────────
   const [planningInputs, setPlanningInputs] = useState<PlanningInputs | null>(null);
   const [draftInputs, setDraftInputs] = useState<PlanningInputs>({ leadTimeDays: null, nextShutdownDate: null, downtimeCostPerDay: null });
+  const [repairCosts, setRepairCosts] = useState<Record<string, RepairCostEntry>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -165,20 +227,31 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
     if (!assetId) { setLoaded(true); return; }
     setLoaded(false);
     fetch(`/api/assets/${assetId}/planning-config`).then((r) => (r.ok ? r.json() : null)).then((data) => {
-      if (data && typeof data === "object") { setPlanningInputs(data); setDraftInputs(data); }
+      if (data && typeof data === "object") { setPlanningInputs(data); setDraftInputs(data); setRepairCosts(data.repairCosts ?? {}); }
       setLoaded(true);
     }).catch(() => setLoaded(true));
   }, [assetId]);
   const faults: SavedFaultItem[] = selectedAnalysis?.fault_list ?? [];
   const currentPeaks = useMemo(() => parsePeaks(selectedAnalysis), [selectedAnalysis]);
-  // Match history by asset_id, exclude selected row, sort ascending by date
+  // Match history by asset_id + component + analysis_type, timestamp <= selected, exclude selected row
   const historyPeaks = useMemo(() => {
-    const selAsset = selectedAnalysis?.asset_id ?? null;
+    if (!selectedAnalysis) return [];
+    const selTs = new Date(selectedAnalysis.timestamp).getTime();
     return loadedAnalyses
-      .filter((r) => r.id !== selectedAnalysis?.id && (selAsset == null || r.asset_id === selAsset))
+      .filter((r) => r.id !== selectedAnalysis.id && r.asset_id === selectedAnalysis.asset_id && r.component === selectedAnalysis.component && (r.analysis_type ?? "vibration") === (selectedAnalysis.analysis_type ?? "vibration") && new Date(r.timestamp).getTime() <= selTs)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
       .map((r) => ({ id: r.id, timestamp: r.timestamp, peaks: parsePeaks(r) }));
   }, [loadedAnalyses, selectedAnalysis]);
+  const hasLaterSameModality = useMemo(() => {
+    if (!selectedAnalysis) return false;
+    const selTs = new Date(selectedAnalysis.timestamp).getTime();
+    return loadedAnalyses.some((r) => r.id !== selectedAnalysis.id && r.asset_id === selectedAnalysis.asset_id && r.component === selectedAnalysis.component && (r.analysis_type ?? "vibration") === (selectedAnalysis.analysis_type ?? "vibration") && new Date(r.timestamp).getTime() > selTs);
+  }, [loadedAnalyses, selectedAnalysis]);
+  const avgInterval = useMemo(() => {
+    const ts = historyPeaks.map((h) => h.timestamp);
+    if (selectedAnalysis) ts.push(selectedAnalysis.timestamp);
+    return computeAvgIntervalDays(ts);
+  }, [historyPeaks, selectedAnalysis]);
   const ranked: Array<{ fault: SavedFaultItem; prescription: PrescriptivePackage; amplitude: number | null; trend: { first: number; last: number; delta: number } | null }> = useMemo(() => {
     const items = faults.map((fault) => {
       const prescription = getPrescription(fault.title); const hz = faultFreq(fault);
@@ -198,7 +271,8 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   const hasInputs = planningInputs != null && planningInputs.leadTimeDays != null && planningInputs.nextShutdownDate != null && planningInputs.downtimeCostPerDay != null;
   const saveInputs = async () => {
     if (!assetId) return; setSaving(true); setSaved(false);
-    try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draftInputs) }); setPlanningInputs({ ...draftInputs }); setSaved(true); setTimeout(() => setSaved(false), 3000); } finally { setSaving(false); }
+    const payload = { ...draftInputs, repairCosts };
+    try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); setPlanningInputs({ ...payload }); setSaved(true); setTimeout(() => setSaved(false), 3000); } finally { setSaving(false); }
   };
 
   // ── Conditional guards (AFTER all hooks) ──────────────────────────────
@@ -209,6 +283,9 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   return (
     <div className="space-y-4 p-4">
       <h3 className="text-base font-semibold text-slate-200">Prescriptive Action Plan</h3>
+      {hasLaterSameModality && (
+        <p className="text-[11px] text-amber-400/80">as of {new Date(selectedAnalysis!.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })} - later runs excluded from trends</p>
+      )}
       {assetId && (
         <div className="bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 space-y-2">
           <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Planning Inputs</div>
@@ -227,10 +304,18 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
         </div>
       )}
       <div className="space-y-3">
-        {ranked.map(({ fault, prescription, amplitude, trend }, i) => (
-          <FaultCard key={`${fault.title}-${fault.frequencyHz ?? fault.frequency ?? i}`} fault={fault} prescription={prescription} amplitude={amplitude} trend={trend}
-            timing={hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs) : null} />
-        ))}
+        {ranked.map(({ fault, prescription, amplitude, trend }, i) => {
+          const entry = repairCosts[fault.title] ?? { repair: null, replacement: null };
+          const rul = computeRulDays(trend, prescription.severityZones.alarmMmS, avgInterval.days, avgInterval.fallback);
+          return (
+            <FaultCard key={`${fault.title}-${fault.frequencyHz ?? fault.frequency ?? i}`} fault={fault} prescription={prescription} amplitude={amplitude} trend={trend}
+              timing={hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback) : null}
+              repairCost={entry.repair} replacementCost={entry.replacement}
+              onRepairCostChange={(v) => setRepairCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], repair: v } }))}
+              onReplacementCostChange={(v) => setRepairCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], replacement: v } }))}
+              rulDays={rul.days} intervalLabel={rul.label || (hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback)?.intervalLabel ?? "" : "")} />
+          );
+        })}
       </div>
       <p className="text-[10px] text-slate-600 text-center pt-2">Prescriptions from prescriptiveDictionary v{DICTIONARY_VERSION} – deterministic, curated content</p>
     </div>
