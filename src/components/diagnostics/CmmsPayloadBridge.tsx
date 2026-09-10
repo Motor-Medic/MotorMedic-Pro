@@ -338,6 +338,9 @@ export default function CmmsPayloadBridge({
               </option>
             ))}
           </select>
+          <p className="text-[10px] text-slate-500 mt-1 italic">
+            Illustrative mapping — validate against your instance.
+          </p>
         </div>
 
         {/* CUSTOM CMMS SUB-PANEL */}

@@ -71,6 +71,14 @@ export interface CmmsPayloadContext {
    * them. Used to compose the description when no diagnosis has been saved.
    */
   evidence?: EvidenceGroup[];
+  // ── Prescriptive enrichment (optional — S3b2 wires these) ──
+  prescriptions?: { procedure: { step: number; task: string; tolerance?: string }[]; parts: { name: string; spec: string; qty: number }[]; tools: string[]; laborHours: number }[];
+  safety?: { loto: string[]; ppe: string }[];
+  timing?: { executeBy: string | null; recommendation: string }[];
+  priority?: { score: number; breakdown: string };
+  breakeven?: { verdict: string } | null;
+  planningInputs?: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null;
+  dictionaryVersion?: string;
 }
 
 /**
@@ -247,6 +255,38 @@ function corroborationText(ctx: CmmsPayloadContext): string {
   return `${ctx.corroborationPercent}% across ${ctx.technologiesWithData.join(", ")}`;
 }
 
+/** Build enrichment footer from optional prescriptive data. Empty string when no enrichment passed. */
+function enrichmentFooter(ctx: CmmsPayloadContext): string {
+  const lines: string[] = [];
+  const rx = ctx.prescriptions?.[0];
+  if (rx?.procedure?.length) {
+    lines.push("PROCEDURE:");
+    rx.procedure.forEach((s) => lines.push(`  ${s.step}. ${s.task}${s.tolerance ? ` [${s.tolerance}]` : ""}`));
+  }
+  const sf = ctx.safety?.[0];
+  if (sf) {
+    if (sf.loto?.length) lines.push(`LOTO: ${sf.loto.join("; ")}`);
+    if (sf.ppe) lines.push(`PPE: ${sf.ppe}`);
+  }
+  const tm = ctx.timing?.[0];
+  if (tm) {
+    if (tm.executeBy) lines.push(`Execute by: ${tm.executeBy}`);
+    if (tm.recommendation) lines.push(`Timing note: ${tm.recommendation}`);
+  }
+  if (ctx.priority) lines.push(`Priority score: ${ctx.priority.score} (${ctx.priority.breakdown})`);
+  if (ctx.breakeven) lines.push(`Breakeven verdict: ${ctx.breakeven.verdict}`);
+  if (ctx.planningInputs) {
+    const pi = ctx.planningInputs;
+    const parts: string[] = [];
+    if (pi.leadTimeDays != null) parts.push(`lead ${pi.leadTimeDays}d`);
+    if (pi.nextShutdownDate) parts.push(`shutdown ${pi.nextShutdownDate}`);
+    if (pi.downtimeCostPerDay != null) parts.push(`$${pi.downtimeCostPerDay}/d`);
+    if (parts.length) lines.push(`Planning: ${parts.join(" | ")}`);
+  }
+  if (ctx.dictionaryVersion) lines.push(`Dictionary: ${ctx.dictionaryVersion}`);
+  return lines.join("\n");
+}
+
 type FieldSpec = [
   key: string,
   label: string,
@@ -289,10 +329,12 @@ export function buildCmmsFieldList(
   const started = malfunctionStart(ctx);
   const parts = (ctx.requiredParts ?? []).join(" | ");
   const steps = ctx.recommendations.join(" | ");
+  const footer = enrichmentFooter(ctx);
 
+  let result: CmmsField[];
   switch (target) {
     case "sap":
-      return fields([
+      result = fields([
         ["ORDER_TYPE", "Notification Type", workType],
         ["EQUNR", "Equipment ID", ctx.assetTag],
         ["SHORT_TEXT", "Short Text", summaryLine(description, 40)],
@@ -311,9 +353,10 @@ export function buildCmmsFieldList(
         ["LONG_TEXT", "Long Text", description, true],
         ["OPERATIONS", "Operations", steps, true]
       ]);
+      break;
 
     case "maximo":
-      return fields([
+      result = fields([
         ["WONUM", "Work Order Number", "AUTO"],
         ["WORKTYPE", "Work Type", workType],
         ["ASSETNUM", "Asset Number", ctx.assetTag],
@@ -333,9 +376,10 @@ export function buildCmmsFieldList(
         ["DESCRIPTION", "Description", description, true],
         ["WOTASKS", "Work Order Tasks", steps, true]
       ]);
+      break;
 
     case "maintainx":
-      return fields([
+      result = fields([
         ["category", "Category", workType],
         ["asset", "Asset", ctx.assetTag],
         ["location", "Location", ctx.component],
@@ -353,9 +397,10 @@ export function buildCmmsFieldList(
         ["description", "Description", description, true],
         ["procedure", "Procedure", steps, true]
       ]);
+      break;
 
     case "fiix":
-      return fields([
+      result = fields([
         ["strCode", "Work Order Code", "AUTO"],
         ["strMaintenanceType", "Maintenance Type", workType],
         ["strAssetCode", "Asset Code", ctx.assetTag],
@@ -374,9 +419,10 @@ export function buildCmmsFieldList(
         ["strDescription", "Description", description, true],
         ["strTasks", "Tasks", steps, true]
       ]);
+      break;
 
     case "oracle_eam":
-      return fields([
+      result = fields([
         ["WORK_ORDER_TYPE", "Work Order Type", workType],
         ["ASSET_NUMBER", "Asset Number", ctx.assetTag],
         ["ASSET_GROUP", "Asset Group", ctx.component],
@@ -399,10 +445,23 @@ export function buildCmmsFieldList(
         ["DESCRIPTION", "Description", description, true],
         ["OPERATION_STEPS", "Operation Steps", steps, true]
       ]);
+      break;
 
     case "custom":
       return buildCustomCmmsFields(ctx);
   }
+
+  // Append prescriptive enrichment to the system's long-text / description field
+  if (footer && result) {
+    const LONG_TEXT_KEY: Record<CmmsTargetId, string> = {
+      sap: "LONG_TEXT", maximo: "DESCRIPTION", maintainx: "description",
+      fiix: "strDescription", oracle_eam: "DESCRIPTION", custom: ""
+    };
+    const lf = result.find((f) => f.key === LONG_TEXT_KEY[target]);
+    if (lf) lf.value += "\n\n" + footer;
+  }
+
+  return result;
 }
 
 /** Key/value form of the same field list, for API posting. */
