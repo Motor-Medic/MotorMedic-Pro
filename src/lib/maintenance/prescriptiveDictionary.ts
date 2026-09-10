@@ -27,6 +27,11 @@ export interface SeverityZones {
   dangerMmS: number;
 }
 
+export interface SafetyGuidance {
+  loto: string[];
+  ppe: string;
+}
+
 export interface PrescriptivePackage {
   diagnosis: string;
   isMapped: boolean;
@@ -36,6 +41,7 @@ export interface PrescriptivePackage {
   laborHours: number;
   severityZones: SeverityZones;
   defaultPriority: 1 | 2 | 3 | 4 | 5;
+  safety: SafetyGuidance;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +49,14 @@ export interface PrescriptivePackage {
 // ---------------------------------------------------------------------------
 
 const ISO_10816: SeverityZones = { alarmMmS: 4.5, dangerMmS: 11.2 };
+
+// Safety guidance by fault domain
+const MECH_SAFETY: SafetyGuidance = { loto: ["Machine Isolation - lock-out/tag-out rotating elements"], ppe: "Level 2: Eye, Hand, Hearing" };
+const ELEC_SAFETY: SafetyGuidance = { loto: ["High Voltage - verify absence before contact", "Apply grounds per NFPA 70E"], ppe: "Level 3: Arc-rated clothing, Eye, Hand, Hearing" };
+const LUBE_SAFETY: SafetyGuidance = { loto: ["Machine Isolation - lock-out/tag-out rotating elements"], ppe: "Level 2: Eye, Hand, Hearing" };
+const HEALTHY_SAFETY: SafetyGuidance = { loto: [], ppe: "Level 1: Eye, Hand" };
+const GEAR_SAFETY: SafetyGuidance = { loto: ["Machine Isolation - lock-out/tag-out rotating elements", "Verify stored energy release"], ppe: "Level 2: Eye, Hand, Hearing" };
+const PROCESS_SAFETY: SafetyGuidance = { loto: ["Process Isolation - close block valves, depressurize", "Verify zero energy state"], ppe: "Level 2: Eye, Hand, Hearing, Respiratory" };
 
 // ---------------------------------------------------------------------------
 // Helper to build a mapped entry concisely
@@ -55,6 +69,7 @@ function mapped(
   procedure: ProcedureStep[],
   parts: PartSpec[],
   tools: string[],
+  safety?: SafetyGuidance,
   zones: SeverityZones = ISO_10816
 ): PrescriptivePackage {
   return {
@@ -66,6 +81,7 @@ function mapped(
     laborHours,
     severityZones: zones,
     defaultPriority: priority,
+    safety: safety ?? { loto: ["Verify isolation per site procedure"], ppe: "Per site standard" },
   };
 }
 
@@ -83,6 +99,7 @@ function unmapped(diagnosis: string): PrescriptivePackage {
     laborHours: 0,
     severityZones: ISO_10816,
     defaultPriority: 5,
+    safety: { loto: ["Verify isolation per site procedure"], ppe: "Per site standard" },
   };
 }
 
@@ -114,7 +131,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trial weight set", spec: "ISO 21940 trial weights, 5 g–500 g", qty: 1 },
       { name: "Balancing clip weights", spec: "Brass or steel clip-on, assorted", qty: 1 },
     ],
-    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"]
+    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"],
+    MECH_SAFETY
   ),
 
   "Mass Unbalance": mapped(
@@ -133,7 +151,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trial weight set", spec: "ISO 21940 trial weights, 5 g–500 g", qty: 1 },
       { name: "Balancing clip weights", spec: "Brass or steel clip-on, assorted", qty: 1 },
     ],
-    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"]
+    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"],
+    MECH_SAFETY
   ),
 
   "Mechanical Unbalance": mapped(
@@ -152,7 +171,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trial weight set", spec: "ISO 21940 trial weights, 5 g–500 g", qty: 1 },
       { name: "Balancing clip weights", spec: "Brass or steel clip-on, assorted", qty: 1 },
     ],
-    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"]
+    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"],
+    MECH_SAFETY
   ),
 
   "Dynamic mass unbalance": mapped(
@@ -171,7 +191,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trial weight set", spec: "ISO 21940 trial weights, 5 g–500 g", qty: 1 },
       { name: "Balancing clip weights", spec: "Brass or steel clip-on, assorted", qty: 1 },
     ],
-    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"]
+    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"],
+    MECH_SAFETY
   ),
 
   "Dynamic Rotor Mass Unbalance": mapped(
@@ -190,7 +211,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trial weight set", spec: "ISO 21940 trial weights, 5 g–500 g", qty: 1 },
       { name: "Balancing clip weights", spec: "Brass or steel clip-on, assorted", qty: 1 },
     ],
-    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"]
+    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"],
+    MECH_SAFETY
   ),
 
   "Shaft unbalance": mapped(
@@ -209,7 +231,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trial weight set", spec: "ISO 21940 trial weights, 5 g–500 g", qty: 1 },
       { name: "Balancing clip weights", spec: "Brass or steel clip-on, assorted", qty: 1 },
     ],
-    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"]
+    ["Vibration analyzer with phase input", "Tachometer / keyphasor", "Balancing software or calculator", "Hand tools for rotor access"],
+    MECH_SAFETY
   ),
 
   // ── MISALIGNMENT FAMILY ─────────────────────────────────────────────────
@@ -233,7 +256,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Precision shim stock", spec: "304 stainless, 0.05–1.00 mm increments", qty: 1 },
       { name: "Hold-down bolt set", spec: "Grade 8.8 / OEM spec", qty: 4 },
     ],
-    ["Laser alignment system", "Dial indicator set", "Torque wrench", "Vibration analyzer", "Feeler gauges"]
+    ["Laser alignment system", "Dial indicator set", "Torque wrench", "Vibration analyzer", "Feeler gauges"],
+    MECH_SAFETY
   ),
 
   "Misalignment": mapped(
@@ -255,7 +279,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Precision shim stock", spec: "304 stainless, 0.05–1.00 mm increments", qty: 1 },
       { name: "Hold-down bolt set", spec: "Grade 8.8 / OEM spec", qty: 4 },
     ],
-    ["Laser alignment system", "Dial indicator set", "Torque wrench", "Vibration analyzer", "Feeler gauges"]
+    ["Laser alignment system", "Dial indicator set", "Torque wrench", "Vibration analyzer", "Feeler gauges"],
+    MECH_SAFETY
   ),
 
   "Shaft Angular & Radial Misalignment": mapped(
@@ -277,7 +302,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Precision shim stock", spec: "304 stainless, 0.05–1.00 mm increments", qty: 1 },
       { name: "Hold-down bolt set", spec: "Grade 8.8 / OEM spec", qty: 4 },
     ],
-    ["Laser alignment system", "Dial indicator set", "Torque wrench", "Vibration analyzer", "Feeler gauges"]
+    ["Laser alignment system", "Dial indicator set", "Torque wrench", "Vibration analyzer", "Feeler gauges"],
+    MECH_SAFETY
   ),
 
   // ── MECHANICAL LOOSENESS ────────────────────────────────────────────────
@@ -302,7 +328,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Grout compound", spec: "Epoxy or non-shrink cementitious grout", qty: 1 },
       { name: "Foundation anchor bolts", spec: "OEM specification", qty: 4 },
     ],
-    ["Socket set", "Torque wrench", "Vibration analyzer", "Hammer (for tap test)", "Structural inspection mirror"]
+    ["Socket set", "Torque wrench", "Vibration analyzer", "Hammer (for tap test)", "Structural inspection mirror"],
+    MECH_SAFETY
   ),
 
   "Mechanical looseness": mapped(
@@ -325,7 +352,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Grout compound", spec: "Epoxy or non-shrink cementitious grout", qty: 1 },
       { name: "Foundation anchor bolts", spec: "OEM specification", qty: 4 },
     ],
-    ["Socket set", "Torque wrench", "Vibration analyzer", "Hammer (for tap test)", "Structural inspection mirror"]
+    ["Socket set", "Torque wrench", "Vibration analyzer", "Hammer (for tap test)", "Structural inspection mirror"],
+    MECH_SAFETY
   ),
 
   "Looseness": mapped(
@@ -348,7 +376,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Grout compound", spec: "Epoxy or non-shrink cementitious grout", qty: 1 },
       { name: "Foundation anchor bolts", spec: "OEM specification", qty: 4 },
     ],
-    ["Socket set", "Torque wrench", "Vibration analyzer", "Hammer (for tap test)", "Structural inspection mirror"]
+    ["Socket set", "Torque wrench", "Vibration analyzer", "Hammer (for tap test)", "Structural inspection mirror"],
+    MECH_SAFETY
   ),
 
   // ── BEARING FAULTS ──────────────────────────────────────────────────────
@@ -374,7 +403,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing housing seal", spec: "NBR lip seal, matched to shaft diameter", qty: 2 },
       { name: "High-temperature bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Bearing heater or induction heater", "Micrometer (outside) and bore gauge (inside)", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"]
+    ["Bearing heater or induction heater", "Micrometer (outside) and bore gauge (inside)", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"],
+    MECH_SAFETY
   ),
 
   "Bearing Defect": mapped(
@@ -396,7 +426,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing housing seal", spec: "NBR lip seal, matched to shaft diameter", qty: 2 },
       { name: "High-temperature bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"]
+    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"],
+    MECH_SAFETY
   ),
 
   "Bearing Raceway Micro-Spalling & Fatigue (Stage 3)": mapped(
@@ -418,7 +449,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing housing seal", spec: "NBR lip seal, matched to shaft diameter", qty: 2 },
       { name: "High-temperature bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"]
+    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"],
+    MECH_SAFETY
   ),
 
   "Inner Race Bearing Defect (BPFI)": mapped(
@@ -440,7 +472,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing housing seal", spec: "NBR lip seal, matched to shaft diameter", qty: 2 },
       { name: "High-temperature bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Bearing heater or induction heater", "Micrometer", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"]
+    ["Bearing heater or induction heater", "Micrometer", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"],
+    MECH_SAFETY
   ),
 
   "Rolling Element Bearing Defect (BSF)": mapped(
@@ -462,7 +495,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing housing seal", spec: "NBR lip seal, matched to shaft diameter", qty: 2 },
       { name: "High-temperature bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"]
+    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"],
+    MECH_SAFETY
   ),
 
   "Bearing Fault / Other": mapped(
@@ -483,7 +517,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing housing seal", spec: "NBR lip seal, matched to shaft diameter", qty: 2 },
       { name: "High-temperature bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"]
+    ["Bearing heater or induction heater", "Micrometer and bore gauge", "Vibration analyzer with envelope/demod capability", "Torque wrench", "Soft-foot dial indicator"],
+    MECH_SAFETY
   ),
 
   // ── GEAR FAULTS ─────────────────────────────────────────────────────────
@@ -508,7 +543,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Gearbox lubricant", spec: "OEM-specified gear oil (e.g. ISO VG 220)", qty: 1 },
       { name: "Gasket set", spec: "OEM gasket set for gearbox housing", qty: 1 },
     ],
-    ["Dial bore gauge", "Gear tooth pattern contact set", "Magnetic particle inspection kit", "Oil drain / fill equipment", "Vibration analyzer"]
+    ["Dial bore gauge", "Gear tooth pattern contact set", "Magnetic particle inspection kit", "Oil drain / fill equipment", "Vibration analyzer"],
+    GEAR_SAFETY
   ),
 
   "Internal gear backlash": mapped(
@@ -529,7 +565,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Gearbox oil seal kit", spec: "OEM seal kit for specific gearbox model", qty: 1 },
       { name: "Gearbox lubricant", spec: "OEM-specified gear oil (e.g. ISO VG 220)", qty: 1 },
     ],
-    ["Dial indicator with magnetic base", "Dial bore gauge", "Oil drain / fill equipment", "Vibration analyzer"]
+    ["Dial indicator with magnetic base", "Dial bore gauge", "Oil drain / fill equipment", "Vibration analyzer"],
+    GEAR_SAFETY
   ),
 
   // ── ELECTRICAL FAULTS ───────────────────────────────────────────────────
@@ -553,7 +590,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Insulation varnish", spec: "Class H polyester-imide or equivalent", qty: 1 },
       { name: "Winding shims and phase separators", spec: "Nomex or equivalent, matched to slot dimensions", qty: 1 },
     ],
-    ["Megger (insulation resistance tester)", "Surge comparison tester", "Polarization index tester", "Motor starter / VFD", "Vibration analyzer", "Infrared thermometer"]
+    ["Megger (insulation resistance tester)", "Surge comparison tester", "Polarization index tester", "Motor starter / VFD", "Vibration analyzer", "Infrared thermometer"],
+    ELEC_SAFETY
   ),
 
   "Air Gap Eccentricity": mapped(
@@ -574,7 +612,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement bearing", spec: "OEM specification for motor frame", qty: 2 },
       { name: "Rotor (if bent or eccentric)", spec: "OEM specification, matched to stator bore", qty: 1 },
     ],
-    ["Feeler gauge set", "Dial indicator with magnetic base", "Vibration analyzer", "Micrometer", "Bearing puller set"]
+    ["Feeler gauge set", "Dial indicator with magnetic base", "Vibration analyzer", "Micrometer", "Bearing puller set"],
+    ELEC_SAFETY
   ),
 
   "Broken Rotor Bar Circuit": mapped(
@@ -596,7 +635,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Rotor bar conductive repair material", spec: "Copper or aluminum, matched to original bar material", qty: 1 },
       { name: "End ring (if applicable)", spec: "OEM specification", qty: 1 },
     ],
-    ["Growler / rotor bar tester", "Motor analyzer (current signature)", "Vibration analyzer", "Balancer (for post-repair balance)", "Bearing puller set"]
+    ["Growler / rotor bar tester", "Motor analyzer (current signature)", "Vibration analyzer", "Balancer (for post-repair balance)", "Bearing puller set"],
+    ELEC_SAFETY
   ),
 
   // ── LUBRICATION FAULTS ──────────────────────────────────────────────────
@@ -618,7 +658,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement lubricant", spec: "OEM-specified grade (e.g. NLGI 2 polyurea grease or ISO VG 68 oil)", qty: 1 },
       { name: "Oil filter (if applicable)", spec: "OEM-specified micron rating", qty: 1 },
     ],
-    ["Grease gun", "Oil sampling kit", "Viscometer (or send sample to lab)", "Vibration analyzer", "Oil drain equipment"]
+    ["Grease gun", "Oil sampling kit", "Viscometer (or send sample to lab)", "Vibration analyzer", "Oil drain equipment"],
+    LUBE_SAFETY
   ),
 
   "Lubrication Starvation": mapped(
@@ -638,7 +679,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement lubricant", spec: "OEM-specified grade", qty: 1 },
       { name: "Grease fitting / zerk", spec: "Matched to bearing housing", qty: 2 },
     ],
-    ["Grease gun", "Oil level dipstick / sight glass", "Vibration analyzer", "Lubrication system diagnostic tools"]
+    ["Grease gun", "Oil level dipstick / sight glass", "Vibration analyzer", "Lubrication system diagnostic tools"],
+    LUBE_SAFETY
   ),
 
   // ── CAVITATION ──────────────────────────────────────────────────────────
@@ -663,7 +705,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Suction strainer", spec: "OEM mesh size", qty: 1 },
       { name: "Pump gasket set", spec: "OEM specification", qty: 1 },
     ],
-    ["Pressure gauge (suction and discharge)", "Ultrasonic leak detector", "Vibration analyzer", "Caliper / micrometer", "Pump alignment tools"]
+    ["Pressure gauge (suction and discharge)", "Ultrasonic leak detector", "Vibration analyzer", "Caliper / micrometer", "Pump alignment tools"],
+    PROCESS_SAFETY
   ),
 
   // ── HYDRAULIC FAULTS ────────────────────────────────────────────────────
@@ -687,7 +730,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement spool (if worn)", spec: "OEM specification for valve model", qty: 1 },
       { name: "Hydraulic fluid", spec: "OEM-specified grade (e.g. ISO VG 46)", qty: 1 },
     ],
-    ["Torque wrench", "Pick set (for O-ring removal)", "Ultrasonic cleaner", "Pressure gauge", "Valve test bench (if available)"]
+    ["Torque wrench", "Pick set (for O-ring removal)", "Ultrasonic cleaner", "Pressure gauge", "Valve test bench (if available)"],
+    PROCESS_SAFETY
   ),
 
   "Internal seal bypassing": mapped(
@@ -707,7 +751,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "O-ring kit", spec: "Metric or imperial, matched to housing dimensions", qty: 1 },
       { name: "Gasket set", spec: "OEM specification for housing", qty: 1 },
     ],
-    ["Socket set", "Screwdriver set", "Seal installation tool", "Pick set", "Pressure test kit"]
+    ["Socket set", "Screwdriver set", "Seal installation tool", "Pick set", "Pressure test kit"],
+    PROCESS_SAFETY
   ),
 
   // ── STRUCTURAL / RESONANCE ─────────────────────────────────────────────
@@ -730,7 +775,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Elastomeric isolation pads", spec: "Neoprene or Sorbothane, 10–25 mm thick", qty: 4 },
       { name: "Fastener set", spec: "Grade 8.8 bolts, matched to existing", qty: 8 },
     ],
-    ["Impact hammer (modal testing)", "Vibration analyzer with modal software", "Torque wrench", "Welder / fabricator (for stiffeners)", "Feeler gauges"]
+    ["Impact hammer (modal testing)", "Vibration analyzer with modal software", "Torque wrench", "Welder / fabricator (for stiffeners)", "Feeler gauges"],
+    MECH_SAFETY
   ),
 
   // ── NOISE FLOOR ─────────────────────────────────────────────────────────
@@ -752,7 +798,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Elastomeric damping pads", spec: "Neoprene or Sorbothane", qty: 4 },
       { name: "Fastener set", spec: "Matched to existing guards and covers", qty: 8 },
     ],
-    ["Vibration analyzer", "Sound level meter", "Torque wrench", "Inspection mirror"]
+    ["Vibration analyzer", "Sound level meter", "Torque wrench", "Inspection mirror"],
+    MECH_SAFETY
   ),
 
   // ── GENERIC / UNCERTAIN ─────────────────────────────────────────────────
@@ -770,7 +817,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 6, task: "Schedule follow-up analysis at next planned stop." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer", "Inspection tools", "Thermal camera (optional)"]
+    ["Vibration analyzer", "Tachometer", "Inspection tools", "Thermal camera (optional)"],
+    MECH_SAFETY
   ),
 
   "General Dynamic Fault": mapped(
@@ -786,7 +834,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 6, task: "Schedule follow-up analysis at next planned stop." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer", "Inspection tools", "Thermal camera (optional)"]
+    ["Vibration analyzer", "Tachometer", "Inspection tools", "Thermal camera (optional)"],
+    MECH_SAFETY
   ),
 
   "Secondary Vibration Influences": mapped(
@@ -801,7 +850,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 5, task: "Address primary contributor with appropriate corrective action." },
     ],
     [],
-    ["Vibration analyzer", "Stroboscope", "Inspection tools"]
+    ["Vibration analyzer", "Stroboscope", "Inspection tools"],
+    MECH_SAFETY
   ),
 
   "Unspecified Anomaly": mapped(
@@ -815,7 +865,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 4, task: "Escalate to senior analyst or OEM representative if data is inconclusive." },
     ],
     [],
-    ["Vibration analyzer", "Infrared thermometer", "Visual inspection tools"]
+    ["Vibration analyzer", "Infrared thermometer", "Visual inspection tools"],
+    MECH_SAFETY
   ),
 
   // ── HEALTHY / NORMAL ────────────────────────────────────────────────────
@@ -833,7 +884,8 @@ const DICT: Record<string, PrescriptivePackage> = {
     [
       { name: "Bearing grease (spare)", spec: "OEM-specified grade, NLGI 2", qty: 1 },
     ],
-    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"]
+    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"],
+    HEALTHY_SAFETY
   ),
 
   "Normal Operation - No Faults Detected": mapped(
@@ -849,7 +901,8 @@ const DICT: Record<string, PrescriptivePackage> = {
     [
       { name: "Bearing grease (spare)", spec: "OEM-specified grade, NLGI 2", qty: 1 },
     ],
-    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"]
+    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"],
+    HEALTHY_SAFETY
   ),
 
   "Normal Operation": mapped(
@@ -865,7 +918,8 @@ const DICT: Record<string, PrescriptivePackage> = {
     [
       { name: "Bearing grease (spare)", spec: "OEM-specified grade, NLGI 2", qty: 1 },
     ],
-    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"]
+    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"],
+    HEALTHY_SAFETY
   ),
 
   "Normal": mapped(
@@ -881,7 +935,8 @@ const DICT: Record<string, PrescriptivePackage> = {
     [
       { name: "Bearing grease (spare)", spec: "OEM-specified grade, NLGI 2", qty: 1 },
     ],
-    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"]
+    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"],
+    HEALTHY_SAFETY
   ),
 
   "Healthy Operations": mapped(
@@ -897,7 +952,8 @@ const DICT: Record<string, PrescriptivePackage> = {
     [
       { name: "Bearing grease (spare)", spec: "OEM-specified grade, NLGI 2", qty: 1 },
     ],
-    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"]
+    ["Vibration analyzer", "Infrared thermometer", "Grease gun", "Torque wrench"],
+    HEALTHY_SAFETY
   ),
 
   "None Detected": mapped(
@@ -910,7 +966,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 3, task: "Schedule next routine measurement interval." },
     ],
     [],
-    ["Measurement instrument (vibration / thermal / ultrasound as applicable)"]
+    ["Measurement instrument (vibration / thermal / ultrasound as applicable)"],
+    HEALTHY_SAFETY
   ),
 
   // ── INCONCLUSIVE / REVIEW ───────────────────────────────────────────────
@@ -929,6 +986,7 @@ const DICT: Record<string, PrescriptivePackage> = {
     ],
     [],
     ["Vibration analyzer", "Route-based analysis software"],
+    MECH_SAFETY
   ),
   "Elevated Vibration — Review Required": mapped(
     "Elevated Vibration — Review Required",
@@ -944,6 +1002,7 @@ const DICT: Record<string, PrescriptivePackage> = {
     ],
     [],
     ["Vibration analyzer", "Route-based analysis software"],
+    MECH_SAFETY
   ),
   "Unresolved": mapped(
     "Unresolved",
@@ -959,6 +1018,7 @@ const DICT: Record<string, PrescriptivePackage> = {
     ],
     [],
     ["Vibration analyzer", "Route-based analysis software"],
+    MECH_SAFETY
   ),
   "Anomaly Detected": mapped(
     "Anomaly Detected",
@@ -974,6 +1034,7 @@ const DICT: Record<string, PrescriptivePackage> = {
     ],
     [],
     ["Vibration analyzer", "Route-based analysis software"],
+    MECH_SAFETY
   ),
 
   // ── ISO ZONE FINDINGS ───────────────────────────────────────────────────
@@ -988,7 +1049,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 3, task: "Schedule next routine interval." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer"]
+    ["Vibration analyzer", "Tachometer"],
+    HEALTHY_SAFETY
   ),
 
   "ISO Zone A — Acceptable": mapped(
@@ -1001,7 +1063,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 3, task: "Schedule next routine interval." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer"]
+    ["Vibration analyzer", "Tachometer"],
+    HEALTHY_SAFETY
   ),
 
   "ISO Zone B — Acceptable": mapped(
@@ -1014,7 +1077,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 3, task: "Schedule increased monitoring interval." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer"]
+    ["Vibration analyzer", "Tachometer"],
+    HEALTHY_SAFETY
   ),
 
   "ISO Zone C — Elevated Vibration": mapped(
@@ -1029,7 +1093,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 5, task: "Trend vibration at increased frequency until resolved." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Alignment tools (as needed)"]
+    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Alignment tools (as needed)"],
+    MECH_SAFETY
   ),
 
   "ISO 10816 Zone C": mapped(
@@ -1044,7 +1109,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 5, task: "Trend vibration at increased frequency until resolved." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Alignment tools (as needed)"]
+    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Alignment tools (as needed)"],
+    MECH_SAFETY
   ),
 
   "ISO Zone D — Elevated Vibration": mapped(
@@ -1060,7 +1126,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 6, task: "Increase monitoring frequency until stable." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Emergency shutdown equipment"]
+    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Emergency shutdown equipment"],
+    MECH_SAFETY
   ),
 
   "ISO 10816 Zone D": mapped(
@@ -1076,7 +1143,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { step: 6, task: "Increase monitoring frequency until stable." },
     ],
     [],
-    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Emergency shutdown equipment"]
+    ["Vibration analyzer", "Tachometer", "Infrared thermometer", "Emergency shutdown equipment"],
+    MECH_SAFETY
   ),
 
   // ── THERMOGRAPHY FAULTS ─────────────────────────────────────────────────
@@ -1100,7 +1168,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Anti-oxidant compound", spec: "Noalox or equivalent for aluminum", qty: 1 },
       { name: "Contact cleaner", spec: "Electrical contact cleaner spray", qty: 1 },
     ],
-    ["Infrared camera", "Torque wrench (low-range)", "Multimeter", "Insulated tools", "Lock-out / tag-out kit"]
+    ["Infrared camera", "Torque wrench (low-range)", "Multimeter", "Insulated tools", "Lock-out / tag-out kit"],
+    ELEC_SAFETY
   ),
 
   "High Resistance": mapped(
@@ -1121,7 +1190,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Contact cleaner", spec: "Electrical contact cleaner spray", qty: 1 },
       { name: "Anti-oxidant compound", spec: "Noalox or equivalent for aluminum", qty: 1 },
     ],
-    ["Micro-ohmmeter", "Infrared camera", "Torque wrench (low-range)", "Insulated tools", "Lock-out / tag-out kit"]
+    ["Micro-ohmmeter", "Infrared camera", "Torque wrench (low-range)", "Insulated tools", "Lock-out / tag-out kit"],
+    ELEC_SAFETY
   ),
 
   "Phase Imbalance": mapped(
@@ -1141,7 +1211,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Terminal connectors / lugs", spec: "Matched to conductor size and type", qty: 4 },
       { name: "Fuses (if applicable)", spec: "Matched to circuit rating", qty: 3 },
     ],
-    ["Power quality analyzer", "Multimeter", "Clamp meter", "Infrared camera", "Lock-out / tag-out kit"]
+    ["Power quality analyzer", "Multimeter", "Clamp meter", "Infrared camera", "Lock-out / tag-out kit"],
+    ELEC_SAFETY
   ),
 
   "Overload": mapped(
@@ -1161,7 +1232,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Overload relay (if defective)", spec: "Matched to motor FLA", qty: 1 },
       { name: "Fuses", spec: "Matched to circuit rating", qty: 3 },
     ],
-    ["Clamp meter", "Multimeter", "Power quality analyzer", "Infrared camera", "Lock-out / tag-out kit"]
+    ["Clamp meter", "Multimeter", "Power quality analyzer", "Infrared camera", "Lock-out / tag-out kit"],
+    ELEC_SAFETY
   ),
 
   "Friction": mapped(
@@ -1182,7 +1254,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement seal", spec: "NBR lip seal, matched to shaft diameter", qty: 1 },
       { name: "Bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
-    ["Infrared camera", "Vibration analyzer", "Feeler gauges", "Torque wrench", "Grease gun"]
+    ["Infrared camera", "Vibration analyzer", "Feeler gauges", "Torque wrench", "Grease gun"],
+    MECH_SAFETY
   ),
 
   "Harmonic Heating": mapped(
@@ -1202,7 +1275,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Capacitor bank (if power factor correction needed)", spec: "Matched to kVAR requirement", qty: 1 },
       { name: "Terminal connectors", spec: "Matched to conductor size", qty: 4 },
     ],
-    ["Power quality analyzer", "Infrared camera", "Oscilloscope", "True-RMS multimeter", "Lock-out / tag-out kit"]
+    ["Power quality analyzer", "Infrared camera", "Oscilloscope", "True-RMS multimeter", "Lock-out / tag-out kit"],
+    ELEC_SAFETY
   ),
 
   "Lubrication Failure": mapped(
@@ -1222,7 +1296,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement lubricant", spec: "OEM-specified grade", qty: 1 },
       { name: "Oil filter (if applicable)", spec: "OEM-specified micron rating", qty: 1 },
     ],
-    ["Grease gun", "Oil sampling kit", "Viscometer (or send sample to lab)", "Vibration analyzer", "Infrared thermometer"]
+    ["Grease gun", "Oil sampling kit", "Viscometer (or send sample to lab)", "Vibration analyzer", "Infrared thermometer"],
+    LUBE_SAFETY
   ),
 
   "Localized Overheating": mapped(
@@ -1241,7 +1316,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Cooling fan (if failed)", spec: "OEM specification, matched to frame", qty: 1 },
       { name: "Ventilation grille / filter", spec: "OEM specification", qty: 1 },
     ],
-    ["Infrared camera", "Multimeter", "Contact thermometer", "Cleaning supplies"]
+    ["Infrared camera", "Multimeter", "Contact thermometer", "Cleaning supplies"],
+    MECH_SAFETY
   ),
 
   // ── ULTRASOUND FAULTS ───────────────────────────────────────────────────
@@ -1263,7 +1339,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Thread sealant", spec: "PTFE tape or anaerobic pipe sealant", qty: 1 },
       { name: "Gaskets", spec: "Matched to flange size", qty: 4 },
     ],
-    ["Ultrasonic leak detector", "Pipe wrench", "Thread sealant", "Pressure gauge", "Safety glasses"]
+    ["Ultrasonic leak detector", "Pipe wrench", "Thread sealant", "Pressure gauge", "Safety glasses"],
+    PROCESS_SAFETY
   ),
 
   "Corona / Tracking": mapped(
@@ -1284,7 +1361,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Replacement bushing or insulator", spec: "OEM specification", qty: 1 },
       { name: "Contact cleaner", spec: "Non-residue electrical cleaner", qty: 1 },
     ],
-    ["UV / corona camera", "Insulation resistance tester (Megger)", "Compressed air", "Cleaning supplies", "Lock-out / tag-out kit"]
+    ["UV / corona camera", "Insulation resistance tester (Megger)", "Compressed air", "Cleaning supplies", "Lock-out / tag-out kit"],
+    ELEC_SAFETY
   ),
 
   "Steam Trap Blow-by": mapped(
@@ -1304,7 +1382,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Trap gasket set", spec: "Matched to trap and pipe flanges", qty: 1 },
       { name: "Thread sealant", spec: "PTFE tape or high-temperature pipe sealant", qty: 1 },
     ],
-    ["Ultrasonic detector", "Infrared thermometer", "Pipe wrench", "Safety glasses and gloves", "Lock-out / tag-out kit"]
+    ["Ultrasonic detector", "Infrared thermometer", "Pipe wrench", "Safety glasses and gloves", "Lock-out / tag-out kit"],
+    PROCESS_SAFETY
   ),
 };
 
@@ -1322,7 +1401,7 @@ for (const key of Object.keys(DICT)) {
 // Public API
 // ---------------------------------------------------------------------------
 
-export const DICTIONARY_VERSION = "1.0.0";
+export const DICTIONARY_VERSION = "1.1.0";
 
 export function getPrescription(diagnosis: string): PrescriptivePackage {
   const key = String(diagnosis ?? "").trim().toLowerCase();
@@ -1335,6 +1414,7 @@ export function isMapped(diagnosis: string): boolean {
 
 // ---------------------------------------------------------------------------
 // Coverage Table — every active diagnosis string → mapped/unmapped
+// All mapped entries now include safety field (LOTO + PPE by fault domain).
 // ---------------------------------------------------------------------------
 //
 // Diagnosis String                                        | Mapped
