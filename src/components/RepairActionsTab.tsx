@@ -50,7 +50,7 @@ function computeAvgIntervalDays(timestamps: string[]): { days: number; fallback:
   const gaps: number[] = [];
   for (let i = 1; i < sorted.length; i++) {
     const d = (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / 86400000;
-    if (d > 0) gaps.push(d);
+    if (d >= 1) gaps.push(d);
   }
   if (gaps.length === 0) return { days: 30, fallback: true };
   gaps.sort((a, b) => a - b);
@@ -95,28 +95,6 @@ function computeRulDays(trend: { first: number; last: number; delta: number } | 
   const runsToAlarm = (alarmThreshold - trend.last) / ratePerRun;
   if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { days: 0, label: "" };
   return { days: Math.round(runsToAlarm * avgDays), label: intervalFallback ? "linear trend extrapolation - not a failure model; median run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; median run interval ${avgDays} days (same-day runs excluded)` };
-}
-
-// ── Priority Score ─────────────────────────────────────────────────────────
-// Weights: severity 0.4, trend 0.3, downtime 0.2, base 0.1
-// Example: resting unbalance (sev 0.0223, trend 0.92, downtime 0, base 0.8)
-//   => rawSum 0.36493 => score 36
-const WEIGHTS = { severity: 0.4, trend: 0.3, downtime: 0.2, base: 0.1 } as const;
-function computePriorityScore(amplitude: number | null, trend: { delta: number } | null, dangerMmS: number, defaultPriority: 1 | 2 | 3 | 4 | 5, downtimeCostPerDay: number | null): { score: number; rawSum: number; breakdown: string } {
-  const sevRatio = amplitude != null ? Math.min(amplitude / dangerMmS, 1) : 0;
-  const trendRatio = trend != null && amplitude != null && amplitude > 0 ? Math.min(Math.max(trend.delta, 0) / amplitude, 1) : 0;
-  const dtRatio = downtimeCostPerDay != null ? Math.min(downtimeCostPerDay / 10000, 1) : 0;
-  const baseRatio = (6 - defaultPriority) / 5;
-  const sevTerm = WEIGHTS.severity * sevRatio;
-  const trendTerm = WEIGHTS.trend * trendRatio;
-  const dtTerm = WEIGHTS.downtime * dtRatio;
-  const baseTerm = WEIGHTS.base * baseRatio;
-  const rawSum = sevTerm + trendTerm + dtTerm + baseTerm;
-  const score = Math.round(rawSum * 100);
-  const fmt = (v: number) => v.toFixed(4);
-  const dtLabel = downtimeCostPerDay != null ? "entered" : "not entered";
-  const breakdown = `sev: ${fmt(sevRatio)} x ${WEIGHTS.severity} = ${fmt(sevTerm)} | trend: ${fmt(trendRatio)} x ${WEIGHTS.trend} = ${fmt(trendTerm)} | dt: ${fmt(dtRatio)} x ${WEIGHTS.downtime} = ${fmt(dtTerm)} [${dtLabel}] | base: ${fmt(baseRatio)} x ${WEIGHTS.base} = ${fmt(baseTerm)}`;
-  return { score, rawSum, breakdown };
 }
 
 // ── Ranked Fault Card ──────────────────────────────────────────────────────
