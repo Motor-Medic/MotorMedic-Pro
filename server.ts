@@ -10149,13 +10149,10 @@ app.get(["/api/assets/:tag/planning-config", "/api/equipment/:tag/planning-confi
     const tag = req.params.tag;
     if (!tag) return res.status(400).json({ error: "Missing tag parameter" });
     if (pool) {
-      const result = await pool.query("SELECT planning_config FROM assets WHERE tag_number = $1", [tag]);
-      if (result.rows.length === 0) return res.status(404).json({ error: "Asset not found" });
-      return res.json(result.rows[0].planning_config || null);
+      const result = await pool.query("SELECT config FROM planning_configs WHERE asset_id = $1", [tag]);
+      return res.json(result.rows.length > 0 ? result.rows[0].config : null);
     } else {
-      const asset = memoryAssets.find(e => (e as any).tag_number === tag);
-      if (!asset) return res.status(404).json({ error: "Asset not found" });
-      return res.json((asset as any).planning_config || null);
+      return res.json(null);
     }
   } catch (error: any) {
     console.error("GET planning_config failed:", error);
@@ -10171,15 +10168,14 @@ app.patch(["/api/assets/:tag/planning-config", "/api/equipment/:tag/planning-con
     const config = req.body;
     if (pool) {
       const result = await pool.query(
-        "UPDATE assets SET planning_config = $1 WHERE tag_number = $2 RETURNING planning_config",
-        [JSON.stringify(config), tag]
+        `INSERT INTO planning_configs (asset_id, config, updated_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (asset_id) DO UPDATE SET config = $2, updated_at = now()
+         RETURNING config`,
+        [tag, JSON.stringify(config)]
       );
-      if (result.rows.length === 0) return res.status(404).json({ error: "Asset not found" });
-      return res.json(result.rows[0].planning_config);
+      return res.json(result.rows[0].config);
     } else {
-      const asset = memoryAssets.find(e => (e as any).tag_number === tag);
-      if (!asset) return res.status(404).json({ error: "Asset not found" });
-      (asset as any).planning_config = config;
       return res.json(config);
     }
   } catch (error: any) {
@@ -11915,6 +11911,14 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS voltage_rating DOUBLE PRECISION NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS horsepower DOUBLE PRECISION NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS planning_config JSONB NULL;");
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS planning_configs (
+        asset_id TEXT PRIMARY KEY,
+        config JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
 
     // Check components table
     const componentsExistsQuery = await pool.query(`
