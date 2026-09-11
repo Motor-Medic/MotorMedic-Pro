@@ -23,8 +23,9 @@ export interface ProcedureStep {
 }
 
 export interface SeverityZones {
-  alarmMmS: number;
-  dangerMmS: number;
+  alarm?: number;
+  danger?: number;
+  unit: string;
 }
 
 export interface SafetyGuidance {
@@ -48,7 +49,9 @@ export interface PrescriptivePackage {
 // ISO 10816-3 severity zone defaults (general-purpose, 15 kW – 300 kW)
 // ---------------------------------------------------------------------------
 
-const ISO_10816: SeverityZones = { alarmMmS: 4.5, dangerMmS: 11.2 };
+const VIB_ZONES: SeverityZones = { alarm: 4.5, danger: 11.2, unit: "mm/s" };
+const US_ZONES: SeverityZones = { alarm: 12, danger: 20, unit: "dB" };
+const IR_ZONES: SeverityZones = { alarm: 4, danger: 15, unit: "degC" };
 
 // Safety guidance by fault domain
 const MECH_SAFETY: SafetyGuidance = { loto: ["Machine Isolation - lock-out/tag-out rotating elements"], ppe: "Level 2: Eye, Hand, Hearing" };
@@ -70,7 +73,7 @@ function mapped(
   parts: PartSpec[],
   tools: string[],
   safety?: SafetyGuidance,
-  zones: SeverityZones = ISO_10816
+  zones: SeverityZones = VIB_ZONES
 ): PrescriptivePackage {
   return {
     diagnosis,
@@ -97,7 +100,7 @@ function unmapped(diagnosis: string): PrescriptivePackage {
     parts: [],
     tools: [],
     laborHours: 0,
-    severityZones: ISO_10816,
+    severityZones: { unit: "mm/s" },
     defaultPriority: 5,
     safety: { loto: ["Verify isolation per site procedure"], ppe: "Per site standard" },
   };
@@ -1169,7 +1172,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Contact cleaner", spec: "Electrical contact cleaner spray", qty: 1 },
     ],
     ["Infrared camera", "Torque wrench (low-range)", "Multimeter", "Insulated tools", "Lock-out / tag-out kit"],
-    ELEC_SAFETY
+    ELEC_SAFETY,
+    IR_ZONES
   ),
 
   "High Resistance": mapped(
@@ -1191,7 +1195,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Anti-oxidant compound", spec: "Noalox or equivalent for aluminum", qty: 1 },
     ],
     ["Micro-ohmmeter", "Infrared camera", "Torque wrench (low-range)", "Insulated tools", "Lock-out / tag-out kit"],
-    ELEC_SAFETY
+    ELEC_SAFETY,
+    IR_ZONES
   ),
 
   "Phase Imbalance": mapped(
@@ -1212,7 +1217,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Fuses (if applicable)", spec: "Matched to circuit rating", qty: 3 },
     ],
     ["Power quality analyzer", "Multimeter", "Clamp meter", "Infrared camera", "Lock-out / tag-out kit"],
-    ELEC_SAFETY
+    ELEC_SAFETY,
+    IR_ZONES
   ),
 
   "Overload": mapped(
@@ -1233,7 +1239,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Fuses", spec: "Matched to circuit rating", qty: 3 },
     ],
     ["Clamp meter", "Multimeter", "Power quality analyzer", "Infrared camera", "Lock-out / tag-out kit"],
-    ELEC_SAFETY
+    ELEC_SAFETY,
+    IR_ZONES
   ),
 
   "Friction": mapped(
@@ -1255,7 +1262,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Bearing grease", spec: "Polyurea or lithium-complex, NLGI 2", qty: 1 },
     ],
     ["Infrared camera", "Vibration analyzer", "Feeler gauges", "Torque wrench", "Grease gun"],
-    MECH_SAFETY
+    MECH_SAFETY,
+    IR_ZONES
   ),
 
   "Harmonic Heating": mapped(
@@ -1276,7 +1284,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Terminal connectors", spec: "Matched to conductor size", qty: 4 },
     ],
     ["Power quality analyzer", "Infrared camera", "Oscilloscope", "True-RMS multimeter", "Lock-out / tag-out kit"],
-    ELEC_SAFETY
+    ELEC_SAFETY,
+    IR_ZONES
   ),
 
   "Lubrication Failure": mapped(
@@ -1297,7 +1306,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Oil filter (if applicable)", spec: "OEM-specified micron rating", qty: 1 },
     ],
     ["Grease gun", "Oil sampling kit", "Viscometer (or send sample to lab)", "Vibration analyzer", "Infrared thermometer"],
-    LUBE_SAFETY
+    LUBE_SAFETY,
+    IR_ZONES
   ),
 
   "Localized Overheating": mapped(
@@ -1317,7 +1327,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Ventilation grille / filter", spec: "OEM specification", qty: 1 },
     ],
     ["Infrared camera", "Multimeter", "Contact thermometer", "Cleaning supplies"],
-    MECH_SAFETY
+    MECH_SAFETY,
+    IR_ZONES
   ),
 
   // ── ULTRASOUND FAULTS ───────────────────────────────────────────────────
@@ -1340,7 +1351,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Gaskets", spec: "Matched to flange size", qty: 4 },
     ],
     ["Ultrasonic leak detector", "Pipe wrench", "Thread sealant", "Pressure gauge", "Safety glasses"],
-    PROCESS_SAFETY
+    PROCESS_SAFETY,
+    US_ZONES
   ),
 
   "Corona / Tracking": mapped(
@@ -1362,7 +1374,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Contact cleaner", spec: "Non-residue electrical cleaner", qty: 1 },
     ],
     ["UV / corona camera", "Insulation resistance tester (Megger)", "Compressed air", "Cleaning supplies", "Lock-out / tag-out kit"],
-    ELEC_SAFETY
+    ELEC_SAFETY,
+    US_ZONES
   ),
 
   "Steam Trap Blow-by": mapped(
@@ -1383,7 +1396,8 @@ const DICT: Record<string, PrescriptivePackage> = {
       { name: "Thread sealant", spec: "PTFE tape or high-temperature pipe sealant", qty: 1 },
     ],
     ["Ultrasonic detector", "Infrared thermometer", "Pipe wrench", "Safety glasses and gloves", "Lock-out / tag-out kit"],
-    PROCESS_SAFETY
+    PROCESS_SAFETY,
+    US_ZONES
   ),
 };
 
@@ -1401,7 +1415,7 @@ for (const key of Object.keys(DICT)) {
 // Public API
 // ---------------------------------------------------------------------------
 
-export const DICTIONARY_VERSION = "1.1.0";
+export const DICTIONARY_VERSION = "1.2.0";
 
 export function getPrescription(diagnosis: string): PrescriptivePackage {
   const key = String(diagnosis ?? "").trim().toLowerCase();

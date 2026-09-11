@@ -7368,13 +7368,29 @@ export default function AnalysisReport({
 
             {/* ===== Selected Analysis Detail — Tab 1 ===== */}
             {selectedAnalysis && activeTab === 1 && (() => {
+              const modality = selectedAnalysis.analysis_type ?? "vibration";
+              const faults = Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : [];
+              const hasHigh = faults.some((f) => String(f.severity ?? "").toUpperCase() === "HIGH");
+
+              if (modality !== "vibration") {
+                return (
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Gauge className="h-4 w-4 text-amber-400" />
+                        <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">ISO 10816 Severity Assessment</h4>
+                      </div>
+                      <p className="text-sm text-slate-500 italic">ISO 10816 severity zones are curated for vibration only — not applicable to {modality} modality</p>
+                    </div>
+                  </div>
+                );
+              }
+
               const isoInfo = resolveIso10816Zone(
                 (selectedAnalysis.telemetry_data as Record<string, unknown> | null | undefined)?.overallVelocity as number | undefined,
                 selectedAnalysis.health_score,
               );
               const isoZoneMeta = ISO_10816_ZONES_MM.find((z) => z.zone === isoInfo.zone);
-              const faults = Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : [];
-              const hasHigh = faults.some((f) => String(f.severity ?? "").toUpperCase() === "HIGH");
 
               return (
                 <div className="space-y-4">

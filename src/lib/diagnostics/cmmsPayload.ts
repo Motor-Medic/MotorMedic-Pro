@@ -732,9 +732,9 @@ export function buildBridgeContext(
   const hasInputs = pi != null && pi.leadTimeDays != null && pi.nextShutdownDate != null && pi.downtimeCostPerDay != null;
   let topTiming: { executeBy: string | null; recommendation: string } | null = null;
   if (hasInputs && topRx && topTrend) {
-    const alarmMmS = topRx.severityZones.alarmMmS;
-    if (topTrend.delta > 0.005) {
-      const runsToAlarm = (alarmMmS - topTrend.last) / topTrend.delta;
+    const alarmThreshold = topRx.severityZones.alarm;
+    if (alarmThreshold != null && topTrend.delta > 0.005) {
+      const runsToAlarm = (alarmThreshold - topTrend.last) / topTrend.delta;
       if (Number.isFinite(runsToAlarm) && runsToAlarm > 0) {
         const daysToAlarm = Math.round(runsToAlarm * avgInterval.days);
         const execDate = new Date(); execDate.setDate(execDate.getDate() + daysToAlarm);
@@ -750,7 +750,7 @@ export function buildBridgeContext(
   // Priority score for top fault
   let topPriority: { score: number; breakdown: string } | null = null;
   if (topRx) {
-    const sevRatio = topAmplitude != null ? Math.min(topAmplitude / topRx.severityZones.dangerMmS, 1) : 0;
+    const sevRatio = topAmplitude != null && topRx.severityZones.danger != null ? Math.min(topAmplitude / topRx.severityZones.danger, 1) : 0;
     const trendRatio = topTrend != null && topAmplitude != null && topAmplitude > 0 ? Math.min(Math.max(topTrend.delta, 0) / topAmplitude, 1) : 0;
     const dtRatio = pi?.downtimeCostPerDay != null ? Math.min(pi.downtimeCostPerDay / 10000, 1) : 0;
     const baseRatio = (6 - topRx.defaultPriority) / 5;
@@ -766,8 +766,8 @@ export function buildBridgeContext(
     const entry = opts.repairCosts?.[topFault?.title ?? ""] ?? null;
     const hasCosts = entry != null && entry.repair != null && entry.replacement != null && entry.replacement > 0;
     let rulDays: number | null = null;
-    if (topTrend && topTrend.delta > 0.005) {
-      const runsToAlarm = (topRx.severityZones.alarmMmS - topTrend.last) / topTrend.delta;
+    if (topTrend && topRx.severityZones.alarm != null && topTrend.delta > 0.005) {
+      const runsToAlarm = (topRx.severityZones.alarm - topTrend.last) / topTrend.delta;
       if (Number.isFinite(runsToAlarm) && runsToAlarm > 0) rulDays = Math.round(runsToAlarm * avgInterval.days);
     }
     if (hasCosts) {
