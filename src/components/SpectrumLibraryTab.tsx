@@ -59,6 +59,8 @@ export default function SpectrumLibraryTab({
 }: SpectrumLibraryTabProps) {
   const [showBearingHarmonics, setShowBearingHarmonics] = useState(false);
   const [manualRefRpm, setManualRefRpm] = useState(3530);
+  // Waterfall hover — mouse-only (no touch), reads exact values under cursor
+  const [wfHover, setWfHover] = useState<{ svgX: number; runIdx: number; freq: number; amp: number; date: string; stored?: boolean } | null>(null);
 
   // Determine modality of the selected run
   const selectedModality = selectedAnalysis?.analysis_type ?? "vibration";
@@ -473,7 +475,32 @@ export default function SpectrumLibraryTab({
                 <div className="flex flex-col w-full h-[420px] bg-slate-950/90 rounded-lg p-4 border border-slate-800">
                   <p className="text-[10px] font-mono text-slate-400 mb-1">Max Amp: {waterfallMaxAmp.toFixed(2)} mm/s (shared scale)</p>
                   <div className="relative flex-1 min-h-0 w-full">
-                    <svg viewBox="0 0 850 320" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                    <svg viewBox="0 0 850 320" preserveAspectRatio="none" className="w-full h-full overflow-visible"
+                      onMouseMove={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const svgX = ((e.clientX - rect.left) / rect.width) * 850;
+                        const svgY = ((e.clientY - rect.top) / rect.height) * 320;
+                        let bestIdx = 0; let bestDist = Infinity;
+                        waterfallRuns.forEach((_, i) => { const ty = 270 - i * 32; const d = Math.abs(svgY - ty); if (d < bestDist) { bestDist = d; bestIdx = i; } });
+                        if (bestDist > 60) { setWfHover(null); return; }
+                        const run = waterfallRuns[bestIdx]; if (!run) { setWfHover(null); return; }
+                        const hf = (Math.max(0, Math.min(svgX, 620)) / 620) * xMax;
+                        const snap = run.peaks.find((p) => Math.abs(p.frequency - hf) < 2);
+                        if (snap) { setWfHover({ svgX: freqToX(snap.frequency), runIdx: bestIdx, freq: snap.frequency, amp: snap.amplitude, date: run.date, stored: true }); return; }
+                        const pts = (run.spectral.length > 0 ? run.spectral : run.peaks).slice().sort((a, b) => a.frequency - b.frequency);
+                        if (pts.length === 0) { setWfHover(null); return; }
+                        let lo = pts[0], hi = pts[pts.length - 1];
+                        if (hf <= lo.frequency) { setWfHover({ svgX: freqToX(lo.frequency), runIdx: bestIdx, freq: lo.frequency, amp: lo.amplitude, date: run.date }); return; }
+                        if (hf >= hi.frequency) { setWfHover({ svgX: freqToX(hi.frequency), runIdx: bestIdx, freq: hi.frequency, amp: hi.amplitude, date: run.date }); return; }
+                        for (let i = 1; i < pts.length; i++) {
+                          if (hf >= pts[i - 1].frequency && hf <= pts[i].frequency) {
+                            const t = pts[i].frequency === pts[i - 1].frequency ? 0 : (hf - pts[i - 1].frequency) / (pts[i].frequency - pts[i - 1].frequency);
+                            setWfHover({ svgX: freqToX(hf), runIdx: bestIdx, freq: hf, amp: pts[i - 1].amplitude + t * (pts[i].amplitude - pts[i - 1].amplitude), date: run.date }); return;
+                          }
+                        }
+                        setWfHover(null);
+                      }}
+                      onMouseLeave={() => setWfHover(null)}>
                       {waterfallRuns.map((run, i) => {
                         const color = waterfallColors[i] ?? "#0891b2";
                         const sorted = [...run.peaks].sort((a, b) => a.frequency - b.frequency);
@@ -512,7 +539,15 @@ export default function SpectrumLibraryTab({
                           </g>
                         );
                       })}
+                      {/* Vertical cursor guide at hover frequency */}
+                      {wfHover && <line x1={wfHover.svgX} x2={wfHover.svgX} y1={0} y2={320} stroke="#facc15" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" pointerEvents="none" />}
                     </svg>
+                    {/* Waterfall hover tooltip — demod tooltip visual style */}
+                    {wfHover && (
+                      <div className="absolute pointer-events-none z-10 px-2.5 py-1.5 rounded-lg text-[11px] font-mono shadow-lg" style={{ background: "#0f172a", border: "1px solid #334155", left: `${(wfHover.svgX / 850) * 100}%`, top: `${((270 - wfHover.runIdx * 32) / 320) * 100 - 8}%`, transform: "translate(-50%, -100%)", color: waterfallColors[wfHover.runIdx] ?? "#0891b2" }}>
+                        {wfHover.date} — {wfHover.freq.toFixed(1)} Hz — {wfHover.amp.toFixed(4)} mm/s{wfHover.stored ? " (stored peak)" : ""}
+                      </div>
+                    )}
                     {/* Date labels — HTML spans, not stretched SVG text */}
                     {waterfallRuns.map((run, i) => (
                       <span
