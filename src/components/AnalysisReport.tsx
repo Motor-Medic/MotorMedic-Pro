@@ -40,7 +40,7 @@ import PartsInventoryModal, {
 } from "./PartsInventory";
 import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
-import { RunHistoryTrigger, RunHistoryPopover, type RunHistoryRun } from "./RunHistoryPopover";
+import { RunHistoryTrigger, RunHistoryPopover, isVibrationRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 import MultiTechAssessment from "./reports/MultiTechAssessment";
 import SavedReportViewer from "./reports/SavedReportViewer";
@@ -6668,7 +6668,7 @@ export default function AnalysisReport({
     const component = selectedAnalysis?.component;
     if (!assetId) return [];
     return loadedAnalyses
-      .filter((r) => r.asset_id === assetId && (!component || r.component === component) && (r.analysis_type ?? "vibration") === "vibration")
+      .filter((r) => r.asset_id === assetId && (!component || r.component === component) && isVibrationRun(r))
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .map((r) => ({
         id: r.id,
@@ -6685,7 +6685,7 @@ export default function AnalysisReport({
     return new Date(tab1Runs[0].timestamp).getTime();
   }, [tab1Runs]);
 
-  const vibrationAnalyses = useMemo(() => loadedAnalyses.filter((r) => (r.analysis_type ?? "vibration") === "vibration"), [loadedAnalyses]);
+  const vibrationAnalyses = useMemo(() => loadedAnalyses.filter(isVibrationRun), [loadedAnalyses]);
   const otherTechCount = loadedAnalyses.length - vibrationAnalyses.length;
 
   const baselineRecord = useMemo(() => {

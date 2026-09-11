@@ -10,6 +10,8 @@ export interface RunHistoryRun {
   analysis_type?: string | null;
 }
 
+export const isVibrationRun = (r: { analysis_type?: string | null }) => (r.analysis_type ?? "vibration") === "vibration";
+
 export interface RunHistoryPopoverProps {
   open: boolean;
   onClose: () => void;
@@ -59,6 +61,7 @@ export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, c
   }, [open, onClose]);
 
   const boundaryRuns = useMemo(() => {
+    if (modalities.length === 1 && modalities[0].toLowerCase() === "vibration") return runs.filter(isVibrationRun);
     const allowed = new Set(modalities.map((m) => m.toLowerCase()));
     return runs.filter((r) => allowed.has((r.analysis_type ?? "vibration").toLowerCase()));
   }, [runs, modalities]);
