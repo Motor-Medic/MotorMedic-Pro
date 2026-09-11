@@ -6668,7 +6668,7 @@ export default function AnalysisReport({
     const component = selectedAnalysis?.component;
     if (!assetId) return [];
     return loadedAnalyses
-      .filter((r) => r.asset_id === assetId && (!component || r.component === component))
+      .filter((r) => r.asset_id === assetId && (!component || r.component === component) && (r.analysis_type ?? "vibration") === "vibration")
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .map((r) => ({
         id: r.id,
@@ -6684,6 +6684,9 @@ export default function AnalysisReport({
     if (tab1Runs.length === 0) return null;
     return new Date(tab1Runs[0].timestamp).getTime();
   }, [tab1Runs]);
+
+  const vibrationAnalyses = useMemo(() => loadedAnalyses.filter((r) => (r.analysis_type ?? "vibration") === "vibration"), [loadedAnalyses]);
+  const otherTechCount = loadedAnalyses.length - vibrationAnalyses.length;
 
   const baselineRecord = useMemo(() => {
     return loadedAnalyses.find((a) => a.is_baseline) ?? null;
@@ -7264,7 +7267,7 @@ export default function AnalysisReport({
                     : "text-slate-400 hover:text-slate-200 border-transparent"
                 }`}
               >
-                Saved Analyses ({loadedAnalyses.length})
+                Saved Analyses ({vibrationAnalyses.length})
               </button>
               {currentTechTabs.map((tab) => {
                 const isActive = activeTab === tab.id;
@@ -7298,7 +7301,7 @@ export default function AnalysisReport({
             {activeTab === 0 && (
               <div className="space-y-3">
                 {loadError && <p className="text-xs text-amber-400">{loadError}</p>}
-                {loadedAnalyses.length === 0 ? (
+                {vibrationAnalyses.length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-center py-16 px-4">
                     <FileText className="h-8 w-8 text-slate-600 mb-2" />
                     <p className="text-sm font-semibold text-slate-300">No saved analyses for this asset yet</p>
@@ -7309,7 +7312,7 @@ export default function AnalysisReport({
                 ) : (
                   <>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      {loadedAnalyses.slice(0, visibleLimit).map((row) => {
+                      {vibrationAnalyses.slice(0, visibleLimit).map((row) => {
                         const on = selectedAnalysis?.id === row.id;
                         const sevRaw = String(
                           (Array.isArray(row.fault_list) && row.fault_list[0]?.severity) || ""
@@ -7352,7 +7355,7 @@ export default function AnalysisReport({
                         );
                       })}
                     </div>
-                    {visibleLimit < loadedAnalyses.length && (
+                    {visibleLimit < vibrationAnalyses.length && (
                       <button
                         type="button"
                         onClick={() => setVisibleLimit((n) => n + 10)}
@@ -7360,6 +7363,9 @@ export default function AnalysisReport({
                       >
                         Show More (+10)
                       </button>
+                    )}
+                    {otherTechCount > 0 && (
+                      <p className="text-[11px] text-slate-500 text-center">{otherTechCount} analys{otherTechCount === 1 ? "is" : "es"} of other technologies viewed on their technology pages</p>
                     )}
                   </>
                 )}
@@ -7971,6 +7977,7 @@ export default function AnalysisReport({
           setRunHistoryOpen(false);
         }}
         componentLabel={selectedAnalysis?.component || loadedComponent || "Analysis"}
+        modalities={["vibration"]}
       />
     </div>
   );
