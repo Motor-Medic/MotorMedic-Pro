@@ -55,11 +55,12 @@ function computeAvgIntervalDays(timestamps: string[]): { days: number; fallback:
 
 // ── Timing ─────────────────────────────────────────────────────────────────
 interface TimingResult { executeBy: string | null; method: string; recommendation: string; costOfWait: string | null; intervalLabel: string; }
-function computeTiming(trend: { first: number; last: number; delta: number } | null, alarmMmS: number, inputs: PlanningInputs | null, avgDays: number, intervalFallback: boolean): TimingResult | null {
+function computeTiming(trend: { first: number; last: number; delta: number } | null, alarmThreshold: number | null | undefined, unit: string, inputs: PlanningInputs | null, avgDays: number, intervalFallback: boolean): TimingResult | null {
   if (!inputs || inputs.leadTimeDays == null || inputs.nextShutdownDate == null || inputs.downtimeCostPerDay == null) return null;
+  if (alarmThreshold == null) return { executeBy: null, method: "not computed", recommendation: `not computed - thresholds not curated for ${unit} modality`, costOfWait: null, intervalLabel: "" };
   if (!trend || trend.delta <= 0.005) return { executeBy: null, method: "no growth", recommendation: "no growth trend - schedule at convenience", costOfWait: null, intervalLabel: "" };
   const ratePerRun = trend.delta;
-  const runsToAlarm = (alarmMmS - trend.last) / ratePerRun;
+  const runsToAlarm = (alarmThreshold - trend.last) / ratePerRun;
   if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { executeBy: null, method: "already past alarm", recommendation: "amplitude at or above alarm - execute immediately", costOfWait: null, intervalLabel: "" };
   const daysToAlarm = Math.round(runsToAlarm * avgDays);
   const execDate = new Date(); execDate.setDate(execDate.getDate() + daysToAlarm);
@@ -81,10 +82,11 @@ function computeTiming(trend: { first: number; last: number; delta: number } | n
 // ── RUL ────────────────────────────────────────────────────────────────────
 const REPLACE_RATIO_THRESHOLD = 0.5;
 const REPLACE_RUL_THRESHOLD_DAYS = 365;
-function computeRulDays(trend: { first: number; last: number; delta: number } | null, alarmMmS: number, avgDays: number, intervalFallback: boolean): { days: number | null; label: string } {
+function computeRulDays(trend: { first: number; last: number; delta: number } | null, alarmThreshold: number | null | undefined, avgDays: number, intervalFallback: boolean): { days: number | null; label: string } {
+  if (alarmThreshold == null) return { days: null, label: "not computed - thresholds not curated" };
   if (!trend || trend.delta <= 0.005) return { days: null, label: "" };
   const ratePerRun = trend.delta;
-  const runsToAlarm = (alarmMmS - trend.last) / ratePerRun;
+  const runsToAlarm = (alarmThreshold - trend.last) / ratePerRun;
   if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { days: 0, label: "" };
   return { days: Math.round(runsToAlarm * avgDays), label: intervalFallback ? "linear trend extrapolation - not a failure model; avg run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; avg run interval ${avgDays} days` };
 }
@@ -112,19 +114,24 @@ function computePriorityScore(amplitude: number | null, trend: { delta: number }
 }
 
 // ── Ranked Fault Card ──────────────────────────────────────────────────────
-function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, replacementCost, onRepairCostChange, onReplacementCostChange, rulDays, intervalLabel, planningInputs }: {
+function FaultCard({ fault, prescription, amplitude, trend, timing, draftRepairCost, draftReplacementCost, savedRepairCost, savedReplacementCost, onRepairCostChange, onReplacementCostChange, rulDays, intervalLabel, planningInputs }: {
   key?: React.Key; fault: SavedFaultItem; prescription: PrescriptivePackage; amplitude: number | null;
   trend: { first: number; last: number; delta: number } | null; timing: TimingResult | null;
-  repairCost: number | null; replacementCost: number | null;
+  draftRepairCost: number | null; draftReplacementCost: number | null;
+  savedRepairCost: number | null; savedReplacementCost: number | null;
   onRepairCostChange: (v: number | null) => void; onReplacementCostChange: (v: number | null) => void;
   rulDays: number | null; intervalLabel: string; planningInputs: PlanningInputs | null;
 }) {
   const { severityZones } = prescription;
-  const barMax = severityZones.dangerMmS * 1.3;
-  const alarmPct = Math.min((severityZones.alarmMmS / barMax) * 100, 100);
-  const dangerPct = Math.min((severityZones.dangerMmS / barMax) * 100, 100);
-  const ampPct = amplitude != null ? Math.min((amplitude / barMax) * 100, 100) : null;
-  const ampRatio = amplitude != null ? amplitude / severityZones.dangerMmS : null;
+  const unit = severityZones.unit;
+  const alarm = severityZones.alarm;
+  const danger = severityZones.danger;
+  const hasThresholds = alarm != null && danger != null;
+  const barMax = hasThresholds ? danger! * 1.3 : 100;
+  const alarmPct = hasThresholds ? Math.min((alarm! / barMax) * 100, 100) : 0;
+  const dangerPct = hasThresholds ? Math.min((danger! / barMax) * 100, 100) : 0;
+  const ampPct = amplitude != null && hasThresholds ? Math.min((amplitude / barMax) * 100, 100) : null;
+  const ampRatio = amplitude != null && hasThresholds ? amplitude / danger! : null;
   return (
     <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-4 space-y-3">
       <div className="flex items-center justify-between gap-2">
@@ -173,7 +180,7 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
             </div>
           )}
           <div className="text-[11px] text-slate-400">Est. labor: <span className="text-slate-200 font-medium">{prescription.laborHours}h</span></div>
-          {amplitude != null && ampPct != null && ampRatio != null && (
+          {amplitude != null && ampPct != null && ampRatio != null && hasThresholds && (
             <div>
               <h5 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Severity</h5>
               <div className="relative h-3 bg-slate-800 rounded-full overflow-visible">
@@ -181,10 +188,11 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
                 <div className="absolute top-0 bottom-0 w-px bg-amber-400" style={{ left: `${alarmPct}%` }} />
                 <div className="absolute top-0 bottom-0 w-px bg-red-500" style={{ left: `${dangerPct}%` }} />
               </div>
-              <div className="flex justify-between text-[10px] text-slate-500 mt-0.5"><span>0</span><span className="text-amber-400">{severityZones.alarmMmS} mm/s alarm</span><span className="text-red-500">{severityZones.dangerMmS} mm/s danger</span></div>
-              <div className="text-[11px] text-slate-300 mt-0.5">Measured: <span className="font-medium">{amplitude.toFixed(2)} mm/s</span></div>
+              <div className="flex justify-between text-[10px] text-slate-500 mt-0.5"><span>0</span><span className="text-amber-400">{alarm} {unit} alarm</span><span className="text-red-500">{danger} {unit} danger</span></div>
+              <div className="text-[11px] text-slate-300 mt-0.5">Measured: <span className="font-medium">{amplitude.toFixed(2)} {unit}</span></div>
             </div>
           )}
+          {amplitude != null && !hasThresholds && <div className="text-[11px] text-slate-500">no curated thresholds for {unit} modality</div>}
           {amplitude == null && <div className="text-[11px] text-slate-500">No matching peak found in stored spectrum (±2 Hz).</div>}
           <div className="text-[11px]">
             {trend ? (
@@ -224,14 +232,14 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
             <h5 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Repair vs Replace</h5>
             <div className="flex gap-3">
               <div><label className="text-[10px] text-slate-500 block mb-0.5">Repair cost $</label>
-                <input type="number" min={0} value={repairCost ?? ""} onChange={(e) => onRepairCostChange(e.target.value ? Number(e.target.value) : null)} className="h-7 w-24 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60" /></div>
+                <input type="number" min={0} value={draftRepairCost ?? ""} onChange={(e) => onRepairCostChange(e.target.value ? Number(e.target.value) : null)} className="h-7 w-24 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60" /></div>
               <div><label className="text-[10px] text-slate-500 block mb-0.5">Replacement cost $</label>
-                <input type="number" min={0} value={replacementCost ?? ""} onChange={(e) => onReplacementCostChange(e.target.value ? Number(e.target.value) : null)} className="h-7 w-24 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60" /></div>
+                <input type="number" min={0} value={draftReplacementCost ?? ""} onChange={(e) => onReplacementCostChange(e.target.value ? Number(e.target.value) : null)} className="h-7 w-24 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60" /></div>
             </div>
-            {repairCost != null && replacementCost != null && replacementCost > 0 && (
+            {savedRepairCost != null && savedReplacementCost != null && savedReplacementCost > 0 && (
               <div className="text-[11px] space-y-1">
                 <div className="text-slate-300">
-                  ratio = <span className="font-mono">${repairCost.toLocaleString()}</span> / <span className="font-mono">${replacementCost.toLocaleString()}</span> = <span className="font-mono font-medium">{(repairCost / replacementCost).toFixed(2)}</span>
+                  ratio = <span className="font-mono">${savedRepairCost.toLocaleString()}</span> / <span className="font-mono">${savedReplacementCost.toLocaleString()}</span> = <span className="font-mono font-medium">{(savedRepairCost / savedReplacementCost).toFixed(2)}</span>
                 </div>
                 <div className="text-slate-300">
                   rul = <span className="font-mono">{rulDays != null ? `${rulDays} days` : "not estimable"}</span>
@@ -239,22 +247,22 @@ function FaultCard({ fault, prescription, amplitude, trend, timing, repairCost, 
                 </div>
                 {rulDays != null && (
                   <div className="space-y-0.5">
-                    <div className="text-slate-400">ratio ≥ 0.5: <span className={repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD ? "text-emerald-400" : "text-slate-500"}>{repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD ? "TRUE" : "FALSE"}</span> ({(repairCost / replacementCost).toFixed(2)} ≥ 0.5)</div>
+                    <div className="text-slate-400">ratio ≥ 0.5: <span className={savedRepairCost / savedReplacementCost >= REPLACE_RATIO_THRESHOLD ? "text-emerald-400" : "text-slate-500"}>{savedRepairCost / savedReplacementCost >= REPLACE_RATIO_THRESHOLD ? "TRUE" : "FALSE"}</span> ({(savedRepairCost / savedReplacementCost).toFixed(2)} ≥ 0.5)</div>
                     <div className="text-slate-400">rul &lt; 365 days: <span className={rulDays < REPLACE_RUL_THRESHOLD_DAYS ? "text-emerald-400" : "text-slate-500"}>{rulDays < REPLACE_RUL_THRESHOLD_DAYS ? "TRUE" : "FALSE"}</span> ({rulDays} &lt; 365)</div>
                   </div>
                 )}
                 <div className="pt-1 font-semibold text-sm">
                   {rulDays != null ? (
-                    repairCost / replacementCost >= REPLACE_RATIO_THRESHOLD && rulDays < REPLACE_RUL_THRESHOLD_DAYS
+                    savedRepairCost / savedReplacementCost >= REPLACE_RATIO_THRESHOLD && rulDays < REPLACE_RUL_THRESHOLD_DAYS
                       ? <span className="text-red-400">Evaluate Capital Replacement</span>
                       : <span className="text-emerald-400">Proceed with Planned Repair</span>
                   ) : (
-                    <span className="text-slate-300">not time-critical - choose on cost (cheaper: <span className="font-mono">{repairCost <= replacementCost ? `repair $${repairCost.toLocaleString()}` : `replace $${replacementCost.toLocaleString()}`}</span>)</span>
+                    <span className="text-slate-300">not time-critical - choose on cost (cheaper: <span className="font-mono">{savedRepairCost <= savedReplacementCost ? `repair $${savedRepairCost.toLocaleString()}` : `replace $${savedReplacementCost.toLocaleString()}`}</span>)</span>
                   )}
                 </div>
               </div>
             )}
-            {(repairCost == null || replacementCost == null) && <div className="text-[10px] text-slate-500 italic">enter both costs to see repair-vs-replace recommendation</div>}
+            {(savedRepairCost == null || savedReplacementCost == null) && <div className="text-[10px] text-slate-500 italic">enter both costs to see repair-vs-replace recommendation</div>}
           </div>
         </>
       ) : (
@@ -275,17 +283,22 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   const [repairCosts, setRepairCosts] = useState<Record<string, RepairCostEntry>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [showBridge, setShowBridge] = useState(false);
+  const [draftCosts, setDraftCosts] = useState<Record<string, RepairCostEntry>>({});
+  const [savedCosts, setSavedCosts] = useState<Record<string, RepairCostEntry>>({});
   const { toast } = useToast();
   useEffect(() => {
     if (!assetId) { setLoaded(true); return; }
     setLoaded(false);
     fetch(`/api/assets/${assetId}/planning-config`).then((r) => (r.ok ? r.json() : null)).then((data) => {
-      if (data && typeof data === "object") { setPlanningInputs(data); setDraftInputs(data); setRepairCosts(data.repairCosts ?? {}); }
+      if (data && typeof data === "object") { setPlanningInputs(data); setDraftInputs(data); const rc = data.repairCosts ?? {}; setDraftCosts(rc); setSavedCosts(rc); }
       setLoaded(true);
     }).catch(() => setLoaded(true));
   }, [assetId]);
+  const isDirty = planningInputs?.leadTimeDays !== draftInputs.leadTimeDays || planningInputs?.nextShutdownDate !== draftInputs.nextShutdownDate || planningInputs?.downtimeCostPerDay !== draftInputs.downtimeCostPerDay || JSON.stringify(savedCosts) !== JSON.stringify(draftCosts);
+  useEffect(() => { const h = (e: BeforeUnloadEvent) => { if (isDirty) { e.preventDefault(); e.returnValue = ""; } }; window.addEventListener("beforeunload", h); return () => window.removeEventListener("beforeunload", h); }, [isDirty]);
   const faults: SavedFaultItem[] = selectedAnalysis?.fault_list ?? [];
   const currentPeaks = useMemo(() => parsePeaks(selectedAnalysis), [selectedAnalysis]);
   // Match history by asset_id + component + analysis_type, timestamp <= selected, exclude selected row
@@ -325,9 +338,13 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
   }, [faults, currentPeaks, historyPeaks]);
   const hasInputs = planningInputs != null && planningInputs.leadTimeDays != null && planningInputs.nextShutdownDate != null && planningInputs.downtimeCostPerDay != null;
   const saveInputs = async () => {
-    if (!assetId) return; setSaving(true); setSaved(false);
-    const payload = { ...draftInputs, repairCosts };
-    try { await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); setPlanningInputs({ ...payload }); setSaved(true); setTimeout(() => setSaved(false), 3000); } finally { setSaving(false); }
+    if (!assetId) return; setSaving(true); setSaved(false); setSaveError(false);
+    const payload = { ...draftInputs, repairCosts: draftCosts };
+    try {
+      const res = await fetch(`/api/assets/${assetId}/planning-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      setPlanningInputs({ ...draftInputs }); setSavedCosts({ ...draftCosts }); setSaved(true); setTimeout(() => setSaved(false), 3000);
+    } catch { setSaveError(true); } finally { setSaving(false); }
   };
   // ── Conditional guards (AFTER all hooks) ──────────────────────────────
   if (!isActive) return null;
@@ -358,21 +375,25 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
             <button onClick={saveInputs} disabled={saving} className="h-7 px-3 rounded bg-amber-600 hover:bg-amber-500 text-[11px] font-semibold text-white flex items-center gap-1 disabled:opacity-50">
               <Save className="h-3 w-3" />{saving ? "Saving…" : "Save"}
             </button>
+            {isDirty && !saving && !saved && <span className="text-[11px] text-amber-400 font-medium">unsaved changes</span>}
             {saved && <span className="text-[11px] text-emerald-400 flex items-center gap-1"><Check className="h-3 w-3" />saved ✓</span>}
+            {saveError && <span className="text-[11px] text-red-400 font-medium">Save failed - changes NOT persisted</span>}
           </div>
         </div>
       )}
       <div className="space-y-3">
         {ranked.map(({ fault, prescription, amplitude, trend }, i) => {
-          const entry = repairCosts[fault.title] ?? { repair: null, replacement: null };
-          const rul = computeRulDays(trend, prescription.severityZones.alarmMmS, avgInterval.days, avgInterval.fallback);
+          const entryDraft = draftCosts[fault.title] ?? { repair: null, replacement: null };
+          const entrySaved = savedCosts[fault.title] ?? { repair: null, replacement: null };
+          const rul = computeRulDays(trend, prescription.severityZones.alarm, avgInterval.days, avgInterval.fallback);
           return (
             <FaultCard key={`${fault.title}-${fault.frequencyHz ?? fault.frequency ?? i}`} fault={fault} prescription={prescription} amplitude={amplitude} trend={trend}
-              timing={hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback) : null}
-              repairCost={entry.repair} replacementCost={entry.replacement}
-              onRepairCostChange={(v) => setRepairCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], repair: v } }))}
-              onReplacementCostChange={(v) => setRepairCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], replacement: v } }))}
-              rulDays={rul.days} intervalLabel={rul.label || (hasInputs ? computeTiming(trend, prescription.severityZones.alarmMmS, planningInputs, avgInterval.days, avgInterval.fallback)?.intervalLabel ?? "" : "")}
+              timing={hasInputs ? computeTiming(trend, prescription.severityZones.alarm, prescription.severityZones.unit, planningInputs, avgInterval.days, avgInterval.fallback) : null}
+              draftRepairCost={entryDraft.repair} draftReplacementCost={entryDraft.replacement}
+              savedRepairCost={entrySaved.repair} savedReplacementCost={entrySaved.replacement}
+              onRepairCostChange={(v) => setDraftCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], repair: v } }))}
+              onReplacementCostChange={(v) => setDraftCosts((prev) => ({ ...prev, [fault.title]: { ...prev[fault.title], replacement: v } }))}
+              rulDays={rul.days} intervalLabel={rul.label || (hasInputs ? computeTiming(trend, prescription.severityZones.alarm, prescription.severityZones.unit, planningInputs, avgInterval.days, avgInterval.fallback)?.intervalLabel ?? "" : "")}
               planningInputs={planningInputs} />
           );
         })}
@@ -386,7 +407,7 @@ export default function RepairActionsTab({ isActive, selectedAnalysis, loadedAna
               <button onClick={() => setShowBridge(false)} className="text-slate-400 hover:text-white transition-colors">✕</button>
             </div>
             <CmmsWorkOrderBridge
-              context={buildBridgeContext(selectedAnalysis, { planningInputs, loadedAnalyses, repairCosts })}
+              context={buildBridgeContext(selectedAnalysis, { planningInputs, loadedAnalyses, repairCosts: savedCosts })}
               sectionId="repair-actions-bridge"
               onToast={toast}
             />
