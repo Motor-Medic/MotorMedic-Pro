@@ -17,6 +17,7 @@ export interface RunHistoryPopoverProps {
   selectedId: string | null;
   onSelect: (run: RunHistoryRun) => void;
   componentLabel: string;
+  modalities?: string[];
 }
 
 export function RunHistoryTrigger({ onClick, viewDate, isLatest }: { onClick: () => void; viewDate: string; isLatest: boolean }) {
@@ -40,7 +41,7 @@ const PAGE_SIZE = 25;
 const MODS = [{ k: "vibration", l: "VIB" }, { k: "mca", l: "MCA" }, { k: "ultrasound", l: "US" }, { k: "thermography", l: "IR" }] as const;
 const chipCls = (a: boolean) => `px-2 py-0.5 text-[11px] font-semibold rounded border transition-colors cursor-pointer select-none ${a ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300" : "bg-slate-800 border-slate-600 text-slate-400 hover:border-slate-500"}`;
 
-export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, componentLabel }: RunHistoryPopoverProps) {
+export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, componentLabel, modalities = ["vibration"] }: RunHistoryPopoverProps) {
   const [filter, setFilter] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -57,20 +58,25 @@ export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, c
     return () => document.removeEventListener("keydown", h);
   }, [open, onClose]);
 
+  const boundaryRuns = useMemo(() => {
+    const allowed = new Set(modalities.map((m) => m.toLowerCase()));
+    return runs.filter((r) => allowed.has((r.analysis_type ?? "vibration").toLowerCase()));
+  }, [runs, modalities]);
+
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
-    for (const r of runs) { const t = (r.analysis_type ?? "vibration").toLowerCase(); c[t] = (c[t] ?? 0) + 1; }
+    for (const r of boundaryRuns) { const t = (r.analysis_type ?? "vibration").toLowerCase(); c[t] = (c[t] ?? 0) + 1; }
     return c;
-  }, [runs]);
+  }, [boundaryRuns]);
 
   const filtered = useMemo(() => {
-    let r = runs;
-    if (mods.size > 0) r = r.filter((x) => mods.has((x.analysis_type ?? "vibration").toLowerCase()));
+    let r = boundaryRuns;
+    if (modalities.length > 1 && mods.size > 0) r = r.filter((x) => mods.has((x.analysis_type ?? "vibration").toLowerCase()));
     if (filter) { const q = filter.toLowerCase(); r = r.filter((x) => x.primaryFault?.toLowerCase().includes(q) || x.id.toLowerCase().includes(q)); }
     if (fromDate) { const f = new Date(fromDate).getTime(); r = r.filter((x) => new Date(x.timestamp).getTime() >= f); }
     if (toDate) { const t = new Date(toDate).getTime() + 86400000; r = r.filter((x) => new Date(x.timestamp).getTime() <= t); }
     return [...r].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  }, [runs, filter, fromDate, toDate, mods]);
+  }, [boundaryRuns, filter, fromDate, toDate, mods, modalities]);
 
   const selIdx = selectedId != null ? filtered.findIndex((r) => r.id === selectedId) : -1;
   const displayCount = selIdx >= vis ? selIdx + 1 : vis;
@@ -94,9 +100,11 @@ export function RunHistoryPopover({ open, onClose, runs, selectedId, onSelect, c
           <span className="text-xs text-slate-500">to</span>
           <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className={cls} />
         </div>
-        <div className="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800">
-          {MODS.map(({ k, l }) => <button key={k} type="button" onClick={() => toggleMod(k)} className={chipCls(mods.has(k))}>{l} <span className="ml-1 opacity-70">{counts[k] ?? 0}</span></button>)}
-        </div>
+        {modalities.length > 1 && (
+          <div className="flex items-center gap-1.5 px-4 py-2 border-b border-slate-800">
+            {MODS.filter(({ k }) => modalities.some((m) => m.toLowerCase() === k)).map(({ k, l }) => <button key={k} type="button" onClick={() => toggleMod(k)} className={chipCls(mods.has(k))}>{l} <span className="ml-1 opacity-70">{counts[k] ?? 0}</span></button>)}
+          </div>
+        )}
         <div className="px-4 py-1.5 text-[11px] text-slate-500 border-b border-slate-800">{filtered.length} run{filtered.length !== 1 ? "s" : ""} - showing {displayed.length}</div>
         <div className="max-h-80 overflow-y-auto">
           {filtered.length === 0 ? (
