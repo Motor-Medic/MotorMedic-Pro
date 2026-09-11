@@ -47,10 +47,16 @@ export interface RepairActionsTabProps { isActive: boolean; selectedAnalysis: Sa
 function computeAvgIntervalDays(timestamps: string[]): { days: number; fallback: boolean } {
   if (timestamps.length < 2) return { days: 30, fallback: true };
   const sorted = [...timestamps].sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-  let total = 0;
-  for (let i = 1; i < sorted.length; i++) { total += (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / 86400000; }
-  const avg = total / (sorted.length - 1);
-  return { days: Math.round(avg) || 30, fallback: false };
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    const d = (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / 86400000;
+    if (d > 0) gaps.push(d);
+  }
+  if (gaps.length === 0) return { days: 30, fallback: true };
+  gaps.sort((a, b) => a - b);
+  const mid = Math.floor(gaps.length / 2);
+  const median = gaps.length % 2 === 0 ? (gaps[mid - 1] + gaps[mid]) / 2 : gaps[mid];
+  return { days: Math.round(median) || 30, fallback: false };
 }
 
 // ── Timing ─────────────────────────────────────────────────────────────────
@@ -76,7 +82,7 @@ function computeTiming(trend: { first: number; last: number; delta: number } | n
     costText = `max exposure if failure occurs today: $${inputs.downtimeCostPerDay}/day x ${arrivalWindow} days = $${(inputs.downtimeCostPerDay * arrivalWindow).toFixed(0)}`;
     recommendation = `execute within ${inputs.leadTimeDays} days of parts arrival`;
   }
-  return { executeBy, method: "linear trend extrapolation", recommendation, costOfWait: costText, intervalLabel: intervalFallback ? "linear trend extrapolation - not a failure model; avg run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; avg run interval ${avgDays} days` };
+  return { executeBy, method: "linear trend extrapolation", recommendation, costOfWait: costText, intervalLabel: intervalFallback ? "linear trend extrapolation - not a failure model; median run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; median run interval ${avgDays} days (same-day runs excluded)` };
 }
 
 // ── RUL ────────────────────────────────────────────────────────────────────
@@ -88,7 +94,7 @@ function computeRulDays(trend: { first: number; last: number; delta: number } | 
   const ratePerRun = trend.delta;
   const runsToAlarm = (alarmThreshold - trend.last) / ratePerRun;
   if (!Number.isFinite(runsToAlarm) || runsToAlarm <= 0) return { days: 0, label: "" };
-  return { days: Math.round(runsToAlarm * avgDays), label: intervalFallback ? "linear trend extrapolation - not a failure model; avg run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; avg run interval ${avgDays} days` };
+  return { days: Math.round(runsToAlarm * avgDays), label: intervalFallback ? "linear trend extrapolation - not a failure model; median run interval assumed 30 days - too few dated runs" : `linear trend extrapolation - not a failure model; median run interval ${avgDays} days (same-day runs excluded)` };
 }
 
 // ── Priority Score ─────────────────────────────────────────────────────────
