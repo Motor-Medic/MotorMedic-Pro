@@ -147,6 +147,8 @@ import McaResultsDashboard from "./McaResultsDashboard";
 import OilInputAccordions from "./OilInputAccordions";
 import OilResultsDashboard from "./OilResultsDashboard";
 import { CmmsWorkOrderBridge as CmmsPayloadBridge } from "./CmmsWorkOrderBridge";
+import { buildBridgeContext, fetchPlanningBundle, type PlanningBundle } from "../lib/diagnostics/cmmsPayload";
+import type { SavedFaultItem } from "../lib/analysisPersistence";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 
@@ -1546,6 +1548,7 @@ export default function Diagnose({
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [planningBundle, setPlanningBundle] = useState<PlanningBundle>({ planningInputs: null, repairCosts: {} });
   const [analysisResult, setAnalysisResult] =
     useState<VibrationAnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<{
@@ -2271,6 +2274,12 @@ useEffect(() => {
     if (chartRegionDetection && !Object.keys(manualRoleSwaps).length) { try { const r = localStorage.getItem(k); if (r) setManualRoleSwaps(JSON.parse(r)); } catch {} }
     if (chartRegionDetection) { try { if (manualRoleSwaps.fft || manualRoleSwaps.envelope) localStorage.setItem(k, JSON.stringify(manualRoleSwaps)); else localStorage.removeItem(k); } catch {} }
   }, [manualRoleSwaps, chartRegionDetection, savedAnalysisId, browseAssetTag]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPlanningBundle(resolveVibrationAssetKey()).then((b) => { if (!cancelled) setPlanningBundle(b); });
+    return () => { cancelled = true; };
+  }, [browseAssetTag, selectedAsset]);
 
   // Animate health gauge when results appear
   useEffect(() => {
@@ -6607,29 +6616,26 @@ useEffect(() => {
                 onDispatchWorkOrder={() => saveAndCreateWorkOrder()}
               />
               <CmmsPayloadBridge
-                context={{
-                  assetTag: browseAssetTag || reportAsset.tag || reportAsset.label,
+                context={buildBridgeContext({
+                  asset_id: browseAssetTag || reportAsset.tag || reportAsset.label,
                   component: browseComponent || "Motor DE",
-                  faultTitle:
-                    analysisResult.primaryFault?.title ||
-                    analysisResult.summary ||
-                    "Unclassified finding",
+                  id: savedAnalysisId ?? undefined,
+                  fault_list: [
+                    ...(analysisResult.identifiedFaults ?? []).map((f) => {
+                      const peak = chartOverlayPeaks.find((p) => Math.abs(p.frequencyHz - f.frequencyHz) < 2);
+                      return { title: f.title, frequencyHz: f.frequencyHz, confidencePercent: f.confidencePercent, severity: f.severity, description: f.description, amplitude: peak?.amplitude ?? 0 };
+                    }),
+                    ...(analysisResult.primaryFault && !analysisResult.identifiedFaults?.some((f) => f.title === analysisResult.primaryFault.title) ? [{ title: analysisResult.primaryFault.title, frequencyHz: analysisResult.primaryFault.frequencyHz, confidencePercent: analysisResult.primaryFault.confidencePercent, severity: analysisResult.primaryFault.severity, amplitude: chartOverlayPeaks.find((p) => Math.abs(p.frequencyHz - analysisResult.primaryFault.frequencyHz) < 2)?.amplitude ?? 0 }] : [])
+                  ] as SavedFaultItem[],
+                  health_score: analysisResult.overallHealthScore,
+                  primary_fault: analysisResult.primaryFault?.title ?? analysisResult.summary ?? null,
                   severity: analysisResult.severity,
-                  confidencePercent:
-                    analysisResult.primaryFault?.confidencePercent ?? null,
-                  healthScore: analysisResult.overallHealthScore ?? null,
-                  horizonHours: null,
-                  horizonDriver: null,
-                  horizonBasis: null,
-                  corroborationPercent: null,
-                  technologiesWithData: ["Vibration"],
-                  signOffStatus: "pending",
-                  signOffEngineer: null,
-                  signOffAt: null,
+                  summary: analysisResult.summary,
                   recommendations: analysisResult.repairRecommendations ?? [],
-                  diagnosisId: savedAnalysisId,
-                  diagnosisAt: analysisStartedAtRef.current
-                }}
+                  analysis_type: "vibration",
+                  timestamp: analysisStartedAtRef.current ?? undefined,
+                  created_at: analysisStartedAtRef.current ?? undefined,
+                }, planningBundle)}
                 sectionId="cmms-data-bridge"
                 onToast={(msg, type) => toast(msg, type ?? "info")}
               />

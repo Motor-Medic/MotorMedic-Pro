@@ -39,7 +39,7 @@ import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
 import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
-import { buildBridgeContext } from "../lib/diagnostics/cmmsPayload";
+import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import { RunHistoryTrigger, RunHistoryPopover, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 import MultiTechAssessment from "./reports/MultiTechAssessment";
@@ -6472,6 +6472,7 @@ export default function AnalysisReport({
   const [showInventory, setShowInventory] = useState(false);
 
   const [showWorkOrder, setShowWorkOrder] = useState(false);
+  const [planningBundle, setPlanningBundle] = useState<{ planningInputs: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null; repairCosts: Record<string, { repair: number | null; replacement: number | null }> }>({ planningInputs: null, repairCosts: {} });
   const [runHistoryOpen, setRunHistoryOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
@@ -6572,6 +6573,12 @@ export default function AnalysisReport({
       setAssessmentAssetId(assetsWithRecords[0]);
     }
   }, [assessmentAssetId, assetsWithRecords, deepLinkAssetId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPlanningBundle(assessmentAssetId).then((b) => { if (!cancelled) setPlanningBundle(b); });
+    return () => { cancelled = true; };
+  }, [assessmentAssetId]);
 
   // Saved oil samples for the assessment asset. Metric cards that used to
   // print a fixed ISO code read from these, and show an em dash without them.
@@ -7929,7 +7936,7 @@ export default function AnalysisReport({
               </button>
             </div>
             <CmmsWorkOrderBridge
-              context={buildBridgeContext(selectedAnalysis, { planningInputs: null, loadedAnalyses })}
+              context={buildBridgeContext(selectedAnalysis, { ...planningBundle, loadedAnalyses })}
               sectionId="analysis-report-bridge"
               onToast={toast}
             />

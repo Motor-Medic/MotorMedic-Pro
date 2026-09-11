@@ -607,7 +607,7 @@ function _n(v: unknown): number {
   return (typeof v === "number" || typeof v === "string") && Number.isFinite(Number(v)) ? Number(v) : NaN;
 }
 
-function _parsePeaks(row: SavedAnalysisResult | null): Array<{ frequency: number; amplitude: number }> {
+function _parsePeaks(row: SavedAnalysisResult | { peaks?: unknown[]; telemetry_data?: Record<string, unknown> | null } | null): Array<{ frequency: number; amplitude: number }> {
   if (!row) return [];
   const out: Array<{ frequency: number; amplitude: number }> = [];
   const walk = (v: unknown): void => {
@@ -647,6 +647,30 @@ function _avgIntervalDays(timestamps: string[]): { days: number; fallback: boole
 
 const _WEIGHTS = { severity: 0.4, trend: 0.3, downtime: 0.2, base: 0.1 } as const;
 
+export interface PlanningBundle {
+  planningInputs: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null;
+  repairCosts: Record<string, { repair: number | null; replacement: number | null }>;
+}
+
+/** Shared fetch used by all three doors so timing/planning/dt lines appear in every payload. */
+export async function fetchPlanningBundle(assetId: string | null | undefined): Promise<PlanningBundle> {
+  if (!assetId) return { planningInputs: null, repairCosts: {} };
+  try {
+    const r = await fetch(`/api/assets/${assetId}/planning-config`);
+    if (!r.ok) return { planningInputs: null, repairCosts: {} };
+    const data = await r.json();
+    if (data && typeof data === "object") {
+      return {
+        planningInputs: data.leadTimeDays != null || data.nextShutdownDate != null || data.downtimeCostPerDay != null
+          ? { leadTimeDays: data.leadTimeDays ?? null, nextShutdownDate: data.nextShutdownDate ?? null, downtimeCostPerDay: data.downtimeCostPerDay ?? null }
+          : null,
+        repairCosts: data.repairCosts ?? {},
+      };
+    }
+  } catch { /* ignore */ }
+  return { planningInputs: null, repairCosts: {} };
+}
+
 export interface BuildBridgeOpts {
   planningInputs: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null;
   loadedAnalyses?: SavedAnalysisResult[];
@@ -657,11 +681,15 @@ export interface BuildBridgeOpts {
  * Build a full `CmmsPayloadContext` from a saved analysis, including
  * prescriptive enrichment (procedure, safety, timing, priority, breakeven).
  *
- * This is the single assembly point that AnalysisReport and RepairActionsTab
- * both call so the bridge receives identical payloads regardless of origin.
+ * This is the single assembly point that AnalysisReport, RepairActionsTab,
+ * and Diagnose all call so the bridge receives identical payloads regardless
+ * of origin.  PARITY DEFINITION: doors 1 (AnalysisReport) + 2 (Tab 3) are
+ * byte-identical for the same selected analysis; door 3 (run-diagnostics)
+ * matches when its live analysis is the same record, differing only in
+ * identity fields (id, timestamp, confidence, sign-off).
  */
 export function buildBridgeContext(
-  analysis: SavedAnalysisResult | null,
+  analysis: SavedAnalysisResult | { asset_id?: string | null; component?: string | null; id?: string; fault_list?: SavedFaultItem[]; health_score?: number | null; primary_fault?: string | null; severity?: string | null; summary?: string | null; recommendations?: string[]; analysis_type?: string | null; timestamp?: string; created_at?: string; telemetry_data?: Record<string, unknown> | null; peaks?: unknown[]; spectrum_image_url?: string | null; financial_impact?: Record<string, number> } | null,
   opts: BuildBridgeOpts
 ): CmmsPayloadContext {
   const a = analysis;
@@ -686,7 +714,7 @@ export function buildBridgeContext(
   const topFault = faults[0] ?? null;
   const topRx = topFault ? getPrescription(topFault.title) : null;
   const topHz = topFault ? _faultFreq(topFault) : null;
-  const topAmplitude = topHz != null ? _findAmplitude(_parsePeaks(a), topHz) : null;
+  const topAmplitude = topHz != null ? (_findAmplitude(_parsePeaks(a), topHz) ?? (topFault as SavedFaultItem & { amplitude?: number }).amplitude ?? null) : null;
 
   // Trend for top fault
   let topTrend: { first: number; last: number; delta: number } | null = null;
@@ -732,7 +760,7 @@ export function buildBridgeContext(
     topPriority = { score, breakdown: `sev: ${fmt(sevRatio)} x ${_WEIGHTS.severity} | trend: ${fmt(trendRatio)} x ${_WEIGHTS.trend} | dt: ${fmt(dtRatio)} x ${_WEIGHTS.downtime} | base: ${fmt(baseRatio)} x ${_WEIGHTS.base}` };
   }
 
-  // Breakeven for top fault — uses repairCosts when available (matches card logic)
+  // Breakeven for top fault — costs required for a verdict; trend-only note when absent
   let topBreakeven: { verdict: string } | null = null;
   if (topRx) {
     const entry = opts.repairCosts?.[topFault?.title ?? ""] ?? null;
@@ -745,8 +773,9 @@ export function buildBridgeContext(
     if (hasCosts) {
       const ratio = entry!.repair! / entry!.replacement!;
       topBreakeven = { verdict: rulDays != null ? (ratio >= 0.5 && rulDays < 365 ? "REPLACE" : "REPAIR") : "not time-critical" };
-    } else if (rulDays != null) {
-      topBreakeven = { verdict: rulDays < 365 ? "REPAIR" : "not time-critical" };
+    } else {
+      const trendNote = rulDays != null ? `; trend-only: ${rulDays}d to alarm` : "";
+      topBreakeven = { verdict: `not entered (costs required)${trendNote}` };
     }
   }
 
