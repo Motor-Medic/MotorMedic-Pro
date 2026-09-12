@@ -42,7 +42,7 @@ import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import { RunHistoryTrigger, RunHistoryPopover, isVibrationRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
-import MultiTechAssessment from "./reports/MultiTechAssessment";
+
 import SavedReportViewer from "./reports/SavedReportViewer";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
@@ -53,7 +53,7 @@ import {
 } from "../types/oilAnalysis";
 import { latestOfType, peakOfType, resolveTempUnit } from "../lib/diagnostics/sensorFusion";
 
-type ReportTab = 0 | 1 | 2 | 3 | 4;
+type ReportTab = 0 | 1 | 2 | 3;
 type ReportTechnology = "vibration" | "thermography" | "ultrasound" | "mca" | "oil";
 
 interface AnalysisReportProps {
@@ -253,36 +253,31 @@ const MCA_PHASE_HISTORY: { date: string; a: number; b: number; c: number; }[] = 
 const TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Spectrum Library" },
-  { id: 3, label: "3. Repair & Actions" },
-  { id: 4, label: "4. Multi-Tech Overview" }
+  { id: 3, label: "3. Repair & Actions" }
 ];
 
 const THERMOGRAPHY_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" },
-  { id: 4, label: "4. Multi-Tech Overview" }
+  { id: 3, label: "3. Repair Actions" }
 ];
 
 const ULTRASOUND_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" },
-  { id: 4, label: "4. Multi-Tech Overview" }
+  { id: 3, label: "3. Repair Actions" }
 ];
 
 const MCA_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
   { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" },
-  { id: 4, label: "4. Multi-Tech Overview" }
+  { id: 3, label: "3. Repair Actions" }
 ];
 
 const OIL_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Lab Results" },
   { id: 2, label: "2. Sample Library" },
-  { id: 3, label: "3. Repair Actions" },
-  { id: 4, label: "4. Multi-Tech Overview" }
+  { id: 3, label: "3. Repair Actions" }
 ];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
@@ -7387,60 +7382,6 @@ export default function AnalysisReport({
 
             {/* ===== Tab 3: Repair & Actions ===== */}
             <RepairActionsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} assetId={assessmentAssetId} />
-
-            {/* ===== Tab 4: Multi-Tech Overview ===== */}
-            {activeTab === 4 && (
-              <>
-                {assetsWithRecords.length === 0 ? (
-                  <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6">
-                    <h3 className="text-base font-bold text-white mb-1">
-                      Multi-Technology Assessment
-                    </h3>
-                    <p className="text-sm text-slate-400">
-                      No saved condition-monitoring records found. Run and save an analysis
-                      from Run Diagnostics to build an assessment.
-                    </p>
-                  </section>
-                ) : (
-                  <div>
-                    <div className="mb-3 flex flex-wrap items-end gap-3">
-                      <div className="min-w-0">
-                        <label
-                          htmlFor="assessment-asset"
-                          className="text-xs font-semibold text-slate-500 uppercase tracking-widest block mb-1"
-                        >
-                          Assessment Asset
-                        </label>
-                        <select
-                          id="assessment-asset"
-                          value={assessmentAssetId ?? ""}
-                          onChange={(e) => setAssessmentAssetId(e.target.value)}
-                          className="h-9 min-w-[200px] px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-amber-400/60"
-                        >
-                          {assetsWithRecords.map((id) => (
-                            <option key={id} value={id}>
-                              {id}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <p className="text-sm text-slate-500 pb-2">
-                        Assets with saved records ({assetsWithRecords.length})
-                      </p>
-                    </div>
-                    {assessmentAssetId && (
-                      <MultiTechAssessment
-                        assetId={assessmentAssetId}
-                        assetLabel={assessmentAssetId}
-                        companyId={selectedCompanyId ?? null}
-                        onToast={toast}
-                        onOpenReport={openReport}
-                      />
-                    )}
-                  </div>
-                )}
-              </>
-            )}
 
             {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the
                   live interactive workspace above has no spectrum/peaks to plot.

@@ -2553,15 +2553,6 @@ useEffect(() => {
           vibrationTrendRecordRef.current = vibrationTrendRecord;
           cacheVibrationRecordLocally(vibrationTrendRecord);
         }
-        console.log("💾 [VIBRATION] Saving diagnostic record:", {
-          assetId: assetKey,
-          timestamp: new Date().toISOString(),
-          hasSpectral: !!vibrationTrendRecord.spectral?.length,
-          spectralLength: vibrationTrendRecord.spectral?.length,
-          firstFewPeaks: vibrationTrendRecord.spectral?.slice(0, 3),
-          hasWaveformAnalysis: Boolean(vibrationTrendRecord.waveformAnalysis),
-          hasEnvelope: Boolean(vibrationTrendRecord.broadband.peakGe)
-        });
       }
 
       const peaksForSave =
@@ -2686,13 +2677,6 @@ useEffect(() => {
       });
 
       setSavedAnalysisId(saved.analysis?.id || null);
-      if (analysisType === "vibration" && vibrationTrendRecord) {
-        console.log("✅ [VIBRATION] Record saved successfully", {
-          analysisId: saved.analysis?.id,
-          assetId: assetKey,
-          spectralLength: vibrationTrendRecord.spectral.length
-        });
-      }
       toast(
         saved.alerts_created > 0
           ? `Analysis saved · ${saved.alerts_created} alert(s) created`
@@ -2832,7 +2816,6 @@ useEffect(() => {
   };
 
   const handleRunAnalysis = async () => {
-    console.log("Starting analysis for:", selectedAsset, browseComponent, activeTech);
     if (!canRun) {
       toast("Select Route, Asset, and Component first.", "warning");
       return;
@@ -2912,7 +2895,7 @@ useEffect(() => {
           body: JSON.stringify({ imageBase64, metadata })
         });
 
-        const payload = await res.json().catch(() => ({}));
+        const payload = await res.json().catch((err) => { console.warn("[thermography] response parse failed:", err); return { success: false, message: "thermal image unavailable - response parse failed" }; });
 
         if (!res.ok || payload?.success === false) {
           const title =
@@ -3167,7 +3150,7 @@ useEffect(() => {
           body: JSON.stringify({ metadata })
         });
 
-        const payload = await res.json().catch(() => ({}));
+        const payload = await res.json().catch((err) => { console.warn("[ultrasound] response parse failed:", err); return { success: false, message: "ultrasound data unavailable - response parse failed" }; });
 
         if (!res.ok || payload?.success === false) {
           const title =
@@ -3695,7 +3678,6 @@ useEffect(() => {
     setThermographyPeaks(null);
     ultrasoundPeaksRef.current = null;
     setUltrasoundPeaks(null);
-    console.log("Reset to new analysis");
   };
 
   const ingestUpload = (
@@ -3919,14 +3901,6 @@ useEffect(() => {
       if (record.spectral.length > 0) {
         cacheVibrationRecordLocally(record);
       }
-
-      console.log("💾 [VIBRATION] Saving diagnostic record:", {
-        assetId: record.assetId,
-        timestamp: record.timestamp,
-        hasSpectral: !!record.spectral?.length,
-        spectralLength: record.spectral?.length,
-        firstFewPeaks: record.spectral?.slice(0, 3)
-      });
 
       const flagged = vr.flaggedFields ?? [];
       setVibrationExtractSummary({ peakCount: record.spectral.length, confidence: confidenceScore });

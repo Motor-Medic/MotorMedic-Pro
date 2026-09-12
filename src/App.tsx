@@ -17,6 +17,7 @@ import AlertsControl from "./components/AlertsControl";
 import AIChatbot from "./components/AIChatbot";
 import AIDataMigration from "./components/AIDataMigration";
 import AnalysisReport from "./components/AnalysisReport";
+import MultiTechPage from "./components/reports/MultiTechPage";
 import RootCauseAnalysis from "./components/RootCauseAnalysis";
 import MaintenanceCalendar from "./components/MaintenanceCalendar";
 import FMEA from "./components/FMEA";
@@ -25,7 +26,7 @@ import AppLink from "./components/AppLink";
 import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigation";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
-  Sun, Moon, Sparkles, FileText, Target, Calendar
+  Sun, Moon, Sparkles, FileText, Target, Calendar, Layers
 } from "lucide-react";
 
 const TREND_STORAGE_KEY = "reliability_trends_v6";
@@ -768,6 +769,19 @@ const updated = [newReport, ...reports];
               <Sparkles className="w-4.5 h-4.5 text-yellow-400" />
               <span>Automated Data Migration</span>
             </AppLink>
+
+            <AppLink
+              href={TAB_TO_PATH["multi-tech"]}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "multi-tech" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-multi-tech-btn"
+            >
+              <Layers className="w-4.5 h-4.5" />
+              <span>Multi-Tech Fusion</span>
+            </AppLink>
           </div>
 
           {/* RELIABILITY ENGINEERING */}
@@ -1012,6 +1026,8 @@ const updated = [newReport, ...reports];
             <AlertsControl userId={user?.id || 3} />
           ) : activeTab === "sensors" ? (
             <MountingPlanner />
+          ) : activeTab === "multi-tech" ? (
+            <MultiTechPage selectedCompanyId={selectedCompanyId} />
           ) : (
             <History
               reports={reports}
@@ -1234,6 +1250,20 @@ const updated = [newReport, ...reports];
                 >
                   <Sparkles className="w-5 h-5 shrink-0 text-yellow-400" />
                   <span>Automated Data Migration</span>
+                </AppLink>
+
+                <AppLink
+                  href={TAB_TO_PATH["multi-tech"]}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "multi-tech" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-multi-tech-btn"
+                >
+                  <Layers className="w-5 h-5 shrink-0" />
+                  <span>Multi-Tech Fusion</span>
                 </AppLink>
               </div>
 

@@ -15,6 +15,7 @@ import {
   type ReportFault,
   type ReportSeverity,
   type ReportTechnologyId,
+  type TechRecommendation,
   type TechnologyReport,
   type TechnologySummaryMap
 } from "./technologySummary";
@@ -121,7 +122,25 @@ export function rehydrateReport(row: SavedReportRow): MultiTechReport {
       ? row.technologies_with_data
       : technologies.filter((t) => t.hasData).map((t) => t.technology),
     overallSeverity: row.overall_severity,
-    faultDiagnoses: Array.isArray(row.fault_diagnoses) ? row.fault_diagnoses : [],
-    recommendations: Array.isArray(row.recommendations) ? row.recommendations : []
+    faultDiagnoses: Array.isArray(row.fault_diagnoses)
+      ? (row.fault_diagnoses as unknown[]).map((f): ReportFault => {
+          const obj = f as Record<string, unknown>;
+          const techId = (obj.technology ?? "vibration") as ReportTechnologyId;
+          const label = technologies.find((t) => t.technology === techId)?.label ?? String(techId);
+          return {
+            technology: techId,
+            techLabel: String(obj.techLabel ?? label),
+            title: String(obj.title ?? ""),
+            severity: (obj.severity ?? "NORMAL") as ReportSeverity
+          };
+        })
+      : [],
+    recommendations: Array.isArray(row.recommendations)
+      ? (row.recommendations as unknown[]).map((r): TechRecommendation =>
+          typeof r === "string"
+            ? { technology: "vibration", techLabel: "Unknown", text: r }
+            : (r as TechRecommendation)
+        )
+      : []
   };
 }

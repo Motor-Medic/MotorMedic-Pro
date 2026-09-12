@@ -136,7 +136,7 @@ export function renderReportBody(report: MultiTechReport) {
                   {SEVERITY_LABEL[f.severity]}
                 </span>
                 <span className="text-slate-500">
-                  {report.technologies.find((t) => t.technology === f.technology)?.label}:
+                  {f.techLabel}:
                 </span>
                 <span className="font-semibold text-white">{f.title}</span>
               </li>
@@ -152,9 +152,9 @@ export function renderReportBody(report: MultiTechReport) {
           </p>
           <ul className="space-y-1.5">
             {report.recommendations.map((r) => (
-              <li key={r} className="flex items-start gap-2 text-xs text-slate-300">
+              <li key={r.text} className="flex items-start gap-2 text-xs text-slate-300">
                 <Check className="h-3.5 w-3.5 text-emerald-400 mt-0.5 shrink-0" />
-                {r}
+                <span className="text-slate-500 shrink-0">{r.techLabel}:</span> {r.text}
               </li>
             ))}
           </ul>

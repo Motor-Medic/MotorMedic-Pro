@@ -143,13 +143,15 @@ export default function MaintenanceCalendar({
   const [selectedWO, setSelectedWO] = useState<CalendarEvent | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchFailed, setFetchFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setFetchFailed(false);
     void Promise.all([
-      fetchAlerts({ limit: 100 }).catch(() => [] as SavedAlert[]),
-      fetchAnalysisResults({ limit: 50 }).catch(() => [] as SavedAnalysisResult[])
+      fetchAlerts({ limit: 100 }).catch(() => { if (!cancelled) setFetchFailed(true); return [] as SavedAlert[]; }),
+      fetchAnalysisResults({ limit: 50 }).catch(() => { if (!cancelled) setFetchFailed(true); return [] as SavedAnalysisResult[]; })
     ])
       .then(async ([alerts, analyses]) => {
         const signOffEntries = await Promise.all(
@@ -267,11 +269,17 @@ export default function MaintenanceCalendar({
 
       {activeCalTab === 1 && !loading && events.length === 0 && (
         <section className={`${CARD} mb-6 text-center py-16 px-4`}>
-          <p className="text-sm font-semibold text-slate-300 mb-1">No maintenance events on file.</p>
-          <p className="text-xs text-slate-500 max-w-md mx-auto">
-            Saved diagnostics alerts, engineer sign-offs, and action-plan recommendations will
-            appear here once recorded.
-          </p>
+          {fetchFailed ? (
+            <p className="text-sm text-amber-400">alerts unavailable - fetch failed</p>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-slate-300 mb-1">No maintenance events on file.</p>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                Saved diagnostics alerts, engineer sign-offs, and action-plan recommendations will
+                appear here once recorded.
+              </p>
+            </>
+          )}
         </section>
       )}
 

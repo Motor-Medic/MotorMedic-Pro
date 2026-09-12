@@ -78,8 +78,15 @@ export interface TechnologyReport {
 
 export interface ReportFault {
   technology: ReportTechnologyId;
+  techLabel: string;
   title: string;
   severity: ReportSeverity;
+}
+
+export interface TechRecommendation {
+  technology: ReportTechnologyId;
+  techLabel: string;
+  text: string;
 }
 
 export interface MultiTechReport {
@@ -88,7 +95,7 @@ export interface MultiTechReport {
   technologiesWithData: ReportTechnologyId[];
   overallSeverity: ReportSeverity;
   faultDiagnoses: ReportFault[];
-  recommendations: string[];
+  recommendations: TechRecommendation[];
 }
 
 /** The honest badge a technology shows when the assessment window is empty. */
@@ -401,17 +408,18 @@ export function buildMultiTechReport(input: {
     .filter((t) => t.primaryFault)
     .map((t) => ({
       technology: t.technology,
+      techLabel: t.label,
       title: t.primaryFault as string,
       severity: t.severity
     }));
 
-  // Deduplicate recommendations across technologies, preserving first-seen order.
   const seen = new Set<string>();
-  const recommendations: string[] = [];
+  const recommendations: TechRecommendation[] = [];
   for (const technology of REPORT_TECHNOLOGIES) {
     if (technology === "oil") continue;
     const record = latestOfType(analysisRecords, technology);
     if (!record || !Array.isArray(record.recommendations)) continue;
+    const label = REPORT_TECHNOLOGY_LABEL[technology];
     for (const raw of record.recommendations) {
       const text =
         typeof raw === "string"
@@ -421,7 +429,7 @@ export function buildMultiTechReport(input: {
             : null;
       if (!text || seen.has(text)) continue;
       seen.add(text);
-      recommendations.push(text);
+      recommendations.push({ technology, techLabel: label, text });
     }
   }
 
