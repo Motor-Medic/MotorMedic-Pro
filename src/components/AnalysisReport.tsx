@@ -40,10 +40,11 @@ import PartsInventoryModal, {
 } from "./PartsInventory";
 import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
-import { RunHistoryTrigger, RunHistoryPopover, isVibrationRun, type RunHistoryRun } from "./RunHistoryPopover";
+import { RunHistoryTrigger, RunHistoryPopover, isVibrationRun, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 
 import SavedReportViewer from "./reports/SavedReportViewer";
+import ThermographyResultsTab from "./reports/ThermographyResultsTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -258,7 +259,7 @@ const TABS: { id: ReportTab; label: string }[] = [
 
 const THERMOGRAPHY_TABS: { id: ReportTab; label: string }[] = [
   { id: 1, label: "1. Analysis Results" },
-  { id: 2, label: "2. Data Library" },
+  { id: 2, label: "2. Thermal Data Library" },
   { id: 3, label: "3. Repair Actions" }
 ];
 
@@ -6206,7 +6207,7 @@ export default function AnalysisReport({
     const component = selectedAnalysis?.component;
     if (!assetId) return [];
     return loadedAnalyses
-      .filter((r) => r.asset_id === assetId && (!component || r.component === component) && isVibrationRun(r))
+      .filter((r) => r.asset_id === assetId && (!component || r.component === component) && isModalityRun(r, selectedTech))
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
       .map((r) => ({
         id: r.id,
@@ -6216,7 +6217,7 @@ export default function AnalysisReport({
         peakCount: Array.isArray(r.peaks) ? r.peaks.length : 0,
         analysis_type: r.analysis_type,
       } as RunHistoryRun));
-  }, [selectedAnalysis, loadedAnalyses]);
+  }, [selectedAnalysis, loadedAnalyses, selectedTech]);
 
   const tab1LatestRunDate = useMemo(() => {
     if (tab1Runs.length === 0) return null;
@@ -6224,7 +6225,16 @@ export default function AnalysisReport({
   }, [tab1Runs]);
 
   const vibrationAnalyses = useMemo(() => loadedAnalyses.filter(isVibrationRun), [loadedAnalyses]);
-  const otherTechCount = loadedAnalyses.length - vibrationAnalyses.length;
+  const modalityAnalyses = useMemo(() => loadedAnalyses.filter((r) => isModalityRun(r, selectedTech)), [loadedAnalyses, selectedTech]);
+  const otherTechCount = loadedAnalyses.length - modalityAnalyses.length;
+
+  // Reset selectedAnalysis when selectedTech changes: auto-select latest run of new modality
+  useEffect(() => {
+    const latest = modalityAnalyses.length > 0
+      ? [...modalityAnalyses].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+      : null;
+    setSelectedAnalysis(latest);
+  }, [selectedTech, modalityAnalyses]);
 
   const baselineRecord = useMemo(() => {
     return loadedAnalyses.find((a) => a.is_baseline) ?? null;
@@ -6839,10 +6849,10 @@ export default function AnalysisReport({
             {activeTab === 0 && (
               <div className="space-y-3">
                 {loadError && <p className="text-xs text-amber-400">{loadError}</p>}
-                {vibrationAnalyses.length === 0 ? (
+                {modalityAnalyses.length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-center py-16 px-4">
                     <FileText className="h-8 w-8 text-slate-600 mb-2" />
-                    <p className="text-sm font-semibold text-slate-300">No saved analyses for this asset yet</p>
+                    <p className="text-sm font-semibold text-slate-300">No saved {selectedTech} analyses for this asset yet</p>
                     <p className="text-xs text-slate-500 mt-1">
                       Complete a Run Diagnostics analysis to populate this list.
                     </p>
@@ -6850,7 +6860,7 @@ export default function AnalysisReport({
                 ) : (
                   <>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      {vibrationAnalyses.slice(0, visibleLimit).map((row) => {
+                      {modalityAnalyses.slice(0, visibleLimit).map((row) => {
                         const on = selectedAnalysis?.id === row.id;
                         const sevRaw = String(
                           (Array.isArray(row.fault_list) && row.fault_list[0]?.severity) || ""
@@ -6893,7 +6903,7 @@ export default function AnalysisReport({
                         );
                       })}
                     </div>
-                    {visibleLimit < vibrationAnalyses.length && (
+                    {visibleLimit < modalityAnalyses.length && (
                       <button
                         type="button"
                         onClick={() => setVisibleLimit((n) => n + 10)}
@@ -6912,11 +6922,14 @@ export default function AnalysisReport({
 
             {/* ===== Selected Analysis Detail — Tab 1 ===== */}
             {selectedAnalysis && activeTab === 1 && (() => {
-              const modality = selectedAnalysis.analysis_type ?? "vibration";
+              const modality = selectedTech;
               const faults = Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : [];
               const hasHigh = faults.some((f) => String(f.severity ?? "").toUpperCase() === "HIGH");
 
               if (modality !== "vibration") {
+                if (modality === "thermography") {
+                  return <ThermographyResultsTab selectedAnalysis={selectedAnalysis} />;
+                }
                 return (
                   <div className="space-y-4">
                     <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
@@ -7114,9 +7127,9 @@ export default function AnalysisReport({
               )}
 
               {/* ===== Interactive FFT Workspace — live spectral chart block (Tab 1 only) ===== */}
-              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && (
+              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && (
                 <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
-                  <p className="text-sm text-slate-500 italic">not a vibration spectrum for {selectedAnalysis.analysis_type ?? selectedTech}</p>
+                  <p className="text-sm text-slate-500 italic">not a vibration spectrum for {selectedTech}</p>
                 </div>
               )}
               {(activeTab === 1 && selectedAnalysis != null && selectedTech === "vibration" && mode !== "empty") && (() => {
@@ -7466,7 +7479,7 @@ export default function AnalysisReport({
           setRunHistoryOpen(false);
         }}
         componentLabel={selectedAnalysis?.component || loadedComponent || "Analysis"}
-        modalities={["vibration"]}
+        modalities={[selectedTech]}
       />
     </div>
   );

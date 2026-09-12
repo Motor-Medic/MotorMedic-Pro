@@ -53,7 +53,7 @@ export function renderTechnologyCard(tech: TechnologyReport) {
         <div className="min-w-0">
           <p className="text-sm font-bold text-white truncate">{tech.label}</p>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            {tech.hasData ? `Captured ${formatWhen(tech.recordedAt)}` : "Not captured"}
+            {tech.hasData ? `Captured ${formatWhen(tech.recordedAt)}` : `No ${tech.label.toLowerCase()} data collected - not part of assessment scope`}
           </p>
         </div>
         <span

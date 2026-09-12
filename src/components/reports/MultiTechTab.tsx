@@ -35,6 +35,17 @@ import {
   SEVERITY_LABEL,
   SEVERITY_STYLE
 } from "./reportPresentation";
+import {
+  buildFusionFromRecords,
+  type TechnologyEvidence,
+  type FusionResult
+} from "../../lib/diagnostics/sensorFusion";
+import {
+  classifyFaultFamily,
+  familiesCorroborate,
+  FAULT_FAMILY_LABEL,
+  type FaultFamily
+} from "../../lib/diagnostics/faultFamily";
 
 export interface MultiTechTabProps {
   assetId: string;
@@ -108,6 +119,38 @@ export default function MultiTechTab({
     [assetId, records, oilSamples]
   );
 
+  const primaryFault = report.faultDiagnoses[0]?.title ?? null;
+  const fusion = useMemo<FusionResult>(
+    () => buildFusionFromRecords({ analysisRecords: records, oilSamples, primaryFault }),
+    [records, oilSamples, primaryFault]
+  );
+
+  const recordCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const r of records) {
+      counts[r.analysis_type] = (counts[r.analysis_type] ?? 0) + 1;
+    }
+    counts["oil"] = oilSamples.length;
+    return counts;
+  }, [records, oilSamples]);
+
+  const corroboratingPairs = useMemo(() => {
+    const pairs: { a: TechnologyEvidence; b: TechnologyEvidence; witnessGapDays: number }[] = [];
+    for (let i = 0; i < fusion.scored.length; i++) {
+      for (let j = i + 1; j < fusion.scored.length; j++) {
+        const a = fusion.scored[i];
+        const b = fusion.scored[j];
+        if (familiesCorroborate(a.family, b.family)) {
+          const aTime = a.recordedAt ? new Date(a.recordedAt).getTime() : 0;
+          const bTime = b.recordedAt ? new Date(b.recordedAt).getTime() : 0;
+          const witnessGapDays = Math.round(Math.abs(aTime - bTime) / 86400000);
+          pairs.push({ a, b, witnessGapDays });
+        }
+      }
+    }
+    return pairs;
+  }, [fusion]);
+
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -158,9 +201,36 @@ export default function MultiTechTab({
           <p className="text-sm text-slate-500 mt-0.5">Live consolidation of every saved record for {assetLabel || assetId}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[report.overallSeverity]}`}>
-            Worst observed (uncorroborated)
-          </span>
+          {corroboratingPairs.length > 0 ? (
+            <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[report.overallSeverity]}`}>
+              Corroborated worst: {SEVERITY_LABEL[report.overallSeverity]}
+            </span>
+          ) : (
+            <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[report.overallSeverity]}`}>
+              Worst observed (uncorroborated)
+            </span>
+          )}
+          {fusion.aggregate != null ? (
+            <span className="rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[11px] font-bold text-cyan-400">
+              Cross-tech corroboration {fusion.aggregate}%
+            </span>
+          ) : fusion.scored.length === 1 ? (
+            <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[11px] font-bold text-amber-400">
+              Single-domain diagnosis
+            </span>
+          ) : (
+            <span className="rounded-md border border-slate-600 bg-slate-800/50 px-2.5 py-1 text-[11px] font-bold text-slate-400">
+              No scored data
+            </span>
+          )}
+          {corroboratingPairs.map((pair, idx) => (
+            <span key={idx} className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[10px] font-bold text-emerald-400">
+              {pair.a.label}↔{pair.b.label}
+              {pair.witnessGapDays > 0 && (
+                <span className="text-emerald-500 ml-1">|{pair.witnessGapDays}d</span>
+              )}
+            </span>
+          ))}
           <button type="button" onClick={() => void handleSave()} disabled={saving || loading || withData === 0}
             title={withData === 0 ? "No telemetry on file for this asset — nothing to save" : "Save this assessment to the database"}
             className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors ${saving || loading || withData === 0 ? "bg-slate-700 text-slate-400 cursor-not-allowed" : "bg-cyan-500 text-slate-900 hover:bg-cyan-400 cursor-pointer"}`}>
@@ -197,7 +267,9 @@ export default function MultiTechTab({
                 <p className="text-[11px] font-bold text-white truncate">{t.label}</p>
                 {t.hasData ? (
                   <>
-                    <p className="text-[10px] text-slate-400 mt-1">1 record</p>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      {recordCounts[t.technology] ?? 0} record{(recordCounts[t.technology] ?? 0) !== 1 ? "s" : ""}
+                    </p>
                     {t.recordedAt && (
                       <p className="text-[9px] text-slate-500 mt-0.5 truncate">
                         {formatWhen(t.recordedAt)}
@@ -218,6 +290,67 @@ export default function MultiTechTab({
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
               Readings span {temporalSpanDays} days — cross-tech comparison may be stale
             </p>
+          )}
+
+          {fusion.rows.length > 0 && (
+            <div className="mb-5">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Correlation Matrix</p>
+              <div className="rounded-lg border border-white/10 bg-slate-950/40 overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-white/10">
+                      <th className="px-3 py-2 text-left text-[10px] font-bold text-slate-400 uppercase">Modality</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-bold text-slate-400 uppercase">Status</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-bold text-slate-400 uppercase">Key Reading</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-bold text-slate-400 uppercase">Fault Family</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-bold text-slate-400 uppercase">Corroborates With</th>
+                      <th className="px-3 py-2 text-left text-[10px] font-bold text-slate-400 uppercase">Age</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fusion.rows.map((row) => {
+                      const corrTechs = fusion.scored.filter(
+                        (s) => s.technology !== row.technology && familiesCorroborate(row.family, s.family)
+                      );
+                      const ageDays = row.recordedAt
+                        ? Math.floor((Date.now() - new Date(row.recordedAt).getTime()) / 86400000)
+                        : null;
+                      return (
+                        <tr key={row.technology} className="border-b border-white/5 last:border-0">
+                          <td className="px-3 py-2 font-semibold text-white">{row.label}</td>
+                          <td className="px-3 py-2">
+                            {row.hasRecord ? (
+                              row.score != null ? (
+                                <span className="text-emerald-400">Scored ({row.score}%)</span>
+                              ) : (
+                                <span className="text-amber-400">Recorded — not scored</span>
+                              )
+                            ) : (
+                              <span className="text-slate-500">No record</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-slate-300 font-mono text-[11px]">{row.reason}</td>
+                          <td className="px-3 py-2 text-slate-400">{FAULT_FAMILY_LABEL[row.family]}</td>
+                          <td className="px-3 py-2 text-slate-400">
+                            {corrTechs.length > 0
+                              ? corrTechs.map((c) => c.label).join(", ")
+                              : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-slate-500">
+                            {ageDays != null ? (ageDays === 0 ? "today" : `${ageDays}d`) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {report.technologies.some((t) => t.technology === "mca") && (
+                <p className="text-[9px] text-slate-500 mt-1.5">
+                  MCA is recorded but not scored in fusion — no validated scoring function exists.
+                </p>
+              )}
+            </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-5">

@@ -12,6 +12,9 @@ export interface RunHistoryRun {
 
 export const isVibrationRun = (r: { analysis_type?: string | null }) => (r.analysis_type ?? "vibration") === "vibration";
 
+export const isModalityRun = (r: { analysis_type?: string | null }, modality: string) =>
+  (r.analysis_type ?? "vibration").toLowerCase() === modality.toLowerCase();
+
 export interface RunHistoryPopoverProps {
   open: boolean;
   onClose: () => void;

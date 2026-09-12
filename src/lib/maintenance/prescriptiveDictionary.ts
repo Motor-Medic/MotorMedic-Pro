@@ -1415,7 +1415,41 @@ for (const key of Object.keys(DICT)) {
 // Public API
 // ---------------------------------------------------------------------------
 
-export const DICTIONARY_VERSION = "1.2.0";
+export const DICTIONARY_VERSION = "1.3.0";
+
+// NFPA 70B-2023 / NETA dual-axis IR severity brackets
+export interface IrSeverityBracket {
+  readonly minDegC: number;
+  readonly maxDegC: number;
+  readonly netaClass: string;
+  readonly repairWindow: string;
+  readonly requiresImmediateAction: boolean;
+}
+
+/** Point-to-Point (P-P) delta-T brackets, °C */
+export const IR_PP_BRACKETS: readonly IrSeverityBracket[] = [
+  { minDegC: -Infinity, maxDegC: 1, netaClass: "Normal", repairWindow: "Regular scheduled maintenance", requiresImmediateAction: false },
+  { minDegC: 1, maxDegC: 4, netaClass: "Class 3 — Minor", repairWindow: "Next scheduled outage", requiresImmediateAction: false },
+  { minDegC: 4, maxDegC: 15, netaClass: "Class 2 — Moderate", repairWindow: "Within 30 days + weekly monitoring", requiresImmediateAction: false },
+  { minDegC: 15, maxDegC: Infinity, netaClass: "Class 1 — Critical", repairWindow: "Immediate action — stop/lockout", requiresImmediateAction: true },
+] as const;
+
+/** Point-to-Ambient (P-A) delta-T brackets, °C */
+export const IR_PA_BRACKETS: readonly IrSeverityBracket[] = [
+  { minDegC: -Infinity, maxDegC: 10, netaClass: "Normal", repairWindow: "Regular scheduled maintenance", requiresImmediateAction: false },
+  { minDegC: 10, maxDegC: 26, netaClass: "Class 3 — Minor", repairWindow: "Next scheduled outage", requiresImmediateAction: false },
+  { minDegC: 26, maxDegC: 40, netaClass: "Class 2 — Moderate", repairWindow: "Within 30 days + weekly monitoring", requiresImmediateAction: false },
+  { minDegC: 40, maxDegC: Infinity, netaClass: "Class 1 — Critical", repairWindow: "Immediate action — stop/lockout", requiresImmediateAction: true },
+] as const;
+
+/** Evaluate delta-T against NFPA 70B brackets. */
+export function evaluateIrSeverity(deltaT_C: number, axis: "P-P" | "P-A"): IrSeverityBracket {
+  const brackets = axis === "P-P" ? IR_PP_BRACKETS : IR_PA_BRACKETS;
+  for (const b of brackets) {
+    if (deltaT_C > b.minDegC && deltaT_C <= b.maxDegC) return b;
+  }
+  return brackets[brackets.length - 1];
+}
 
 export function getPrescription(diagnosis: string): PrescriptivePackage {
   const key = String(diagnosis ?? "").trim().toLowerCase();
