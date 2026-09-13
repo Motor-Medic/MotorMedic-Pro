@@ -251,35 +251,14 @@ const MCA_LIBRARY_TESTS: { id: string; date: string; dateMs: number; motorId: st
 const MCA_MULTI_TREND: { date: string; ir40: number | null; imbalance: number | null; pi: number | null; fi: number | null; projection: number | null; }[] = [];
 const MCA_PHASE_HISTORY: { date: string; a: number; b: number; c: number; }[] = [];
 
-const TABS: { id: ReportTab; label: string }[] = [
-  { id: 1, label: "1. Analysis Results" },
-  { id: 2, label: "2. Spectrum Library" },
-  { id: 3, label: "3. Repair & Actions" }
-];
-
-const THERMOGRAPHY_TABS: { id: ReportTab; label: string }[] = [
-  { id: 1, label: "1. Analysis Results" },
-  { id: 2, label: "2. Thermal Data Library" },
-  { id: 3, label: "3. Repair Actions" }
-];
-
-const ULTRASOUND_TABS: { id: ReportTab; label: string }[] = [
-  { id: 1, label: "1. Analysis Results" },
-  { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" }
-];
-
-const MCA_TABS: { id: ReportTab; label: string }[] = [
-  { id: 1, label: "1. Analysis Results" },
-  { id: 2, label: "2. Data Library" },
-  { id: 3, label: "3. Repair Actions" }
-];
-
-const OIL_TABS: { id: ReportTab; label: string }[] = [
-  { id: 1, label: "1. Lab Results" },
-  { id: 2, label: "2. Sample Library" },
-  { id: 3, label: "3. Repair Actions" }
-];
+const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =>
+  modality === "vibration"
+    ? [
+        { id: 1, label: "1. Analysis Results" },
+        { id: 2, label: "2. Spectrum Library" },
+        { id: 3, label: "3. Prescriptive Plan & CMMS Bridge" },
+      ]
+    : [{ id: 1, label: "1. Analysis Results" }];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
 const OIL_SPECTROMETRY = {
@@ -6038,6 +6017,15 @@ export default function AnalysisReport({
     }
   };
 
+  /** Atomically select a run and coerce the tile to its modality. */
+  const selectAnalysisWithModality = useCallback((row: SavedAnalysisResult | null) => {
+    setSelectedAnalysis(row);
+    if (row) {
+      const norm = (row.analysis_type ?? "vibration").toLowerCase() as ReportTechnology;
+      setSelectedTech((prev) => (prev === norm ? prev : norm));
+    }
+  }, []);
+
   // Fetch saved analyses from PostgreSQL on page load. Populates the Saved
   // Analyses list, but never auto-restores a selection when the equipment
   // selectors are still empty — the user must pick a report explicitly.
@@ -6235,6 +6223,12 @@ export default function AnalysisReport({
       : null;
     setSelectedAnalysis(latest);
   }, [selectedTech, modalityAnalyses]);
+
+  // Clamp activeTab to available ids when modality changes (Tab 2/3 hidden for non-vibration)
+  useEffect(() => {
+    const ids = getModalityTabs(selectedTech).map((t) => t.id);
+    if (!ids.includes(activeTab)) setActiveTab(ids[ids.length - 1]);
+  }, [selectedTech]);
 
   const baselineRecord = useMemo(() => {
     return loadedAnalyses.find((a) => a.is_baseline) ?? null;
@@ -6450,7 +6444,7 @@ export default function AnalysisReport({
 
       const sorted = [...rows].sort((a, b) => new Date(b.timestamp || b.created_at || 0).getTime() - new Date(a.timestamp || a.created_at || 0).getTime());
       setLoadedAnalyses(sorted);
-      setSelectedAnalysis(sorted[0] ?? null);
+      selectAnalysisWithModality(sorted[0] ?? null);
       setHasLoadedReport(true);
 
       if (rows.length === 0) {
@@ -6555,11 +6549,7 @@ export default function AnalysisReport({
     );
   }
 
-  const currentTechTabs = selectedTech === "oil" ? OIL_TABS
-    : selectedTech === "thermography" ? THERMOGRAPHY_TABS
-    : selectedTech === "ultrasound" ? ULTRASOUND_TABS
-    : selectedTech === "mca" ? MCA_TABS
-    : TABS;
+  const currentTechTabs = getModalityTabs(selectedTech);
 
   return (
     <div className="min-h-screen flex flex-col gap-4 p-4 bg-slate-950">
@@ -6835,7 +6825,7 @@ export default function AnalysisReport({
                 );
               })}
             </div>
-            {hasLoadedReport && selectedAnalysis && (
+            {hasLoadedReport && selectedAnalysis && (selectedAnalysis.analysis_type ?? "vibration") === selectedTech && (
               <div className="flex mt-2 mb-2 justify-start">
                 <RunHistoryTrigger
                   onClick={() => setRunHistoryOpen(true)}
@@ -6874,7 +6864,7 @@ export default function AnalysisReport({
                           <button
                             key={row.id}
                             type="button"
-                            onClick={() => { setSelectedAnalysis(row); setActiveTab(1); }}
+                            onClick={() => { selectAnalysisWithModality(row); setActiveTab(1); }}
                             className={`w-full text-left rounded-lg border p-3 transition-colors cursor-pointer ${
                               on
                                 ? "border-amber-400/50 bg-amber-400/10"
@@ -7122,7 +7112,7 @@ export default function AnalysisReport({
                   baselineSpectrum={baselineSpectrum}
                   reportVibrationRecord={reportVibrationRecord}
                   allAnalyses={loadedAnalyses}
-                  onSelectAnalysis={setSelectedAnalysis}
+                  onSelectAnalysis={selectAnalysisWithModality}
                 />
               )}
 
@@ -7475,7 +7465,7 @@ export default function AnalysisReport({
         selectedId={selectedAnalysis?.id ?? null}
         onSelect={(run) => {
           const match = loadedAnalyses.find((a) => a.id === run.id);
-          if (match) setSelectedAnalysis(match);
+          if (match) selectAnalysisWithModality(match);
           setRunHistoryOpen(false);
         }}
         componentLabel={selectedAnalysis?.component || loadedComponent || "Analysis"}
