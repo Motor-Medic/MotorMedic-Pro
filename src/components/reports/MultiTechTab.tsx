@@ -46,6 +46,9 @@ import {
   FAULT_FAMILY_LABEL,
   type FaultFamily
 } from "../../lib/diagnostics/faultFamily";
+import { TechPrescriptionCard } from "./TechPrescriptionCard";
+import { PlanningInputsCard } from "./PlanningInputsCard";
+import { fetchPlanningBundle } from "../../lib/diagnostics/cmmsPayload";
 
 export interface MultiTechTabProps {
   assetId: string;
@@ -113,6 +116,13 @@ export default function MultiTechTab({
   useEffect(() => {
     loadHistory();
   }, [loadHistory]);
+
+  const [planningBundle, setPlanningBundle] = useState<{ planningInputs: { leadTimeDays: number | null; nextShutdownDate: string | null; downtimeCostPerDay: number | null } | null; repairCosts: Record<string, { repair: number | null; replacement: number | null }> }>({ planningInputs: null, repairCosts: {} });
+
+  useEffect(() => {
+    if (!assetId) return;
+    fetchPlanningBundle(assetId).then(setPlanningBundle);
+  }, [assetId]);
 
   const report = useMemo(
     () => buildMultiTechReport({ assetId, analysisRecords: records, oilSamples }),
@@ -353,6 +363,14 @@ export default function MultiTechTab({
             </div>
           )}
 
+          {assetId && (
+            <PlanningInputsCard
+              assetId={assetId}
+              planningInputs={planningBundle.planningInputs}
+              onSave={(inputs) => setPlanningBundle((b) => ({ ...b, planningInputs: inputs }))}
+            />
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-5">
             {report.technologies.map((tech) => {
               const ageDays = tech.recordedAt
@@ -403,6 +421,13 @@ export default function MultiTechTab({
                           </span>
                         )}
                       </div>
+                      <TechPrescriptionCard
+                        tech={tech}
+                        records={records}
+                        loadedAnalyses={records}
+                        planningInputs={planningBundle.planningInputs}
+                        repairCosts={planningBundle.repairCosts}
+                      />
                     </div>
                   )}
                 </div>

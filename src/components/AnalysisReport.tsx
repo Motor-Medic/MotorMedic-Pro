@@ -6017,15 +6017,6 @@ export default function AnalysisReport({
     }
   };
 
-  /** Atomically select a run and coerce the tile to its modality. */
-  const selectAnalysisWithModality = useCallback((row: SavedAnalysisResult | null) => {
-    setSelectedAnalysis(row);
-    if (row) {
-      const norm = (row.analysis_type ?? "vibration").toLowerCase() as ReportTechnology;
-      setSelectedTech((prev) => (prev === norm ? prev : norm));
-    }
-  }, []);
-
   // Fetch saved analyses from PostgreSQL on page load. Populates the Saved
   // Analyses list, but never auto-restores a selection when the equipment
   // selectors are still empty — the user must pick a report explicitly.
@@ -6170,6 +6161,29 @@ export default function AnalysisReport({
     return getEquipmentData();
   }, [equipTick]);
 
+  /** Sync draft selectors to a record's asset + component when present in the option lists. */
+  const syncSelectorsToRecord = (row: SavedAnalysisResult) => {
+    const flat = flatEquipment.find((a) => a.id === row.asset_id || a.tag === row.asset_id);
+    if (!flat) return;
+    setSelectedRoute(flat.routeName);
+    setSelectedAsset(flat.tag);
+    setSelectedComponent(
+      row.component && flat.components.some((c) => c.name === row.component)
+        ? row.component
+        : flat.components[0]?.name ?? ""
+    );
+  };
+
+  /** Atomically select a run, coerce the tile to its modality, and sync selectors. */
+  const selectAnalysisWithModality = useCallback((row: SavedAnalysisResult | null) => {
+    setSelectedAnalysis(row);
+    if (row) {
+      const norm = (row.analysis_type ?? "vibration").toLowerCase() as ReportTechnology;
+      setSelectedTech((prev) => (prev === norm ? prev : norm));
+      syncSelectorsToRecord(row);
+    }
+  }, [flatEquipment]);
+
   const reportAsset = MOCK_ASSETS.find((a) => a.id === loadedAssetId) ?? MOCK_ASSETS[0];
   const selectedEquip = flatEquipment.find((e) => e.tag === reportAsset.tag) ?? null;
   const displayAssetLabel =
@@ -6216,12 +6230,21 @@ export default function AnalysisReport({
   const modalityAnalyses = useMemo(() => loadedAnalyses.filter((r) => isModalityRun(r, selectedTech)), [loadedAnalyses, selectedTech]);
   const otherTechCount = loadedAnalyses.length - modalityAnalyses.length;
 
-  // Reset selectedAnalysis when selectedTech changes: auto-select latest run of new modality
+  // Reset selectedAnalysis only when selectedTech actually changes AND a report was
+  // already loaded: re-select the latest run of the new modality scoped to the
+  // current record's asset + component. Never on mount, never across assets.
+  const prevTechRef = useRef<ReportTechnology>(selectedTech);
   useEffect(() => {
-    const latest = modalityAnalyses.length > 0
-      ? [...modalityAnalyses].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
-      : null;
-    setSelectedAnalysis(latest);
+    const prev = prevTechRef.current;
+    prevTechRef.current = selectedTech;
+    if (prev === selectedTech) return;
+    const base = selectedAnalysis;
+    if (!base?.asset_id) return;
+    const scoped = modalityAnalyses
+      .filter((r) => r.asset_id === base.asset_id && (!base.component || r.component === base.component))
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] ?? null;
+    setSelectedAnalysis(scoped);
+    if (scoped) syncSelectorsToRecord(scoped);
   }, [selectedTech, modalityAnalyses]);
 
   // Clamp activeTab to available ids when modality changes (Tab 2/3 hidden for non-vibration)
