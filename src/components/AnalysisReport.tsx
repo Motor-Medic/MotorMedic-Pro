@@ -34,7 +34,7 @@ import {
 import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
-import RepairActionsTab from "./RepairActionsTab";
+import PrognosticsTab from "./reports/PrognosticsTab";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -256,7 +256,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
     ? [
         { id: 1, label: "1. Analysis Results" },
         { id: 2, label: "2. Spectrum Library" },
-        { id: 3, label: "3. Prescriptive Plan & CMMS Bridge" },
+        { id: 3, label: "3. Prognostics & Comparison" },
       ]
     : [{ id: 1, label: "1. Analysis Results" }];
 
@@ -7406,8 +7406,8 @@ export default function AnalysisReport({
               );
             })()}
 
-            {/* ===== Tab 3: Repair & Actions ===== */}
-            <RepairActionsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} assetId={assessmentAssetId} />
+            {/* ===== Tab 3: Prognostics & Comparison ===== */}
+            <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />
 
             {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the
                   live interactive workspace above has no spectrum/peaks to plot.
