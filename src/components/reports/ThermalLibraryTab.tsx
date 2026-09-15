@@ -27,7 +27,7 @@ function rowFor(r: SavedAnalysisResult): IrRow | null {
   return { date: new Date(r.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), ts: r.timestamp, hotspot: hs, deltaT: dT, unit, dTC, bracket: evaluateIrSeverity(dTC, "P-P"), eps: epsRaw == null ? "not recorded" : String(epsRaw) };
 }
 
-const W = 520, H = 150, PL = 44, PR = 12, PT = 16, PB = 30;
+const W = 520, H = 150, PL = 54, PR = 12, PT = 16, PB = 30, PADX = 32;
 
 export default function ThermalLibraryTab({ selectedAnalysis, allAnalyses }: ThermalLibraryTabProps) {
   if (!selectedAnalysis?.asset_id) return (
@@ -46,10 +46,11 @@ export default function ThermalLibraryTab({ selectedAnalysis, allAnalyses }: The
   const [showAll, setShowAll] = useState(false);
   const unit = rows[0]?.unit ?? "°F";
   const maxV = Math.max(...rows.map((r) => Math.max(r.hotspot ?? 0, r.deltaT ?? 0)), 10) * 1.15;
-  const px = (i: number, n: number) => n === 1 ? (PL + W - PR) / 2 : PL + i * (W - PL - PR) / (n - 1);
+  const px = (i: number, n: number) => n === 1 ? (PL + W - PR) / 2 : (PL + PADX) + i * (W - PR - PL - PADX) / (n - 1);
   const py = (v: number) => PT + (1 - Math.max(0, v) / maxV) * (H - PT - PB);
   const cat = (b: IrSeverityBracket | null) => b ? CLASS_FILL[b.netaClass.split(" — ")[0]] ?? "#64748b" : "#64748b";
-  const grid = [0, 1, 2].map((i) => ({ v: maxV * i / 4, y: py(maxV * i / 4) }));
+  const grid = [0, 0.5, 1].map((f) => ({ v: maxV * f, y: py(maxV * f) }));
+  const unitLabel = unit === "°F" ? "degF" : "degC";
 
   return (
     <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
@@ -71,10 +72,10 @@ export default function ThermalLibraryTab({ selectedAnalysis, allAnalyses }: The
               <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400">Y axes in {unit}</span>
             </div>
             <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-48" preserveAspectRatio="none">
-              {grid.map((g) => (<g key={g.v.toFixed(1)}><line x1={PL} x2={W - PR} y1={g.y} y2={g.y} stroke="#334155" strokeDasharray="3 3" /><text x={PL - 5} y={g.y + 2} fontSize="8" fill="#64748b" textAnchor="end" dominantBaseline="middle">{g.v.toFixed(0)}</text></g>))}
-              <text x={PL - 7} y={(PT + H - PB) / 2} fontSize="8" fill="#38bdf8" transform={`rotate(-90 ${PL - 7} ${(PT + H - PB) / 2})`} textAnchor="middle">Temp {unit}</text>
+              {grid.map((g) => (<g key={g.v.toFixed(1)}><line x1={PL} x2={W - PR} y1={g.y} y2={g.y} stroke="#334155" strokeDasharray="3 3" /><text x={PL - 6} y={g.y + 2} fontSize="8" fill="#64748b" textAnchor="end" dominantBaseline="middle">{g.v.toFixed(0)}</text></g>))}
+              <text x={PL - 10} y={(PT + H - PB) / 2} fontSize="8" fill="#38bdf8" transform={`rotate(-90 ${PL - 10} ${(PT + H - PB) / 2})`} textAnchor="middle">Temp ({unitLabel})</text>
               {rows.map((r, i) => (<g key={r.ts}>
-                <text x={px(i, rows.length)} y={H - 10} fontSize="8" fill="#64748b" textAnchor="middle">{r.date.split(",")[0]}</text>
+                {i === 0 || rows[i - 1].ts.slice(0, 10) !== r.ts.slice(0, 10) ? <text x={px(i, rows.length)} y={H - 10} fontSize="8" fill="#64748b" textAnchor="middle">{r.date.split(",")[0]}</text> : null}
                 <circle cx={px(i, rows.length)} cy={py(r.hotspot ?? 0)} r="2.6" fill={cat(r.bracket)} />
                 <circle cx={px(i, rows.length)} cy={py(r.deltaT ?? 0)} r="2.6" fill="none" stroke={cat(r.bracket)} strokeWidth="1" />
                 {r.bracket && <text x={px(i, rows.length)} y={py(r.hotspot ?? 0) - 6} fontSize="7" fill={cat(r.bracket)} textAnchor="middle">{r.bracket.netaClass.split(" — ")[0]}</text>}

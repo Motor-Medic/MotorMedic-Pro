@@ -79,7 +79,10 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Mandate — {latest.date}</p>
                   <p className="text-xs text-slate-300">Governing class: <span className="font-bold uppercase">{latest.gov?.netaClass ?? "—"}</span><span className="text-slate-500 ml-1">· {latest.gov ? `axis ${latest.axis}` : "no verdict"}</span></p>
-                  {latest.gov && <p className="text-xs text-amber-300 mt-1">{latest.gov.repairWindow}{latest.gov.requiresImmediateAction ? " — MANDATORY immediate action: stop equipment, apply lockout/tagout." : ""}</p>}
+                  {latest.gov && (<p className="text-xs text-amber-300 mt-1">
+                    {latest.gov.requiresImmediateAction && <span className="inline-block rounded border border-red-500/50 bg-red-500/10 text-red-400 px-1.5 py-0.5 text-[9px] font-bold uppercase mr-1">MANDATORY</span>}
+                    {latest.gov.repairWindow}
+                  </p>)}
                   <p className="text-[10px] text-slate-500 mt-1">NFPA 70B-2023 (enforceable) / NETA severity classes</p>
                 </div>
               </div>
@@ -101,8 +104,8 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
                   <tr key={r.ts} className="text-slate-300 border-t border-slate-800">
                     <td className="py-1">{r.date}</td>
                     <td className="py-1 text-right font-mono">{dTfmt(r.deltaT, r.unit)}</td>
-                    <td className="py-1 text-right font-mono">{r.dTC != null ? `${r.dTC.toFixed(1)}°C` : "—"}</td>
-                    <td className="py-1 text-slate-400">{r.pa == null ? "P-P only (P-A unavailable — ambient not recorded)" : r.axis}</td>
+                    <td className="py-1 text-right font-mono pr-4">{r.dTC != null ? `${r.dTC.toFixed(1)}°C` : "—"}</td>
+                    <td className="py-1 text-left text-slate-400 pl-1"><span className="font-semibold text-slate-300">{r.pa == null ? "P-P only" : r.axis}</span>{r.pa == null && <span className="text-slate-500"> (P-A unavailable — ambient not recorded)</span>}</td>
                     <td className="py-1"><span className="font-bold uppercase">{r.gov?.netaClass ?? "—"}</span></td>
                     <td className="py-1 text-slate-400">{r.gov?.repairWindow ?? "—"}</td>
                     <td className="py-1 text-slate-400">{r.eps}</td>
