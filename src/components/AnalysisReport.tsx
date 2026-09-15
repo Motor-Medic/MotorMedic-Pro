@@ -45,6 +45,8 @@ import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/repor
 
 import SavedReportViewer from "./reports/SavedReportViewer";
 import ThermographyResultsTab from "./reports/ThermographyResultsTab";
+import ThermalLibraryTab from "./reports/ThermalLibraryTab";
+import NfpaComplianceTab from "./reports/NfpaComplianceTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -258,7 +260,13 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
         { id: 2, label: "2. Spectrum Library" },
         { id: 3, label: "3. Prognostics & Comparison" },
       ]
-    : [{ id: 1, label: "1. Analysis Results" }];
+    : modality === "thermography"
+      ? [
+          { id: 1, label: "1. Analysis Results" },
+          { id: 2, label: "2. Thermal Trend Library" },
+          { id: 3, label: "3. NFPA 70B Compliance Dossier" },
+        ]
+      : [{ id: 1, label: "1. Analysis Results" }];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
 const OIL_SPECTROMETRY = {
@@ -7125,8 +7133,14 @@ export default function AnalysisReport({
               </div>
             )}
 
-              {/* ===== Tab 2: Spectrum Library (dedicated workspace component) ===== */}
-              {activeTab === 2 && (
+              {/* ===== Tab 2: Spectrum Library / Thermal Trend Library (modality-specific) ===== */}
+              {activeTab === 2 && selectedTech === "thermography" && (
+                <ThermalLibraryTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                />
+              )}
+              {activeTab === 2 && selectedTech !== "thermography" && (
                 <SpectrumLibraryTab
                   selectedAnalysis={selectedAnalysis}
                   peakList={peakList}
@@ -7136,6 +7150,14 @@ export default function AnalysisReport({
                   reportVibrationRecord={reportVibrationRecord}
                   allAnalyses={loadedAnalyses}
                   onSelectAnalysis={selectAnalysisWithModality}
+                />
+              )}
+
+              {/* ===== Tab 3: NFPA 70B Compliance Dossier (thermography only) ===== */}
+              {activeTab === 3 && selectedTech === "thermography" && (
+                <NfpaComplianceTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
                 />
               )}
 
@@ -7406,8 +7428,10 @@ export default function AnalysisReport({
               );
             })()}
 
-            {/* ===== Tab 3: Prognostics & Comparison ===== */}
-            <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />
+            {/* ===== Tab 3: Prognostics (vibration) / NFPA Dossier (thermography) ===== */}
+            {selectedTech === "vibration" && (
+              <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />
+            )}
 
             {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the
                   live interactive workspace above has no spectrum/peaks to plot.

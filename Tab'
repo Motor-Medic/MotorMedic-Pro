@@ -1,0 +1,100 @@
+warning: in the working copy of 'src/components/AnalysisReport.tsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/src/components/AnalysisReport.tsx b/src/components/AnalysisReport.tsx[m
+[1mindex 5b7982b..b9721d6 100644[m
+[1m--- a/src/components/AnalysisReport.tsx[m
+[1m+++ b/src/components/AnalysisReport.tsx[m
+[36m@@ -45,6 +45,8 @@[m [mimport { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/repor[m
+ [m
+ import SavedReportViewer from "./reports/SavedReportViewer";[m
+ import ThermographyResultsTab from "./reports/ThermographyResultsTab";[m
+[32m+[m[32mimport ThermalLibraryTab from "./reports/ThermalLibraryTab";[m
+[32m+[m[32mimport NfpaComplianceTab from "./reports/NfpaComplianceTab";[m
+ import { useQueryParam } from "../lib/useQueryParam";[m
+ import { fetchOilSamples } from "../lib/oilSampleRow";[m
+ import {[m
+[36m@@ -258,7 +260,13 @@[m [mconst getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =[m
+         { id: 2, label: "2. Spectrum Library" },[m
+         { id: 3, label: "3. Prognostics & Comparison" },[m
+       ][m
+[31m-    : [{ id: 1, label: "1. Analysis Results" }];[m
+[32m+[m[32m    : modality === "thermography"[m
+[32m+[m[32m      ? [[m
+[32m+[m[32m          { id: 1, label: "1. Analysis Results" },[m
+[32m+[m[32m          { id: 2, label: "2. Thermal Trend Library" },[m
+[32m+[m[32m          { id: 3, label: "3. NFPA 70B Compliance Dossier" },[m
+[32m+[m[32m        ][m
+[32m+[m[32m      : [{ id: 1, label: "1. Analysis Results" }];[m
+ [m
+ /** Spectrometry groups — wear / contaminants / additives (ppm). */[m
+ const OIL_SPECTROMETRY = {[m
+[36m@@ -7125,8 +7133,14 @@[m [mexport default function AnalysisReport({[m
+               </div>[m
+             )}[m
+ [m
+[31m-              {/* ===== Tab 2: Spectrum Library (dedicated workspace component) ===== */}[m
+[31m-              {activeTab === 2 && ([m
+[32m+[m[32m              {/* ===== Tab 2: Spectrum Library / Thermal Trend Library (modality-specific) ===== */}[m
+[32m+[m[32m              {activeTab === 2 && selectedTech === "thermography" && ([m
+[32m+[m[32m                <ThermalLibraryTab[m
+[32m+[m[32m                  selectedAnalysis={selectedAnalysis}[m
+[32m+[m[32m                  allAnalyses={loadedAnalyses}[m
+[32m+[m[32m                />[m
+[32m+[m[32m              )}[m
+[32m+[m[32m              {activeTab === 2 && selectedTech !== "thermography" && ([m
+                 <SpectrumLibraryTab[m
+                   selectedAnalysis={selectedAnalysis}[m
+                   peakList={peakList}[m
+[36m@@ -7139,6 +7153,14 @@[m [mexport default function AnalysisReport({[m
+                 />[m
+               )}[m
+ [m
+[32m+[m[32m              {/* ===== Tab 3: NFPA 70B Compliance Dossier (thermography only) ===== */}[m
+[32m+[m[32m              {activeTab === 3 && selectedTech === "thermography" && ([m
+[32m+[m[32m                <NfpaComplianceTab[m
+[32m+[m[32m                  selectedAnalysis={selectedAnalysis}[m
+[32m+[m[32m                  allAnalyses={loadedAnalyses}[m
+[32m+[m[32m                />[m
+[32m+[m[32m              )}[m
+[32m+[m
+               {/* ===== Interactive FFT Workspace — live spectral chart block (Tab 1 only) ===== */}[m
+               {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && ([m
+                 <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">[m
+[36m@@ -7406,8 +7428,10 @@[m [mexport default function AnalysisReport({[m
+               );[m
+             })()}[m
+ [m
+[31m-            {/* ===== Tab 3: Prognostics & Comparison ===== */}[m
+[31m-            <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />[m
+[32m+[m[32m            {/* ===== Tab 3: Prognostics (vibration) / NFPA Dossier (thermography) ===== */}[m
+[32m+[m[32m            {selectedTech === "vibration" && ([m
+[32m+[m[32m              <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />[m
+[32m+[m[32m            )}[m
+ [m
+             {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the[m
+                   live interactive workspace above has no spectrum/peaks to plot.[m
+[1mdiff --git a/src/lib/diagnostics/cmmsPayload.ts b/src/lib/diagnostics/cmmsPayload.ts[m
+[1mindex 04cf960..0d79d37 100644[m
+[1m--- a/src/lib/diagnostics/cmmsPayload.ts[m
+[1m+++ b/src/lib/diagnostics/cmmsPayload.ts[m
+[36m@@ -681,9 +681,10 @@[m [mexport interface BuildBridgeOpts {[m
+  * Build a full `CmmsPayloadContext` from a saved analysis, including[m
+  * prescriptive enrichment (procedure, safety, timing, priority, breakeven).[m
+  *[m
+[31m- * This is the single assembly point that AnalysisReport, RepairActionsTab,[m
+[32m+[m[32m * This is the single assembly point that AnalysisReport, TechPrescriptionCard,[m
+  * and Diagnose all call so the bridge receives identical payloads regardless[m
+[31m- * of origin.  PARITY DEFINITION: doors 1 (AnalysisReport) + 2 (Tab 3) are[m
+[32m+[m[32m * of origin.  PARITY DEFINITION: doors 1 (AnalysisReport) + 2 (Tab 3[m
+[32m+[m[32m * PrognosticsTab) are[m
+  * byte-identical for the same selected analysis; door 3 (run-diagnostics)[m
+  * matches when its live analysis is the same record, differing only in[m
+  * identity fields (id, timestamp, confidence, sign-off).[m
+[36m@@ -698,7 +699,7 @@[m [mexport function buildBridgeContext([m
+     ? (a.telemetry_data as Record<string, unknown>).rpm ?? null[m
+     : null;[m
+ [m
+[31m-  // History peaks (same logic as RepairActionsTab)[m
+[32m+[m[32m  // History peaks (same logic as PrognosticsTab)[m
+   const historyPeaks = (opts.loadedAnalyses ?? [])[m
+     .filter((r) => r.id !== a?.id && r.asset_id === a?.asset_id && r.component === a?.component[m
+       && (r.analysis_type ?? "vibration") === (a?.analysis_type ?? "vibration")[m

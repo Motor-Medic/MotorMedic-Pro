@@ -681,9 +681,10 @@ export interface BuildBridgeOpts {
  * Build a full `CmmsPayloadContext` from a saved analysis, including
  * prescriptive enrichment (procedure, safety, timing, priority, breakeven).
  *
- * This is the single assembly point that AnalysisReport, RepairActionsTab,
+ * This is the single assembly point that AnalysisReport, TechPrescriptionCard,
  * and Diagnose all call so the bridge receives identical payloads regardless
- * of origin.  PARITY DEFINITION: doors 1 (AnalysisReport) + 2 (Tab 3) are
+ * of origin.  PARITY DEFINITION: doors 1 (AnalysisReport) + 2 (Tab 3
+ * PrognosticsTab) are
  * byte-identical for the same selected analysis; door 3 (run-diagnostics)
  * matches when its live analysis is the same record, differing only in
  * identity fields (id, timestamp, confidence, sign-off).
@@ -698,7 +699,7 @@ export function buildBridgeContext(
     ? (a.telemetry_data as Record<string, unknown>).rpm ?? null
     : null;
 
-  // History peaks (same logic as RepairActionsTab)
+  // History peaks (same logic as PrognosticsTab)
   const historyPeaks = (opts.loadedAnalyses ?? [])
     .filter((r) => r.id !== a?.id && r.asset_id === a?.asset_id && r.component === a?.component
       && (r.analysis_type ?? "vibration") === (a?.analysis_type ?? "vibration")
