@@ -49,6 +49,7 @@ import ThermalLibraryTab from "./reports/ThermalLibraryTab";
 import NfpaComplianceTab from "./reports/NfpaComplianceTab";
 import UltrasoundResultsTab from "./reports/UltrasoundResultsTab";
 import UltrasoundTrendLibraryTab from "./reports/UltrasoundTrendLibraryTab";
+import UltrasoundPatternDossierTab from "./reports/UltrasoundPatternDossierTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -272,6 +273,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
         ? [
             { id: 1, label: "1. Analysis Results" },
             { id: 2, label: "2. Acoustic Trend Library" },
+            { id: 3, label: "3. Acoustic Pattern & Survey Dossier" },
           ]
         : [{ id: 1, label: "1. Analysis Results" }];
 
@@ -7169,9 +7171,15 @@ export default function AnalysisReport({
                 />
               )}
 
-              {/* ===== Tab 3: NFPA 70B Compliance Dossier (thermography only) ===== */}
+              {/* ===== Tab 3: NFPA 70B Compliance Dossier (thermography) / Acoustic Pattern & Survey Dossier (ultrasound) ===== */}
               {activeTab === 3 && selectedTech === "thermography" && (
                 <NfpaComplianceTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                />
+              )}
+              {activeTab === 3 && selectedTech === "ultrasound" && (
+                <UltrasoundPatternDossierTab
                   selectedAnalysis={selectedAnalysis}
                   allAnalyses={loadedAnalyses}
                 />
