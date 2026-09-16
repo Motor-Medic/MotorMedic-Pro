@@ -1415,7 +1415,7 @@ for (const key of Object.keys(DICT)) {
 // Public API
 // ---------------------------------------------------------------------------
 
-export const DICTIONARY_VERSION = "1.3.0";
+export const DICTIONARY_VERSION = "1.4.0";
 
 // NFPA 70B-2023 / NETA dual-axis IR severity brackets
 export interface IrSeverityBracket {
@@ -1454,6 +1454,39 @@ export function evaluateIrSeverity(deltaT_C: number, axis: "P-P" | "P-A"): IrSev
 export function getPrescription(diagnosis: string): PrescriptivePackage {
   const key = String(diagnosis ?? "").trim().toLowerCase();
   return _lookup.get(key) ?? unmapped(String(diagnosis ?? ""));
+}
+
+// ---------------------------------------------------------------------------
+// Ultrasound severity brackets — industry structure-borne delta-dB guidance
+// (UE Systems / SDT practice). No ISO severity standard exists for ultrasound.
+// Exclusive lower bound, inclusive upper bound. Values are stated in whole dB
+// in the source practice; a rounding gap is intentional — a delta landing on a
+// boundary (e.g. exactly 8 dB) classifies into the higher bracket, matching
+// the inclusive-upper convention. Never interpolate between brackets.
+// ---------------------------------------------------------------------------
+
+export const US_DDB_SOURCE = "industry structure-borne delta-dB guidance (UE Systems/SDT practice) - no ISO severity standard exists for ultrasound";
+
+export interface UsDeltaDbBracket {
+  readonly minDb: number;
+  readonly maxDb: number;
+  readonly clazz: string;
+  readonly action: string;
+}
+
+/** Delta-over-baseline (dB) brackets. Exclusive lower, inclusive upper. */
+export const US_DDB_BRACKETS: readonly UsDeltaDbBracket[] = [
+  { minDb: -Infinity, maxDb: 8, clazz: "Satisfactory", action: "No action required" },
+  { minDb: 8, maxDb: 13, clazz: "Class 3 — Minor", action: "Lubrication starvation risk" },
+  { minDb: 13, maxDb: 24, clazz: "Class 2 — Moderate", action: "Friction & surface wear" },
+  { minDb: 24, maxDb: Infinity, clazz: "Class 1 — Critical", action: "Severe micro-spalling" },
+] as const;
+
+export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
+  for (const b of US_DDB_BRACKETS) {
+    if (deltaDb > b.minDb && deltaDb <= b.maxDb) return b;
+  }
+  return US_DDB_BRACKETS[US_DDB_BRACKETS.length - 1];
 }
 
 export function isMapped(diagnosis: string): boolean {

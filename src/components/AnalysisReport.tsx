@@ -47,6 +47,7 @@ import SavedReportViewer from "./reports/SavedReportViewer";
 import ThermographyResultsTab from "./reports/ThermographyResultsTab";
 import ThermalLibraryTab from "./reports/ThermalLibraryTab";
 import NfpaComplianceTab from "./reports/NfpaComplianceTab";
+import UltrasoundResultsTab from "./reports/UltrasoundResultsTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -6950,6 +6951,9 @@ export default function AnalysisReport({
               if (modality !== "vibration") {
                 if (modality === "thermography") {
                   return <ThermographyResultsTab selectedAnalysis={selectedAnalysis} />;
+                }
+                if (modality === "ultrasound") {
+                  return <UltrasoundResultsTab selectedAnalysis={selectedAnalysis} />;
                 }
                 return (
                   <div className="space-y-4">
