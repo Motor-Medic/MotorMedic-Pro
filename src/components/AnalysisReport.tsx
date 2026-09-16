@@ -50,6 +50,7 @@ import NfpaComplianceTab from "./reports/NfpaComplianceTab";
 import UltrasoundResultsTab from "./reports/UltrasoundResultsTab";
 import UltrasoundTrendLibraryTab from "./reports/UltrasoundTrendLibraryTab";
 import UltrasoundPatternDossierTab from "./reports/UltrasoundPatternDossierTab";
+import McaResultsTab from "./reports/McaResultsTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -275,6 +276,8 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
             { id: 2, label: "2. Acoustic Trend Library" },
             { id: 3, label: "3. Acoustic Pattern & Survey Dossier" },
           ]
+      : modality === "mca"
+        ? [{ id: 1, label: "1. Analysis Results" }]
         : [{ id: 1, label: "1. Analysis Results" }];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
@@ -6963,6 +6966,9 @@ export default function AnalysisReport({
                 if (modality === "ultrasound") {
                   return <UltrasoundResultsTab selectedAnalysis={selectedAnalysis} />;
                 }
+                if (modality === "mca") {
+                  return <McaResultsTab selectedAnalysis={selectedAnalysis} />;
+                }
                 return (
                   <div className="space-y-4">
                     <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
@@ -7186,7 +7192,12 @@ export default function AnalysisReport({
               )}
 
               {/* ===== Interactive FFT Workspace — live spectral chart block (Tab 1 only) ===== */}
-              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && (
+              {activeTab === 1 && selectedAnalysis != null && selectedTech === "mca" && (
+                <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
+                  <p className="text-sm text-slate-500 italic">not a vibration spectrum for mca</p>
+                </div>
+              )}
+              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && selectedTech !== "mca" && (
                 <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
                   <p className="text-sm text-slate-500 italic">not a vibration spectrum for {selectedTech}</p>
                 </div>

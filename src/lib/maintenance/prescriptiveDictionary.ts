@@ -1492,6 +1492,37 @@ export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
   return US_DDB_BRACKETS[US_DDB_BRACKETS.length - 1];
 }
 
+// ---------------------------------------------------------------------------
+// MCA phase-unbalance brackets — NEMA MG-1 practice.  No ISO severity class
+// standard exists for MCA.  Exclusive lower, inclusive upper.  Values are
+// stated as whole-percent in the source practice; a rounding gap is
+// intentional — a delta landing on a boundary (e.g. exactly 2%) classifies
+// into the higher bracket, matching the inclusive-upper convention.
+// ---------------------------------------------------------------------------
+
+export const MCA_IMBALANCE_SOURCE = "NEMA MG-1 practice - voltage unbalance <=5%, current unbalance >2-3% warrants investigation; no ISO severity class standard exists for MCA";
+
+export interface McaImbalanceBracket {
+  readonly minPct: number;
+  readonly maxPct: number;
+  readonly clazz: string;
+  readonly action: string;
+}
+
+export const MCA_IMBALANCE_BRACKETS: readonly McaImbalanceBracket[] = [
+  { minPct: -Infinity, maxPct: 2, clazz: "Satisfactory", action: "No action required" },
+  { minPct: 2, maxPct: 4, clazz: "Class 3 — Minor", action: "Early winding / connection asymmetry" },
+  { minPct: 4, maxPct: 8, clazz: "Class 2 — Moderate", action: "Investigate connections and windings" },
+  { minPct: 8, maxPct: Infinity, clazz: "Class 1 — Critical", action: "Severe asymmetry - NEMA MG-1 derating practice" },
+] as const;
+
+export function evaluateMcaSeverity(imbalancePct: number): McaImbalanceBracket {
+  for (const b of MCA_IMBALANCE_BRACKETS) {
+    if (imbalancePct > b.minPct && imbalancePct <= b.maxPct) return b;
+  }
+  return MCA_IMBALANCE_BRACKETS[MCA_IMBALANCE_BRACKETS.length - 1];
+}
+
 export function isMapped(diagnosis: string): boolean {
   return getPrescription(diagnosis).isMapped;
 }
