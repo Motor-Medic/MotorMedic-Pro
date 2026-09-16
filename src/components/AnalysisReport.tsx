@@ -48,6 +48,7 @@ import ThermographyResultsTab from "./reports/ThermographyResultsTab";
 import ThermalLibraryTab from "./reports/ThermalLibraryTab";
 import NfpaComplianceTab from "./reports/NfpaComplianceTab";
 import UltrasoundResultsTab from "./reports/UltrasoundResultsTab";
+import UltrasoundTrendLibraryTab from "./reports/UltrasoundTrendLibraryTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -267,7 +268,12 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
           { id: 2, label: "2. Thermal Trend Library" },
           { id: 3, label: "3. NFPA 70B Compliance Dossier" },
         ]
-      : [{ id: 1, label: "1. Analysis Results" }];
+      : modality === "ultrasound"
+        ? [
+            { id: 1, label: "1. Analysis Results" },
+            { id: 2, label: "2. Acoustic Trend Library" },
+          ]
+        : [{ id: 1, label: "1. Analysis Results" }];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
 const OIL_SPECTROMETRY = {
@@ -7137,14 +7143,20 @@ export default function AnalysisReport({
               </div>
             )}
 
-              {/* ===== Tab 2: Spectrum Library / Thermal Trend Library (modality-specific) ===== */}
+              {/* ===== Tab 2: Spectrum Library / Thermal Trend Library / Acoustic Trend Library (modality-specific) ===== */}
               {activeTab === 2 && selectedTech === "thermography" && (
                 <ThermalLibraryTab
                   selectedAnalysis={selectedAnalysis}
                   allAnalyses={loadedAnalyses}
                 />
               )}
-              {activeTab === 2 && selectedTech !== "thermography" && (
+              {activeTab === 2 && selectedTech === "ultrasound" && (
+                <UltrasoundTrendLibraryTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                />
+              )}
+              {activeTab === 2 && selectedTech !== "thermography" && selectedTech !== "ultrasound" && (
                 <SpectrumLibraryTab
                   selectedAnalysis={selectedAnalysis}
                   peakList={peakList}

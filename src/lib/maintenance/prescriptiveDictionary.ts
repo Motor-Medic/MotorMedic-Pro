@@ -1457,15 +1457,16 @@ export function getPrescription(diagnosis: string): PrescriptivePackage {
 }
 
 // ---------------------------------------------------------------------------
-// Ultrasound severity brackets — industry structure-borne delta-dB guidance
-// (UE Systems / SDT practice). No ISO severity standard exists for ultrasound.
-// Exclusive lower bound, inclusive upper bound. Values are stated in whole dB
-// in the source practice; a rounding gap is intentional — a delta landing on a
-// boundary (e.g. exactly 8 dB) classifies into the higher bracket, matching
-// the inclusive-upper convention. Never interpolate between brackets.
+// Ultrasound severity ladder — UE Systems bearing-condition delta-dB over
+// baseline. No ISO severity standard exists for ultrasound. Applied as
+// program practice to survey delta-dB. Exclusive lower, inclusive upper.
+// Values are stated in whole dB in the source practice; a rounding gap is
+// intentional — a delta landing on a boundary (e.g. exactly 8 dB)
+// classifies into the higher bracket, matching the inclusive-upper
+// convention. Never interpolate between brackets.
 // ---------------------------------------------------------------------------
 
-export const US_DDB_SOURCE = "industry structure-borne delta-dB guidance (UE Systems/SDT practice) - no ISO severity standard exists for ultrasound";
+export const US_DDB_SOURCE = "UE Systems bearing-condition ladder (structure-borne delta-dB over baseline): +8 lube/pre-failure, +12 incipient, +16 advanced, +35-50 catastrophic; applied as program practice to survey delta-dB";
 
 export interface UsDeltaDbBracket {
   readonly minDb: number;
@@ -1477,10 +1478,12 @@ export interface UsDeltaDbBracket {
 /** Delta-over-baseline (dB) brackets. Exclusive lower, inclusive upper. */
 export const US_DDB_BRACKETS: readonly UsDeltaDbBracket[] = [
   { minDb: -Infinity, maxDb: 8, clazz: "Satisfactory", action: "No action required" },
-  { minDb: 8, maxDb: 13, clazz: "Class 3 — Minor", action: "Lubrication starvation risk" },
-  { minDb: 13, maxDb: 24, clazz: "Class 2 — Moderate", action: "Friction & surface wear" },
-  { minDb: 24, maxDb: Infinity, clazz: "Class 1 — Critical", action: "Severe micro-spalling" },
+  { minDb: 8, maxDb: 12, clazz: "Class 3 — Minor", action: "Lubrication deficiency / pre-failure" },
+  { minDb: 12, maxDb: 16, clazz: "Class 2 — Moderate", action: "Incipient failure" },
+  { minDb: 16, maxDb: Infinity, clazz: "Class 1 — Critical", action: "Advanced failure" },
 ] as const;
+
+export const US_CATASTROPHIC_DB = 35;
 
 export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
   for (const b of US_DDB_BRACKETS) {
