@@ -51,6 +51,7 @@ import UltrasoundResultsTab from "./reports/UltrasoundResultsTab";
 import UltrasoundTrendLibraryTab from "./reports/UltrasoundTrendLibraryTab";
 import UltrasoundPatternDossierTab from "./reports/UltrasoundPatternDossierTab";
 import McaResultsTab from "./reports/McaResultsTab";
+import McaTrendLibraryTab from "./reports/McaTrendLibraryTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -277,7 +278,10 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
             { id: 3, label: "3. Acoustic Pattern & Survey Dossier" },
           ]
       : modality === "mca"
-        ? [{ id: 1, label: "1. Analysis Results" }]
+        ? [
+            { id: 1, label: "1. Analysis Results" },
+            { id: 2, label: "2. Winding & Insulation Trend Library" },
+          ]
         : [{ id: 1, label: "1. Analysis Results" }];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
@@ -7151,7 +7155,7 @@ export default function AnalysisReport({
               </div>
             )}
 
-              {/* ===== Tab 2: Spectrum Library / Thermal Trend Library / Acoustic Trend Library (modality-specific) ===== */}
+              {/* ===== Tab 2: Spectrum Library / Thermal Trend Library / Acoustic Trend Library / MCA Trend Library (modality-specific) ===== */}
               {activeTab === 2 && selectedTech === "thermography" && (
                 <ThermalLibraryTab
                   selectedAnalysis={selectedAnalysis}
@@ -7164,7 +7168,13 @@ export default function AnalysisReport({
                   allAnalyses={loadedAnalyses}
                 />
               )}
-              {activeTab === 2 && selectedTech !== "thermography" && selectedTech !== "ultrasound" && (
+              {activeTab === 2 && selectedTech === "mca" && (
+                <McaTrendLibraryTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                />
+              )}
+              {activeTab === 2 && selectedTech !== "thermography" && selectedTech !== "ultrasound" && selectedTech !== "mca" && (
                 <SpectrumLibraryTab
                   selectedAnalysis={selectedAnalysis}
                   peakList={peakList}
