@@ -6205,16 +6205,10 @@ export default function AnalysisReport({
     );
   };
 
-  /** Atomically select a run, coerce the tile to its modality, and sync selectors. */
+  /** Select a run and sync selectors — never changes selectedTech or activeTab. */
   const selectAnalysisWithModality = useCallback((row: SavedAnalysisResult | null) => {
     setSelectedAnalysis(row);
     if (row) {
-      const norm = (row.analysis_type ?? "vibration").toLowerCase() as ReportTechnology;
-      setSelectedTech((prev) => {
-        if (prev === norm) return prev;
-        if (prev === "oil") return prev;
-        return norm;
-      });
       syncSelectorsToRecord(row);
     }
   }, [flatEquipment]);
@@ -6278,8 +6272,10 @@ export default function AnalysisReport({
     const scoped = modalityAnalyses
       .filter((r) => r.asset_id === base.asset_id && (!base.component || r.component === base.component))
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] ?? null;
-    setSelectedAnalysis(scoped);
-    if (scoped) syncSelectorsToRecord(scoped);
+    if (scoped) {
+      setSelectedAnalysis(scoped);
+      syncSelectorsToRecord(scoped);
+    }
   }, [selectedTech, modalityAnalyses]);
 
   // Clamp activeTab to available ids when modality changes (Tab 2/3 hidden for non-vibration)
