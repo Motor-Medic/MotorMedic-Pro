@@ -270,11 +270,11 @@ export default function McaTrendLibraryTab({
                 </g>
               ))}
               <text
-                x={PL - 10}
+                x={PL - 16}
                 y={(PT + H - PB) / 2}
                 fontSize="8"
                 fill="#f59e0b"
-                transform={`rotate(-90 ${PL - 10} ${(PT + H - PB) / 2})`}
+                transform={`rotate(-90 ${PL - 16} ${(PT + H - PB) / 2})`}
                 textAnchor="middle"
               >
                 %
@@ -408,11 +408,11 @@ export default function McaTrendLibraryTab({
                   </g>
                 ))}
                 <text
-                  x={PL - 10}
+                  x={PL - 16}
                   y={(PT + H - PB) / 2}
                   fontSize="8"
                   fill="#38bdf8"
-                  transform={`rotate(-90 ${PL - 10} ${(PT + H - PB) / 2})`}
+                  transform={`rotate(-90 ${PL - 16} ${(PT + H - PB) / 2})`}
                   textAnchor="middle"
                 >
                   MΩ
