@@ -52,6 +52,7 @@ import UltrasoundTrendLibraryTab from "./reports/UltrasoundTrendLibraryTab";
 import UltrasoundPatternDossierTab from "./reports/UltrasoundPatternDossierTab";
 import McaResultsTab from "./reports/McaResultsTab";
 import McaTrendLibraryTab from "./reports/McaTrendLibraryTab";
+import McaHealthDossierTab from "./reports/McaHealthDossierTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -281,6 +282,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
         ? [
             { id: 1, label: "1. Analysis Results" },
             { id: 2, label: "2. Winding & Insulation Trend Library" },
+            { id: 3, label: "3. Motor Health & Test Practice Dossier" },
           ]
         : [{ id: 1, label: "1. Analysis Results" }];
 
@@ -7196,6 +7198,12 @@ export default function AnalysisReport({
               )}
               {activeTab === 3 && selectedTech === "ultrasound" && (
                 <UltrasoundPatternDossierTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                />
+              )}
+              {activeTab === 3 && selectedTech === "mca" && (
+                <McaHealthDossierTab
                   selectedAnalysis={selectedAnalysis}
                   allAnalyses={loadedAnalyses}
                 />
