@@ -53,6 +53,7 @@ import UltrasoundPatternDossierTab from "./reports/UltrasoundPatternDossierTab";
 import McaResultsTab from "./reports/McaResultsTab";
 import McaTrendLibraryTab from "./reports/McaTrendLibraryTab";
 import McaHealthDossierTab from "./reports/McaHealthDossierTab";
+import OilResultsTab from "./reports/OilResultsTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -284,7 +285,11 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
             { id: 2, label: "2. Winding & Insulation Trend Library" },
             { id: 3, label: "3. Motor Health & Test Practice Dossier" },
           ]
-        : [{ id: 1, label: "1. Analysis Results" }];
+        : modality === "oil"
+          ? [
+              { id: 1, label: "1. Analysis Results" },
+            ]
+          : [{ id: 1, label: "1. Analysis Results" }];
 
 /** Spectrometry groups — wear / contaminants / additives (ppm). */
 const OIL_SPECTROMETRY = {
@@ -6205,7 +6210,11 @@ export default function AnalysisReport({
     setSelectedAnalysis(row);
     if (row) {
       const norm = (row.analysis_type ?? "vibration").toLowerCase() as ReportTechnology;
-      setSelectedTech((prev) => (prev === norm ? prev : norm));
+      setSelectedTech((prev) => {
+        if (prev === norm) return prev;
+        if (prev === "oil") return prev;
+        return norm;
+      });
       syncSelectorsToRecord(row);
     }
   }, [flatEquipment]);
@@ -6376,6 +6385,15 @@ export default function AnalysisReport({
       (a) => a.tag === selectedAsset && (!selectedRoute || a.routeName === selectedRoute)
     );
     return match?.components ?? [];
+  }, [selectedRoute, selectedAsset, flatEquipment]);
+
+  /** Equipment-selection asset ID — present before any Load Report click. */
+  const equipmentAssetId = useMemo(() => {
+    if (!selectedAsset) return null;
+    const match = flatEquipment.find(
+      (a) => a.tag === selectedAsset && (!selectedRoute || a.routeName === selectedRoute)
+    );
+    return match?.tag ?? match?.id ?? null;
   }, [selectedRoute, selectedAsset, flatEquipment]);
 
   // Dismiss the export menu on any outside click.
@@ -6975,6 +6993,9 @@ export default function AnalysisReport({
                 if (modality === "mca") {
                   return <McaResultsTab selectedAnalysis={selectedAnalysis} />;
                 }
+                if (modality === "oil") {
+                  return <OilResultsTab selectedAnalysis={selectedAnalysis} allAnalyses={loadedAnalyses} equipmentAssetId={equipmentAssetId} />;
+                }
                 return (
                   <div className="space-y-4">
                     <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
@@ -7150,7 +7171,7 @@ export default function AnalysisReport({
             })()}
 
             {/* ===== Tab 1: Analysis Results (no selection) ===== */}
-            {activeTab === 1 && !selectedAnalysis && (
+            {activeTab === 1 && !selectedAnalysis && selectedTech !== "oil" && (
               <div className="flex flex-col items-center justify-center text-center py-16 px-4">
                 <FileText className="h-8 w-8 text-slate-600 mb-3" />
                 <p className="text-sm font-semibold text-slate-300">Select Route, Asset, and Component, then click Load Report, or select a Saved Analysis</p>
@@ -7215,7 +7236,14 @@ export default function AnalysisReport({
                   <p className="text-sm text-slate-500 italic">not a vibration spectrum for mca</p>
                 </div>
               )}
-              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && selectedTech !== "mca" && (
+              {activeTab === 1 && selectedTech === "oil" && (selectedAnalysis != null || selectedComponent) && (
+                <OilResultsTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                  equipmentAssetId={equipmentAssetId}
+                />
+              )}
+              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && selectedTech !== "mca" && selectedTech !== "oil" && (
                 <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
                   <p className="text-sm text-slate-500 italic">not a vibration spectrum for {selectedTech}</p>
                 </div>
