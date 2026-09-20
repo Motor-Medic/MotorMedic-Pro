@@ -55,6 +55,7 @@ import McaTrendLibraryTab from "./reports/McaTrendLibraryTab";
 import McaHealthDossierTab from "./reports/McaHealthDossierTab";
 import OilResultsTab from "./reports/OilResultsTab";
 import OilTrendLibraryTab from "./reports/OilTrendLibraryTab";
+import OilProgramDossierTab from "./reports/OilProgramDossierTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -290,6 +291,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
           ? [
               { id: 1, label: "1. Analysis Results" },
               { id: 2, label: "2. Tribology & Wear Trend Library" },
+              { id: 3, label: "3. Lubrication Program & Lab Dossier" },
             ]
           : [{ id: 1, label: "1. Analysis Results" }];
 
@@ -7232,6 +7234,13 @@ export default function AnalysisReport({
                 <McaHealthDossierTab
                   selectedAnalysis={selectedAnalysis}
                   allAnalyses={loadedAnalyses}
+                />
+              )}
+              {activeTab === 3 && selectedTech === "oil" && (
+                <OilProgramDossierTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                  equipmentAssetId={equipmentAssetId}
                 />
               )}
 

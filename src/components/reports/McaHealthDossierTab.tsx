@@ -340,7 +340,7 @@ export default function McaHealthDossierTab({
               S5 — Competency &amp; Validity
             </h4>
             <div className="space-y-1.5 text-xs text-slate-400">
-              <p>MCA practitioner competency per ISO 18436-4 (personnel certification).</p>
+              <p>no ISO 18436 part covers motor circuit analysis; practitioner competency per industry training practice and vendor certification.</p>
               <p>Operator ID not recorded at capture.</p>
             </div>
           </div>
