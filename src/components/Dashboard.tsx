@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -8,6 +8,7 @@ import {
   TrendingUp,
   Wrench
 } from "lucide-react";
+import { loadCostModel, COST_MODEL_EVENT, type CostModel } from "./scorecard/CostDock";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx / sidebar)                           */
@@ -192,6 +193,18 @@ export default function Dashboard({
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [costModel, setCostModel] = useState<CostModel>(loadCostModel);
+
+  const onCostChange = useCallback(() => setCostModel(loadCostModel()), []);
+
+  useEffect(() => {
+    window.addEventListener(COST_MODEL_EVENT, onCostChange);
+    window.addEventListener("storage", onCostChange);
+    return () => {
+      window.removeEventListener(COST_MODEL_EVENT, onCostChange);
+      window.removeEventListener("storage", onCostChange);
+    };
+  }, [onCostChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -401,42 +414,90 @@ export default function Dashboard({
             </h3>
           </div>
           {data?.financialRisk ? (
-            <>
-              <p className="text-sm text-slate-300 leading-relaxed">
-                Projected Failure Exposure:{" "}
-                <span className="text-red-500 font-bold">
-                  {formatUsd(data.financialRisk.failureExposure)}
-                </span>
-                {" | "}
-                Cost to Fix:{" "}
-                <span className="text-white font-bold">
-                  {formatUsd(data.financialRisk.costToFix)}
-                </span>
-                {" | "}
-                Action ROI:{" "}
-                <span className="text-green-400 font-bold">
-                  {data.financialRisk.roiPercent != null
-                    ? `${data.financialRisk.roiPercent.toLocaleString()}%`
-                    : "—"}
-                </span>
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={onStartQuickAnalysis}
-                  className="px-3 py-1.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors"
-                >
-                  Run Quick Analysis
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onNavigate("trends")}
-                  className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-bold cursor-pointer transition-colors"
-                >
-                  Open Trends
-                </button>
+            costModel.downtimeCostPerHour ? (
+              <>
+                <p className="text-sm text-slate-300 leading-relaxed">
+                  Projected Failure Exposure:{" "}
+                  <span className="text-red-500 font-bold">
+                    {formatUsd(data.financialRisk.failureExposure)}
+                  </span>
+                  <span className="text-[9px] text-slate-500 ml-1">
+                    (diagnostic financial_impact records)
+                  </span>
+                  {" | "}
+                  Cost to Fix:{" "}
+                  <span className="text-white font-bold">
+                    {formatUsd(data.financialRisk.costToFix)}
+                  </span>
+                  <span className="text-[9px] text-slate-500 ml-1">
+                    (stored repair estimate)
+                  </span>
+                  {" | "}
+                  Action ROI:{" "}
+                  <span className="text-green-400 font-bold">
+                    {data.financialRisk.roiPercent != null
+                      ? `${data.financialRisk.roiPercent.toLocaleString()}%`
+                      : "\u2014"}
+                  </span>
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1 italic">
+                  Modeled estimate, not a financial audit (G2){" \u00b7 "}site cost
+                  model: ${costModel.downtimeCostPerHour.value}/hr downtime{" \u00b7 "}
+                  constants: critical 24h / high 8h / medium 4h / low 1h
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={onStartQuickAnalysis}
+                    className="px-3 py-1.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Run Quick Analysis
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate("trends")}
+                    className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Open Trends
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-amber-400/80 italic border-l-2 border-amber-400/40 pl-3">
+                  Site cost model not configured — exposure suppressed. Enter
+                  downtime cost per hour in the Reliability Scorecard dock to
+                  enable dollarized figures.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onNavigate(
+                        "diagnose" as
+                          | "diagnose"
+                          | "history"
+                          | "trends"
+                          | "sensors"
+                          | "assets"
+                          | "migration"
+                          | "alerts"
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-lg border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Configure Cost Model
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onStartQuickAnalysis}
+                    className="px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Run Quick Analysis
+                  </button>
+                </div>
               </div>
-            </>
+            )
           ) : (
             <EmptyBlock
               icon={TrendingUp}
