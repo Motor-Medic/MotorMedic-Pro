@@ -21,12 +21,13 @@ import MultiTechPage from "./components/reports/MultiTechPage";
 import RootCauseAnalysis from "./components/RootCauseAnalysis";
 import MaintenanceCalendar from "./components/MaintenanceCalendar";
 import FMEA from "./components/FMEA";
+import ReliabilityScorecard from "./components/scorecard/ReliabilityScorecard";
 import ScrollToTop from "./components/ScrollToTop";
 import AppLink from "./components/AppLink";
 import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigation";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
-  Sun, Moon, Sparkles, FileText, Target, Calendar, Layers
+  Sun, Moon, Sparkles, FileText, Target, Calendar, Layers, BarChart3
 } from "lucide-react";
 
 const TREND_STORAGE_KEY = "reliability_trends_v6";
@@ -825,6 +826,19 @@ const updated = [newReport, ...reports];
               <ShieldAlert className="w-4.5 h-4.5" />
               <span>FMEA Analysis</span>
             </AppLink>
+
+            <AppLink
+              href={TAB_TO_PATH["reliability-scorecard"]}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "reliability-scorecard" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-reliability-scorecard-btn"
+            >
+              <BarChart3 className="w-4.5 h-4.5" />
+              <span>Reliability Scorecard</span>
+            </AppLink>
           </div>
 
           {/* OPERATIONS & ALERTS */}
@@ -1028,6 +1042,8 @@ const updated = [newReport, ...reports];
             <MountingPlanner />
           ) : activeTab === "multi-tech" ? (
             <MultiTechPage selectedCompanyId={selectedCompanyId} />
+          ) : activeTab === "reliability-scorecard" ? (
+            <ReliabilityScorecard selectedCompanyId={selectedCompanyId} />
           ) : (
             <History
               reports={reports}
@@ -1309,6 +1325,20 @@ const updated = [newReport, ...reports];
                 >
                   <ShieldAlert className="w-5 h-5 shrink-0" />
                   <span>FMEA Analysis</span>
+                </AppLink>
+
+                <AppLink
+                  href={TAB_TO_PATH["reliability-scorecard"]}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "reliability-scorecard" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-reliability-scorecard-btn"
+                >
+                  <BarChart3 className="w-5 h-5 shrink-0" />
+                  <span>Reliability Scorecard</span>
                 </AppLink>
               </div>
 

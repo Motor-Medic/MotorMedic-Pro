@@ -14,7 +14,8 @@ export type AppTab =
   | "alerts"
   | "history"
   | "admin"
-  | "multi-tech";
+  | "multi-tech"
+  | "reliability-scorecard";
 
 export const TAB_TO_PATH: Record<AppTab, string> = {
   dashboard: "/",
@@ -30,7 +31,8 @@ export const TAB_TO_PATH: Record<AppTab, string> = {
   alerts: "/alerts-control",
   history: "/diagnosis-logs",
   admin: "/tenant-settings",
-  "multi-tech": "/multi-tech"
+  "multi-tech": "/multi-tech",
+  "reliability-scorecard": "/reliability-scorecard"
 };
 
 const PATH_TO_TAB: Record<string, AppTab> = {
@@ -47,7 +49,8 @@ const PATH_TO_TAB: Record<string, AppTab> = {
   "/alerts-control": "alerts",
   "/diagnosis-logs": "history",
   "/tenant-settings": "admin",
-  "/multi-tech": "multi-tech"
+  "/multi-tech": "multi-tech",
+  "/reliability-scorecard": "reliability-scorecard"
 };
 
 export function normalizePath(pathname: string): string {
