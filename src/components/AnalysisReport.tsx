@@ -54,6 +54,7 @@ import McaResultsTab from "./reports/McaResultsTab";
 import McaTrendLibraryTab from "./reports/McaTrendLibraryTab";
 import McaHealthDossierTab from "./reports/McaHealthDossierTab";
 import OilResultsTab from "./reports/OilResultsTab";
+import OilTrendLibraryTab from "./reports/OilTrendLibraryTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -288,6 +289,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
         : modality === "oil"
           ? [
               { id: 1, label: "1. Analysis Results" },
+              { id: 2, label: "2. Tribology & Wear Trend Library" },
             ]
           : [{ id: 1, label: "1. Analysis Results" }];
 
@@ -7193,7 +7195,14 @@ export default function AnalysisReport({
                   allAnalyses={loadedAnalyses}
                 />
               )}
-              {activeTab === 2 && selectedTech !== "thermography" && selectedTech !== "ultrasound" && selectedTech !== "mca" && (
+              {activeTab === 2 && selectedTech === "oil" && (
+                <OilTrendLibraryTab
+                  selectedAnalysis={selectedAnalysis}
+                  allAnalyses={loadedAnalyses}
+                  equipmentAssetId={equipmentAssetId}
+                />
+              )}
+              {activeTab === 2 && selectedTech !== "thermography" && selectedTech !== "ultrasound" && selectedTech !== "mca" && selectedTech !== "oil" && (
                 <SpectrumLibraryTab
                   selectedAnalysis={selectedAnalysis}
                   peakList={peakList}
