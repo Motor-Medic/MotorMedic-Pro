@@ -2,12 +2,13 @@ import React, { useState } from "react";
 import CostDock from "./CostDock";
 import RiskRoiTab from "./RiskRoiTab";
 import BacklogVelocityTab from "./BacklogVelocityTab";
+import CoverageBadActorsTab from "./CoverageBadActorsTab";
 
 interface ReliabilityScorecardProps {
   selectedCompanyId: number;
 }
 
-const TABS = ["1. Risk & ROI", "2. Backlog & Execution Velocity"] as const;
+const TABS = ["1. Risk & ROI", "2. Backlog & Execution Velocity", "3. Coverage & Bad Actors"] as const;
 
 export default function ReliabilityScorecard({ selectedCompanyId }: ReliabilityScorecardProps) {
   const [activeTab, setActiveTab] = useState<string>(TABS[0]);
@@ -21,15 +22,15 @@ export default function ReliabilityScorecard({ selectedCompanyId }: ReliabilityS
 
       <CostDock onChange={setCostModel} />
 
-      <div className="flex gap-1 border-b border-slate-800">
+      <div className="flex gap-2 border-b border-slate-700">
         {TABS.map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-xs font-semibold transition-colors ${
+            className={`px-5 py-2.5 text-sm font-bold rounded-t-lg transition-all cursor-pointer ${
               activeTab === tab
-                ? "text-yellow-400 border-b-2 border-yellow-400"
-                : "text-slate-400 hover:text-slate-200"
+                ? "bg-yellow-400 text-slate-950 border-b-2 border-yellow-400 shadow"
+                : "text-slate-400 hover:text-white hover:bg-slate-800/60 border-b-2 border-transparent"
             }`}
           >
             {tab}
@@ -42,6 +43,9 @@ export default function ReliabilityScorecard({ selectedCompanyId }: ReliabilityS
       )}
       {activeTab === "2. Backlog & Execution Velocity" && (
         <BacklogVelocityTab selectedCompanyId={selectedCompanyId} />
+      )}
+      {activeTab === "3. Coverage & Bad Actors" && (
+        <CoverageBadActorsTab selectedCompanyId={selectedCompanyId} />
       )}
     </div>
   );

@@ -83,7 +83,7 @@ export default function BacklogVelocityTab({
   const openFaults = faults.filter((f) => f.woStatus === "open");
   const closedFaults = faults.filter((f) => f.woStatus === "closed");
 
-  const ageBuckets = ["<3 months", "3\u20136 months", "6\u201312 months", ">12 months"] as const;
+  const ageBuckets = ["<3 months", "3–6 months", "6–12 months", ">12 months"] as const;
 
   function bucketIndex(days: number): number {
     if (days < 90) return 0;
@@ -174,7 +174,7 @@ export default function BacklogVelocityTab({
       {/* P1 AGING MATRIX */}
       <section>
         <h3 className="text-sm font-bold text-white mb-3">
-          P1 \u2014 Fault Aging Matrix
+          P1 — Fault Aging Matrix
         </h3>
         <p className="text-[10px] text-slate-500 mb-4">
           Open faults age to today; closed faults age to work-order close.
@@ -229,13 +229,13 @@ export default function BacklogVelocityTab({
           <div className="mt-4 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
             <p className="text-xs text-amber-400 font-semibold">
               Unaddressed critical fault{criticalOver90.length !== 1 ? "s" : ""}{" "}
-              exceeding 90 days \u2014 structural failure risk compounding
+              exceeding 90 days — structural failure risk compounding
               (guidance flag, not a diagnosis)
             </p>
             <ul className="mt-1.5 space-y-0.5">
               {criticalOver90.map((f) => (
                 <li key={f.id} className="text-[10px] text-amber-300/70">
-                  {f.asset} \u2014 {f.component} ({daysSince(f.firstSeen)}d
+                  {f.asset} — {f.component} ({daysSince(f.firstSeen)}d
                   open, first seen{" "}
                   {new Date(f.firstSeen).toLocaleDateString()})
                 </li>
@@ -248,7 +248,7 @@ export default function BacklogVelocityTab({
       {/* P2 EXECUTION VELOCITY */}
       <section>
         <h3 className="text-sm font-bold text-white mb-3">
-          P2 \u2014 Execution Velocity
+          P2 — Execution Velocity
         </h3>
         <p className="text-[10px] text-slate-500 mb-4">
           New faults (firstSeen) vs implemented work orders (woClosedDate) per
@@ -257,7 +257,7 @@ export default function BacklogVelocityTab({
 
         {monthKeys.length === 0 ? (
           <p className="text-xs text-slate-400 italic">
-            No fault entries with dates recorded \u2014 velocity cannot be
+            No fault entries with dates recorded — velocity cannot be
             computed.
           </p>
         ) : (
@@ -335,7 +335,7 @@ export default function BacklogVelocityTab({
           <p className="text-[10px] text-slate-500 mt-2 italic">
             {closedMonthsMissingDate.length} closed fault
             {closedMonthsMissingDate.length !== 1 ? "s" : ""} lack
-            woClosedDate \u2014 counted in new series only, gap in implemented
+            woClosedDate — counted in new series only, gap in implemented
             series.
           </p>
         )}
