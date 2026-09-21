@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import CostDock from "./CostDock";
 import RiskRoiTab from "./RiskRoiTab";
+import BacklogVelocityTab from "./BacklogVelocityTab";
 
 interface ReliabilityScorecardProps {
   selectedCompanyId: number;
 }
 
-const TABS = ["1. Risk & ROI"] as const;
+const TABS = ["1. Risk & ROI", "2. Backlog & Execution Velocity"] as const;
 
 export default function ReliabilityScorecard({ selectedCompanyId }: ReliabilityScorecardProps) {
   const [activeTab, setActiveTab] = useState<string>(TABS[0]);
@@ -38,6 +39,9 @@ export default function ReliabilityScorecard({ selectedCompanyId }: ReliabilityS
 
       {activeTab === "1. Risk & ROI" && (
         <RiskRoiTab selectedCompanyId={selectedCompanyId} />
+      )}
+      {activeTab === "2. Backlog & Execution Velocity" && (
+        <BacklogVelocityTab selectedCompanyId={selectedCompanyId} />
       )}
     </div>
   );
