@@ -1,8 +1,18 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Clock } from "lucide-react";
-import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
+import type { SavedAnalysisResult, SavedFaultItem } from "../../lib/analysisPersistence";
 import { getPrescription } from "../../lib/maintenance/prescriptiveDictionary";
 import { buildFaultHistory, faultFreq } from "../../lib/diagnostics/spectralDiff";
+import {
+  MIN_POINTS,
+  MIN_SPAN_DAYS,
+  ISO_C_D_BOUNDARY,
+  MAX_WINDOW_DAYS,
+  dayLabel,
+  derivePf,
+  type SeriesCandidate,
+  type Threshold,
+} from "./pfEngine";
 
 interface VibrationPrognosticsTabProps {
   isActive: boolean;
@@ -10,62 +20,18 @@ interface VibrationPrognosticsTabProps {
   loadedAnalyses: SavedAnalysisResult[];
 }
 
-interface SeriesPoint {
-  day: number;
-  value: number;
-  date: string;
-}
-
-const MIN_POINTS = 4;
-const MIN_SPAN_DAYS = 30;
-const ISO_C_D_BOUNDARY = 7.1;
-const MAX_WINDOW_DAYS = 180;
-
-function leastSquares(pts: SeriesPoint[]): { slope: number; intercept: number; stdErr: number; seOfSlope: number } | null {
-  const n = pts.length;
-  if (n < 2) return null;
-  const meanX = pts.reduce((s, p) => s + p.day, 0) / n;
-  const meanY = pts.reduce((s, p) => s + p.value, 0) / n;
-  let sxx = 0;
-  let sxy = 0;
-  for (const p of pts) {
-    sxx += (p.day - meanX) ** 2;
-    sxy += (p.day - meanX) * (p.value - meanY);
-  }
-  if (sxx === 0) return null;
-  const slope = sxy / sxx;
-  const intercept = meanY - slope * meanX;
-  let sse = 0;
-  for (const p of pts) {
-    const pred = intercept + slope * p.day;
-    sse += (p.value - pred) ** 2;
-  }
-  const se = n > 2 ? Math.sqrt(sse / (n - 2)) : 0;
-  const seOfSlope = sxx > 0 ? se / Math.sqrt(sxx) : 0;
-  return { slope, intercept, stdErr: se, seOfSlope };
-}
-
-function daysFromIso(iso: string): number {
-  return (new Date(iso).getTime() - Date.now()) / 86400000;
-}
-
-function dayLabel(days: number): string {
-  if (!Number.isFinite(days)) return "—";
-  if (days > MAX_WINDOW_DAYS) return `Unconstrained (>${MAX_WINDOW_DAYS}d)`;
-  if (days < 0) return "already crossed";
-  return `${Math.round(days)} days`;
-}
-
-function findDetectionDate(pts: SeriesPoint[], functional: number, storedDetection: string | null): string | null {
-  if (storedDetection) return storedDetection;
-  for (const p of pts) {
-    if (p.value >= functional) return p.date;
-  }
-  return null;
+function severityRank(faults: SavedFaultItem[], title: string): number {
+  const hit = faults.find((f) => f.title === title);
+  const s = String(hit?.severity ?? "").toLowerCase();
+  if (s.includes("critical") || s.includes("high") || s.includes("severe")) return 3;
+  if (s.includes("medium") || s.includes("moderate") || s.includes("warning")) return 2;
+  if (s.includes("low") || s.includes("minor")) return 1;
+  return 0;
 }
 
 export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, loadedAnalyses }: VibrationPrognosticsTabProps) {
   const [epoch, setEpoch] = useState(0);
+  const [overrideId, setOverrideId] = useState<string | null>(null);
 
   const asset = selectedAnalysis?.asset_id ?? null;
   const component = selectedAnalysis?.component ?? null;
@@ -74,99 +40,88 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
     if (isActive) setEpoch((e) => e + 1);
   }, [isActive, asset, component]);
 
-  const derivation = useMemo(() => {
+  useEffect(() => {
+    setOverrideId(null);
+  }, [asset, component, selectedAnalysis?.id]);
+
+  const candidates = useMemo<SeriesCandidate[]>(() => {
     void epoch;
     const runs = loadedAnalyses
       .filter((r) => (r.analysis_type ?? "vibration") === "vibration" && r.asset_id === asset && (!component || r.component === component))
       .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime());
 
-    const topFault = Array.isArray(selectedAnalysis?.fault_list) && selectedAnalysis.fault_list.length
-      ? selectedAnalysis.fault_list[0]
-      : null;
-    const trackedHz = topFault ? faultFreq(topFault) : null;
+    const faultList = Array.isArray(selectedAnalysis?.fault_list) ? selectedAnalysis.fault_list : [];
+    const history = buildFaultHistory(runs);
+    const out: SeriesCandidate[] = [];
+    const seen = new Set<string>();
 
-    let seriesLabel = trackedHz != null
-      ? `peak amplitude at ${trackedHz.toFixed(1)} Hz — mm/s at tracked Hz`
-      : "no tracked fault frequency on this record — series unavailable";
-    let pts: SeriesPoint[] = [];
-
-    if (trackedHz != null) {
-      const fh = buildFaultHistory(runs).find((e) => e.frequencyHz != null && Math.abs(e.frequencyHz - trackedHz) <= Math.max(2, trackedHz * 0.02));
-      if (fh) {
-        pts = fh.series.map((s) => ({ day: 0, value: s.amplitude, date: s.ts }));
-        seriesLabel = `peak amplitude at ${fh.frequencyHz?.toFixed(1) ?? trackedHz.toFixed(1)} Hz — mm/s at tracked Hz`;
-      }
+    for (const fh of history) {
+      const hz = fh.frequencyHz;
+      const id = hz != null ? `${fh.title}@${hz.toFixed(1)}` : fh.title;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        label: hz != null ? `${fh.title} ${hz.toFixed(2)} Hz` : fh.title,
+        unit: "mm/s",
+        points: fh.series.map((s) => ({ value: s.amplitude, date: s.ts })),
+        severityRank: severityRank(faultList, fh.title),
+        worsening: "increase",
+      });
     }
 
-    if (pts.length >= 2) {
-      const t0 = new Date(pts[0].date).getTime();
-      pts = pts.map((p) => ({ ...p, day: (new Date(p.date).getTime() - t0) / 86400000 }));
+    for (const f of faultList) {
+      const hz = faultFreq(f);
+      const id = hz != null ? `${f.title}@${hz.toFixed(1)}` : f.title;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        label: hz != null ? `${f.title} ${hz.toFixed(2)} Hz` : f.title,
+        unit: "mm/s",
+        points: [],
+        severityRank: severityRank(faultList, f.title),
+        worsening: "increase",
+      });
     }
 
-    const n = pts.length;
-    const spanDays = n >= 2 ? pts[n - 1].day - pts[0].day : 0;
-    const fit = n >= 2 ? leastSquares(pts) : null;
+    return out;
+  }, [loadedAnalyses, asset, component, selectedAnalysis, epoch]);
 
-    const siteAlarm = topFault ? getPrescription(topFault.title).severityZones.alarm ?? null : null;
+  const threshold = useMemo<Threshold | null>(() => {
+    const faultList = Array.isArray(selectedAnalysis?.fault_list) ? selectedAnalysis.fault_list : [];
+    const selected = candidates.find((c) => c.id === overrideId)
+      ?? candidates.slice().sort((a, b) => b.points.length - a.points.length || b.severityRank - a.severityRank)[0]
+      ?? null;
+    const title = selected ? selected.label.replace(/\s+[\d.]+\s*Hz$/, "") : faultList[0]?.title ?? null;
+    const siteAlarm = title ? getPrescription(title).severityZones.alarm ?? null : null;
+    if (siteAlarm != null) {
+      return { value: siteAlarm, provenance: "stored site alarm (prescriptive dictionary severity zones)" };
+    }
+    return {
+      value: ISO_C_D_BOUNDARY,
+      provenance: "site-practice proxy - not a stored functional limit (ISO 20816 zone C/D boundary)",
+    };
+  }, [candidates, overrideId, selectedAnalysis]);
 
-    const functionalThreshold = siteAlarm != null
-      ? { value: siteAlarm, provenance: "stored site alarm (prescriptive dictionary severity zones)" }
-      : { value: ISO_C_D_BOUNDARY, provenance: "site-practice proxy - not a stored functional limit (ISO 20816 zone C/D boundary)" };
-
+  const derivation = useMemo(() => {
     const storedDetection =
       (selectedAnalysis?.telemetry_data as Record<string, unknown> | null | undefined)?.detectionDate != null
         ? String((selectedAnalysis.telemetry_data as Record<string, unknown>).detectionDate)
         : null;
-
-    const detectionDate = pts.length > 0 ? findDetectionDate(pts, functionalThreshold.value, storedDetection) : null;
-
-    const g9Pass = n >= MIN_POINTS && spanDays >= MIN_SPAN_DAYS;
-    const slopeGatePass = fit != null && fit.slope > 0;
-
-    let fWindow: { lower: number; upper: number; median: number } | null = null;
-    let rulLabel: string | null = null;
-    if (g9Pass && slopeGatePass && fit) {
-      const last = pts[n - 1];
-      const remaining = functionalThreshold.value - last.value;
-      const slopeMain = fit.slope;
-      const slopeFast = fit.slope + fit.seOfSlope;
-      const slopeSlow = fit.slope - fit.seOfSlope;
-      const toDays = (sl: number): number => {
-        if (!Number.isFinite(sl) || sl <= 0) return Infinity;
-        return remaining / sl;
-      };
-      const dMed = toDays(slopeMain);
-      const dFast = toDays(slopeFast);
-      const dSlow = toDays(slopeSlow);
-      fWindow = {
-        lower: dFast,
-        upper: dSlow <= 0 || !Number.isFinite(dSlow) ? Infinity : dSlow,
-        median: dMed,
-      };
-      rulLabel = Number.isFinite(dMed) ? dayLabel(dMed) : `Unconstrained (>${MAX_WINDOW_DAYS}d)`;
-    }
-
-    return {
-      seriesLabel,
-      pts,
-      n,
-      spanDays,
-      fit,
-      functionalThreshold,
-      detectionDate,
-      g9Pass,
-      slopeGatePass,
-      fWindow,
-      rulLabel,
-      component,
-      asset,
-    };
-  }, [loadedAnalyses, asset, component, selectedAnalysis, epoch]);
+    return derivePf({
+      candidates,
+      overrideId,
+      threshold,
+      storedDetection,
+    });
+  }, [candidates, overrideId, threshold, selectedAnalysis, epoch]);
 
   const {
-    seriesLabel, pts, n, spanDays, fit,
+    seriesLabel, unit, pts, n, spanDays, fit,
     functionalThreshold, detectionDate,
     g9Pass, slopeGatePass, fWindow, rulLabel,
+    selectionNote, candidateSummaries,
   } = derivation;
 
   const watchlist = useMemo(() => {
@@ -179,11 +134,12 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
 
   if (!isActive) return null;
 
+  const thr = functionalThreshold ?? { value: ISO_C_D_BOUNDARY, provenance: "no threshold" };
   const slopeTxt = fit ? `${fit.slope.toFixed(4)} mm/s per day` : "not computed";
   const seTxt = fit ? `± ${fit.seOfSlope.toFixed(4)}` : "—";
 
-  const yMin = pts.length ? Math.min(...pts.map((p) => p.value), functionalThreshold.value) * 0.95 : 0;
-  const yMax = pts.length ? Math.max(...pts.map((p) => p.value), functionalThreshold.value) * 1.05 : 1;
+  const yMin = pts.length ? Math.min(...pts.map((p) => p.value), thr.value) * 0.95 : 0;
+  const yMax = pts.length ? Math.max(...pts.map((p) => p.value), thr.value) * 1.05 : 1;
   const xMax = Math.max(spanDays, 1);
 
   const pathFor = (k: number): string => {
@@ -215,8 +171,24 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
           <Clock className="h-3 w-3" />Basis
         </div>
+        <label className="flex items-center gap-2 text-xs text-slate-400">
+          <span className="shrink-0">Series</span>
+          <select
+            value={overrideId ?? ""}
+            onChange={(e) => setOverrideId(e.target.value || null)}
+            className="h-7 flex-1 min-w-0 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60"
+          >
+            <option value="">default — longest history (largest N)</option>
+            {candidateSummaries.map((c) => (
+              <option key={c.id} value={c.id}>{c.label} (N = {c.n})</option>
+            ))}
+          </select>
+        </label>
         <p className="text-xs text-slate-300">
-          Series: <span className="text-white">{seriesLabel}</span> · N = {n} points over {spanDays.toFixed(1)} days (fractional day offsets from stored timestamps)
+          Projected fault: <span className="text-white">{seriesLabel}</span> — {selectionNote.replace(/^projected series: /, "")}
+        </p>
+        <p className="text-xs text-slate-300">
+          N = {n} points over {spanDays.toFixed(1)} days (fractional day offsets from stored timestamps) · unit: {unit || "mm/s"}
         </p>
         <p className="text-xs text-slate-400">
           Least-squares slope: <span className="font-mono text-white">{slopeTxt}</span> (SE of slope {seTxt}) · fit note: ordinary linear regression on stored timestamps; not a physics failure model
@@ -228,7 +200,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
             : <span className="italic text-slate-500">no threshold crossing on record</span>}
         </p>
         <p className="text-xs text-slate-400">
-          Functional threshold: <span className="text-white font-mono">{functionalThreshold.value} mm/s</span> — {functionalThreshold.provenance}
+          Functional threshold: <span className="text-white font-mono">{thr.value} mm/s</span> — {thr.provenance}
         </p>
       </div>
 
@@ -239,6 +211,10 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
       ) : !slopeGatePass ? (
         <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
           no degradation trend - slope flat or improving; RUL not computed
+        </p>
+      ) : !functionalThreshold ? (
+        <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
+          no functional threshold stored - slope only, no F window
         </p>
       ) : (
         <div className="space-y-2">
@@ -257,17 +233,17 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
             <path d={pathFor(0)} fill="none" stroke="#fbbf24" strokeWidth="1.5" />
             <line
               x1="0"
-              y1={Math.max(5, Math.min(115, 120 - (functionalThreshold.value - yMin) / (yMax - yMin) * 100))}
+              y1={Math.max(5, Math.min(115, 120 - (thr.value - yMin) / (yMax - yMin) * 100))}
               x2="360"
-              y2={Math.max(5, Math.min(115, 120 - (functionalThreshold.value - yMin) / (yMax - yMin) * 100))}
+              y2={Math.max(5, Math.min(115, 120 - (thr.value - yMin) / (yMax - yMin) * 100))}
               stroke="#f87171"
               strokeDasharray="4 3"
               strokeWidth="1"
             />
-            {detectionDate && (
+            {detectionDate && pts.length > 0 && (
               <circle
-                cx={(pts.length ? pts[0].day : 0)}
-                cy={pts.length ? Math.max(5, Math.min(115, 120 - (pts[0].value - yMin) / (yMax - yMin) * 100)) : 60}
+                cx={(pts[0].day / xMax) * 360}
+                cy={Math.max(5, Math.min(115, 120 - (pts[0].value - yMin) / (yMax - yMin) * 100))}
                 r="4"
                 fill="#38bdf8"
               />
@@ -282,7 +258,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
 
       <footer className="border-t border-slate-800 pt-3 space-y-1">
         <p className="text-[10px] text-slate-500 italic">
-          Projections are modeled estimates from stored history (G8) — not measurements. Absence of sufficient history is confessed, not extrapolated (G9). Guidance flags are guidance, not diagnoses.
+          Projections are modeled estimates from stored history (G8) — not measurements. Absence of sufficient history is confessed, not extrapolated (G9). Guidance flags are guidance, not diagnoses. Series selection policy: largest N, ties by severity; override does not borrow another curve.
         </p>
         <p className="text-[10px] text-slate-500">Watchlist: {watchlist}</p>
       </footer>

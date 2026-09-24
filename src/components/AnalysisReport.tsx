@@ -57,6 +57,10 @@ import McaHealthDossierTab from "./reports/McaHealthDossierTab";
 import OilResultsTab from "./reports/OilResultsTab";
 import OilTrendLibraryTab from "./reports/OilTrendLibraryTab";
 import OilProgramDossierTab from "./reports/OilProgramDossierTab";
+import InfraredPrognosticsTab from "./reports/InfraredPrognosticsTab";
+import UltrasoundPrognosticsTab from "./reports/UltrasoundPrognosticsTab";
+import OilPrognosticsTab from "./reports/OilPrognosticsTab";
+import McaPrognosticsTab from "./reports/McaPrognosticsTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -276,24 +280,28 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
           { id: 1, label: "1. Analysis Results" },
           { id: 2, label: "2. Thermal Trend Library" },
           { id: 3, label: "3. NFPA 70B Compliance Dossier" },
+          { id: 4, label: "4. Prognostics & P-F Window" },
         ]
       : modality === "ultrasound"
         ? [
             { id: 1, label: "1. Analysis Results" },
             { id: 2, label: "2. Acoustic Trend Library" },
             { id: 3, label: "3. Acoustic Pattern & Survey Dossier" },
+            { id: 4, label: "4. Prognostics & P-F Window" },
           ]
       : modality === "mca"
         ? [
             { id: 1, label: "1. Analysis Results" },
             { id: 2, label: "2. Winding & Insulation Trend Library" },
             { id: 3, label: "3. Motor Health & Test Practice Dossier" },
+            { id: 4, label: "4. Prognostics & P-F Window" },
           ]
         : modality === "oil"
           ? [
               { id: 1, label: "1. Analysis Results" },
               { id: 2, label: "2. Tribology & Wear Trend Library" },
               { id: 3, label: "3. Lubrication Program & Lab Dossier" },
+              { id: 4, label: "4. Prognostics & P-F Window" },
             ]
           : [{ id: 1, label: "1. Analysis Results" }];
 
@@ -7531,10 +7539,24 @@ export default function AnalysisReport({
               <VibrationComparisonTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
             )}
 
-            {/* ===== Tab 4: Prognostics & P-F Window (vibration) — sole prognostics surface ===== */}
-            {selectedTech === "vibration" && (
-              <VibrationPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
-            )}
+              {/* ===== Tab 4: Prognostics & P-F Window (vibration) — sole prognostics surface ===== */}
+              {selectedTech === "vibration" && (
+                <VibrationPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
+              )}
+
+              {/* ===== Tab 4: Prognostics & P-F Window (non-vibration modalities) ===== */}
+              {activeTab === 4 && selectedTech === "thermography" && (
+                <InfraredPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
+              )}
+              {activeTab === 4 && selectedTech === "ultrasound" && (
+                <UltrasoundPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
+              )}
+              {activeTab === 4 && selectedTech === "mca" && (
+                <McaPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
+              )}
+              {activeTab === 4 && selectedTech === "oil" && (
+                <OilPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} equipmentAssetId={equipmentAssetId} />
+              )}
 
             {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the
                   live interactive workspace above has no spectrum/peaks to plot.
