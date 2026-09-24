@@ -34,8 +34,8 @@ import {
 import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
-import PrognosticsTab from "./reports/PrognosticsTab";
 import VibrationPrognosticsTab from "./reports/VibrationPrognosticsTab";
+import VibrationComparisonTab from "./reports/VibrationComparisonTab";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -7526,12 +7526,12 @@ export default function AnalysisReport({
               );
             })()}
 
-            {/* ===== Tab 3: Prognostics (vibration) / NFPA Dossier (thermography) ===== */}
+            {/* ===== Tab 3: Comparison surfaces (vibration) — Fault Track / Spectral Diff / Audit Strip ===== */}
             {selectedTech === "vibration" && (
-              <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />
+              <VibrationComparisonTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
             )}
 
-            {/* ===== Tab 4: Prognostics & P-F Window (vibration) ===== */}
+            {/* ===== Tab 4: Prognostics & P-F Window (vibration) — sole prognostics surface ===== */}
             {selectedTech === "vibration" && (
               <VibrationPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
             )}

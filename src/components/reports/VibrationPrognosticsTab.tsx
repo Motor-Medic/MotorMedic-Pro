@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Clock } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
-import { extractVibrationRecordFromAnalysis } from "../../lib/vibration/vibrationDiagnosticRecord";
 import { getPrescription } from "../../lib/maintenance/prescriptiveDictionary";
-import { buildFaultHistory } from "../../lib/diagnostics/spectralDiff";
+import { buildFaultHistory, faultFreq } from "../../lib/diagnostics/spectralDiff";
 
 interface VibrationPrognosticsTabProps {
   isActive: boolean;
@@ -21,18 +20,6 @@ const MIN_POINTS = 4;
 const MIN_SPAN_DAYS = 30;
 const ISO_C_D_BOUNDARY = 7.1;
 const MAX_WINDOW_DAYS = 180;
-
-function overallMmS(row: SavedAnalysisResult): number | null {
-  const rec = extractVibrationRecordFromAnalysis(row);
-  if (rec?.broadband && typeof rec.broadband.overallVelocity === "number" && Number.isFinite(rec.broadband.overallVelocity) && rec.broadband.overallVelocity > 0)
-    return Number(rec.broadband.overallVelocity);
-  const td = row.telemetry_data;
-  if (td && typeof td === "object") {
-    const v = (td as Record<string, unknown>).overallVelocity;
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
-  }
-  return null;
-}
 
 function leastSquares(pts: SeriesPoint[]): { slope: number; intercept: number; stdErr: number; seOfSlope: number } | null {
   const n = pts.length;
@@ -93,25 +80,21 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
       .filter((r) => (r.analysis_type ?? "vibration") === "vibration" && r.asset_id === asset && (!component || r.component === component))
       .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime());
 
-    const raw: SeriesPoint[] = [];
-    for (const r of runs) {
-      const v = overallMmS(r);
-      if (v != null) raw.push({ day: 0, value: v, date: r.timestamp });
-    }
+    const topFault = Array.isArray(selectedAnalysis?.fault_list) && selectedAnalysis.fault_list.length
+      ? selectedAnalysis.fault_list[0]
+      : null;
+    const trackedHz = topFault ? faultFreq(topFault) : null;
 
-    let seriesLabel = "overall velocity (mm/s RMS)";
-    let pts = raw;
+    let seriesLabel = trackedHz != null
+      ? `peak amplitude at ${trackedHz.toFixed(1)} Hz — mm/s at tracked Hz`
+      : "no tracked fault frequency on this record — series unavailable";
+    let pts: SeriesPoint[] = [];
 
-    if (pts.length < MIN_POINTS) {
-      const fh = buildFaultHistory(runs)[0];
-      if (fh && fh.series.length >= MIN_POINTS) {
-        const t0 = new Date(fh.series[0].ts).getTime();
-        pts = fh.series.map((s) => ({
-          day: (new Date(s.ts).getTime() - t0) / 86400000,
-          value: s.amplitude,
-          date: s.ts,
-        }));
-        seriesLabel = `fault energy at ${fh.frequencyHz.toFixed(1)} Hz — ${fh.title}`;
+    if (trackedHz != null) {
+      const fh = buildFaultHistory(runs).find((e) => e.frequencyHz != null && Math.abs(e.frequencyHz - trackedHz) <= Math.max(2, trackedHz * 0.02));
+      if (fh) {
+        pts = fh.series.map((s) => ({ day: 0, value: s.amplitude, date: s.ts }));
+        seriesLabel = `peak amplitude at ${fh.frequencyHz?.toFixed(1) ?? trackedHz.toFixed(1)} Hz — mm/s at tracked Hz`;
       }
     }
 
@@ -124,9 +107,6 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
     const spanDays = n >= 2 ? pts[n - 1].day - pts[0].day : 0;
     const fit = n >= 2 ? leastSquares(pts) : null;
 
-    const topFault = Array.isArray(selectedAnalysis?.fault_list) && selectedAnalysis.fault_list.length
-      ? selectedAnalysis.fault_list[0]
-      : null;
     const siteAlarm = topFault ? getPrescription(topFault.title).severityZones.alarm ?? null : null;
 
     const functionalThreshold = siteAlarm != null
@@ -236,7 +216,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
           <Clock className="h-3 w-3" />Basis
         </div>
         <p className="text-xs text-slate-300">
-          Series: <span className="text-white">{seriesLabel}</span> · N = {n} points over {Math.round(spanDays)} days
+          Series: <span className="text-white">{seriesLabel}</span> · N = {n} points over {spanDays.toFixed(1)} days (fractional day offsets from stored timestamps)
         </p>
         <p className="text-xs text-slate-400">
           Least-squares slope: <span className="font-mono text-white">{slopeTxt}</span> (SE of slope {seTxt}) · fit note: ordinary linear regression on stored timestamps; not a physics failure model
