@@ -201,7 +201,7 @@ function CalendarList({ rows, failed }: { rows: RouteRow[]; failed: boolean }) {
         modalityLabel: "All",
         due: null,
         overdue: false,
-        confession: "no collections on record",
+        confession: row.freqDays != null ? "no collections on record" : CADENCE_CONFESS,
       });
       continue;
     }
@@ -234,14 +234,16 @@ function CalendarList({ rows, failed }: { rows: RouteRow[]; failed: boolean }) {
   const w30 = entries.filter((e) => !e.overdue && e.due != null && e.due <= in30).sort((a, b) => (a.due?.getTime() ?? 0) - (b.due?.getTime() ?? 0));
   const w60 = entries.filter((e) => !e.overdue && e.due != null && e.due > in30 && e.due <= in60).sort((a, b) => (a.due?.getTime() ?? 0) - (b.due?.getTime() ?? 0));
   const w90 = entries.filter((e) => !e.overdue && e.due != null && e.due > in60 && e.due <= in90).sort((a, b) => (a.due?.getTime() ?? 0) - (b.due?.getTime() ?? 0));
-  const confessions = entries.filter((e) => e.due == null && !e.overdue);
+  const noCollections = entries.filter((e) => e.due == null && !e.overdue && e.confession === "no collections on record");
+  const noCadence = entries.filter((e) => e.due == null && !e.overdue && e.confession === CADENCE_CONFESS);
 
   const ordered: Array<{ heading: string | null; items: CalEntry[] }> = [
     { heading: "Overdue", items: overdue },
     { heading: "Next 30 days", items: w30 },
     { heading: "Next 31–60 days", items: w60 },
     { heading: "Next 61–90 days", items: w90 },
-    { heading: "Cadence not recorded", items: confessions },
+    { heading: "no collections on record - due dates cannot be computed", items: noCollections },
+    { heading: "cadence target not recorded", items: noCadence },
   ];
 
   const flat: Array<{ heading: string | null; entry: CalEntry }> = [];

@@ -246,6 +246,7 @@ export default function MaintenanceCalendar({
         </div>
       </div>
 
+      <RouteCadenceSection variant="planner" />
       <RouteCadenceSection variant="calendar" />
 
       {/* ===== SUB-TAB NAV ===== */}
