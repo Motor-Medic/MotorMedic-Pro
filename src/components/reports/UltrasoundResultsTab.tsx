@@ -69,6 +69,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
         <Field label="Gain" value={mt.gainDb} unit="dB" />
         <Field label="Ambient Acoustic Noise Floor" value={mt.noiseFloor} unit="dB" />
       </div>
+      <p className="text-[11px] text-slate-500 mt-3">{(() => { const td = (selectedAnalysis.telemetry_data ?? {}) as Record<string, unknown>; const collectorId = td.collector_id ?? (selectedAnalysis as unknown as Record<string, unknown>).collector_id; return typeof collectorId === "string" && collectorId ? `Collector: ${collectorId}` : <span className="italic text-slate-500">collector ID not recorded at capture</span>; })()}</p>
     </div>
     <div className={card}>
       <div className="flex items-center gap-2 mb-3"><Gauge className="h-4 w-4 text-amber-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Readings</h4></div>

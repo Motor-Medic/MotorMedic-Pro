@@ -173,6 +173,7 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
           <Field label="Distance" value={meta.distance} unit="m" />
           <Field label="Relative Humidity (RH)" value={meta.humidity} unit="%" />
         </div>
+        <p className="text-[11px] text-slate-500 mt-3">{(() => { const td = (selectedAnalysis.telemetry_data ?? {}) as Record<string, unknown>; const collectorId = td.collector_id ?? (selectedAnalysis as unknown as Record<string, unknown>).collector_id; return typeof collectorId === "string" && collectorId ? `Collector: ${collectorId}` : <span className="italic text-slate-500">collector ID not recorded at capture</span>; })()}</p>
       </div>
 
       <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">

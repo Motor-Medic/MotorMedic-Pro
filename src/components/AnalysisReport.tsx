@@ -7017,6 +7017,7 @@ export default function AnalysisReport({
 
               return (
                 <div className="space-y-4">
+                  <p className="text-[11px] text-slate-500">{(() => { const td = (selectedAnalysis.telemetry_data ?? {}) as Record<string, unknown>; const collectorId = td.collector_id ?? (selectedAnalysis as unknown as Record<string, unknown>).collector_id; return typeof collectorId === "string" && collectorId ? `Collector: ${collectorId}` : <span className="italic text-slate-500">collector ID not recorded at capture</span>; })()}</p>
                   {/* -- ISO 10816 Severity Bar -- */}
                   <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4 space-y-3">
                     <div className="flex items-center gap-2 mb-1">
