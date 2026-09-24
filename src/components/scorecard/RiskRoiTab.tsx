@@ -348,6 +348,9 @@ export default function RiskRoiTab({ selectedCompanyId }: RiskRoiTabProps) {
                 <span className="text-white font-mono">
                   {formatUsd(costModel.replacementCost.value)}{" "}
                   <span className="text-[9px] text-slate-500">(source: manual entry)</span>
+                  {costModel.replacementCost.adoptedFrom === "vision-suggestion" && (
+                    <span className="text-[9px] text-slate-500"> (adopted from vision suggestion)</span>
+                  )}
                 </span>
               ) : (
                 <span className="text-slate-500 italic">not configured</span>
