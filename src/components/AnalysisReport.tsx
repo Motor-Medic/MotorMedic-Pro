@@ -35,6 +35,7 @@ import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDi
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
 import PrognosticsTab from "./reports/PrognosticsTab";
+import VibrationPrognosticsTab from "./reports/VibrationPrognosticsTab";
 import PartsInventoryModal, {
   formatUsd, getStockStatus, usePartsInventory, type InventoryPart
 } from "./PartsInventory";
@@ -65,7 +66,7 @@ import {
 } from "../types/oilAnalysis";
 import { latestOfType, peakOfType, resolveTempUnit } from "../lib/diagnostics/sensorFusion";
 
-type ReportTab = 0 | 1 | 2 | 3;
+type ReportTab = 0 | 1 | 2 | 3 | 4;
 type ReportTechnology = "vibration" | "thermography" | "ultrasound" | "mca" | "oil";
 
 interface AnalysisReportProps {
@@ -268,6 +269,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
         { id: 1, label: "1. Analysis Results" },
         { id: 2, label: "2. Spectrum Library" },
         { id: 3, label: "3. Prognostics & Comparison" },
+        { id: 4, label: "4. Prognostics & P-F Window" },
       ]
     : modality === "thermography"
       ? [
@@ -7527,6 +7529,11 @@ export default function AnalysisReport({
             {/* ===== Tab 3: Prognostics (vibration) / NFPA Dossier (thermography) ===== */}
             {selectedTech === "vibration" && (
               <PrognosticsTab isActive={activeTab === 3} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} planningInputs={planningBundle.planningInputs} />
+            )}
+
+            {/* ===== Tab 4: Prognostics & P-F Window (vibration) ===== */}
+            {selectedTech === "vibration" && (
+              <VibrationPrognosticsTab isActive={activeTab === 4} selectedAnalysis={selectedAnalysis} loadedAnalyses={loadedAnalyses} />
             )}
 
             {/* ===== Legacy FFT card (SpectralFftWorkspace) — fallback only, renders when the
