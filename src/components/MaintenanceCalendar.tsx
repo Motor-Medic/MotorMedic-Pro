@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Loader2, Sparkles, Zap } from "lucide-react";
 import { fetchAlerts, fetchAnalysisResults, type SavedAlert, type SavedAnalysisResult } from "../lib/analysisPersistence";
+import RouteCadenceSection from "./planning/RouteCadenceSection";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx)                                     */
@@ -244,6 +245,8 @@ export default function MaintenanceCalendar({
           </div>
         </div>
       </div>
+
+      <RouteCadenceSection variant="calendar" />
 
       {/* ===== SUB-TAB NAV ===== */}
       <div className="flex flex-wrap gap-2 mb-6">

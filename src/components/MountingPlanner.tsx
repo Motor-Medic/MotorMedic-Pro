@@ -6,6 +6,7 @@ import {
   RotateCcw, Ruler, Search, ShieldCheck, Target, Wrench, X, Zap
 } from "lucide-react";
 import { useToast } from "./Toast";
+import RouteCadenceSection from "./planning/RouteCadenceSection";
 
 // Types for Reference Guides and Scanner
 export interface ReferencePoint {
@@ -1147,6 +1148,8 @@ export default function MountingPlanner() {
           </span>
         </button>
       </header>
+
+      <RouteCadenceSection variant="planner" />
 
       {/* ===== Equipment selection ===== */}
       <section className={`${CARD} p-4 sm:p-5 space-y-3`}>
