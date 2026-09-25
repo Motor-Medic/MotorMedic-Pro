@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Clock } from "lucide-react";
-import type { SavedAnalysisResult, SavedFaultItem } from "../../lib/analysisPersistence";
-import { getPrescription } from "../../lib/maintenance/prescriptiveDictionary";
-import { buildFaultHistory, faultFreq } from "../../lib/diagnostics/spectralDiff";
+import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
@@ -14,20 +12,12 @@ import {
   type SeriesCandidate,
   type Threshold,
 } from "./pfEngine";
+import { storedDetectionOf, vibrationCandidates, vibrationRuns, vibrationThreshold } from "./prognosticsResolvers";
 
 interface VibrationPrognosticsTabProps {
   isActive: boolean;
   selectedAnalysis: SavedAnalysisResult | null;
   loadedAnalyses: SavedAnalysisResult[];
-}
-
-function severityRank(faults: SavedFaultItem[], title: string): number {
-  const hit = faults.find((f) => f.title === title);
-  const s = String(hit?.severity ?? "").toLowerCase();
-  if (s.includes("critical") || s.includes("high") || s.includes("severe")) return 3;
-  if (s.includes("medium") || s.includes("moderate") || s.includes("warning")) return 2;
-  if (s.includes("low") || s.includes("minor")) return 1;
-  return 0;
 }
 
 export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, loadedAnalyses }: VibrationPrognosticsTabProps) {
@@ -45,76 +35,27 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
     setOverrideId(null);
   }, [asset, component, selectedAnalysis?.id]);
 
+  const { runs } = useMemo(
+    () => vibrationRuns(loadedAnalyses, asset, component),
+    [loadedAnalyses, asset, component],
+  );
+
   const candidates = useMemo<SeriesCandidate[]>(() => {
     void epoch;
-    const runs = loadedAnalyses
-      .filter((r) => (r.analysis_type ?? "vibration") === "vibration" && r.asset_id === asset && (!component || r.component === component))
-      .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime());
+    return vibrationCandidates(runs, selectedAnalysis);
+  }, [runs, selectedAnalysis, epoch]);
 
-    const faultList = Array.isArray(selectedAnalysis?.fault_list) ? selectedAnalysis.fault_list : [];
-    const history = buildFaultHistory(runs);
-    const out: SeriesCandidate[] = [];
-    const seen = new Set<string>();
-
-    for (const fh of history) {
-      const hz = fh.frequencyHz;
-      const id = hz != null ? `${fh.title}@${hz.toFixed(1)}` : fh.title;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push({
-        id,
-        label: hz != null ? `${fh.title} ${hz.toFixed(2)} Hz` : fh.title,
-        unit: "mm/s",
-        points: fh.series.map((s) => ({ value: s.amplitude, date: s.ts })),
-        severityRank: severityRank(faultList, fh.title),
-        worsening: "increase",
-      });
-    }
-
-    for (const f of faultList) {
-      const hz = faultFreq(f);
-      const id = hz != null ? `${f.title}@${hz.toFixed(1)}` : f.title;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push({
-        id,
-        label: hz != null ? `${f.title} ${hz.toFixed(2)} Hz` : f.title,
-        unit: "mm/s",
-        points: [],
-        severityRank: severityRank(faultList, f.title),
-        worsening: "increase",
-      });
-    }
-
-    return out;
-  }, [loadedAnalyses, asset, component, selectedAnalysis, epoch]);
-
-  const threshold = useMemo<Threshold | null>(() => {
-    const faultList = Array.isArray(selectedAnalysis?.fault_list) ? selectedAnalysis.fault_list : [];
-    const selected = candidates.find((c) => c.id === overrideId)
-      ?? candidates.slice().sort((a, b) => b.points.length - a.points.length || b.severityRank - a.severityRank)[0]
-      ?? null;
-    const title = selected ? selected.label.replace(/\s+[\d.]+\s*Hz$/, "") : faultList[0]?.title ?? null;
-    const siteAlarm = title ? getPrescription(title).severityZones.alarm ?? null : null;
-    if (siteAlarm != null) {
-      return { value: siteAlarm, provenance: "stored site alarm (prescriptive dictionary severity zones)" };
-    }
-    return {
-      value: ISO_C_D_BOUNDARY,
-      provenance: "site-practice proxy - not a stored functional limit (ISO 20816 zone C/D boundary)",
-    };
-  }, [candidates, overrideId, selectedAnalysis]);
+  const threshold = useMemo<Threshold | null>(
+    () => vibrationThreshold(candidates, overrideId, selectedAnalysis).threshold,
+    [candidates, overrideId, selectedAnalysis],
+  );
 
   const derivation = useMemo(() => {
-    const storedDetection =
-      (selectedAnalysis?.telemetry_data as Record<string, unknown> | null | undefined)?.detectionDate != null
-        ? String((selectedAnalysis.telemetry_data as Record<string, unknown>).detectionDate)
-        : null;
     return derivePf({
       candidates,
       overrideId,
       threshold,
-      storedDetection,
+      storedDetection: storedDetectionOf(selectedAnalysis),
     });
   }, [candidates, overrideId, threshold, selectedAnalysis, epoch]);
 

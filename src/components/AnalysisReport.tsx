@@ -61,6 +61,7 @@ import InfraredPrognosticsTab from "./reports/InfraredPrognosticsTab";
 import UltrasoundPrognosticsTab from "./reports/UltrasoundPrognosticsTab";
 import OilPrognosticsTab from "./reports/OilPrognosticsTab";
 import McaPrognosticsTab from "./reports/McaPrognosticsTab";
+import ComponentPrognosticsSummary from "./reports/ComponentPrognosticsSummary";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -6665,6 +6666,16 @@ export default function AnalysisReport({
             })}
           </div>
         </section>
+
+        <ComponentPrognosticsSummary
+          selectedAnalysis={selectedAnalysis}
+          loadedAnalyses={loadedAnalyses}
+          equipmentAssetId={equipmentAssetId}
+          onSelectModality={(id) => {
+            setSelectedTech(id);
+            setActiveTab(4);
+          }}
+        />
 
         {/* ===== Equipment Selection ===== */}
         <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">

@@ -8,7 +8,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Flame } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
-import { peakOfType, resolveTempUnit } from "../../lib/diagnostics/sensorFusion";
 import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
@@ -20,18 +19,18 @@ import {
   type SeriesCandidate,
   type Threshold,
 } from "./pfEngine";
+import {
+  storedDetectionOf,
+  thermographyCandidates,
+  thermographyRuns,
+  thermographyThreshold,
+  type RunsSplit,
+} from "./prognosticsResolvers";
 
 interface Props {
   isActive: boolean;
   selectedAnalysis: SavedAnalysisResult | null;
   loadedAnalyses: SavedAnalysisResult[];
-}
-
-const num = (v: unknown): number | null =>
-  typeof v === "number" && Number.isFinite(v) ? v : null;
-
-function toC(dT: number, unit: "°F" | "°C"): number {
-  return unit === "°F" ? dT * (5 / 9) : dT;
 }
 
 export default function InfraredPrognosticsTab({ isActive, selectedAnalysis, loadedAnalyses }: Props) {
@@ -43,16 +42,9 @@ export default function InfraredPrognosticsTab({ isActive, selectedAnalysis, loa
     setOverrideId(null);
   }, [asset, component, selectedAnalysis?.id]);
 
-  const assetRuns = useMemo(() => {
-    if (!isActive) return [];
-    return loadedAnalyses
-      .filter((r) => (r.analysis_type ?? "").toLowerCase() === "thermography" && r.asset_id === asset)
-      .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime());
-  }, [isActive, loadedAnalyses, asset]);
-
-  const runs = useMemo(
-    () => assetRuns.filter((r) => !component || r.component === component),
-    [assetRuns, component],
+  const { assetRuns, runs } = useMemo<RunsSplit>(
+    () => (isActive ? thermographyRuns(loadedAnalyses, asset, component) : { assetRuns: [], runs: [] }),
+    [isActive, loadedAnalyses, asset, component],
   );
 
   const exclusion = useMemo(
@@ -60,51 +52,23 @@ export default function InfraredPrognosticsTab({ isActive, selectedAnalysis, loa
     [assetRuns, component],
   );
 
-  const candidates = useMemo<SeriesCandidate[]>(() => {
-    const dT: { value: number; date: string }[] = [];
-    const hs: { value: number; date: string }[] = [];
-    const i2r: { value: number; date: string }[] = [];
-    let maxSev = 0;
-    for (const r of runs) {
-      const peak = peakOfType(r, "thermography") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
-      const unit = resolveTempUnit(r) ?? "°F";
-      const dTRaw = num(peak?.delta_t ?? peak?.deltaT);
-      if (dTRaw != null) dT.push({ value: toC(dTRaw, unit), date: r.timestamp });
-      const hsRaw = num(peak?.hotspot_temp ?? peak?.hotspotTemp);
-      if (hsRaw != null) hs.push({ value: unit === "°F" ? (hsRaw - 32) * (5 / 9) : hsRaw, date: r.timestamp });
-      const i2rRaw = num(r.i2r_normalized_delta_t);
-      if (i2rRaw != null) i2r.push({ value: i2rRaw, date: r.timestamp });
-      if (num(r.max_allowable_limit) != null) maxSev = Math.max(maxSev, 1);
-    }
-    const out: SeriesCandidate[] = [];
-    if (dT.length) out.push({ id: "ir-delta-t", label: "ΔT P-P at tracked hotspot", unit: "°C", points: dT, severityRank: 3 + maxSev, worsening: "increase" });
-    if (hs.length) out.push({ id: "ir-hotspot", label: "Hotspot temperature", unit: "°C", points: hs, severityRank: 2, worsening: "increase" });
-    if (i2r.length) out.push({ id: "ir-i2r", label: "I²R normalized ΔT", unit: "°C", points: i2r, severityRank: 1, worsening: "increase" });
-    return out;
-  }, [runs]);
+  const candidates = useMemo<SeriesCandidate[]>(
+    () => thermographyCandidates(runs),
+    [runs],
+  );
 
-  const threshold = useMemo<Threshold | null>(() => {
-    const stored =
-      num(selectedAnalysis?.max_allowable_limit) ??
-      num((peakOfType(selectedAnalysis ?? ({} as SavedAnalysisResult), "thermography") as Record<string, unknown> | null)?.max_allowable_limit);
-    if (stored != null && stored > 0) {
-      return { value: stored, provenance: "stored max_allowable_limit (analysis row / peaks)" };
-    }
-    if (candidates.some((c) => c.id === "ir-delta-t")) {
-      return {
-        value: 15,
-        provenance: "site-practice proxy — NFPA 70B/NETA Class 1 ΔT boundary (15 °C), not a stored functional limit",
-      };
-    }
-    return null;
-  }, [selectedAnalysis, candidates]);
+  const threshold = useMemo<Threshold | null>(
+    () => thermographyThreshold(candidates, overrideId, selectedAnalysis).threshold,
+    [selectedAnalysis, candidates, overrideId],
+  );
 
   const derivation = useMemo(() => {
-    const storedDetection =
-      (selectedAnalysis?.telemetry_data as Record<string, unknown> | null | undefined)?.detectionDate != null
-        ? String((selectedAnalysis.telemetry_data as Record<string, unknown>).detectionDate)
-        : null;
-    return derivePf({ candidates, overrideId, threshold, storedDetection });
+    return derivePf({
+      candidates,
+      overrideId,
+      threshold,
+      storedDetection: storedDetectionOf(selectedAnalysis),
+    });
   }, [candidates, overrideId, threshold, selectedAnalysis]);
 
   const { seriesLabel, unit, pts, n, spanDays, fit, functionalThreshold, detectionDate, verdict, fWindow, rulLabel, selectionNote, candidateSummaries, worsening } = derivation;

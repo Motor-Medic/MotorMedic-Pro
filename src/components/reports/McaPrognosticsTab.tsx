@@ -8,13 +8,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Zap } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import {
-  mcaPeakBlob,
-  extractMcaWindingFromSaved,
-  extractMcaGroundwallFromSaved,
-} from "../../lib/mca/mcaPersistence";
-import { percentUnbalance } from "../../lib/mca/windingBalanceCalculator";
-import { calculateGroundwallInsulation } from "../../lib/mca/groundwallCalculator";
-import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
   MAX_WINDOW_DAYS,
@@ -24,29 +17,17 @@ import {
   type SeriesCandidate,
   type Threshold,
 } from "./pfEngine";
+import {
+  mcaCandidates,
+  mcaRuns,
+  mcaThreshold,
+  type RunsSplit,
+} from "./prognosticsResolvers";
 
 interface Props {
   isActive: boolean;
   selectedAnalysis: SavedAnalysisResult | null;
   loadedAnalyses: SavedAnalysisResult[];
-}
-
-const num = (v: unknown): number | null =>
-  typeof v === "number" && Number.isFinite(v) ? v : null;
-
-function imbalanceFor(r: SavedAnalysisResult): number | null {
-  const blob = mcaPeakBlob(r);
-  const winding = extractMcaWindingFromSaved(r);
-  const stored = num(blob.imbalance_pct ?? blob.imbalancePct ?? blob.max_unbalance_rl ?? blob.maxUnbalanceRl);
-  if (stored != null) return stored;
-  if (winding.fromTelemetry) {
-    return Math.max(
-      percentUnbalance(winding.phaseR),
-      percentUnbalance(winding.phaseL),
-      percentUnbalance(winding.phaseZ),
-    );
-  }
-  return null;
 }
 
 export default function McaPrognosticsTab({ isActive, selectedAnalysis, loadedAnalyses }: Props) {
@@ -58,89 +39,20 @@ export default function McaPrognosticsTab({ isActive, selectedAnalysis, loadedAn
     setOverrideId(null);
   }, [asset, component, selectedAnalysis?.id]);
 
-  const runs = useMemo(() => {
-    if (!isActive) return [];
-    return loadedAnalyses
-      .filter((r) => (r.analysis_type ?? "").toLowerCase() === "mca" && r.asset_id === asset && (!component || r.component === component))
-      .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime());
-  }, [isActive, loadedAnalyses, asset, component]);
+  const { runs } = useMemo<RunsSplit>(
+    () => (isActive ? mcaRuns(loadedAnalyses, asset, component) : { assetRuns: [], runs: [] }),
+    [isActive, loadedAnalyses, asset, component],
+  );
 
-  const candidates = useMemo<SeriesCandidate[]>(() => {
-    const imb: { value: number; date: string }[] = [];
-    const ir: { value: number; date: string }[] = [];
-    let maxImb = 0;
-    let minIr = Infinity;
-    for (const r of runs) {
-      const u = imbalanceFor(r);
-      if (u != null) {
-        imb.push({ value: u, date: r.timestamp });
-        maxImb = Math.max(maxImb, u);
-      }
-      const gw = extractMcaGroundwallFromSaved(r);
-      const irV = gw.ir1mMOmega != null && gw.ir1mMOmega > 0 ? gw.ir1mMOmega : null;
-      if (irV != null) {
-        ir.push({ value: irV, date: r.timestamp });
-        minIr = Math.min(minIr, irV);
-      }
-    }
-    const out: SeriesCandidate[] = [];
-    if (imb.length) {
-      out.push({
-        id: "mca-imbalance",
-        label: "Current unbalance",
-        unit: "%",
-        points: imb,
-        severityRank: Math.round(maxImb * 10),
-        worsening: "increase",
-      });
-    }
-    if (ir.length) {
-      out.push({
-        id: "mca-ir",
-        label: "Insulation resistance (IR 1 min)",
-        unit: "MΩ",
-        points: ir,
-        severityRank: Number.isFinite(minIr) ? Math.max(0, 100 - Math.round(minIr)) : 0,
-        worsening: "decrease",
-      });
-    }
-    return out;
-  }, [runs]);
+  const candidates = useMemo<SeriesCandidate[]>(
+    () => mcaCandidates(runs),
+    [runs],
+  );
 
-  const threshold = useMemo<Threshold | null>(() => {
-    const sel = candidates.find((c) => c.id === overrideId)
-      ?? candidates.slice().sort((a, b) => b.points.length - a.points.length || b.severityRank - a.severityRank)[0]
-      ?? null;
-    if (sel?.id === "mca-imbalance") {
-      return {
-        value: 8,
-        provenance: "site-practice proxy — NEMA MG-1 Class 1 unbalance boundary (8 %), not a stored functional limit; no ISO severity standard exists for MCA",
-      };
-    }
-    if (sel?.id === "mca-ir") {
-      const last = runs[runs.length - 1];
-      const gw = last ? extractMcaGroundwallFromSaved(last) : null;
-      if (gw && gw.ir1mMOmega != null && gw.ir1mMOmega > 0 && gw.testVoltageV != null && gw.testVoltageV > 0) {
-        const result = calculateGroundwallInsulation({
-          ir1mMOmega: gw.ir1mMOmega,
-          ir15sMOmega: gw.ir15sMOmega,
-          ir30sMOmega: gw.ir30sMOmega,
-          ir10mMOmega: gw.ir10mMOmega,
-          testVoltageV: gw.testVoltageV,
-          windingTempC: gw.windingTempC,
-          insulationClass: gw.insulationClass,
-        });
-        if (result.hasData && result.irIeeeMinMOmega > 0) {
-          return {
-            value: result.irIeeeMinMOmega,
-            provenance: "IEEE 43 minimum (groundwall calculator irIeeeMinMOmega from test voltage / winding class)",
-          };
-        }
-      }
-      return null;
-    }
-    return null;
-  }, [candidates, overrideId, runs]);
+  const threshold = useMemo<Threshold | null>(
+    () => mcaThreshold(candidates, overrideId, runs).threshold,
+    [candidates, overrideId, runs],
+  );
 
   const derivation = useMemo(() => {
     const storedDetection = null;

@@ -8,7 +8,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Droplet } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
-import { DEFAULT_ALARM_LIMITS, type OilSample } from "../../types/oilAnalysis";
+import { type OilSample } from "../../types/oilAnalysis";
 import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
@@ -19,6 +19,11 @@ import {
   type SeriesCandidate,
   type Threshold,
 } from "./pfEngine";
+import {
+  oilCandidates,
+  oilThreshold,
+  resolveOilAssetId,
+} from "./prognosticsResolvers";
 
 interface Props {
   isActive: boolean;
@@ -27,37 +32,12 @@ interface Props {
   equipmentAssetId?: string | null;
 }
 
-interface ElementDef {
-  key: keyof OilSample;
-  symbol: string;
-  label: string;
-  alarmKey: keyof OilSample;
-  defaultLimit: number;
-}
-
-const ELEMENTS: ElementDef[] = [
-  { key: "iron", symbol: "Fe", label: "Iron", alarmKey: "ironAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.iron },
-  { key: "copper", symbol: "Cu", label: "Copper", alarmKey: "copperAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.copper },
-  { key: "chromium", symbol: "Cr", label: "Chromium", alarmKey: "chromiumAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.chromium },
-  { key: "lead", symbol: "Pb", label: "Lead", alarmKey: "leadAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.lead },
-  { key: "aluminum", symbol: "Al", label: "Aluminum", alarmKey: "aluminumAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.aluminum },
-  { key: "silicon", symbol: "Si", label: "Silicon", alarmKey: "siliconAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.silicon },
-];
-
-function numVal(v: unknown): number | null {
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
-
 export default function OilPrognosticsTab({ isActive, selectedAnalysis, loadedAnalyses, equipmentAssetId }: Props) {
   const [overrideId, setOverrideId] = useState<string | null>(null);
   const [samples, setSamples] = useState<OilSample[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const assetId = equipmentAssetId ?? selectedAnalysis?.asset_id ?? (() => {
-    if (!loadedAnalyses?.length) return null;
-    const ids = [...new Set(loadedAnalyses.map((r) => r.asset_id).filter(Boolean))];
-    return ids.length === 1 ? ids[0]! : null;
-  })();
+  const assetId = resolveOilAssetId(equipmentAssetId, selectedAnalysis, loadedAnalyses);
 
   useEffect(() => {
     setOverrideId(null);
@@ -82,48 +62,13 @@ export default function OilPrognosticsTab({ isActive, selectedAnalysis, loadedAn
 
   const candidates = useMemo<SeriesCandidate[]>(() => {
     if (!isActive) return [];
-    const out: SeriesCandidate[] = [];
-    for (const el of ELEMENTS) {
-      const points: { value: number; date: string }[] = [];
-      let maxRatio = 0;
-      let storedLimit = false;
-      for (const s of sorted) {
-        const v = numVal(s[el.key]);
-        if (v == null) continue;
-        points.push({ value: v, date: s.sampleDate });
-        const lim = numVal(s[el.alarmKey]) ?? el.defaultLimit;
-        if (numVal(s[el.alarmKey]) != null) storedLimit = true;
-        if (lim > 0) maxRatio = Math.max(maxRatio, v / lim);
-      }
-      if (!points.length) continue;
-      out.push({
-        id: `oil-${el.key}`,
-        label: `${el.symbol} — ${el.label}`,
-        unit: "ppm",
-        points,
-        severityRank: Math.round(maxRatio * 10) + (storedLimit ? 1 : 0),
-        worsening: "increase",
-      });
-    }
-    return out.sort((a, b) => b.points.length - a.points.length || b.severityRank - a.severityRank);
+    return oilCandidates(sorted);
   }, [isActive, sorted]);
 
-  const threshold = useMemo<Threshold | null>(() => {
-    const sel = candidates.find((c) => c.id === overrideId) ?? candidates[0] ?? null;
-    if (!sel) return null;
-    const key = sel.id.replace(/^oil-/, "") as keyof OilSample;
-    const alarmKey = (`${key}AlarmLimit` in (sorted[0] ?? {}) ? `${key}AlarmLimit` : null) as keyof OilSample | null;
-    const latest = sorted[sorted.length - 1];
-    const stored = latest && alarmKey ? numVal(latest[alarmKey]) : null;
-    if (stored != null && stored > 0) {
-      return { value: stored, provenance: `stored ${String(alarmKey)} on latest oil sample (oil_samples)` };
-    }
-    const def = ELEMENTS.find((e) => e.key === key)?.defaultLimit;
-    if (def != null && def > 0) {
-      return { value: def, provenance: "DEFAULT_ALARM_LIMITS (lab/OEM practice defaults in oilAnalysis.ts)" };
-    }
-    return null;
-  }, [candidates, overrideId, sorted]);
+  const threshold = useMemo<Threshold | null>(
+    () => oilThreshold(candidates, overrideId, sorted).threshold,
+    [candidates, overrideId, sorted],
+  );
 
   const derivation = useMemo(() => {
     const storedDetection = null;

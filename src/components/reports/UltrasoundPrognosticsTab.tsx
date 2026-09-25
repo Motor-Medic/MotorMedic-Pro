@@ -7,7 +7,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Waves } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
-import { peakOfType } from "../../lib/diagnostics/sensorFusion";
 import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
@@ -18,15 +17,19 @@ import {
   type SeriesCandidate,
   type Threshold,
 } from "./pfEngine";
+import {
+  storedDetectionOf,
+  ultrasoundCandidates,
+  ultrasoundRuns,
+  ultrasoundThreshold,
+  type RunsSplit,
+} from "./prognosticsResolvers";
 
 interface Props {
   isActive: boolean;
   selectedAnalysis: SavedAnalysisResult | null;
   loadedAnalyses: SavedAnalysisResult[];
 }
-
-const num = (v: unknown): number | null =>
-  typeof v === "number" && Number.isFinite(v) ? v : null;
 
 export default function UltrasoundPrognosticsTab({ isActive, selectedAnalysis, loadedAnalyses }: Props) {
   const [overrideId, setOverrideId] = useState<string | null>(null);
@@ -37,54 +40,28 @@ export default function UltrasoundPrognosticsTab({ isActive, selectedAnalysis, l
     setOverrideId(null);
   }, [asset, component, selectedAnalysis?.id]);
 
-  const runs = useMemo(() => {
-    if (!isActive) return [];
-    return loadedAnalyses
-      .filter((r) => (r.analysis_type ?? "").toLowerCase() === "ultrasound" && r.asset_id === asset && (!component || r.component === component))
-      .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime());
-  }, [isActive, loadedAnalyses, asset, component]);
+  const { runs } = useMemo<RunsSplit>(
+    () => (isActive ? ultrasoundRuns(loadedAnalyses, asset, component) : { assetRuns: [], runs: [] }),
+    [isActive, loadedAnalyses, asset, component],
+  );
 
-  const candidates = useMemo<SeriesCandidate[]>(() => {
-    const peak: { value: number; date: string }[] = [];
-    const delta: { value: number; date: string }[] = [];
-    const rms: { value: number; date: string }[] = [];
-    for (const r of runs) {
-      const p = peakOfType(r, "ultrasound") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
-      const peakDb = num(p?.peak_dbmv ?? p?.peak_dbuv);
-      const baseline = num(p?.baseline_dbmv ?? p?.baseline_dbuv);
-      const storedDelta = num(p?.delta_db);
-      const rmsDb = num(p?.rms_dbmv ?? p?.rms_dbuv);
-      if (peakDb != null) peak.push({ value: peakDb, date: r.timestamp });
-      if (rmsDb != null) rms.push({ value: rmsDb, date: r.timestamp });
-      const d = storedDelta ?? (peakDb != null && baseline != null ? Math.round((peakDb - baseline) * 10) / 10 : null);
-      if (d != null) delta.push({ value: d, date: r.timestamp });
-    }
-    const out: SeriesCandidate[] = [];
-    if (delta.length) out.push({ id: "us-delta-db", label: "ΔdB over baseline", unit: "dB", points: delta, severityRank: 3, worsening: "increase" });
-    if (peak.length) out.push({ id: "us-peak-db", label: "Peak level", unit: "dBmV", points: peak, severityRank: 2, worsening: "increase" });
-    if (rms.length) out.push({ id: "us-rms-db", label: "RMS level", unit: "dBmV", points: rms, severityRank: 1, worsening: "increase" });
-    return out;
-  }, [runs]);
+  const candidates = useMemo<SeriesCandidate[]>(
+    () => ultrasoundCandidates(runs),
+    [runs],
+  );
 
-  const threshold = useMemo<Threshold | null>(() => {
-    const sel = candidates.find((c) => c.id === overrideId)
-      ?? candidates.slice().sort((a, b) => b.points.length - a.points.length || b.severityRank - a.severityRank)[0]
-      ?? null;
-    if (sel?.id === "us-delta-db") {
-      return {
-        value: 16,
-        provenance: "site-practice proxy — UE Systems bearing-condition ladder Class 1 boundary (+16 dB), not a stored functional limit",
-      };
-    }
-    return null;
-  }, [candidates, overrideId]);
+  const threshold = useMemo<Threshold | null>(
+    () => ultrasoundThreshold(candidates, overrideId).threshold,
+    [candidates, overrideId],
+  );
 
   const derivation = useMemo(() => {
-    const storedDetection =
-      (selectedAnalysis?.telemetry_data as Record<string, unknown> | null | undefined)?.detectionDate != null
-        ? String((selectedAnalysis.telemetry_data as Record<string, unknown>).detectionDate)
-        : null;
-    return derivePf({ candidates, overrideId, threshold, storedDetection });
+    return derivePf({
+      candidates,
+      overrideId,
+      threshold,
+      storedDetection: storedDetectionOf(selectedAnalysis),
+    });
   }, [candidates, overrideId, threshold, selectedAnalysis]);
 
   const { seriesLabel, unit, pts, n, spanDays, fit, functionalThreshold, detectionDate, verdict, fWindow, rulLabel, selectionNote, candidateSummaries, worsening } = derivation;
