@@ -8,6 +8,7 @@ import {
   MIN_SPAN_DAYS,
   ISO_C_D_BOUNDARY,
   MAX_WINDOW_DAYS,
+  TREND_GATE_LABEL,
   dayLabel,
   derivePf,
   type SeriesCandidate,
@@ -120,7 +121,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
   const {
     seriesLabel, unit, pts, n, spanDays, fit,
     functionalThreshold, detectionDate,
-    g9Pass, slopeGatePass, fWindow, rulLabel,
+    verdict, fWindow, rulLabel,
     selectionNote, candidateSummaries,
   } = derivation;
 
@@ -146,7 +147,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
     if (!fit) return "";
     return pts.map((p, i) => {
       const x = (p.day / xMax) * 360;
-      const y = 120 - ((fit.intercept + fit.slope * p.day + k * fit.seOfSlope) - yMin) / (yMax - yMin) * 100;
+      const y = 120 - ((fit.intercept + fit.slope * p.day + k * fit.seOfSlope) - yMin) / (yMax - yMin || 1) * 100;
       return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${Math.max(5, Math.min(115, y)).toFixed(1)}`;
     }).join(" ");
   };
@@ -154,15 +155,19 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
   const bandPath = fit && pts.length >= 2
     ? `${pathFor(1)} ${[...pts].reverse().map((p) => {
         const x = (p.day / xMax) * 360;
-        const y = 120 - ((fit.intercept + fit.slope * p.day - fit.seOfSlope) - yMin) / (yMax - yMin) * 100;
+        const y = 120 - ((fit.intercept + fit.slope * p.day - fit.seOfSlope) - yMin) / (yMax - yMin || 1) * 100;
         return `L${x.toFixed(1)},${Math.max(5, Math.min(115, y)).toFixed(1)}`;
       }).join(" ")} Z`
     : "";
 
   const fWindowTxt = fWindow
-    ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
-        Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`
-      }`
+    ? fWindow.median >= 0
+      ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
+          Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`
+        }`
+      : fWindow.upper < 0
+        ? `F window: already crossed (median ~${Math.abs(Math.round(fWindow.median))} days ago, upper ~${Math.abs(Math.round(fWindow.upper))} days ago)`
+        : `F window: median already crossed (~${Math.abs(Math.round(fWindow.median))} days ago) - upper bound in ~${Math.round(fWindow.upper)} days`
     : null;
 
   return (
@@ -191,7 +196,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
           N = {n} points over {spanDays.toFixed(1)} days (fractional day offsets from stored timestamps) · unit: {unit || "mm/s"}
         </p>
         <p className="text-xs text-slate-400">
-          Least-squares slope: <span className="font-mono text-white">{slopeTxt}</span> (SE of slope {seTxt}) · fit note: ordinary linear regression on stored timestamps; not a physics failure model
+          Least-squares slope: <span className="font-mono text-white">{slopeTxt}</span> (SE of slope {seTxt}) · {TREND_GATE_LABEL} · fit note: ordinary linear regression on stored timestamps; not a physics failure model
         </p>
         <p className="text-xs text-slate-400">
           Detection point:{" "}
@@ -204,15 +209,19 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
         </p>
       </div>
 
-      {!g9Pass ? (
+      {verdict === "thin" ? (
         <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
-          degradation trend not established - {n} points over {Math.round(spanDays)} days (minimum {MIN_POINTS} over {MIN_SPAN_DAYS})
+          degradation trend not established - {n} points over {Math.round(spanDays)} days (minimum {MIN_POINTS} over {MIN_SPAN_DAYS} days)
         </p>
-      ) : !slopeGatePass ? (
+      ) : verdict === "stable" ? (
         <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
-          no degradation trend - slope flat or improving; RUL not computed
+          no degradation trend - slope {slopeTxt} (SE {seTxt}) not statistically distinguishable from flat ({TREND_GATE_LABEL}); RUL not computed
         </p>
-      ) : !functionalThreshold ? (
+      ) : verdict === "improving" ? (
+        <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
+          trend improving - significant slope in the healthy direction: {slopeTxt} (SE {seTxt}); no RUL computed (no degradation trend to project)
+        </p>
+      ) : verdict === "no-threshold" ? (
         <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
           no functional threshold stored - slope only, no F window
         </p>
@@ -233,9 +242,9 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
             <path d={pathFor(0)} fill="none" stroke="#fbbf24" strokeWidth="1.5" />
             <line
               x1="0"
-              y1={Math.max(5, Math.min(115, 120 - (thr.value - yMin) / (yMax - yMin) * 100))}
+              y1={Math.max(5, Math.min(115, 120 - (thr.value - yMin) / (yMax - yMin || 1) * 100))}
               x2="360"
-              y2={Math.max(5, Math.min(115, 120 - (thr.value - yMin) / (yMax - yMin) * 100))}
+              y2={Math.max(5, Math.min(115, 120 - (thr.value - yMin) / (yMax - yMin || 1) * 100))}
               stroke="#f87171"
               strokeDasharray="4 3"
               strokeWidth="1"
@@ -243,7 +252,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
             {detectionDate && pts.length > 0 && (
               <circle
                 cx={(pts[0].day / xMax) * 360}
-                cy={Math.max(5, Math.min(115, 120 - (pts[0].value - yMin) / (yMax - yMin) * 100))}
+                cy={Math.max(5, Math.min(115, 120 - (pts[0].value - yMin) / (yMax - yMin || 1) * 100))}
                 r="4"
                 fill="#38bdf8"
               />

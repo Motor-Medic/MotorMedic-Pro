@@ -13,6 +13,7 @@ import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
   MAX_WINDOW_DAYS,
+  TREND_GATE_LABEL,
   dayLabel,
   derivePf,
   type SeriesCandidate,
@@ -129,7 +130,7 @@ export default function OilPrognosticsTab({ isActive, selectedAnalysis, loadedAn
     return derivePf({ candidates, overrideId, threshold, storedDetection });
   }, [candidates, overrideId, threshold]);
 
-  const { seriesLabel, unit, pts, n, spanDays, fit, functionalThreshold, detectionDate, g9Pass, slopeGatePass, fWindow, rulLabel, selectionNote, candidateSummaries, worsening } = derivation;
+  const { seriesLabel, unit, pts, n, spanDays, fit, functionalThreshold, detectionDate, verdict, fWindow, rulLabel, selectionNote, candidateSummaries, worsening } = derivation;
 
   if (!isActive) return null;
 
@@ -165,9 +166,13 @@ export default function OilPrognosticsTab({ isActive, selectedAnalysis, loadedAn
       }).join(" ")} Z`
     : "";
   const fWindowTxt = fWindow && thr
-    ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
-        Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`
-      }`
+    ? fWindow.median >= 0
+      ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
+          Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`
+        }`
+      : fWindow.upper < 0
+        ? `F window: already crossed (median ~${Math.abs(Math.round(fWindow.median))} days ago, upper ~${Math.abs(Math.round(fWindow.upper))} days ago)`
+        : `F window: median already crossed (~${Math.abs(Math.round(fWindow.median))} days ago) - upper bound in ~${Math.round(fWindow.upper)} days`
     : null;
 
   if (loadError) {
@@ -212,7 +217,7 @@ export default function OilPrognosticsTab({ isActive, selectedAnalysis, loadedAn
           N = {n} over {spanDays.toFixed(1)} days (fractional day offsets from sample dates) · unit: {unit || "ppm"} · worsening: {worsening}
         </p>
         <p className="text-xs text-slate-400">
-          Slope: <span className="font-mono text-white">{slopeTxt}</span> (SE {seTxt}) · ordinary linear regression; not a physics failure model
+          Slope: <span className="font-mono text-white">{slopeTxt}</span> (SE {seTxt}) · {TREND_GATE_LABEL} · ordinary linear regression; not a physics failure model
         </p>
         <p className="text-xs text-slate-400">
           Detection: {detectionDate ? <span className="text-amber-300">{new Date(detectionDate).toLocaleDateString()}</span> : <span className="italic text-slate-500">no threshold crossing on record</span>}
@@ -227,15 +232,19 @@ export default function OilPrognosticsTab({ isActive, selectedAnalysis, loadedAn
         </p>
       </div>
 
-      {!g9Pass ? (
+      {verdict === "thin" ? (
         <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
-          degradation trend not established - {n} points over {Math.round(spanDays)} days (minimum {MIN_POINTS} over {MIN_SPAN_DAYS})
+          degradation trend not established - {n} points over {Math.round(spanDays)} days (minimum {MIN_POINTS} over {MIN_SPAN_DAYS} days)
         </p>
-      ) : !slopeGatePass ? (
+      ) : verdict === "stable" ? (
         <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
-          no degradation trend - slope flat or improving; RUL not computed
+          no degradation trend - slope {slopeTxt} (SE {seTxt}) not statistically distinguishable from flat ({TREND_GATE_LABEL}); RUL not computed
         </p>
-      ) : !thr ? (
+      ) : verdict === "improving" ? (
+        <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
+          trend improving - significant slope in the healthy direction: {slopeTxt} (SE {seTxt}); no RUL computed (no degradation trend to project)
+        </p>
+      ) : verdict === "no-threshold" || !thr ? (
         <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
           no functional threshold stored - slope only, no F window
         </p>

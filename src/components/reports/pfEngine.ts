@@ -11,12 +11,26 @@
  * Absence of a functional threshold → slope only, no F window (confess).
  * Worsening direction is part of the question: rising metrics (amplitude,
  * ΔT, ppm, imbalance %) vs falling metrics (insulation resistance).
+ *
+ * Trend gate (statistical, not calendar-superstitious): a trend is
+ * established iff N ≥ MIN_POINTS AND span ≥ MIN_SPAN_DAYS AND
+ * |slope| ≥ TREND_SIG_FACTOR × SE of slope. Every verdict names its own
+ * reason (verdict + verdict-derived text in the tabs): WINDOW / STABLE /
+ * IMPROVING / THIN / NO THRESHOLD. Honesty cuts both ways — suppressing a
+ * significant healthy trend (IMPROVING) is as false as extrapolating noise.
  */
 
 export const MIN_POINTS = 4;
-export const MIN_SPAN_DAYS = 30;
+export const MIN_SPAN_DAYS = 7;
 export const ISO_C_D_BOUNDARY = 7.1;
 export const MAX_WINDOW_DAYS = 180;
+/** Statistical significance factor for the trend gate: |slope| ≥ factor × SE. */
+export const TREND_SIG_FACTOR = 2;
+/** Wording stated on every tab's basis card. */
+export const TREND_GATE_LABEL = "trend gate: |slope| >= 2 x SE";
+
+/** Which message the tab renders; every kind names its own reason. */
+export type PfVerdict = "window" | "stable" | "improving" | "thin" | "no-threshold";
 
 /** How the measurement gets worse over time. */
 export type WorseningDirection = "increase" | "decrease";
@@ -73,7 +87,9 @@ export interface PfDerivation {
   functionalThreshold: Threshold | null;
   detectionDate: string | null;
   g9Pass: boolean;
+  significancePass: boolean;
   slopeGatePass: boolean;
+  verdict: PfVerdict;
   fWindow: FWindow | null;
   rulLabel: string | null;
   selectionNote: string;
@@ -175,9 +191,33 @@ export function resolveSelectedId(
   return selectDefaultCandidate(candidates)?.id ?? null;
 }
 
+export interface ExclusionVerdict {
+  count: number;
+  components: string[];
+}
+
+export function componentExclusionVerdict(
+  rows: { component?: string | null }[],
+  trackedComponent: string | null,
+): ExclusionVerdict {
+  if (!trackedComponent) return { count: 0, components: [] };
+  const dropped = rows.filter((r) => r.component !== trackedComponent);
+  const components = [...new Set(dropped.map((r) => r.component ?? "unlabeled"))].sort();
+  return { count: dropped.length, components };
+}
+
 export function slopeGatePass(fit: Fit | null, worsening: WorseningDirection): boolean {
   if (!fit) return false;
   return worsening === "increase" ? fit.slope > 0 : fit.slope < 0;
+}
+
+/** Statistical trend gate: |slope| ≥ TREND_SIG_FACTOR × SE of slope. */
+export function significanceGatePass(fit: Fit | null): boolean {
+  if (!fit) return false;
+  if (!Number.isFinite(fit.slope) || !Number.isFinite(fit.seOfSlope)) return false;
+  // Perfect fit (SE = 0): slope stands on its own only if it is not flat.
+  if (fit.seOfSlope === 0) return fit.slope !== 0;
+  return Math.abs(fit.slope) >= TREND_SIG_FACTOR * fit.seOfSlope;
 }
 
 export interface DerivePfInput {
@@ -207,12 +247,25 @@ export function derivePf(input: DerivePfInput): PfDerivation {
       ? findDetectionDate(pts, threshold.value, storedDetection, worsening)
       : storedDetection;
 
+  // Gate chain: (1) thin history, (2) statistical significance, (3) direction.
   const g9Pass = n >= MIN_POINTS && spanDays >= MIN_SPAN_DAYS;
+  const significancePass = significanceGatePass(fit);
   const gatePass = slopeGatePass(fit, worsening);
+
+  // Every verdict names its own reason; selection policy/thresholds unchanged.
+  const verdict: PfVerdict = !g9Pass
+    ? "thin"
+    : !significancePass
+      ? "stable"
+      : !gatePass
+        ? "improving"
+        : !threshold
+          ? "no-threshold"
+          : "window";
 
   let fWindow: FWindow | null = null;
   let rulLabel: string | null = null;
-  if (g9Pass && gatePass && fit && threshold) {
+  if (verdict === "window" && fit && threshold) {
     const last = pts[n - 1];
     const toDays = (sl: number): number => {
       if (worsening === "increase") {
@@ -230,7 +283,7 @@ export function derivePf(input: DerivePfInput): PfDerivation {
     const dSlow = toDays(slower);
     fWindow = {
       lower: dFast,
-      upper: dSlow <= 0 || !Number.isFinite(dSlow) ? Infinity : dSlow,
+      upper: Number.isFinite(dSlow) ? dSlow : Infinity,
       median: dMed,
     };
     rulLabel = Number.isFinite(dMed) ? dayLabel(dMed) : `Unconstrained (>${MAX_WINDOW_DAYS}d)`;
@@ -258,7 +311,9 @@ export function derivePf(input: DerivePfInput): PfDerivation {
     functionalThreshold: threshold,
     detectionDate,
     g9Pass,
+    significancePass,
     slopeGatePass: gatePass,
+    verdict,
     fWindow,
     rulLabel,
     selectionNote,
