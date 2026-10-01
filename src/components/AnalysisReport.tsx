@@ -61,7 +61,6 @@ import InfraredPrognosticsTab from "./reports/InfraredPrognosticsTab";
 import UltrasoundPrognosticsTab from "./reports/UltrasoundPrognosticsTab";
 import OilPrognosticsTab from "./reports/OilPrognosticsTab";
 import McaPrognosticsTab from "./reports/McaPrognosticsTab";
-import ComponentPrognosticsSummary from "./reports/ComponentPrognosticsSummary";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
 import {
@@ -6076,7 +6075,9 @@ export default function AnalysisReport({
         const rows = await fetchAnalysisResults({ limit: 200 });
         if (cancelled) return;
         setLoadedAnalyses(rows);
-        setSelectedAnalysis(null);
+        // Keep an explicit selection that landed while this list fetch was in
+        // flight (drill-down hydration or a sidebar pick); otherwise stay null.
+        setSelectedAnalysis((prev) => prev ?? null);
         setHasLoadedReport(true);
         setLoadError(null);
       } catch (err) {
@@ -6111,6 +6112,13 @@ export default function AnalysisReport({
    */
   const deepLinkReportId = useQueryParam("reportId");
   const deepLinkAssetId = useQueryParam("assetId");
+  // Drill-down context from the Multi-Tech Fusion prognosis rows: equipment
+  // identity (route/asset/component) plus the target modality and tab.
+  const hydrateRoute = useQueryParam("route");
+  const hydrateAsset = useQueryParam("asset");
+  const hydrateComponent = useQueryParam("component");
+  const hydrateTech = useQueryParam("tech");
+  const hydrateTab = useQueryParam("tab");
 
   const openReport = useCallback((reportId: string) => {
     navigateToTab("analysis", { reportId });
@@ -6550,6 +6558,87 @@ export default function AnalysisReport({
     }
   };
 
+  /**
+   * Drill-down hydration (Multi-Tech Fusion prognosis rows):
+   * `?route=&asset=&component=&tech=&tab=`. Read once on mount. The asset is
+   * the anchor — without a valid one the link falls back to today's defaults
+   * with a visible notice; provided-but-unknown values are confessed the same
+   * way and never applied silently. No params at all = today's behavior.
+   */
+  const hydrationAppliedRef = useRef(false);
+  const hydrationNavRef = useRef<{ tech: ReportTechnology; tab: ReportTab } | null>(null);
+  const [hydrationLoadRequested, setHydrationLoadRequested] = useState(false);
+  const hydrationLoadStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (hydrationAppliedRef.current) return;
+    hydrationAppliedRef.current = true;
+
+    if (!hydrateRoute && !hydrateAsset && !hydrateComponent && !hydrateTech && !hydrateTab) {
+      return; // no link context — default behavior, nothing to confess
+    }
+
+    const flat = hydrateAsset
+      ? flatEquipment.find((a) => a.tag === hydrateAsset || a.id === hydrateAsset)
+      : undefined;
+    if (!flat) {
+      toast(
+        `Report link context not found${
+          hydrateAsset ? ` for asset "${hydrateAsset}"` : " (missing asset parameter)"
+        } — showing the default selection.`,
+        "warning"
+      );
+      return;
+    }
+
+    const notes: string[] = [];
+    if (hydrateRoute && hydrateRoute !== flat.routeName) {
+      notes.push(`unknown route "${hydrateRoute}" (using "${flat.routeName}")`);
+    }
+    let component = flat.components[0]?.name ?? "";
+    if (hydrateComponent) {
+      if (flat.components.some((c) => c.name === hydrateComponent)) component = hydrateComponent;
+      else notes.push(`unknown component "${hydrateComponent}" (using "${component || "none"}")`);
+    }
+    let tech: ReportTechnology = "vibration";
+    if (hydrateTech) {
+      if (REPORT_TECH_CARDS.some((c) => c.id === hydrateTech)) tech = hydrateTech as ReportTechnology;
+      else notes.push(`unknown modality "${hydrateTech}" (using "vibration")`);
+    }
+    let tab: ReportTab = 1;
+    if (hydrateTab) {
+      const parsed = Number(hydrateTab);
+      const validIds = getModalityTabs(tech).map((t) => t.id);
+      if (Number.isInteger(parsed) && validIds.includes(parsed as ReportTab)) tab = parsed as ReportTab;
+      else notes.push(`unknown tab "${hydrateTab}" (using tab 1)`);
+    }
+    if (notes.length) toast(`Report link: ${notes.join("; ")}.`, "warning");
+
+    setSelectedRoute(flat.routeName);
+    setSelectedAsset(flat.tag);
+    setSelectedComponent(component);
+    hydrationNavRef.current = { tech, tab };
+    setHydrationLoadRequested(true);
+    // Mount-only: first-render query values; later navigations do not re-hydrate.
+  }, []);
+
+  // Follow-up load: runs after the hydrated selectors are committed so
+  // handleLoadReport reads them; then applies modality + tab, mirroring the
+  // manual flow (select equipment → load → switch tile) so the existing
+  // modality-change effect re-selects the target modality's run.
+  useEffect(() => {
+    if (!hydrationLoadRequested || hydrationLoadStartedRef.current) return;
+    hydrationLoadStartedRef.current = true;
+    void handleLoadReport().then(() => {
+      const nav = hydrationNavRef.current;
+      if (!nav) return;
+      setSelectedTech(nav.tech);
+      setActiveTab(nav.tab);
+    });
+    // Deliberately not cancelled: the trailing state writes are harmless after
+    // unmount, and StrictMode's double-invoke must not double-load.
+  }, [hydrationLoadRequested]);
+
   const addPartToReport = (part: InventoryPart) => {
     setReportParts((prev) =>
       prev.some((line) => line.partId === part.id) ? prev : [...prev, { partId: part.id, quantity: 1 }]
@@ -6666,16 +6755,6 @@ export default function AnalysisReport({
             })}
           </div>
         </section>
-
-        <ComponentPrognosticsSummary
-          selectedAnalysis={selectedAnalysis}
-          loadedAnalyses={loadedAnalyses}
-          equipmentAssetId={equipmentAssetId}
-          onSelectModality={(id) => {
-            setSelectedTech(id);
-            setActiveTab(4);
-          }}
-        />
 
         {/* ===== Equipment Selection ===== */}
         <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">

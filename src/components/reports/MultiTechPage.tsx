@@ -5,17 +5,20 @@
  * routing; the actual cross-technology assessment lives in MultiTechTab.
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Layers, Loader2 } from "lucide-react";
 import {
   fetchAnalysisResults,
   type SavedAnalysisResult,
 } from "../../lib/analysisPersistence";
+import { getFlatEquipment } from "../../data/equipmentDb";
 import { navigateToTab } from "../../navigation";
 import { useQueryParam } from "../../lib/useQueryParam";
 import { useToast } from "../Toast";
 import SavedReportViewer from "./SavedReportViewer";
 import MultiTechTab from "./MultiTechTab";
+import ComponentPrognosticsSummary from "./ComponentPrognosticsSummary";
+import type { PrognosticsModality } from "./prognosticsResolvers";
 
 interface MultiTechPageProps {
   selectedCompanyId?: number;
@@ -65,6 +68,67 @@ export default function MultiTechPage({ selectedCompanyId }: MultiTechPageProps)
 
   const closeReport = (assetId?: string | null) => {
     navigateToTab("multi-tech", assetId ? { assetId } : {});
+  };
+
+  /** Component scope for the prognosis section: newest record's component wins. */
+  const [prognosisComponent, setPrognosisComponent] = useState<string | null>(null);
+  const prognosisInitAssetRef = useRef<string | null>(null);
+
+  const assetComponentRows = useMemo(() => {
+    return [...loadedAnalyses]
+      .filter((r) => r.asset_id === assessmentAssetId)
+      .sort(
+        (a, b) =>
+          new Date(b.timestamp || b.created_at || 0).getTime() -
+          new Date(a.timestamp || a.created_at || 0).getTime()
+      );
+  }, [loadedAnalyses, assessmentAssetId]);
+
+  const componentsForAsset = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of assetComponentRows) {
+      if (row.component) names.add(row.component);
+    }
+    return [...names].sort();
+  }, [assetComponentRows]);
+
+  const hasComponentlessRecords = useMemo(
+    () => assetComponentRows.some((r) => !r.component),
+    [assetComponentRows]
+  );
+
+  useEffect(() => {
+    if (!assessmentAssetId || prognosisInitAssetRef.current === assessmentAssetId) return;
+    if (assetComponentRows.length === 0) return; // wait for records to land
+    prognosisInitAssetRef.current = assessmentAssetId;
+    setPrognosisComponent(assetComponentRows.find((r) => r.component)?.component ?? null);
+  }, [assessmentAssetId, assetComponentRows]);
+
+  const prognosisAnalysis = useMemo<SavedAnalysisResult | null>(() => {
+    if (!assessmentAssetId) return null;
+    const pool = prognosisComponent
+      ? assetComponentRows.filter((r) => r.component === prognosisComponent)
+      : assetComponentRows.filter((r) => !r.component);
+    return pool[0] ?? null;
+  }, [assetComponentRows, assessmentAssetId, prognosisComponent]);
+
+  /**
+   * Drill-down: the payload carries the full equipment context (route/asset/
+   * component) plus modality + tab — context alone or modality alone would
+   * land Analysis Reports on the wrong asset or a blank reading room.
+   */
+  const openPrognostics = (id: PrognosticsModality) => {
+    if (!assessmentAssetId) return;
+    const flat = getFlatEquipment().find(
+      (a) => a.tag === assessmentAssetId || a.id === assessmentAssetId
+    );
+    navigateToTab("analysis", {
+      route: flat?.routeName ?? "",
+      asset: assessmentAssetId,
+      component: prognosisComponent ?? "",
+      tech: id,
+      tab: "4",
+    });
   };
 
   if (deepLinkReportId) {
@@ -138,6 +202,42 @@ export default function MultiTechPage({ selectedCompanyId }: MultiTechPageProps)
             <p className="text-sm text-slate-500 pb-2">
               Assets with saved records ({assetsWithRecords.length})
             </p>
+          </div>
+          <div className="mt-4 space-y-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-0">
+                <label
+                  htmlFor="prognosis-component"
+                  className="text-xs font-semibold text-slate-500 uppercase tracking-widest block mb-1"
+                >
+                  Prognosis Component
+                </label>
+                <select
+                  id="prognosis-component"
+                  value={prognosisComponent ?? ""}
+                  onChange={(e) => setPrognosisComponent(e.target.value || null)}
+                  className="h-9 min-w-[200px] px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-amber-400/60"
+                >
+                  {(hasComponentlessRecords || componentsForAsset.length === 0) && (
+                    <option value="">All components (asset-wide)</option>
+                  )}
+                  {componentsForAsset.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="text-sm text-slate-500 pb-2">
+                Components with saved records ({componentsForAsset.length})
+              </p>
+            </div>
+            <ComponentPrognosticsSummary
+              selectedAnalysis={prognosisAnalysis}
+              loadedAnalyses={loadedAnalyses}
+              equipmentAssetId={assessmentAssetId}
+              onSelectModality={openPrognostics}
+            />
           </div>
           {assessmentAssetId && (
             <MultiTechTab

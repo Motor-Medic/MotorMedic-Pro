@@ -1,11 +1,15 @@
 /**
- * ComponentPrognosticsSummary — component-level P-F front door rendered between
- * the Technology tiles and Equipment Selection: one verdict row per modality.
- * Rows run the SAME resolvers + pfEngine as each modality's Prognostics tab
- * (tab 4), with the tab's default inputs: default series selection (largest N,
- * ties by severity), threshold ladder with stored / named-proxy provenance.
- * Row click drills into that modality's Prognostics tab for the full basis
- * card, series selector, and uncertainty band — no basis recomputed here.
+ * ComponentPrognosticsSummary — component-level P-F front door mounted on the
+ * Multi-Tech Fusion page (cross-modality component synthesis lives there;
+ * Analysis Reports is a per-modality reading room). One verdict row per
+ * modality, scoped to the page's selected component. Rows run the SAME
+ * resolvers + pfEngine as each modality's Prognostics tab (tab 4), with the
+ * tab's default inputs: default series selection (largest N, ties by
+ * severity), threshold ladder with stored / named-proxy provenance.
+ * onSelectModality is a navigation callback: the host page must carry its
+ * full equipment context (route / asset / component) with the target
+ * modality + tab — arriving on Analysis Reports about the wrong asset (or
+ * with a blank reading room) is a defect, not a navigation.
  */
 import { useEffect, useMemo, useState } from "react";
 import { ChevronRight } from "lucide-react";
@@ -49,6 +53,10 @@ interface Props {
   selectedAnalysis: SavedAnalysisResult | null;
   loadedAnalyses: SavedAnalysisResult[];
   equipmentAssetId?: string | null;
+  /**
+   * Row-click navigation callback. The host must route to Analysis Reports
+   * carrying equipment context (route / asset / component) + modality + tab 4.
+   */
   onSelectModality: (id: PrognosticsModality) => void;
 }
 
