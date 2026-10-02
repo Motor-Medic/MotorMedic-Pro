@@ -1,8 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Loader2, Sparkles, Zap } from "lucide-react";
 import { fetchAlerts, fetchAnalysisResults, type SavedAlert, type SavedAnalysisResult } from "../lib/analysisPersistence";
 import RouteCadenceSection from "./planning/RouteCadenceSection";
 import WorkOrderVerificationSection from "./planning/WorkOrderVerificationSection";
+import {
+  approveWorkOrderDraft,
+  discardWorkOrderDraft,
+  getWorkOrderDraftsSnapshot,
+  subscribeWorkOrderDrafts,
+  type WorkOrderDraft
+} from "../lib/maintenance/workOrderDrafts";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx)                                     */
@@ -132,6 +139,109 @@ const tabBtn = (active: boolean) =>
       ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
       : "bg-slate-800 border-slate-700 text-slate-400"
   }`;
+
+/* ========================================================================== */
+/* Draft Proposals (H3-2) - proposals generated from Fusion WINDOW/CROSSED    */
+/* rows. A draft is never a work order: approve only records a state that     */
+/* still awaits real CMMS integration (none is built). No dollars on drafts.  */
+/* ========================================================================== */
+
+function DraftProposalsSection() {
+  const drafts = useSyncExternalStore(subscribeWorkOrderDrafts, getWorkOrderDraftsSnapshot);
+
+  return (
+    <section className={`${CARD} mb-6`}>
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+        Draft Proposals
+      </p>
+      {drafts.length === 0 ? (
+        <p className="text-xs italic text-slate-400">
+          no draft proposals - no WINDOW or CROSSED verdicts pending
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {drafts.map((d: WorkOrderDraft) => (
+            <div key={d.id}>
+              <DraftProposalCard draft={d} />
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DraftProposalCard({ draft: d }: { draft: WorkOrderDraft }) {
+  const generated = d.generatedAt
+    ? new Date(d.generatedAt).toLocaleString()
+    : "generated-at not on record";
+  const slopeTxt =
+    d.slope !== null && d.seOfSlope !== null
+      ? `slope ${d.slope.toFixed(4)} +/- ${d.seOfSlope.toFixed(4)} ${d.unit || "units"} per day`
+      : "slope not computed - no fit on record";
+
+  return (
+    <div className="rounded-lg border border-slate-700/80 bg-slate-950/40 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <span className="text-sm font-bold text-white">{d.modalityLabel}</span>
+          <span className="text-[11px] text-slate-400 font-mono">
+            {d.assetId}
+            {d.component ? ` / ${d.component}` : ""}
+          </span>
+          <span className="px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 border-amber-500/40 text-amber-300">
+            {d.verdict || "verdict not on record"}
+          </span>
+          <span className="px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider bg-slate-500/15 border-slate-500/40 text-slate-300">
+            {d.status}
+          </span>
+        </div>
+        <div className="flex gap-2 shrink-0">
+          {d.status === "draft" && (
+            <button
+              type="button"
+              onClick={() => approveWorkOrderDraft(d.id)}
+              className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 cursor-pointer"
+            >
+              Approve
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => discardWorkOrderDraft(d.id)}
+            className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/40 text-red-300 hover:bg-red-500/10 cursor-pointer"
+          >
+            Discard
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-1 text-[11px] text-slate-400">
+        <p>target: {d.target || "target not on record"}</p>
+        <p>
+          tracked metric: {d.trackedMetric || "not on record"} · unit: {d.unit || "not on record"}
+        </p>
+        <p>
+          verdict: {d.verdict || "not on record"} - {d.sentence || "sentence not on record"}
+        </p>
+        <p>
+          N = {d.n} over {d.spanDays.toFixed(1)} days · {slopeTxt}
+        </p>
+        <p>threshold provenance: {d.thresholdProvenance}</p>
+        <p>generated at: {generated}</p>
+      </div>
+
+      <p className="text-[10px] text-amber-400/90 italic mt-2">
+        proposal is guidance, not a diagnosis
+      </p>
+      {d.status === "approved" && (
+        <p className="text-[10px] text-cyan-300 mt-1">
+          approved - awaiting real CMMS integration (no sync built)
+        </p>
+      )}
+    </div>
+  );
+}
 
 export default function MaintenanceCalendar({
   selectedCompanyId,
@@ -505,6 +615,7 @@ export default function MaintenanceCalendar({
       </div>
 
       {/* ===== TAB 1: SCHEDULE & DISPATCH ===== */}
+      {activeCalTab === 1 && <DraftProposalsSection />}
       {activeCalTab === 1 && <WorkOrderVerificationSection />}
 
       {activeCalTab === 1 && <RouteCadenceSection variant="planner" />}

@@ -11,11 +11,22 @@
  * modality + tab — arriving on Analysis Reports about the wrong asset (or
  * with a blank reading room) is a defect, not a navigation.
  */
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type MouseEvent,
+} from "react";
 import { ChevronRight } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
 import type { OilSample } from "../../types/oilAnalysis";
+import {
+  getWorkOrderDraftsSnapshot,
+  proposeWorkOrderDraft,
+  subscribeWorkOrderDrafts,
+} from "../../lib/maintenance/workOrderDrafts";
 import {
   componentExclusionVerdict,
   derivePf,
@@ -73,6 +84,9 @@ interface SummaryRow {
   seriesLabel: string;
   unit: string;
   exclusion: ExclusionVerdict;
+  slope: number | null;
+  seOfSlope: number | null;
+  thresholdProvenance: string;
 }
 
 const MODALITY_META: Record<PrognosticsModality, { title: string; empty: string }> = {
@@ -144,6 +158,9 @@ function rowFromDerivation(
       seriesLabel: "—",
       unit: d.unit,
       exclusion,
+      slope: null,
+      seOfSlope: null,
+      thresholdProvenance: "no threshold on record - no series",
     };
   }
   return {
@@ -157,6 +174,11 @@ function rowFromDerivation(
     seriesLabel: d.seriesLabel,
     unit: d.unit,
     exclusion,
+    slope: d.fit ? d.fit.slope : null,
+    seOfSlope: d.fit ? d.fit.seOfSlope : null,
+    thresholdProvenance: resolved.threshold
+      ? resolved.threshold.provenance
+      : "no threshold on record - below-detection check withheld",
   };
 }
 
@@ -285,6 +307,9 @@ export default function ComponentPrognosticsSummary({
         seriesLabel: "—",
         unit: "ppm",
         exclusion: { count: 0, components: [] },
+        slope: null,
+        seOfSlope: null,
+        thresholdProvenance: "not computed - loading stored oil samples",
       };
     }
     if (oilStatus === "error") {
@@ -299,6 +324,9 @@ export default function ComponentPrognosticsSummary({
         seriesLabel: "—",
         unit: "ppm",
         exclusion: { count: 0, components: [] },
+        slope: null,
+        seOfSlope: null,
+        thresholdProvenance: "not computed - oil samples unavailable",
       };
     }
     const candidates = oilCandidates(sortedOil);
@@ -315,6 +343,36 @@ export default function ComponentPrognosticsSummary({
   const rows: SummaryRow[] = [vibrationRow, thermographyRow, ultrasoundRow, mcaRow, oilRow].filter(
     (r): r is SummaryRow => r != null,
   );
+
+  const drafts = useSyncExternalStore(subscribeWorkOrderDrafts, getWorkOrderDraftsSnapshot);
+  const draftAssetId = asset ?? equipmentAssetId ?? "";
+  const hasOpenDraft = (modality: PrognosticsModality) =>
+    draftAssetId !== "" && drafts.some((d) => d.assetId === draftAssetId && d.modality === modality);
+
+  const onPropose = (e: MouseEvent, row: SummaryRow) => {
+    e.stopPropagation();
+    if (!draftAssetId) return;
+    const seriesPresent =
+      !!row.seriesLabel && row.seriesLabel !== "—" && !row.seriesLabel.startsWith("no tracked series");
+    proposeWorkOrderDraft({
+      assetId: draftAssetId,
+      component: component ?? "",
+      modality: row.id,
+      modalityLabel: row.title,
+      target: seriesPresent
+        ? row.seriesLabel
+        : `${row.title} degradation - no single fault in scope`,
+      trackedMetric: seriesPresent ? row.seriesLabel : "no tracked series on record",
+      unit: row.unit,
+      verdict: row.chip,
+      sentence: row.sentence,
+      n: row.n,
+      spanDays: row.spanDays,
+      slope: row.slope,
+      seOfSlope: row.seOfSlope,
+      thresholdProvenance: row.thresholdProvenance,
+    });
+  };
 
   return (
     <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">
@@ -339,10 +397,18 @@ export default function ComponentPrognosticsSummary({
       )}
 
       {rows.map((row) => (
-        <button
+        <div
           key={row.id}
-          type="button"
+          role="button"
+          tabIndex={0}
           onClick={() => onSelectModality(row.id)}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onSelectModality(row.id);
+            }
+          }}
           className="w-full text-left bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 flex items-start gap-3 hover:border-yellow-500/60 hover:bg-slate-800 transition-all cursor-pointer"
         >
           <div className="min-w-0 flex-1 space-y-1.5">
@@ -358,6 +424,16 @@ export default function ComponentPrognosticsSummary({
               >
                 {KIND_TAG_LABEL[row.kind]}
               </span>
+              {(row.chip === "WINDOW" || row.chip === "CROSSED") && draftAssetId !== "" && (
+                <button
+                  type="button"
+                  disabled={hasOpenDraft(row.id)}
+                  onClick={(e) => onPropose(e, row)}
+                  className="ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-slate-600 text-slate-300 hover:border-cyan-400/60 hover:text-cyan-300 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {hasOpenDraft(row.id) ? "Draft pending" : "Propose work order"}
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-300 leading-relaxed">{row.sentence}</p>
             <p className="text-[10px] text-slate-500">
@@ -373,7 +449,7 @@ export default function ComponentPrognosticsSummary({
             )}
           </div>
           <ChevronRight className="w-4 h-4 text-slate-500 shrink-0 mt-1" />
-        </button>
+        </div>
       ))}
 
       <footer className="border-t border-slate-800 pt-3">

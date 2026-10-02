@@ -1,4 +1,9 @@
 import React, { useState, useEffect } from "react";
+import { getPrescription } from "../../lib/maintenance/prescriptiveDictionary";
+import {
+  loadClosedWoStore,
+  type SeededVerificationRun,
+} from "../../lib/maintenance/closedWorkOrderSeed";
 
 const FAULTS_KEY = "spectra_reliability_faults_v1";
 
@@ -26,6 +31,86 @@ function loadFaults(): FaultEntry[] {
     }
   } catch {}
   return [];
+}
+
+const HEALED_WINDOW_DAYS = 14;
+const HEALED_MS = HEALED_WINDOW_DAYS * 86400000;
+
+const VERIF_UNIT_BY_ANALYSIS: Record<string, string> = {
+  vibration: "mm/s",
+  ultrasound: "dB",
+  infrared: "°C",
+  thermography: "°C",
+  mca: "A",
+  oil_analysis: "ppm",
+};
+
+function countHealedClosedWos(): number {
+  const store = loadClosedWoStore();
+  let count = 0;
+  for (const wo of store.workOrders) {
+    const closeMs = new Date(wo.closeDate).getTime();
+    if (!Number.isFinite(closeMs)) continue;
+    const component = wo.component.trim().toLowerCase();
+    let post: SeededVerificationRun | null = null;
+    let postMs = Infinity;
+    for (const r of store.postRepairRuns) {
+      if (r.assetId !== wo.assetId) continue;
+      if (component.length > 0 && r.component.trim().toLowerCase() !== component) continue;
+      const ms = new Date(r.timestamp).getTime();
+      if (!Number.isFinite(ms) || ms < closeMs || ms - closeMs > HEALED_MS) continue;
+      if (ms < postMs) {
+        post = r;
+        postMs = ms;
+      }
+    }
+    if (!post) continue;
+    const target = wo.targetFault.trim().toLowerCase();
+    const tol = wo.trackedHz !== null ? Math.max(2, Math.abs(wo.trackedHz) * 0.02) : null;
+    let reported = post.fault_list.some((f) => {
+      const title = (f.title ?? "").trim().toLowerCase();
+      const titleHit =
+        target.length > 0 &&
+        title.length > 0 &&
+        (title === target || title.includes(target) || target.includes(title));
+      const hzHit =
+        tol !== null &&
+        wo.trackedHz !== null &&
+        f.frequencyHz != null &&
+        Math.abs(f.frequencyHz - wo.trackedHz) <= tol;
+      return titleHit || hzHit;
+    });
+    const primary = (post.primary_fault ?? "").trim().toLowerCase();
+    if (
+      !reported &&
+      target.length > 0 &&
+      primary.length > 0 &&
+      (primary === target || primary.includes(target))
+    ) {
+      reported = true;
+    }
+    if (reported) continue;
+    if (wo.trackedHz === null || tol === null) continue;
+    let hit: { frequencyHz: number; amplitude: number } | null = null;
+    for (const p of post.peaks) {
+      if (
+        Math.abs(p.frequencyHz - wo.trackedHz) <= tol &&
+        (hit === null || p.amplitude > hit.amplitude)
+      ) {
+        hit = p;
+      }
+    }
+    if (hit === null) continue;
+    const unit = VERIF_UNIT_BY_ANALYSIS[(post.analysisType ?? "").trim().toLowerCase()] ?? "";
+    const zones = getPrescription(wo.targetFault).severityZones;
+    const ladderUnit = (zones.unit ?? "").trim();
+    if (unit.length === 0 || ladderUnit.length === 0 || unit !== ladderUnit) continue;
+    const threshold =
+      zones.alarm != null && Number.isFinite(Number(zones.alarm)) ? Number(zones.alarm) : null;
+    if (threshold === null || hit.amplitude >= threshold) continue;
+    count += 1;
+  }
+  return count;
 }
 
 function monthsBetween(start: Date, end: Date): string[] {
@@ -73,6 +158,7 @@ export default function BacklogVelocityTab({
   selectedCompanyId,
 }: BacklogVelocityTabProps) {
   const [faults, setFaults] = useState<FaultEntry[]>([]);
+  const [verifiedCount] = useState(() => countHealedClosedWos());
 
   useEffect(() => {
     setFaults(loadFaults());
@@ -323,6 +409,10 @@ export default function BacklogVelocityTab({
             Implemented (woClosedDate)
           </span>
         </div>
+
+        <p className="text-[10px] text-slate-500 mt-3">
+          verified by post-repair evidence: {verifiedCount}
+        </p>
 
         {isFallingBehind && (
           <p className="text-xs text-amber-400/80 italic mt-3 border-l-2 border-amber-400/40 pl-3">
