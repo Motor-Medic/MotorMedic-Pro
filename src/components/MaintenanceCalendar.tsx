@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Loader2, Sparkles, Zap } from "lucide-react";
 import { fetchAlerts, fetchAnalysisResults, type SavedAlert, type SavedAnalysisResult } from "../lib/analysisPersistence";
 import RouteCadenceSection from "./planning/RouteCadenceSection";
+import WorkOrderVerificationSection from "./planning/WorkOrderVerificationSection";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx)                                     */
@@ -264,6 +265,8 @@ export default function MaintenanceCalendar({
       </div>
 
       {/* ===== TAB 1: SCHEDULE & DISPATCH ===== */}
+      {activeCalTab === 1 && <WorkOrderVerificationSection />}
+
       {activeCalTab === 1 && loading && (
         <div className={`${CARD} mb-6 flex items-center gap-2 text-sm text-slate-400`}>
           <Loader2 className="h-4 w-4 animate-spin" />
