@@ -247,34 +247,14 @@ export default function MaintenanceCalendar({
         </div>
       </div>
 
-      <RouteCadenceSection variant="planner" />
-      <RouteCadenceSection variant="calendar" />
-
-      {/* ===== SUB-TAB NAV ===== */}
-      <div className="flex flex-wrap gap-2 mb-6">
-        {CAL_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveCalTab(tab.id)}
-            className={tabBtn(activeCalTab === tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ===== TAB 1: SCHEDULE & DISPATCH ===== */}
-      {activeCalTab === 1 && <WorkOrderVerificationSection />}
-
-      {activeCalTab === 1 && loading && (
+      {loading && (
         <div className={`${CARD} mb-6 flex items-center gap-2 text-sm text-slate-400`}>
           <Loader2 className="h-4 w-4 animate-spin" />
           Loading scheduled events…
         </div>
       )}
 
-      {activeCalTab === 1 && !loading && events.length === 0 && (
+      {!loading && events.length === 0 && (
         <section className={`${CARD} mb-6 text-center py-16 px-4`}>
           {fetchFailed ? (
             <p className="text-sm text-amber-400">alerts unavailable - fetch failed</p>
@@ -290,7 +270,7 @@ export default function MaintenanceCalendar({
         </section>
       )}
 
-      {activeCalTab === 1 && !loading && events.length > 0 && (
+      {!loading && events.length > 0 && (
         <>
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-6">
             <div className="flex flex-wrap gap-2">
@@ -509,6 +489,26 @@ export default function MaintenanceCalendar({
           )}
         </>
       )}
+
+      {/* ===== SUB-TAB NAV ===== */}
+      <div className="flex flex-wrap gap-2 mb-6">
+        {CAL_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveCalTab(tab.id)}
+            className={tabBtn(activeCalTab === tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ===== TAB 1: SCHEDULE & DISPATCH ===== */}
+      {activeCalTab === 1 && <WorkOrderVerificationSection />}
+
+      {activeCalTab === 1 && <RouteCadenceSection variant="planner" />}
+      {activeCalTab === 1 && <RouteCadenceSection variant="calendar" />}
 
       {/* ===== TAB 2: RESOURCE & SKILLS ===== */}
       {activeCalTab === 2 && (
