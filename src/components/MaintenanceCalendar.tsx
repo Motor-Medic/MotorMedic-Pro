@@ -33,11 +33,11 @@ const CAL_TABS: { id: CalTab; label: string }[] = [
   { id: 4, label: "📋 PM/PdM Templates" }
 ];
 
-const CAL_VIEWS: { id: CalView; label: string }[] = [
-  { id: "month", label: "Month" },
-  { id: "week", label: "Week" },
-  { id: "gantt", label: "Gantt" },
-  { id: "list", label: "List" }
+const CAL_VIEWS: { id: CalView; label: string; title: string }[] = [
+  { id: "month", label: "Month", title: "month grid" },
+  { id: "week", label: "Week", title: "week list" },
+  { id: "gantt", label: "Gantt", title: "gantt timeline" },
+  { id: "list", label: "List", title: "flat list" }
 ];
 
 interface CalendarEvent {
@@ -151,8 +151,11 @@ function DraftProposalsSection() {
 
   return (
     <section className={`${CARD} mb-6`}>
-      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">
         Draft Proposals
+      </p>
+      <p className="text-xs text-slate-500 mb-3">
+        proposals awaiting your approval - generated from prognostic verdicts
       </p>
       {drafts.length === 0 ? (
         <p className="text-xs italic text-slate-400">
@@ -315,6 +318,28 @@ export default function MaintenanceCalendar({
     );
   };
 
+  const rangeLabel = useMemo(() => {
+    if (calView === "month") return monthLabel;
+    const list = calView === "week" ? events.slice(0, 14) : events;
+    if (list.length === 0) return "no dates on record";
+    const fmt = (d: Date) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const newest = list[0].when;
+    const oldest = list[list.length - 1].when;
+    return oldest.getTime() === newest.getTime() ? fmt(newest) : `${fmt(oldest)} - ${fmt(newest)}`;
+  }, [calView, monthLabel, events]);
+
+  const eventsInView = useMemo(() => {
+    if (calView === "week") return Math.min(14, events.length);
+    if (calView !== "month") return events.length;
+    const anchor = events[0]?.when ?? new Date();
+    return events.filter(
+      (ev) => ev.when.getFullYear() === anchor.getFullYear() && ev.when.getMonth() === anchor.getMonth()
+    ).length;
+  }, [events, calView]);
+
+  const viewLabel = CAL_VIEWS.find((v) => v.id === calView)?.label ?? "Month";
+  const groupLabel = groupBy === "asset" ? "Asset Route" : "Technician";
+
   return (
     <div className="w-full min-h-full bg-slate-950 text-white px-4 py-6 md:px-6">
       {/* ===== GLOBAL HEADER ===== */}
@@ -324,16 +349,10 @@ export default function MaintenanceCalendar({
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
               Maintenance Calendar Engine
             </p>
-            <div className="flex flex-wrap gap-2">
-              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs">
-                <span className="text-slate-300">
-                  SCHEDULED EVENTS: {loading ? "…" : events.length}
-                </span>
-              </div>
-              <div className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-xs text-slate-400">
-                From saved alerts, action plans &amp; sign-offs
-              </div>
-            </div>
+            <p className="text-xs text-slate-400">
+              {loading ? "loading scheduled events" : `${events.length} scheduled events`}
+              {" - compiled from saved alerts, action plans & sign-offs"}
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -355,6 +374,9 @@ export default function MaintenanceCalendar({
             </button>
           </div>
         </div>
+        <p className="text-[11px] text-slate-500 mt-4 pt-3 border-t border-white/5">
+          {`Showing ${viewLabel} ${rangeLabel} - grouped by ${groupLabel} - ${eventsInView} events in view`}
+        </p>
       </div>
 
       {loading && (
@@ -389,6 +411,7 @@ export default function MaintenanceCalendar({
                   key={view.id}
                   type="button"
                   onClick={() => setCalView(view.id)}
+                  title={view.title}
                   className={tabBtn(calView === view.id)}
                 >
                   {view.label}
@@ -396,7 +419,7 @@ export default function MaintenanceCalendar({
               ))}
             </div>
             <label className="inline-flex items-center gap-2 text-xs text-slate-400">
-              Group By:
+              Group events by:
               <select
                 value={groupBy}
                 onChange={(e) => setGroupBy(e.target.value as GroupBy)}
@@ -430,7 +453,7 @@ export default function MaintenanceCalendar({
                 {monthDays.map((day, idx) => (
                   <div
                     key={idx}
-                    className="min-h-[88px] rounded-lg border border-white/10 bg-slate-950/50 p-1.5"
+                    className="min-h-[88px] max-h-[88px] overflow-hidden rounded-lg border border-white/10 bg-slate-950/50 p-1.5"
                   >
                     {day && (
                       <>
@@ -440,9 +463,10 @@ export default function MaintenanceCalendar({
                             key={ev.id}
                             type="button"
                             onClick={() => setSelectedWO(ev)}
+                            title={`${ev.time} — ${ev.title}`}
                             className="w-full text-left rounded-md border border-cyan-500/40 bg-cyan-500/10 p-1.5 mb-1 cursor-pointer hover:border-cyan-400/60 transition-colors"
                           >
-                            <p className="text-[10px] font-bold text-white leading-tight truncate">
+                            <p className="text-[10px] font-bold text-white leading-tight line-clamp-2 break-words">
                               {ev.time} — {ev.title}
                             </p>
                           </button>

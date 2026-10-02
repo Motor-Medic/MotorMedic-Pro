@@ -123,6 +123,21 @@ function AnalystTag({ analyst }: { analyst: string | null }) {
   return <span className="text-[11px] italic text-slate-500 shrink-0">analyst not assigned</span>;
 }
 
+function collapseSentence(
+  routeName: string,
+  parts: { b: Bucket; dayText: string; dueText: string | null }[]
+): string {
+  const first = parts[0];
+  const labels = parts
+    .map((p) => (p.b.label === "MCA" ? "MCA" : p.b.label.toLowerCase()))
+    .join(", ");
+  const raw = first.dueText ?? "";
+  const dash = raw.indexOf(" - ");
+  let tail = dash >= 0 ? raw.slice(dash + 3) : raw;
+  if (tail.startsWith("due date ")) tail = `due dates ${tail.slice("due date ".length)}`;
+  return `${routeName} - ${first.dayText} for ${labels} - ${tail}`;
+}
+
 function PlannerGrid({ rows }: { rows: RouteRow[] }) {
   const shown = rows.slice(0, MAX_ROWS);
   const overflow = rows.length - shown.length;
@@ -134,50 +149,68 @@ function PlannerGrid({ rows }: { rows: RouteRow[] }) {
 
   return (
     <div className="space-y-3">
-      {shown.map((row) => (
-        <div key={row.id} className="rounded-lg border border-slate-700/80 bg-slate-950/40 p-3">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <p className="text-sm font-bold text-white min-w-0 truncate">{row.name}</p>
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-[10px] font-mono text-slate-400">
-                {row.frequency ?? "no frequency"}
-              </span>
-              <AnalystTag analyst={row.analyst} />
+      {shown.map((row) => {
+        const parts = row.buckets.map((b) => {
+          const due =
+            row.freqDays != null && b.lastDate
+              ? new Date(new Date(b.lastDate).getTime() + row.freqDays * DAY_MS)
+              : null;
+          const overdue = due != null && due.getTime() < today.getTime();
+          const dayText = dayLabel(b.lastDate);
+          const dueText =
+            due != null
+              ? null
+              : row.freqDays == null
+                ? CADENCE_CONFESS
+                : "no collection recorded - due date cannot be computed";
+          return { b, due, overdue, dayText, dueText };
+        });
+        const collapsed =
+          parts.length > 0 &&
+          parts.every((p) => p.due == null) &&
+          parts.every((p) => p.dayText === parts[0].dayText && p.dueText === parts[0].dueText);
+        return (
+          <div key={row.id} className="rounded-lg border border-slate-700/80 bg-slate-950/40 p-3">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-sm font-bold text-white min-w-0 truncate">{row.name}</p>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px] font-mono text-slate-400">
+                  {row.frequency ?? "no frequency"}
+                </span>
+                <AnalystTag analyst={row.analyst} />
+              </div>
             </div>
+            {collapsed ? (
+              <div className="rounded border border-slate-800 bg-slate-900/60 p-2 min-w-0">
+                <p className="text-[11px] italic text-slate-500 break-words">
+                  {collapseSentence(row.name, parts)}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+                {parts.map(({ b, due, overdue, dayText, dueText }) => (
+                  <div key={b.modality} className="rounded border border-slate-800 bg-slate-900/60 p-2 min-w-0">
+                    <p className="text-[10px] uppercase tracking-wider text-slate-500">{b.label}</p>
+                    <p className="text-xs text-slate-300 font-mono mt-0.5 break-words">{dayText}</p>
+                    {due != null ? (
+                      <p className="text-[11px] mt-1 text-slate-400 break-words">
+                        next due {dayLabel(due.toISOString())}
+                        {overdue && (
+                          <span className="block text-amber-400 mt-0.5">
+                            overdue — {OVERDUE_LABEL}
+                          </span>
+                        )}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] mt-1 italic text-slate-500 break-words">{dueText}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-            {row.buckets.map((b) => {
-              const due =
-                row.freqDays != null && b.lastDate
-                  ? new Date(new Date(b.lastDate).getTime() + row.freqDays * DAY_MS)
-                  : null;
-              const overdue = due != null && due.getTime() < today.getTime();
-              return (
-                <div key={b.modality} className="rounded border border-slate-800 bg-slate-900/60 p-2 min-w-0">
-                  <p className="text-[10px] uppercase tracking-wider text-slate-500">{b.label}</p>
-                  <p className="text-xs text-slate-300 font-mono mt-0.5 break-words">{dayLabel(b.lastDate)}</p>
-                  {due != null ? (
-                    <p className="text-[11px] mt-1 text-slate-400 break-words">
-                      next due {dayLabel(due.toISOString())}
-                      {overdue && (
-                        <span className="block text-amber-400 mt-0.5">
-                          overdue — {OVERDUE_LABEL}
-                        </span>
-                      )}
-                    </p>
-                  ) : row.freqDays == null ? (
-                    <p className="text-[11px] mt-1 italic text-slate-500 break-words">{CADENCE_CONFESS}</p>
-                  ) : (
-                    <p className="text-[11px] mt-1 italic text-slate-500 break-words">
-                      no collection recorded - due date cannot be computed
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+        );
+      })}
       {overflow > 0 && (
         <p className="text-[11px] text-slate-500">+{overflow} more route{overflow === 1 ? "" : "s"} not shown</p>
       )}
@@ -325,15 +358,20 @@ export default function RouteCadenceSection({ variant }: RouteCadenceSectionProp
 
   return (
     <section className="rounded-xl border border-slate-700/80 bg-slate-900/50 p-4 mb-6">
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-2 mb-1">
         <CalendarClock className="h-4 w-4 text-cyan-400 shrink-0" />
         <h2 className="text-xs font-bold text-slate-300 uppercase tracking-widest">
-          Route Cadence
+          {variant === "planner" ? "Route Cadence" : "Upcoming Due"}
         </h2>
         <span className="text-[10px] text-slate-500 ml-auto">
           {variant === "planner" ? "bucket grid" : "upcoming due · 90 days"}
         </span>
       </div>
+      <p className="text-xs text-slate-500 mb-3">
+        {variant === "planner"
+          ? "what each route should collect, by modality"
+          : "next 90 days, by route"}
+      </p>
       {loading ? (
         <p className="text-xs italic text-slate-500">loading collection history…</p>
       ) : fetchFailed ? (
