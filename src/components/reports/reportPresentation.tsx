@@ -28,6 +28,36 @@ export const SEVERITY_LABEL: Record<ReportSeverity, string> = {
   NO_DATA: "No data"
 };
 
+/** Fault-severity domain (stored per-fault severity on saved analyses: HIGH / MEDIUM / LOW / CRITICAL). */
+export function faultSeverityBadgeInfo(
+  raw: string | null | undefined,
+): { label: string; className: string } {
+  const s = (raw ?? "").toUpperCase();
+  if (s === "HIGH" || s === "CRITICAL") {
+    return {
+      label: s === "HIGH" ? "HIGH" : "CRITICAL",
+      className: "rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase bg-red-500/10 text-red-400 border-red-500/30",
+    };
+  }
+  if (s === "MEDIUM") {
+    return {
+      label: "MEDIUM",
+      className: "rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase bg-yellow-400/10 text-yellow-400 border-yellow-400/30",
+    };
+  }
+  if (s === "LOW") {
+    return {
+      label: "LOW",
+      className: "rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+    };
+  }
+  const display = raw ?? "MISSING";
+  return {
+    label: display,
+    className: "rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase bg-slate-500/10 text-slate-400 border-slate-500/30",
+  };
+}
+
 export function formatWhen(raw: string | null): string {
   if (!raw) return "—";
   const d = new Date(raw);
