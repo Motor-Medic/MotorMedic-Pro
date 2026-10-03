@@ -6,7 +6,8 @@
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Gauge, RadioTower, Waves, Zap } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
-import { SEVERITY_LABEL, SEVERITY_STYLE } from "./reportPresentation";
+import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
+import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import { evaluateUsSeverity, US_DDB_SOURCE } from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
@@ -27,7 +28,7 @@ function Field({ label, value, unit }: { label: string; value: unknown; unit?: s
   return (<div className={cell}><p className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</p><p className={`text-sm font-mono mt-0.5 ${value != null ? "text-white" : "text-slate-500 italic"}`}>{value != null ? `${value}${unit ? ` ${unit}` : ""}` : "not recorded"}</p></div>);
 }
 const crestGuide = (c: number | null) => c == null ? null : c < 2 ? "Compact signal — low crest suggests broad-band (airborne/turbulence) rather than a discrete bearing event." : c <= 6 ? "Moderate crest — intermittent mechanical contact typical of dry/rubbing surfaces." : "High crest — burst-like signature consistent with spalling or discrete impacts.";
-const sevClass = (r: SavedAnalysisResult) => { const s = (r.severity ?? "").toUpperCase(); return s.includes("CRITICAL") || s.includes("HIGH") ? "CRITICAL" : s.includes("MODERATE") || s.includes("MEDIUM") ? "ANOMALY" : s.includes("MINOR") || s.includes("LOW") ? "MINOR" : "NO_DATA"; };
+const sevClass = (r: SavedAnalysisResult): ReportSeverity => { const s = (r.severity ?? "").toUpperCase(); return s.includes("CRITICAL") || s.includes("HIGH") ? "CRITICAL" : s.includes("MODERATE") || s.includes("MEDIUM") ? "ANOMALY" : s.includes("MINOR") || s.includes("LOW") ? "NORMAL" : "NO_DATA"; };
 const sevTone = (c: string | null) => c == null ? "" : c.includes("Class 1") ? "border-red-500/50 text-red-400 bg-red-500/10" : c.includes("Class 2") ? "border-amber-500/30 text-amber-400 bg-amber-500/10" : c.includes("Class 3") ? "border-sky-500/30 text-sky-400 bg-sky-500/10" : "border-emerald-500/30 text-emerald-400 bg-emerald-500/10";
 
 export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundResultsTabProps) {
@@ -57,7 +58,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
     <div className={card}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0"><div className="flex items-center gap-2"><Waves className="h-4 w-4 text-cyan-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Ultrasound / Acoustic Severity Assessment</h4></div><p className="text-sm text-slate-500 mt-1">{selectedAnalysis.component || "—"} · {selectedAnalysis.asset_id || "—"},</p></div>
-        <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider shrink-0 ${SEVERITY_STYLE[sevClass(selectedAnalysis) as keyof typeof SEVERITY_STYLE]}`}>{SEVERITY_LABEL[sevClass(selectedAnalysis) as keyof typeof SEVERITY_LABEL]}</span>
+        <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider shrink-0 ${SEVERITY_STYLE[sevClass(selectedAnalysis)]}`}>{SEVERITY_LABEL[sevClass(selectedAnalysis)]}</span>
       </div>
       <p className="text-[10px] text-slate-500 mt-1">{US_DDB_SOURCE}</p>
     </div>
@@ -96,7 +97,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
       <div className="flex items-center gap-2 mb-3"><AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Fault Diagnoses</h4></div>
       <ul className="space-y-1.5">{faults.map((f, i) => (
         <li key={i} className="flex items-center gap-2 text-xs text-slate-300">
-          <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${SEVERITY_STYLE[f.sev as keyof typeof SEVERITY_STYLE]}`}>{SEVERITY_LABEL[f.sev as keyof typeof SEVERITY_LABEL]}</span>
+          <span className={faultSeverityBadgeInfo(f.sev).className}>{faultSeverityBadgeInfo(f.sev).label}</span>
           <span className="font-semibold text-white">{f.title}</span>
           <span className="text-slate-500">({f.conf}% · {FAULT_FAMILY_LABEL[f.family]})</span>
         </li>

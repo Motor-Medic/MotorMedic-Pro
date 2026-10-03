@@ -5,7 +5,8 @@
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Flame, Gauge, Info, Shield, ShieldAlert, Thermometer, Zap } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
-import { SEVERITY_LABEL, SEVERITY_STYLE } from "./reportPresentation";
+import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
+import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import { evaluateIrSeverity, IR_PP_BRACKETS, IR_PA_BRACKETS, type IrSeverityBracket } from "../../lib/maintenance/prescriptiveDictionary";
 
@@ -36,7 +37,7 @@ const fmtDeltaT = (dT: number | null, u: string) => {
   const s = `${dT.toFixed(1)}${u}`;
   return u === "°F" ? `${s} (Δ ${(dT * 5 / 9).toFixed(1)}°C)` : `${s} (Δ ${(dT * 9 / 5).toFixed(1)}°F)`;
 };
-const sevClass = (r: SavedAnalysisResult) => {
+const sevClass = (r: SavedAnalysisResult): ReportSeverity => {
   const s = (r.severity ?? "").toUpperCase();
   if (s.includes("CRITICAL") || s.includes("HIGH")) return "CRITICAL";
   if (s.includes("ANOMALY") || s.includes("MEDIUM")) return "ANOMALY";
@@ -135,7 +136,7 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
             <p className="text-sm text-slate-500 mt-1">{selectedAnalysis.component || "—"} · {selectedAnalysis.asset_id || "—"},</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[sev as keyof typeof SEVERITY_STYLE]}`}>{SEVERITY_LABEL[sev as keyof typeof SEVERITY_LABEL]}</span>
+            <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[sev]}`}>{SEVERITY_LABEL[sev]}</span>
             <span className="rounded-md border border-slate-600 bg-slate-800/50 px-2.5 py-1 text-[11px] font-bold text-slate-400">NETA: {neta}</span>
           </div>
         </div>
@@ -221,7 +222,7 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
           <ul className="space-y-1.5">
             {faults.map((f, i) => (
               <li key={i} className="flex items-center gap-2 text-xs text-slate-300">
-                <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${SEVERITY_STYLE[f.sev as keyof typeof SEVERITY_STYLE]}`}>{SEVERITY_LABEL[f.sev as keyof typeof SEVERITY_LABEL]}</span>
+                <span className={faultSeverityBadgeInfo(f.sev).className}>{faultSeverityBadgeInfo(f.sev).label}</span>
                 <span className="font-semibold text-white">{f.title}</span>
                 <span className="text-slate-500">({f.conf}% · {FAULT_FAMILY_LABEL[f.family]})</span>
               </li>

@@ -1739,14 +1739,18 @@ function ThermographyAnalysisResults({
     );
   }
 
-function thermalSeverityBadge(severity: ThermalSeverity) {
-  if (severity === "CRITICAL") {
+function thermalSeverityBadge(severity: string) {
+  const s = severity.toUpperCase();
+  if (s === "CRITICAL") {
     return "bg-red-500/15 border-red-500/40 text-red-400";
   }
-  if (severity === "WARNING") {
+  if (s === "WARNING") {
     return "bg-yellow-500/15 border-yellow-500/40 text-yellow-400";
   }
-  return "bg-emerald-500/15 border-emerald-500/40 text-emerald-400";
+  if (s === "NORMAL") {
+    return "bg-emerald-500/15 border-emerald-500/40 text-emerald-400";
+  }
+  return "bg-slate-500/15 border-slate-500/40 text-slate-400";
 }
 
 function thermalHistoryDot(tone: "red" | "yellow" | "green") {
@@ -2643,12 +2647,14 @@ function UltrasoundAnalysisResults() {
   );
 }
 
-function usClassBadge(classification: UsClass) {
-  if (classification === "LEAK") return "bg-red-500/15 border-red-500/40 text-red-400";
-  if (classification === "NORMAL") return "bg-emerald-500/15 border-emerald-500/40 text-emerald-400";
-  if (classification === "BEARING") return "bg-cyan-500/15 border-cyan-500/40 text-cyan-400";
-  if (classification === "ARCING") return "bg-yellow-500/15 border-yellow-500/40 text-yellow-400";
-  return "bg-blue-500/15 border-blue-500/40 text-blue-400";
+function usClassBadge(classification: string) {
+  const c = classification.toUpperCase();
+  if (c === "LEAK") return "bg-red-500/15 border-red-500/40 text-red-400";
+  if (c === "NORMAL") return "bg-emerald-500/15 border-emerald-500/40 text-emerald-400";
+  if (c === "BEARING") return "bg-cyan-500/15 border-cyan-500/40 text-cyan-400";
+  if (c === "ARCING") return "bg-yellow-500/15 border-yellow-500/40 text-yellow-400";
+  if (c === "STEAM") return "bg-blue-500/15 border-blue-500/40 text-blue-400";
+  return "bg-slate-500/15 border-slate-500/40 text-slate-400";
 }
 
 /** Ultrasound — Tab 2: Waveform & Audio Library */
@@ -4119,14 +4125,18 @@ function McaAnalysisResults({ assetLabel }: { assetLabel: string }) {
   );
 }
 
-function mcaStatusBadge(status: McaTestStatus) {
-  if (status === "PASS") {
+function mcaStatusBadge(status: string) {
+  const s = status.toUpperCase();
+  if (s === "PASS") {
     return "bg-emerald-500/15 text-emerald-400 border-emerald-500/40";
   }
-  if (status === "FAIL") {
+  if (s === "FAIL") {
     return "bg-red-500/15 text-red-400 border-red-500/40";
   }
-  return "bg-yellow-500/15 text-yellow-500 border-yellow-500/40";
+  if (s === "WARNING") {
+    return "bg-yellow-500/15 text-yellow-500 border-yellow-500/40";
+  }
+  return "bg-slate-500/15 text-slate-400 border-slate-500/40";
 }
 
 /** MCA — Tab 2: Test History Library */

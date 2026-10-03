@@ -6,7 +6,12 @@
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Gauge, Zap } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
-import { SEVERITY_LABEL, SEVERITY_STYLE } from "./reportPresentation";
+import {
+  faultSeverityBadgeInfo,
+  MCA_HEADER_SEVERITY_LABEL,
+  MCA_HEADER_SEVERITY_STYLE,
+  type McaHeaderSeverity,
+} from "./reportPresentation";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import {
   evaluateMcaSeverity,
@@ -179,14 +184,14 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
     );
 
   // --- Severity reconciliation ---
-  const storedSeverity = (() => {
+  const storedSeverity: McaHeaderSeverity = (() => {
     const s = (selectedAnalysis.severity ?? "").toUpperCase();
     if (s.includes("CRITICAL") || s.includes("HIGH")) return "CRITICAL";
     if (s.includes("MODERATE") || s.includes("MEDIUM")) return "ANOMALY";
     if (s.includes("MINOR") || s.includes("LOW")) return "MINOR";
     return "NO_DATA";
   })();
-  const bracketSeverity = bracket == null ? "NO_DATA" : bracket.clazz.includes("Class 1") ? "CRITICAL" : bracket.clazz.includes("Class 2") ? "ANOMALY" : bracket.clazz.includes("Class 3") ? "MINOR" : "NORMAL";
+  const bracketSeverity: McaHeaderSeverity = bracket == null ? "NO_DATA" : bracket.clazz.includes("Class 1") ? "CRITICAL" : bracket.clazz.includes("Class 2") ? "ANOMALY" : bracket.clazz.includes("Class 3") ? "MINOR" : "NORMAL";
   const sevRank = (s: string) => s === "CRITICAL" ? 4 : s === "ANOMALY" ? 3 : s === "MINOR" ? 2 : s === "NORMAL" ? 1 : 0;
   const governing = sevRank(storedSeverity) >= sevRank(bracketSeverity) ? storedSeverity : bracketSeverity;
   const differs = storedSeverity !== bracketSeverity && storedSeverity !== "NO_DATA" && bracketSeverity !== "NO_DATA";
@@ -210,10 +215,10 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
           </div>
           <span
             className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider shrink-0 ${
-              SEVERITY_STYLE[governing as keyof typeof SEVERITY_STYLE]
+              MCA_HEADER_SEVERITY_STYLE[governing]
             }`}
           >
-            {SEVERITY_LABEL[governing as keyof typeof SEVERITY_LABEL]}
+            {MCA_HEADER_SEVERITY_LABEL[governing]}
           </span>
         </div>
         <p className="text-[10px] text-slate-500 mt-1">
@@ -346,7 +351,7 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
                 </p>
                 {differs && (
                   <p className="text-[10px] text-slate-400 mt-1">
-                    record severity (fault-driven): <span className={`font-bold ${SEVERITY_STYLE[storedSeverity as keyof typeof SEVERITY_STYLE]}`}>{SEVERITY_LABEL[storedSeverity as keyof typeof SEVERITY_LABEL]}</span> — governs header badge · imbalance class: <span className={`font-bold ${sevTone(bracket.clazz)}`}>{bracket.clazz}</span>
+                    record severity (fault-driven): <span className={`font-bold ${MCA_HEADER_SEVERITY_STYLE[storedSeverity]}`}>{MCA_HEADER_SEVERITY_LABEL[storedSeverity]}</span> — governs header badge · imbalance class: <span className={`font-bold ${sevTone(bracket.clazz)}`}>{bracket.clazz}</span>
                   </p>
                 )}
               </>
@@ -374,11 +379,9 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
                 className="flex items-center gap-2 text-xs text-slate-300"
               >
                 <span
-                  className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${
-                    SEVERITY_STYLE[f.sev as keyof typeof SEVERITY_STYLE]
-                  }`}
+                  className={faultSeverityBadgeInfo(f.sev).className}
                 >
-                  {SEVERITY_LABEL[f.sev as keyof typeof SEVERITY_LABEL]}
+                  {faultSeverityBadgeInfo(f.sev).label}
                 </span>
                 <span className="font-semibold text-white">{f.title}</span>
                 <span className="text-slate-500">

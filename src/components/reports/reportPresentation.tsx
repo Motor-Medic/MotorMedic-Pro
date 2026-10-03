@@ -58,6 +58,34 @@ export function faultSeverityBadgeInfo(
   };
 }
 
+/**
+ * MCA header severity domain — stored record severity reconciled against the
+ * imbalance class bracket, so it carries MINOR (Class 3 / stored LOW-MINOR)
+ * in addition to the shared ReportSeverity keys.
+ */
+export type McaHeaderSeverity =
+  | "CRITICAL"
+  | "ANOMALY"
+  | "MINOR"
+  | "NORMAL"
+  | "NO_DATA";
+
+export const MCA_HEADER_SEVERITY_STYLE: Record<McaHeaderSeverity, string> = {
+  CRITICAL: "bg-red-500/10 text-red-400 border-red-500/30",
+  ANOMALY: "bg-yellow-400/10 text-yellow-400 border-yellow-400/30",
+  MINOR: "bg-sky-500/10 text-sky-400 border-sky-500/30",
+  NORMAL: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+  NO_DATA: "bg-slate-500/10 text-slate-400 border-slate-500/30"
+};
+
+export const MCA_HEADER_SEVERITY_LABEL: Record<McaHeaderSeverity, string> = {
+  CRITICAL: "Critical",
+  ANOMALY: "Anomaly",
+  MINOR: "Minor",
+  NORMAL: "Normal",
+  NO_DATA: "No data"
+};
+
 export function formatWhen(raw: string | null): string {
   if (!raw) return "—";
   const d = new Date(raw);
