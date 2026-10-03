@@ -119,12 +119,12 @@ export function mapOilSampleRow(
     sampleDate: toSampleDateKey(row.sample_date),
     operatingHours: num(row.operating_hours),
 
-    iron: num(row.iron),
-    copper: num(row.copper),
-    chromium: num(row.chromium),
-    lead: num(row.lead),
-    aluminum: num(row.aluminum),
-    silicon: num(row.silicon),
+    iron: optNum(row.iron),
+    copper: optNum(row.copper),
+    chromium: optNum(row.chromium),
+    lead: optNum(row.lead),
+    aluminum: optNum(row.aluminum),
+    silicon: optNum(row.silicon),
     tin: optNum(row.tin),
     nickel: optNum(row.nickel),
 

@@ -86,13 +86,14 @@ export interface OilSample {
   sampleDate: string; // ISO date string
   operatingHours: number;
 
-  // Wear Metals (PPM - parts per million)
-  iron: number;
-  copper: number;
-  chromium: number;
-  lead: number;
-  aluminum: number;
-  silicon: number;
+  // Wear Metals (PPM - parts per million). Nullable: an unreported element
+  // stays absent so a null can never render as a measured 0.
+  iron?: number;
+  copper?: number;
+  chromium?: number;
+  lead?: number;
+  aluminum?: number;
+  silicon?: number;
   tin?: number;
   nickel?: number;
 

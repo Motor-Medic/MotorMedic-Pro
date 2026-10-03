@@ -6,7 +6,7 @@
  * guidance labeled; standards cited only when verifiable.
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Beaker, Droplet, Info, ShieldAlert } from "lucide-react";
+import { Beaker, Droplet, Info, ShieldAlert } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily } from "../../lib/diagnostics/faultFamily";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
@@ -94,12 +94,6 @@ export default function OilResultsTab({
   const sampleDate = latest?.sampleDate ?? null;
   const lagDays = sampleDate && reportDate ? daysBetween(sampleDate, reportDate) : null;
 
-  const hasTopOff = latest != null && "makeUpOilLiters" in latest;
-  const topOffVal = latest && typeof (latest as Record<string, unknown>).makeUpOilLiters === "number"
-    ? ((latest as Record<string, unknown>).makeUpOilLiters as number)
-    : null;
-  const topOffTrue = hasTopOff && topOffVal != null && topOffVal > 0;
-
   if (!assetId)
     return (
       <div className="flex flex-col items-center justify-center text-center py-16 px-4">
@@ -180,16 +174,14 @@ export default function OilResultsTab({
               </div>
               <div>
                 <span className={label}>Oil age</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.oilHours != null && latest.oilHours > 0
-                    ? `${latest.oilHours.toLocaleString()} hrs`
-                    : dash}
+                <p className="text-slate-300">
+                  <span className="italic text-slate-500">not recorded</span>
                 </p>
               </div>
               <div>
                 <span className={label}>Machine age</span>
                 <p className="text-slate-300 font-mono">
-                  {latest.operatingHours != null && latest.operatingHours > 0
+                  {latest.operatingHours != null
                     ? `${latest.operatingHours.toLocaleString()} hrs`
                     : dash}
                 </p>
@@ -197,29 +189,15 @@ export default function OilResultsTab({
               <div>
                 <span className={label}>Sampler ID</span>
                 <p className="text-slate-300">
-                  {"samplerId" in latest && (latest as Record<string, unknown>).samplerId
-                    ? String((latest as Record<string, unknown>).samplerId)
-                    : <span className="italic text-slate-500">not recorded</span>}
+                  <span className="italic text-slate-500">not recorded</span>
                 </p>
               </div>
             </div>
 
-            {topOffTrue && (
-              <div className="mt-3 rounded-lg border border-amber-500/60 bg-amber-500/10 px-3 py-2 flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
-                <p className="text-xs text-amber-300 font-semibold">
-                  DILUTION WARNING: make-up fluid added prior to sample &mdash;
-                  wear concentrations and chemistry are diluted
-                </p>
-              </div>
-            )}
-
-            {!("makeUpOilLiters" in (latest ?? {})) && (
-              <p className="text-[10px] text-slate-500 mt-2 italic">
-                top-off / make-up oil events not recorded &mdash; dilution
-                cannot be ruled out
-              </p>
-            )}
+            <p className="text-[10px] text-slate-500 mt-2 italic">
+              top-off / make-up oil events not recorded &mdash; dilution
+              cannot be ruled out
+            </p>
           </div>
 
           {/* ===== FLUID CHEMISTRY CARD ===== */}
@@ -395,7 +373,7 @@ export default function OilResultsTab({
               <div>
                 <span className={label}>Lab-flagged severity</span>
                 <p className="text-slate-300">
-                  {latest.severity != null ? latest.severity : <span className="italic text-slate-500">not recorded</span>}
+                  <span className="italic text-slate-500">not recorded</span>
                 </p>
               </div>
               <div>
@@ -411,11 +389,9 @@ export default function OilResultsTab({
               </div>
             </div>
 
-            {latest.severity == null && (
-              <p className="text-[10px] text-slate-500 mb-2 italic">
-                lab-flagged severity not recorded &mdash; baseline comparison only
-              </p>
-            )}
+            <p className="text-[10px] text-slate-500 mb-2 italic">
+              lab-flagged severity not recorded &mdash; baseline comparison only
+            </p>
 
             <p className="text-[10px] text-slate-500 mb-3">
               no universal ISO severity class standard exists for oil analysis
