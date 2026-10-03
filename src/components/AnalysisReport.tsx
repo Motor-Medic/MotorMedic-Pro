@@ -3,7 +3,7 @@ import {
   Activity, AlertOctagon, AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight, AudioWaveform, Calendar, Check,
   CheckCircle2, ChevronDown, ClipboardCheck, Clock, Crosshair, DollarSign, Download, Droplet, Eye,
   FileText, Filter, Gauge, GitBranch, Info, Layers, LineChart, Loader2, Mail, MapPin, MessageSquare, Pause, Play,
-  Plus, Search, ShieldCheck, Sliders, Sparkles, Target, Thermometer, Trash2, Upload, User, Wrench, X, Zap
+  Plus, Search, ShieldCheck, Sliders, Sparkles, Target, Thermometer, Trash2, Upload, User, Waves, Wrench, X, Zap
 } from "lucide-react";
 import {
   Area,
@@ -7307,16 +7307,40 @@ export default function AnalysisReport({
                 />
               )}
               {activeTab === 2 && selectedTech === "ultrasound" && (
-                <UltrasoundTrendLibraryTab
-                  selectedAnalysis={selectedAnalysis}
-                  allAnalyses={loadedAnalyses}
-                />
+                selectedAnalysis?.asset_id ? (
+                  <UltrasoundTrendLibraryTab
+                    selectedAnalysis={selectedAnalysis}
+                    allAnalyses={loadedAnalyses}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                    <Waves className="h-8 w-8 text-slate-600 mb-3" />
+                    <p className="text-sm font-semibold text-slate-300">
+                      Select an asset with ultrasound inspections
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Open an ultrasound report or select a location to build the acoustic library.
+                    </p>
+                  </div>
+                )
               )}
               {activeTab === 2 && selectedTech === "mca" && (
-                <McaTrendLibraryTab
-                  selectedAnalysis={selectedAnalysis}
-                  allAnalyses={loadedAnalyses}
-                />
+                selectedAnalysis?.asset_id ? (
+                  <McaTrendLibraryTab
+                    selectedAnalysis={selectedAnalysis}
+                    allAnalyses={loadedAnalyses}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                    <Zap className="h-8 w-8 text-slate-600 mb-3" />
+                    <p className="text-sm font-semibold text-slate-300">
+                      Select an asset with MCA inspections
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Open an MCA report or select a location to build the winding library.
+                    </p>
+                  </div>
+                )
               )}
               {activeTab === 2 && selectedTech === "oil" && (
                 <OilTrendLibraryTab
@@ -7346,16 +7370,40 @@ export default function AnalysisReport({
                 />
               )}
               {activeTab === 3 && selectedTech === "ultrasound" && (
-                <UltrasoundPatternDossierTab
-                  selectedAnalysis={selectedAnalysis}
-                  allAnalyses={loadedAnalyses}
-                />
+                selectedAnalysis?.asset_id ? (
+                  <UltrasoundPatternDossierTab
+                    selectedAnalysis={selectedAnalysis}
+                    allAnalyses={loadedAnalyses}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                    <Waves className="h-8 w-8 text-slate-600 mb-3" />
+                    <p className="text-sm font-semibold text-slate-300">
+                      Select an asset with ultrasound inspections
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Open an ultrasound report or select a location to view the pattern dossier.
+                    </p>
+                  </div>
+                )
               )}
               {activeTab === 3 && selectedTech === "mca" && (
-                <McaHealthDossierTab
-                  selectedAnalysis={selectedAnalysis}
-                  allAnalyses={loadedAnalyses}
-                />
+                selectedAnalysis?.asset_id ? (
+                  <McaHealthDossierTab
+                    selectedAnalysis={selectedAnalysis}
+                    allAnalyses={loadedAnalyses}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+                    <Zap className="h-8 w-8 text-slate-600 mb-3" />
+                    <p className="text-sm font-semibold text-slate-300">
+                      Select an asset with MCA inspections
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Open an MCA report or select a location to build the motor health dossier.
+                    </p>
+                  </div>
+                )
               )}
               {activeTab === 3 && selectedTech === "oil" && (
                 <OilProgramDossierTab
