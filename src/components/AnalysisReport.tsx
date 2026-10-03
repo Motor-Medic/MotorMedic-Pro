@@ -41,7 +41,7 @@ import PartsInventoryModal, {
 } from "./PartsInventory";
 import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
-import { RunHistoryTrigger, RunHistoryPopover, isVibrationRun, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
+import { RunHistoryTrigger, RunHistoryPopover, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 
 import SavedReportViewer from "./reports/SavedReportViewer";
@@ -6012,7 +6012,7 @@ export default function AnalysisReport({
 
   // Draft dropdown selections ONLY — changing these never fetches / updates the report
   const [selectedRoute, setSelectedRoute] = useState("Boiler Feed System");
-  const [selectedAsset, setSelectedAsset] = useState(MOCK_ASSETS[0].tag);
+  const [selectedAsset, setSelectedAsset] = useState<string>(MOCK_ASSETS[0].tag);
   const [selectedComponent, setSelectedComponent] = useState("Motor DE");
   const [isLoading, setIsLoading] = useState(false);
 
@@ -6020,7 +6020,7 @@ export default function AnalysisReport({
   const [loadedAssetLabel, setLoadedAssetLabel] = useState(
     () => `${MOCK_ASSETS[0].name} - ${MOCK_ASSETS[0].tag}`
   );
-  const [loadedAssetId, setLoadedAssetId] = useState(MOCK_ASSETS[0].id);
+  const [loadedAssetId, setLoadedAssetId] = useState<string>(MOCK_ASSETS[0].id);
   const [loadedComponent, setLoadedComponent] = useState<string | null>("Motor DE");
 
   const [assetSearch, setAssetSearch] = useState("");
@@ -6278,9 +6278,19 @@ export default function AnalysisReport({
     return new Date(tab1Runs[0].timestamp).getTime();
   }, [tab1Runs]);
 
-  const vibrationAnalyses = useMemo(() => loadedAnalyses.filter(isVibrationRun), [loadedAnalyses]);
   const modalityAnalyses = useMemo(() => loadedAnalyses.filter((r) => isModalityRun(r, selectedTech)), [loadedAnalyses, selectedTech]);
   const otherTechCount = loadedAnalyses.length - modalityAnalyses.length;
+
+  const rangeActive = startDate !== "" || endDate !== "";
+  const datedAnalyses = useMemo(() => {
+    if (!rangeActive) return modalityAnalyses;
+    const from = startDate ? new Date(`${startDate}T00:00:00`).getTime() : -Infinity;
+    const to = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : Infinity;
+    return modalityAnalyses.filter((r) => {
+      const t = r.timestamp ? new Date(r.timestamp).getTime() : NaN;
+      return Number.isFinite(t) && t >= from && t <= to;
+    });
+  }, [modalityAnalyses, startDate, endDate, rangeActive]);
 
   // Reset selectedAnalysis only when selectedTech actually changes AND a report was
   // already loaded: re-select the latest run of the new modality scoped to the
@@ -6887,11 +6897,18 @@ export default function AnalysisReport({
         <label className="text-sm text-slate-400 shrink-0">To</label>
         <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
           className="h-9 px-3 rounded-lg bg-slate-950 border border-slate-800 text-sm text-slate-200 focus:outline-none focus:border-yellow-400/60" />
+        {rangeActive && (
+          <button type="button" onClick={() => { setStartDate(""); setEndDate(""); }}
+            className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-amber-500/40 text-amber-300 text-sm font-medium rounded-lg cursor-pointer transition-colors shrink-0">
+            <X className="h-4 w-4" /><span>Clear range</span>
+          </button>
+        )}
 
         <span className="h-6 border-l border-slate-700 shrink-0" />
 
         <button type="button" onClick={() => selectedAnalysis && setShowWorkOrder(true)}
           disabled={!selectedAnalysis}
+          title={selectedAnalysis ? "Draft a work order from the selected saved analysis" : "Select a saved analysis to draft a work order from it"}
           className="flex items-center gap-1.5 h-9 px-3 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-sm font-semibold rounded-lg cursor-pointer transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed">
           <Wrench className="h-4 w-4" /><span>Create Work Order</span>
         </button>
@@ -6918,24 +6935,6 @@ export default function AnalysisReport({
         <button type="button" onClick={() => setShowInventory(true)}
           className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-sm font-medium rounded-lg cursor-pointer transition-colors shrink-0">
           <Search className="h-4 w-4" /><span>Parts Search</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setShowWorkOrder(true)}
-          disabled={!selectedAnalysis}
-          title={
-            selectedAnalysis
-              ? "Draft a work order from the selected saved analysis"
-              : "Select a saved analysis to draft a work order from it"
-          }
-          className={`flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 text-sm font-medium rounded-lg transition-colors shrink-0 ${
-            selectedAnalysis
-              ? "text-slate-300 hover:border-slate-700 hover:text-white cursor-pointer"
-              : "text-slate-500 cursor-not-allowed opacity-60"
-          }`}
-        >
-          <Wrench className="h-4 w-4" /><span>Work Order</span>
         </button>
 
         <button type="button" disabled title={PENDING_SCHEDULE}
@@ -6972,7 +6971,7 @@ export default function AnalysisReport({
                     : "text-slate-400 hover:text-slate-200 border-transparent"
                 }`}
               >
-                Saved Analyses ({vibrationAnalyses.length})
+                Saved Analyses ({datedAnalyses.length})
               </button>
               {currentTechTabs.map((tab) => {
                 const isActive = activeTab === tab.id;
@@ -7006,18 +7005,29 @@ export default function AnalysisReport({
             {activeTab === 0 && (
               <div className="space-y-3">
                 {loadError && <p className="text-xs text-amber-400">{loadError}</p>}
-                {modalityAnalyses.length === 0 ? (
+                {datedAnalyses.length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-center py-16 px-4">
                     <FileText className="h-8 w-8 text-slate-600 mb-2" />
-                    <p className="text-sm font-semibold text-slate-300">No saved {selectedTech} analyses for this asset yet</p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      Complete a Run Diagnostics analysis to populate this list.
-                    </p>
+                    {rangeActive ? (
+                      <>
+                        <p className="text-sm font-semibold text-slate-300">No saved {selectedTech} analyses in the selected date range</p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Clear the From / To range to see all saved {selectedTech} analyses.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm font-semibold text-slate-300">No saved {selectedTech} analyses for this asset yet</p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Complete a Run Diagnostics analysis to populate this list.
+                        </p>
+                      </>
+                    )}
                   </div>
                 ) : (
                   <>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      {modalityAnalyses.slice(0, visibleLimit).map((row) => {
+                      {datedAnalyses.slice(0, visibleLimit).map((row) => {
                         const on = selectedAnalysis?.id === row.id;
                         const sevRaw = String(
                           (Array.isArray(row.fault_list) && row.fault_list[0]?.severity) || ""
@@ -7060,7 +7070,7 @@ export default function AnalysisReport({
                         );
                       })}
                     </div>
-                    {visibleLimit < modalityAnalyses.length && (
+                    {visibleLimit < datedAnalyses.length && (
                       <button
                         type="button"
                         onClick={() => setVisibleLimit((n) => n + 10)}
@@ -7346,35 +7356,7 @@ export default function AnalysisReport({
               )}
 
               {/* ===== Interactive FFT Workspace — live spectral chart block (Tab 1 only) ===== */}
-              {activeTab === 1 && selectedAnalysis != null && selectedTech === "mca" && (
-                <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
-                  <p className="text-sm text-slate-500 italic">not a vibration spectrum for mca</p>
-                </div>
-              )}
-              {activeTab === 1 && selectedTech === "oil" && (selectedAnalysis != null || selectedComponent) && (
-                <OilResultsTab
-                  selectedAnalysis={selectedAnalysis}
-                  allAnalyses={loadedAnalyses}
-                  equipmentAssetId={equipmentAssetId}
-                />
-              )}
-              {activeTab === 1 && selectedAnalysis != null && selectedTech !== "vibration" && selectedTech !== "thermography" && selectedTech !== "mca" && selectedTech !== "oil" && (
-                <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
-                  <p className="text-sm text-slate-500 italic">not a vibration spectrum for {selectedTech}</p>
-                </div>
-              )}
               {(activeTab === 1 && selectedAnalysis != null && selectedTech === "vibration" && mode !== "empty") && (() => {
-                if ((selectedTech !== "vibration" || (mode as "stems" | "curve" | "empty") === "empty")) {
-                  const title = selectedTech !== "vibration" ? "No data available" : selectedAnalysis ? "No spectral data captured" : "No saved analyses for this asset yet";
-                  const body = selectedTech !== "vibration" ? `No ${selectedTech} data library available for this asset. Run a diagnostic to populate reports.` : selectedAnalysis ? "This record has no stored vibration spectrum. Run Diagnostics to capture data for this asset." : "Load a saved analysis report or run a diagnostic to populate the spectrum library.";
-                  return (
-                    <div className="flex flex-col items-center justify-center text-center py-16 px-4">
-                      <FileText className="h-8 w-8 text-slate-600 mb-3" />
-                      <p className="text-sm font-semibold text-slate-300">{title}</p>
-                      <p className="text-sm text-slate-500 mt-1 max-w-md">{body}</p>
-                    </div>
-                  );
-                }
                 const hasBaseline = baselineSpectrum.length > 0;
               const chartRows = mode === "curve" ? fullPts : peakList.map((p) => ({ frequency: p.frequency, amplitude: p.amplitude, baselineAmplitude: undefined as number | undefined, stemLabel: `${p.frequency.toFixed(1)}Hz` }));
               const unitShort = tab2Unit === "acceleration" ? "g" : "mm/s";
@@ -7404,17 +7386,6 @@ export default function AnalysisReport({
               return (
                 <div className="space-y-4">
 {/* Tab 2 shell block removed — UI now owned by SpectrumLibraryTab component */}
-
-                  {/* -- Inner Tab 2 chart gate: empty notice when nothing loaded, else the spectral workspace -- */}
-                  {activeTab === 2 && (selectedAnalysis == null || (mode as "stems" | "curve" | "empty") === "empty") ? (
-                    <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
-                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Spectrum Library workspace</h4>
-                      <div className="h-[300px] bg-slate-950 rounded-xl border border-slate-700/80 p-3 flex items-center justify-center text-center">
-                        <p className="text-slate-500 text-sm max-w-md">No report loaded - select equipment and click Load Report, or pick a Saved Analysis</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
 
                   {/* -- Baseline badge -- */}
                   {showBaseline && !hasBaseline && (
@@ -7618,8 +7589,6 @@ export default function AnalysisReport({
                       </table>
                     </div>
                   </div>
-                    </>
-                  )}
                 </div>
               );
             })()}
