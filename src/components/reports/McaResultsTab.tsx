@@ -204,8 +204,8 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
               </h4>
             </div>
             <p className="text-sm text-slate-500 mt-1">
-              {selectedAnalysis.component || "\u2014"} ·{" "}
-              {selectedAnalysis.asset_id || "\u2014"}
+              {selectedAnalysis.component || "—"} ·{" "}
+              {selectedAnalysis.asset_id || "—"}
             </p>
           </div>
           <span
@@ -279,7 +279,7 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
           <Field
             label="Insulation Resistance"
             value={groundwall.ir1mMOmega > 0 ? groundwall.ir1mMOmega : null}
-            unit="M\u03A9"
+            unit="MΩ"
           />
           <Field
             label="Polarization Index"
@@ -288,7 +288,7 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
           <Field
             label="Max Phase Resistance"
             value={num(blob.max_phase_r ?? blob.maxPhaseR)}
-            unit="\u03A9"
+            unit="Ω"
           />
         </div>
         <p className="text-[11px] text-slate-500 mt-2">
