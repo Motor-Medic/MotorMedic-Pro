@@ -44,7 +44,13 @@ const sevClass = (r: SavedAnalysisResult): ReportSeverity => {
   if (s.includes("NORMAL") || s.includes("LOW")) return "NORMAL";
   return "NO_DATA";
 };
-const netaClass = (r: SavedAnalysisResult) => (r.consensus_details as Record<string, unknown> | null)?.severity_class as string ?? "not recorded";
+const netaClass = (r: SavedAnalysisResult): string => {
+  const p = r.peaks?.[0];
+  if (p == null || typeof p !== "object") return "not recorded";
+  if (!("severity_class" in p)) return "not recorded";
+  const v = p.severity_class;
+  return typeof v === "string" && v.trim() !== "" ? v : "not recorded";
+};
 
 function Field({ label, value, unit }: { label: string; value: unknown; unit?: string }) {
   return (
@@ -142,26 +148,30 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
         </div>
       </div>
 
-      {gov && (
-        <div className={`rounded-xl border p-4 ${gov.requiresImmediateAction ? "border-red-500/50 bg-red-500/10" : "border-amber-500/30 bg-amber-500/5"}`}>
-          <div className="flex items-start gap-3">
-            {gov.requiresImmediateAction ? <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" /> : <Shield className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />}
-            <div className="min-w-0">
-              <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">NFPA 70B-2023 Severity Evaluation</p>
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`rounded border px-2 py-0.5 text-[11px] font-bold uppercase ${gov.requiresImmediateAction ? "border-red-500/50 text-red-400 bg-red-500/10" : "border-amber-500/30 text-amber-400 bg-amber-500/10"}`}>{gov.netaClass}</span>
-                <span className="text-[11px] text-slate-400">Governing axis: {govAxis}</span>
-              </div>
-              <p className="text-xs text-slate-300">
-                <span className="text-slate-500">ΔT: </span>{dTC != null ? `${dTC.toFixed(1)}°C` : "—"}
-                {meta.ambientTemp != null ? " (P-A axis evaluated)" : " (P-A axis unavailable - ambient not recorded)"}
-              </p>
-              <p className="text-xs text-slate-400 mt-1"><span className="font-semibold text-slate-300">Repair window: </span>{gov.repairWindow}</p>
-              {gov.requiresImmediateAction && <p className="text-xs text-red-400 mt-1 font-semibold">⚠ MANDATORY: Immediate action required — stop equipment and apply lockout/tagout procedures.</p>}
-            </div>
+      <div className={`rounded-xl border p-4 ${!gov ? "border-slate-600 bg-slate-800/30" : gov.requiresImmediateAction ? "border-red-500/50 bg-red-500/10" : "border-amber-500/30 bg-amber-500/5"}`}>
+        <div className="flex items-start gap-3">
+          {!gov ? <Info className="h-4 w-4 text-slate-400 shrink-0 mt-0.5" /> : gov.requiresImmediateAction ? <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" /> : <Shield className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />}
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">NFPA 70B-2023 Severity Evaluation</p>
+            {!gov ? (
+              <p className="text-xs text-slate-400 italic">governing axis not recorded - class evaluation unavailable</p>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[11px] text-slate-400">NFPA 70B class: <span className="font-semibold text-slate-200">{gov.netaClass}</span></span>
+                  <span className="text-[11px] text-slate-400">Governing axis: {govAxis}</span>
+                </div>
+                <p className="text-xs text-slate-300">
+                  <span className="text-slate-500">ΔT (P-P / P-A input): </span>{dTC != null ? `${dTC.toFixed(1)}°C` : "—"}
+                  {meta.ambientTemp != null ? " (P-A axis evaluated)" : " (P-A axis unavailable - ambient not recorded)"}
+                </p>
+                <p className="text-xs text-slate-400 mt-1"><span className="font-semibold text-slate-300">Repair window: </span>{gov.repairWindow}</p>
+                {gov.requiresImmediateAction && <p className="text-xs text-red-400 mt-1 font-semibold">{gov.netaClass}: Immediate evaluation recommended</p>}
+              </>
+            )}
           </div>
         </div>
-      )}
+      </div>
 
       <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
         <div className="flex items-center gap-2 mb-3"><Gauge className="h-4 w-4 text-amber-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Inspection Metadata</h4></div>
@@ -181,7 +191,7 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
         <div className="flex items-center gap-2 mb-3"><Thermometer className="h-4 w-4 text-red-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Readings</h4></div>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           <RField label="Hotspot Temp" value={fmtTemp(peaks.hotspot as number, meta.tempUnit)} age={age} />
-          <RField label="Delta-T (stored)" value={fmtDeltaT(peaks.deltaT as number, meta.tempUnit)} age={age} note="Stored unit primary + labeled conversion" />
+          <RField label="Delta-T (stored, P-P / P-A basis)" value={fmtDeltaT(peaks.deltaT as number, meta.tempUnit)} age={age} note="Stored unit primary + labeled conversion" />
           <RField label="Phase A Temp" value={fmtTemp(meta.phaseA as number, meta.tempUnit)} age={age} />
           <RField label="Phase B Temp" value={fmtTemp(meta.phaseB as number, meta.tempUnit)} age={age} />
           <RField label="Phase C Temp" value={fmtTemp(meta.phaseC as number, meta.tempUnit)} age={age} />
@@ -192,7 +202,7 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
         <div className="flex items-center gap-2 mb-3"><Zap className="h-4 w-4 text-cyan-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Load Normalization</h4></div>
         {loadNorm.ok ? (
           <div className="space-y-2">
-            <p className="text-xs text-slate-300"><span className="text-slate-500">dT_rated (I²R model): </span><span className="font-mono font-bold text-white">{loadNorm.dR!.toFixed(1)}°C</span></p>
+            <p className="text-xs text-slate-300"><span className="text-slate-500">dT_rated (I²R model, P-P / P-A basis): </span><span className="font-mono font-bold text-white">{loadNorm.dR!.toFixed(1)}°C</span></p>
             <p className="text-[11px] text-slate-400 italic">Projection for resistive connections — model, not measurement.</p>
             <p className="text-[11px] text-slate-500"><span className="font-semibold">Audit: </span>{loadNorm.msg}</p>
           </div>
@@ -207,7 +217,7 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
               <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Emissivity Uncertainty</p>
               {eps === "low" ? (
                 <>
-                  <p className="text-xs text-amber-300">Emissivity {meta.emissivity} is below 0.60 — quantitative temperature readings may be unreliable on bare metal surfaces.</p>
+                  <p className="text-xs text-amber-300">Emissivity {String(meta.emissivity)} is below 0.60 — quantitative temperature readings may be unreliable on bare metal surfaces.</p>
                   <p className="text-[11px] text-slate-400 mt-1">Guidance: Apply high-emissivity tape or coating to measurement points for accurate readings.</p>
                 </>
               ) : <p className="text-xs text-slate-400 italic">Emissivity not recorded - quantitative readings uncertain on bare metal.</p>}
@@ -216,9 +226,11 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
         </div>
       )}
 
-      {faults.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
-          <div className="flex items-center gap-2 mb-3"><AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Fault Diagnoses</h4></div>
+      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
+        <div className="flex items-center gap-2 mb-3"><AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Fault Diagnoses</h4></div>
+        {!faults || faults.length === 0 ? (
+          <p className="text-xs text-slate-500 italic">no faults reported</p>
+        ) : (
           <ul className="space-y-1.5">
             {faults.map((f, i) => (
               <li key={i} className="flex items-center gap-2 text-xs text-slate-300">
@@ -228,12 +240,14 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        )}
+      </div>
 
-      {recs.length > 0 && (
-        <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
-          <div className="flex items-center gap-2 mb-3"><CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Recommendations</h4></div>
+      <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
+        <div className="flex items-center gap-2 mb-3"><CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Recommendations</h4></div>
+        {!recs || recs.length === 0 ? (
+          <p className="text-xs text-slate-500 italic">no recommendations for this run</p>
+        ) : (
           <ul className="space-y-1.5">
             {recs.map((r, i) => (
               <li key={i} className="flex items-start gap-2 text-xs text-slate-300">
@@ -242,8 +256,8 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
               </li>
             ))}
           </ul>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
