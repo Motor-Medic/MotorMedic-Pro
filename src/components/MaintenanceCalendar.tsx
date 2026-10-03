@@ -246,6 +246,54 @@ function DraftProposalCard({ draft: d }: { draft: WorkOrderDraft }) {
   );
 }
 
+/** Chips shown per day cell before the "+N more" pill.
+ * Geometry (no DOM measurement): cell box 88px - 1px borders x2 - 12px padding = 74px content;
+ * day label ~19px + one 2-line chip ~43px + pill ~10px ≈ 72px fits; a second chip (~43px more) would clip. */
+const MAX_CHIPS_PER_DAY = 1;
+
+export function DayCell({
+  day,
+  events,
+  onSelect
+}: {
+  day: number | null;
+  events: CalendarEvent[];
+  onSelect: (ev: CalendarEvent) => void;
+}) {
+  const shown = events.slice(0, MAX_CHIPS_PER_DAY);
+  const hidden = events.slice(MAX_CHIPS_PER_DAY);
+  return (
+    <div className="min-h-[88px] max-h-[88px] overflow-hidden rounded-lg border border-white/10 bg-slate-950/50 p-1.5">
+      {day != null && (
+        <>
+          <p className="text-[10px] text-slate-500 mb-1">{day}</p>
+          {shown.map((ev) => (
+            <button
+              key={ev.id}
+              type="button"
+              onClick={() => onSelect(ev)}
+              title={`${ev.time} — ${ev.title}`}
+              className="w-full text-left rounded-md border border-cyan-500/40 bg-cyan-500/10 p-1.5 mb-1 cursor-pointer hover:border-cyan-400/60 transition-colors"
+            >
+              <p className="text-[10px] font-bold text-white leading-tight line-clamp-2 break-words">
+                {ev.time} — {ev.title}
+              </p>
+            </button>
+          ))}
+          {hidden.length > 0 && (
+            <div
+              title={hidden.map((h) => `${h.time} — ${h.title}`).join("\n")}
+              className="text-[10px] font-bold text-slate-400 leading-none cursor-default"
+            >
+              +{hidden.length} more
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function MaintenanceCalendar({
   selectedCompanyId,
   onNavigateToTrends
@@ -451,29 +499,13 @@ export default function MaintenanceCalendar({
               </div>
               <div className="grid grid-cols-7 gap-1">
                 {monthDays.map((day, idx) => (
-                  <div
-                    key={idx}
-                    className="min-h-[88px] max-h-[88px] overflow-hidden rounded-lg border border-white/10 bg-slate-950/50 p-1.5"
-                  >
-                    {day && (
-                      <>
-                        <p className="text-[10px] text-slate-500 mb-1">{day}</p>
-                        {eventsForDay(day).slice(0, 2).map((ev) => (
-                          <button
-                            key={ev.id}
-                            type="button"
-                            onClick={() => setSelectedWO(ev)}
-                            title={`${ev.time} — ${ev.title}`}
-                            className="w-full text-left rounded-md border border-cyan-500/40 bg-cyan-500/10 p-1.5 mb-1 cursor-pointer hover:border-cyan-400/60 transition-colors"
-                          >
-                            <p className="text-[10px] font-bold text-white leading-tight line-clamp-2 break-words">
-                              {ev.time} — {ev.title}
-                            </p>
-                          </button>
-                        ))}
-                      </>
-                    )}
-                  </div>
+                  <React.Fragment key={idx}>
+                    <DayCell
+                      day={day}
+                      events={day ? eventsForDay(day) : []}
+                      onSelect={setSelectedWO}
+                    />
+                  </React.Fragment>
                 ))}
               </div>
             </div>

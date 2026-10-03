@@ -77,7 +77,7 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
               <div className="flex items-start gap-3">
                 {latest.gov?.requiresImmediateAction ? <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" /> : <Shield className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />}
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Mandate — {latest.date}</p>
+                  <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Governing class — {latest.date}</p>
                   <p className="text-xs text-slate-300">Governing class: <span className="font-bold uppercase">{latest.gov?.netaClass ?? "—"}</span><span className="text-slate-500 ml-1">· {latest.gov ? `axis ${latest.axis}` : "no verdict"}</span></p>
                   {latest.gov && (<p className="text-xs text-amber-300 mt-1">
                     {latest.gov.requiresImmediateAction && <span className="inline-block rounded border border-red-500/50 bg-red-500/10 text-red-400 px-1.5 py-0.5 text-[9px] font-bold uppercase mr-1">MANDATORY</span>}

@@ -27,6 +27,7 @@ import {
   openRouterRefererHeaders
 } from "./openRouterModels";
 import { EXPERT_VISION_PROMPT, VIBRATION_VISION_PROMPT_SIMPLE } from "./vibration/visionModelConfig";
+import { loadCostModel } from "../components/scorecard/CostDock";
 
 /** Canonical Express mount path — keep client fetch URLs in sync with server.ts */
 export const ANALYZE_VIBRATION_API_PATH = "/api/analyze-vibration";
@@ -186,8 +187,17 @@ function isTimeoutLike(err: unknown): boolean {
   );
 }
 
-const DOWNTIME_RATE_PER_HOUR = 5000;
 const REACTIVE_MAINTENANCE_MULTIPLIER = 5;
+
+/** Site downtime rate from the cost dock - unit: USD per hour (manual entry in CostDock, source: "manual").
+ *  Returns null while the dock is unconfigured so callers withhold dollar figures (G1). */
+export function siteDowntimeRatePerHourUsd(): number | null {
+  try {
+    const entry = loadCostModel().downtimeCostPerHour;
+    if (entry && Number.isFinite(entry.value) && entry.value > 0) return entry.value;
+  } catch {}
+  return null;
+}
 /** Keep each provider call under the 60s per-attempt budget. */
 const AI_PROVIDER_TIMEOUT_MS = 55_000;
 
@@ -260,12 +270,13 @@ function computeFinancialImpactFromFaultTitle(primaryFaultTitle: string | undefi
     ];
   }
 
+  const downtimeRatePerHour = siteDowntimeRatePerHourUsd() ?? 0;
   return {
     financialImpact: {
       preventiveRepairCost,
       failureCostIfDelayed: preventiveRepairCost * REACTIVE_MAINTENANCE_MULTIPLIER,
-      // Total downtime loss ($5,000/hr × repair hours)
-      downtimeLossPerHour: DOWNTIME_RATE_PER_HOUR * repairHours
+      // Total downtime loss = site dock rate (USD/hour) × repair hours; 0 while dock unconfigured (G1)
+      downtimeLossPerHour: downtimeRatePerHour * repairHours
     },
     repairRecommendations
   };

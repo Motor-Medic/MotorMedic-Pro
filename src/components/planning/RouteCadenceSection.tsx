@@ -138,7 +138,7 @@ function collapseSentence(
   return `${routeName} - ${first.dayText} for ${labels} - ${tail}`;
 }
 
-function PlannerGrid({ rows }: { rows: RouteRow[] }) {
+export function PlannerGrid({ rows }: { rows: RouteRow[] }) {
   const shown = rows.slice(0, MAX_ROWS);
   const overflow = rows.length - shown.length;
   const today = startOfToday();

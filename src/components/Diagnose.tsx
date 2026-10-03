@@ -55,9 +55,11 @@ import {
 } from "../data/equipmentDb";
 import {
   ANALYZE_VIBRATION_API_PATH,
+  siteDowntimeRatePerHourUsd,
   type ApiSeverity,
   type VibrationAnalysisResult
 } from "../lib/consensusEngine";
+import { loadCostModel } from "./scorecard/CostDock";
 import {
   applyTickDensityRoleCorrection,
   cropAllChartRegions,
@@ -749,8 +751,14 @@ type FaultCostProfile = {
   repairRecommendations: string[];
 };
 
-const DOWNTIME_RATE_PER_HOUR = 5000;
 const REACTIVE_MAINTENANCE_MULTIPLIER = 5;
+
+/** Downtime loss in USD for a repair duration: cost-dock rate (USD/hour) × hours;
+ *  0 while the dock rate is unconfigured - no dollars without a funded rate (G1). */
+function downtimeLossUsd(repairHours: number): number {
+  const rate = siteDowntimeRatePerHourUsd();
+  return rate != null ? rate * repairHours : 0;
+}
 
 function classifyFaultForCosting(primaryFaultTitle: string | undefined | null): FaultCostProfile {
   const title = String(primaryFaultTitle || "").trim();
@@ -892,8 +900,8 @@ function computeFinancialImpactFromFault(primaryFaultTitle: string | undefined |
   const profile = classifyFaultForCosting(primaryFaultTitle);
   const preventiveRepairCost = profile.preventiveRepairCost;
   const failureCostIfDelayed = preventiveRepairCost * REACTIVE_MAINTENANCE_MULTIPLIER;
-  // Stored total downtime loss ($5,000/hr × repair hours) — displayed as Downtime Loss
-  const downtimeLossPerHour = DOWNTIME_RATE_PER_HOUR * profile.repairHours;
+  // Stored total downtime loss = cost-dock downtime rate (USD/hour) × repair hours - displayed as Downtime Loss
+  const downtimeLossPerHour = downtimeLossUsd(profile.repairHours);
   return {
     financialImpact: {
       preventiveRepairCost,
@@ -1979,8 +1987,13 @@ export default function Diagnose({
   const financial = analysisResult?.financialImpact;
   const preventiveCost = Number(financial?.preventiveRepairCost) || 0;
   const failureCost = Number(financial?.failureCostIfDelayed) || 0;
-  // downtimeLossPerHour stores total downtime loss ($5k/hr × repair hours)
+  // downtimeLossPerHour stores total downtime loss (cost-dock downtime rate × repair hours)
   const downtimeLoss = Number(financial?.downtimeLossPerHour) || 0;
+  const dockDowntime = loadCostModel().downtimeCostPerHour;
+  const downtimeFigure = dockDowntime ? formatUsd(downtimeLoss) : "suppressed";
+  const downtimeLabel = dockDowntime
+    ? `downtime rate ${formatUsd(dockDowntime.value)}/hr - cost dock entry by ${dockDowntime.enteredBy} on ${new Date(dockDowntime.enteredAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+    : "downtime cost per hour not configured in the cost dock - figure withheld";
   const roiPercent =
     preventiveCost > 0
       ? Math.round(((failureCost - preventiveCost) / preventiveCost) * 100)
@@ -2571,6 +2584,7 @@ useEffect(() => {
           ? thermalUpload?.preview || null
           : spectrumUpload?.preview || null;
 
+      const downtimeRateUsd = siteDowntimeRatePerHourUsd();
       const saved = await saveAnalysisResult({
         asset_id: assetKey,
         component: browseComponent || null,
@@ -2584,12 +2598,12 @@ useEffect(() => {
           preventiveRepairCost: reconciled.financialImpact?.preventiveRepairCost ?? 0,
           failureCostIfDelayed: reconciled.financialImpact?.failureCostIfDelayed ?? 0,
           downtimeLossPerHour: reconciled.financialImpact?.downtimeLossPerHour ?? 0,
-          downtimeRatePerHour: DOWNTIME_RATE_PER_HOUR,
+          downtimeRatePerHour: downtimeRateUsd ?? 0,
           estimatedRepairHours:
-            DOWNTIME_RATE_PER_HOUR > 0
+            downtimeRateUsd != null && downtimeRateUsd > 0
               ? Math.round(
                   (Number(reconciled.financialImpact?.downtimeLossPerHour) || 0) /
-                    DOWNTIME_RATE_PER_HOUR
+                    downtimeRateUsd
                 )
               : 0,
           roiPercent:
@@ -2763,7 +2777,11 @@ useEffect(() => {
       y += 6;
       doc.text(`Failure if delayed: ${formatUsd(failureCost)}`, 14, y);
       y += 6;
-      doc.text(`Downtime loss: ${formatUsd(downtimeLoss)}`, 14, y);
+      doc.text(
+        `Downtime loss: ${dockDowntime ? `${downtimeFigure} - ${downtimeLabel}` : downtimeLabel}`,
+        14,
+        y
+      );
 
       y += 10;
       doc.setFontSize(12);
@@ -3371,7 +3389,9 @@ useEffect(() => {
           financialImpact: {
             preventiveRepairCost: 2500,
             failureCostIfDelayed: 25000,
-            downtimeLossPerHour: 5000
+            downtimeLossPerHour: downtimeLossUsd(
+              classifyFaultForCosting(primaryFault).repairHours
+            )
           },
           repairRecommendations: [
             hasWinding
@@ -5919,8 +5939,9 @@ useEffect(() => {
                   {" "}
                   Production Downtime Loss:{" "}
                   <span className="text-white font-semibold">
-                    {formatUsd(downtimeLoss)}
-                  </span>
+                    {downtimeFigure}
+                  </span>{" "}
+                  <span className="text-[10px] text-slate-500">{downtimeLabel}</span>
                 </p>
               </div>
             </div>
@@ -6477,8 +6498,9 @@ useEffect(() => {
                   {" "}
                   Downtime Loss:{" "}
                   <span className="text-white font-semibold">
-                    {formatUsd(downtimeLoss)}
-                  </span>
+                    {downtimeFigure}
+                  </span>{" "}
+                  <span className="text-[10px] text-slate-500">{downtimeLabel}</span>
                 </p>
 
                 <div className="mt-auto pt-4 border-t border-slate-800 space-y-3">
@@ -6831,7 +6853,8 @@ useEffect(() => {
                     <span className="text-red-300 font-semibold">{formatUsd(failureCost)}</span>
                     {" · "}
                     Downtime:{" "}
-                    <span className="text-white font-semibold">{formatUsd(downtimeLoss)}</span>
+                    <span className="text-white font-semibold">{downtimeFigure}</span>{" "}
+                    <span className="text-[10px] text-slate-500">{downtimeLabel}</span>
                   </p>
                 </div>
                 <div>
