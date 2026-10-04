@@ -1,7 +1,9 @@
-﻿/**
+/**
  * UltrasoundResultsTab — ultrasound / acoustic severity assessment.
- * US_DDB_BRACKETS (industry structure-borne delta-dB guidance, UE Systems/SDT);
- * no ISO severity standard exists for ultrasound; absence != normal; guidance labeled.
+ * structure-borne delta-dB ladder (UE Systems/SDT guidance thresholds re-tiered
+ * to the page legend: <8 / [8,16) / [16,35) / >=35, inclusive lower bounds so
+ * exact 8/16/35 land in the higher class); no ISO severity standard exists for
+ * ultrasound; absence != normal; guidance labeled.
  */
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Gauge, RadioTower, Waves, Zap } from "lucide-react";
@@ -9,8 +11,32 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
 import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
-import { evaluateUsSeverity, US_DDB_SOURCE } from "../../lib/maintenance/prescriptiveDictionary";
+import { US_DDB_SOURCE } from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
+
+export interface UsPageTier {
+  readonly minDb: number;
+  readonly maxDb: number;
+  readonly clazz: string;
+  readonly action: string;
+}
+
+/** Single US delta-dB class ladder for both the report chips and the trend
+ * library's chips, legend, and bracket lines. Inclusive lower bounds: exact
+ * 8/16/35 land deterministically in the higher class; 27 reads Class 2. */
+export const US_PAGE_LADDER: readonly UsPageTier[] = [
+  { minDb: -Infinity, maxDb: 8, clazz: "Satisfactory", action: "No action required" },
+  { minDb: 8, maxDb: 16, clazz: "Class 3 — Minor", action: "Lubrication deficiency / pre-failure" },
+  { minDb: 16, maxDb: 35, clazz: "Class 2 — Moderate", action: "Incipient failure" },
+  { minDb: 35, maxDb: Infinity, clazz: "Class 1 — Critical", action: "Advanced failure" },
+];
+
+export function evaluateUsDeltaClass(deltaDb: number): UsPageTier {
+  for (const b of US_PAGE_LADDER) {
+    if (deltaDb >= b.minDb && deltaDb < b.maxDb) return b;
+  }
+  return US_PAGE_LADDER[US_PAGE_LADDER.length - 1];
+}
 export interface UltrasoundResultsTabProps { selectedAnalysis: SavedAnalysisResult; }
 const num = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 const card = "rounded-xl border border-white/10 bg-slate-950/40 p-4";
@@ -44,7 +70,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
     if (pks.peakDb != null && pks.baselineDb != null) return { value: Math.round((pks.peakDb - pks.baselineDb) * 10) / 10, audit: "derived from peak - baseline (no stored delta)" };
     return { value: null as number | null, audit: "delta-dB unavailable - baseline not recorded" };
   })();
-  const bracket = useMemo(() => delta.value != null ? evaluateUsSeverity(delta.value) : null, [delta.value]);
+  const bracket = useMemo(() => delta.value != null ? evaluateUsDeltaClass(delta.value) : null, [delta.value]);
   const faults = useMemo(() => (Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : []).map(f => { const o = f as unknown as Record<string, unknown>; const t = String(o.fault ?? f.title ?? "Unknown"); return { title: t, sev: String(o.severity ?? f.severity ?? "MEDIUM"), conf: Number(o.confidence ?? f.confidence ?? 0), family: classifyFaultFamily(t) }; }), [selectedAnalysis.fault_list]);
   const recs = useMemo(() => (selectedAnalysis.recommendations ?? []).map(r => { const family = classifyFaultFamily(r); return { text: r, label: family === "unknown" ? "Unattributed (stored consensus)" : "Ultrasound" }; }), [selectedAnalysis.recommendations]);
   if (!selectedAnalysis || (selectedAnalysis.analysis_type ?? "vibration") !== "ultrasound") return (

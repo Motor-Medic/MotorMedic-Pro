@@ -8,11 +8,10 @@ import { Info, Waves } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import {
-  evaluateUsSeverity,
   US_CATASTROPHIC_DB,
-  US_DDB_BRACKETS,
   US_DDB_SOURCE,
 } from "../../lib/maintenance/prescriptiveDictionary";
+import { US_PAGE_LADDER, evaluateUsDeltaClass } from "./UltrasoundResultsTab";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
 
 export interface UltrasoundTrendLibraryTabProps {
@@ -34,6 +33,22 @@ interface TrendRow {
 
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
+
+/** contiguous [start, end) index spans where valid holds - used so null runs
+ * break the plot line instead of being drawn at 0 */
+function validSpans(valid: boolean[]): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  let start = -1;
+  for (let i = 0; i <= valid.length; i++) {
+    const ok = i < valid.length && valid[i];
+    if (ok && start < 0) start = i;
+    else if (!ok && start >= 0) {
+      out.push([start, i]);
+      start = -1;
+    }
+  }
+  return out;
+}
 
 const CLASS_COLOR: Record<string, string> = {
   Satisfactory: "#22c55e",
@@ -78,7 +93,7 @@ function rowFor(r: SavedAnalysisResult): TrendRow | null {
     audit = "delta-dB unavailable \u2014 baseline not recorded";
   }
 
-  const bracket = deltaDb != null ? evaluateUsSeverity(deltaDb) : null;
+  const bracket = deltaDb != null ? evaluateUsDeltaClass(deltaDb) : null;
   const clazz = bracket?.clazz ?? "No data";
   const primaryFault = r.primary_fault ?? r.fault_list?.[0]?.title ?? null;
   const family = classifyFaultFamily(primaryFault);
@@ -108,6 +123,9 @@ const PR = 12;
 const PT = 16;
 const PB = 30;
 const PADX = 32;
+// right gutter: keeps full bracket/catastrophic label text inside the viewBox
+// (geometry-only fix - no label text is shortened or removed)
+const RGUT = 170;
 
 export default function UltrasoundTrendLibraryTab({
   selectedAnalysis,
@@ -171,8 +189,26 @@ export default function UltrasoundTrendLibraryTab({
     y: pyB(bMax * f),
   }));
 
-  // bracket lines for Panel B
-  const bracketLines = US_DDB_BRACKETS.slice(1).map((b) => ({
+  // --- null honesty: recorded spans draw lines; missing runs confess ---
+  const segPts = (span: [number, number], y: (r: TrendRow) => number) =>
+    rows
+      .slice(span[0], span[1])
+      .map((r, k) => `${px(span[0] + k, rows.length)},${y(r)}`)
+      .join(" ");
+  const missX = (span: [number, number]) =>
+    px((span[0] + span[1] - 1) / 2, rows.length);
+  const peakSpans = validSpans(rows.map((r) => r.peakDb != null));
+  const baseSpans = validSpans(rows.map((r) => r.baselineDb != null));
+  const deltaSpans = validSpans(rows.map((r) => r.deltaDb != null));
+  const missingA = validSpans(
+    rows.map((r) => r.peakDb == null || r.baselineDb == null),
+  );
+  const missingB = validSpans(rows.map((r) => r.deltaDb == null));
+  const missY = PT + (H - PT - PB) / 2;
+
+  // bracket lines for Panel B (class boundaries from the page ladder; the
+  // catastrophic threshold keeps its own dedicated line below)
+  const bracketLines = US_PAGE_LADDER.slice(1, -1).map((b) => ({
     y: pyB(b.minDb),
     label: `${b.minDb} dB`,
     desc: b.action,
@@ -215,12 +251,12 @@ export default function UltrasoundTrendLibraryTab({
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
                 Peak &amp; Baseline
               </h4>
-              <span className="text-[9px] border rounded px-1 border-cyan-500/60 text-cyan-400">
+              <span className="text-[9px] border rounded px-1 shrink-0 border-cyan-500/60 text-cyan-400">
                 dBuV
               </span>
             </div>
             <svg
-              viewBox={`0 0 ${W} ${H}`}
+              viewBox={`0 0 ${W + RGUT} ${H}`}
               className="w-full h-48"
               preserveAspectRatio="none"
             >
@@ -272,51 +308,65 @@ export default function UltrasoundTrendLibraryTab({
                   ) : null}
                 </g>
               ))}
-              {/* baseline line */}
-              {rows.length > 1 && (
-                <polyline
-                  points={rows
-                    .map(
-                      (r, i) =>
-                        `${px(i, rows.length)},${pyA(r.baselineDb ?? 0)}`,
-                    )
-                    .join(" ")}
-                  fill="none"
-                  stroke="#94a3b8"
-                  strokeWidth="1.2"
-                  strokeDasharray="4 3"
-                />
-              )}
-              {/* peak line */}
-              {rows.length > 1 && (
-                <polyline
-                  points={rows
-                    .map(
-                      (r, i) =>
-                        `${px(i, rows.length)},${pyA(r.peakDb ?? 0)}`,
-                    )
-                    .join(" ")}
-                  fill="none"
-                  stroke="#22d3ee"
-                  strokeWidth="1.5"
-                />
-              )}
-              {/* dots */}
+              {/* baseline line - recorded spans only; null runs never plot at 0 */}
+              {baseSpans
+                .filter((s) => s[1] - s[0] > 1)
+                .map((s, i) => (
+                  <polyline
+                    key={`base-${i}`}
+                    points={segPts(s, (r) => pyA(r.baselineDb ?? 0))}
+                    fill="none"
+                    stroke="#94a3b8"
+                    strokeWidth="1.2"
+                    strokeDasharray="4 3"
+                  />
+                ))}
+              {/* peak line - recorded spans only */}
+              {peakSpans
+                .filter((s) => s[1] - s[0] > 1)
+                .map((s, i) => (
+                  <polyline
+                    key={`peak-${i}`}
+                    points={segPts(s, (r) => pyA(r.peakDb ?? 0))}
+                    fill="none"
+                    stroke="#22d3ee"
+                    strokeWidth="1.5"
+                  />
+                ))}
+              {/* dots - only where the reading exists */}
               {rows.map((r, i) => (
                 <g key={r.ts + "-dot"}>
-                  <circle
-                    cx={px(i, rows.length)}
-                    cy={pyA(r.peakDb ?? 0)}
-                    r="2.6"
-                    fill="#22d3ee"
-                  />
-                  <circle
-                    cx={px(i, rows.length)}
-                    cy={pyA(r.baselineDb ?? 0)}
-                    r="2.6"
-                    fill="#94a3b8"
-                  />
+                  {r.peakDb != null && (
+                    <circle
+                      cx={px(i, rows.length)}
+                      cy={pyA(r.peakDb)}
+                      r="2.6"
+                      fill="#22d3ee"
+                    />
+                  )}
+                  {r.baselineDb != null && (
+                    <circle
+                      cx={px(i, rows.length)}
+                      cy={pyA(r.baselineDb)}
+                      r="2.6"
+                      fill="#94a3b8"
+                    />
+                  )}
                 </g>
+              ))}
+              {/* missing-run confessions */}
+              {missingA.map((s, i) => (
+                <text
+                  key={`missA-${i}`}
+                  x={missX(s)}
+                  y={missY}
+                  fontSize="7"
+                  fill="#64748b"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                >
+                  no data recorded
+                </text>
               ))}
             </svg>
             <div className="flex flex-wrap gap-1.5 mt-1">
@@ -343,12 +393,12 @@ export default function UltrasoundTrendLibraryTab({
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">
                 Delta over Baseline
               </h4>
-              <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400">
+              <span className="text-[9px] border rounded px-1 shrink-0 border-amber-500/60 text-amber-400">
                 dB
               </span>
             </div>
             <svg
-              viewBox={`0 0 ${W} ${H}`}
+              viewBox={`0 0 ${W + RGUT} ${H}`}
               className="w-full h-48"
               preserveAspectRatio="none"
             >
@@ -448,45 +498,59 @@ export default function UltrasoundTrendLibraryTab({
                   ) : null}
                 </g>
               ))}
-              {/* delta line */}
-              {rows.length > 1 && (
-                <polyline
-                  points={rows
-                    .map(
-                      (r, i) =>
-                        `${px(i, rows.length)},${pyB(r.deltaDb ?? 0)}`,
-                    )
-                    .join(" ")}
-                  fill="none"
-                  stroke="#f59e0b"
-                  strokeWidth="1.2"
-                  opacity="0.5"
-                />
-              )}
-              {/* dots colored by class */}
-              {rows.map((r, i) => (
-                <g key={r.ts + "-pt"}>
-                  <circle
-                    cx={px(i, rows.length)}
-                    cy={pyB(r.deltaDb ?? 0)}
-                    r="3"
-                    fill={classColor(r.clazz)}
+              {/* delta line - recorded spans only; null runs never plot at 0 */}
+              {deltaSpans
+                .filter((s) => s[1] - s[0] > 1)
+                .map((s, i) => (
+                  <polyline
+                    key={`delta-${i}`}
+                    points={segPts(s, (r) => pyB(r.deltaDb ?? 0))}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth="1.2"
+                    opacity="0.5"
                   />
-                  {r.isCatastrophic && (
+                ))}
+              {/* dots colored by class - only where a delta exists */}
+              {rows.map((r, i) =>
+                r.deltaDb != null ? (
+                  <g key={r.ts + "-pt"}>
                     <circle
                       cx={px(i, rows.length)}
-                      cy={pyB(r.deltaDb ?? 0)}
-                      r="5"
-                      fill="none"
-                      stroke="#dc2626"
-                      strokeWidth="1"
+                      cy={pyB(r.deltaDb)}
+                      r="3"
+                      fill={classColor(r.clazz)}
                     />
-                  )}
-                </g>
+                    {r.isCatastrophic && (
+                      <circle
+                        cx={px(i, rows.length)}
+                        cy={pyB(r.deltaDb)}
+                        r="5"
+                        fill="none"
+                        stroke="#dc2626"
+                        strokeWidth="1"
+                      />
+                    )}
+                  </g>
+                ) : null,
+              )}
+              {/* missing-run confessions */}
+              {missingB.map((s, i) => (
+                <text
+                  key={`missB-${i}`}
+                  x={missX(s)}
+                  y={missY}
+                  fontSize="7"
+                  fill="#64748b"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                >
+                  no data recorded
+                </text>
               ))}
             </svg>
             <div className="flex flex-wrap gap-1.5 mt-1">
-              {US_DDB_BRACKETS.map((b) => (
+              {US_PAGE_LADDER.map((b) => (
                 <span
                   key={b.clazz}
                   className="inline-flex items-center gap-1 text-[9px] text-slate-500"
@@ -509,13 +573,13 @@ export default function UltrasoundTrendLibraryTab({
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-slate-500">
-                  <th className="text-left font-normal">Date</th>
-                  <th className="text-right font-normal">Peak dBuV</th>
-                  <th className="text-right font-normal">Baseline dBuV</th>
-                  <th className="text-right font-normal">Delta stored</th>
-                  <th className="text-left font-normal">Audit verdict</th>
-                  <th className="text-left font-normal">Class</th>
-                  <th className="text-left font-normal">Pattern</th>
+                  <th className="text-left font-normal px-2 pb-1.5">Date</th>
+                  <th className="text-right font-normal px-2 pb-1.5">Peak dBuV</th>
+                  <th className="text-right font-normal px-2 pb-1.5">Baseline dBuV</th>
+                  <th className="text-right font-normal px-2 pb-1.5">Delta stored</th>
+                  <th className="text-left font-normal px-2 pb-1.5">Audit verdict</th>
+                  <th className="text-left font-normal px-2 pb-1.5">Class</th>
+                  <th className="text-left font-normal px-2 pb-1.5">Pattern</th>
                 </tr>
               </thead>
               <tbody>
@@ -524,20 +588,20 @@ export default function UltrasoundTrendLibraryTab({
                     key={r.ts}
                     className="text-slate-300 border-t border-slate-800"
                   >
-                    <td className="py-1">{r.date}</td>
-                    <td className="py-1 text-right font-mono">
+                    <td className="py-1 px-2">{r.date}</td>
+                    <td className="py-1 px-2 text-right font-mono">
                       {r.peakDb != null ? r.peakDb.toFixed(1) : "\u2014"}
                     </td>
-                    <td className="py-1 text-right font-mono">
+                    <td className="py-1 px-2 text-right font-mono">
                       {r.baselineDb != null ? r.baselineDb.toFixed(1) : "\u2014"}
                     </td>
-                    <td className="py-1 text-right font-mono">
+                    <td className="py-1 px-2 text-right font-mono">
                       {r.deltaDb != null ? `${r.deltaDb.toFixed(1)} dB` : "\u2014"}
                     </td>
-                    <td className="py-1 text-[10px] text-slate-400">
+                    <td className="py-1 px-2 text-[10px] text-slate-400">
                       {r.audit}
                     </td>
-                    <td className="py-1">
+                    <td className="py-1 px-2">
                       <span
                         className="inline-flex items-center gap-1 text-[9px] font-bold uppercase"
                         style={{ color: classColor(r.clazz) }}
@@ -554,7 +618,7 @@ export default function UltrasoundTrendLibraryTab({
                         )}
                       </span>
                     </td>
-                    <td className="py-1 text-slate-400">
+                    <td className="py-1 px-2 text-slate-400">
                       {FAULT_FAMILY_LABEL[
                         r.family as keyof typeof FAULT_FAMILY_LABEL
                       ] ?? "Unclassified"}
