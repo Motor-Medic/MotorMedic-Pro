@@ -58,7 +58,7 @@ export default function SpectrumLibraryTab({
   onSelectAnalysis
 }: SpectrumLibraryTabProps) {
   const [showBearingHarmonics, setShowBearingHarmonics] = useState(false);
-  const [manualRefRpm, setManualRefRpm] = useState(3530);
+  const [manualRefRpm, setManualRefRpm] = useState<number | null>(null);
   // Waterfall hover — mouse-only (no touch), reads exact values under cursor
   const [wfHover, setWfHover] = useState<{ svgX: number; runIdx: number; freq: number; amp: number; date: string; stored?: boolean } | null>(null);
 
@@ -117,8 +117,10 @@ export default function SpectrumLibraryTab({
     if (!td || typeof td !== "object") return null;
     const o = td as Record<string, unknown>;
     const vtr = o.vibration_trend_record as Record<string, unknown> | undefined;
-    const r = Number(o.rpm ?? o.running_speed_rpm ?? (vtr ? vtr.rpm : null));
-    return Number.isFinite(r) && r > 0 ? r : null;
+    const raw = o.rpm ?? o.running_speed_rpm ?? (vtr ? vtr.rpm : null);
+    if (raw == null || raw === "") return null;
+    const r = Number(raw);
+    return Number.isFinite(r) && r >= 0 ? r : null;
   };
 
   // ---- DERIVED DATA: RPM and bearing geometry from the row / asset ----
@@ -131,8 +133,10 @@ export default function SpectrumLibraryTab({
     if (!td || typeof td !== "object") return null;
     const ctx = (td as Record<string, unknown>).context;
     if (!ctx || typeof ctx !== "object") return null;
-    const r = Number((ctx as Record<string, unknown>).motorSpeedRPM);
-    return Number.isFinite(r) && r > 0 ? r : null;
+    const raw = (ctx as Record<string, unknown>).motorSpeedRPM;
+    if (raw == null || raw === "") return null;
+    const r = Number(raw);
+    return Number.isFinite(r) && r >= 0 ? r : null;
   })();
   // Asset-level RPM: check telemetry_data.asset_rpm or component-level fields
   const assetRpm = (() => {
@@ -140,21 +144,25 @@ export default function SpectrumLibraryTab({
     if (!td || typeof td !== "object") return null;
     const o = td as Record<string, unknown>;
     const vtr = o.vibration_trend_record as Record<string, unknown> | undefined;
-    const r = Number(o.asset_rpm ?? o.operating_rpm ?? o.nameplate_rpm ?? (vtr ? vtr.asset_rpm ?? vtr.operating_rpm : null));
-    return Number.isFinite(r) && r > 0 ? r : null;
+    const raw = o.asset_rpm ?? o.operating_rpm ?? o.nameplate_rpm ?? (vtr ? vtr.asset_rpm ?? vtr.operating_rpm : null);
+    if (raw == null || raw === "") return null;
+    const r = Number(raw);
+    return Number.isFinite(r) && r >= 0 ? r : null;
   })();
   const effectiveRpm = rowRpm ?? contextRpm ?? assetRpm ?? manualRefRpm;
-  const rpmSource: "record" | "context" | "asset" | "manual" = rowRpm != null ? "record" : contextRpm != null ? "context" : assetRpm != null ? "asset" : "manual";
+  const rpmSource: "record" | "context" | "asset" | "manual" | null =
+    rowRpm != null ? "record" : contextRpm != null ? "context" : assetRpm != null ? "asset" : manualRefRpm != null ? "manual" : null;
   const isVisionRpm = (() => {
     const td = selectedAnalysis?.telemetry_data;
     if (!td || typeof td !== "object") return false;
     const o = td as Record<string, unknown>;
     return o.rpm_source === "vision-extracted";
   })();
-  const rpmHz = effectiveRpm / 60;
+  const rpmHz = effectiveRpm != null ? effectiveRpm / 60 : 0;
   const hasRpm = effectiveRpm != null;
 
-  // geometry: asset bearing model if in BEARING_GEOMETRY, else "SKF 6210"
+  // geometry: only the asset's own bearing model when its geometry is in the
+  // library; otherwise null (confessed downstream - never a silent generic).
   const BEARING_GEOMETRY: Record<string, { n: number; bd: number; pd: number; angle: number }> = {
     "SKF 6210": { n: 9, bd: 12.7, pd: 70.0, angle: 0 },
     "NSK 6312": { n: 8, bd: 22.225, pd: 95.0, angle: 0 },
@@ -168,11 +176,12 @@ export default function SpectrumLibraryTab({
     return typeof model === "string" && model.trim() ? model.trim() : null;
   };
   const assetBearingModel = selectedAnalysis ? extractBearingModel(selectedAnalysis) : null;
-  const geometryModel = assetBearingModel && BEARING_GEOMETRY[assetBearingModel] ? assetBearingModel : "SKF 6210";
+  const geometryModel: string | null =
+    assetBearingModel && BEARING_GEOMETRY[assetBearingModel] ? assetBearingModel : null;
 
   // Bearing fault characteristic orders (ISO 15242)
   const bearingHz = (() => {
-    const geo = BEARING_GEOMETRY[geometryModel];
+    const geo = geometryModel ? BEARING_GEOMETRY[geometryModel] : undefined;
     if (!geo || !hasRpm) return null;
     const r = (geo.bd / geo.pd) * Math.cos((geo.angle * Math.PI) / 180);
     const bpfoOrder = (geo.n / 2) * (1 - r);
@@ -188,11 +197,14 @@ export default function SpectrumLibraryTab({
     };
   })();
 
-  // Waterfall data prep: filter to vibration, apply as-of cutoff, sort chronologically, take last 6
+  // Waterfall data prep: only the selected asset's vibration runs, apply
+  // as-of cutoff, sort chronologically, take last 6 (never other assets).
   const selectedTs = selectedAnalysis ? new Date(selectedAnalysis.timestamp).getTime() : Infinity;
+  const waterfallAssetId = selectedAnalysis?.asset_id ?? null;
   const waterfallRuns = (() => {
     const vibrationRows = allAnalyses
       .filter((a) => a.analysis_type === "vibration")
+      .filter((a) => waterfallAssetId != null && a.asset_id === waterfallAssetId)
       .filter((a) => new Date(a.timestamp).getTime() <= selectedTs)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
       .slice(-6);
@@ -203,8 +215,8 @@ export default function SpectrumLibraryTab({
       spectralSource: extractSpectralSource(row),
     }));
   })();
-  const hasLaterVibrationRuns = selectedAnalysis != null && allAnalyses.some(
-    (a) => a.analysis_type === "vibration" && new Date(a.timestamp).getTime() > selectedTs
+  const hasLaterVibrationRuns = selectedAnalysis != null && waterfallAssetId != null && allAnalyses.some(
+    (a) => a.analysis_type === "vibration" && a.asset_id === waterfallAssetId && new Date(a.timestamp).getTime() > selectedTs
   );
 
   // Shared waterfall domains + color ramp (kept across mini-chart strips)
@@ -222,7 +234,6 @@ export default function SpectrumLibraryTab({
   const displayRows = chartRows;
 
   // ==== Envelope / demod primary view ====
-  const DEMOD_GEOMETRY = { n: 9, bd: 12.7, pd: 70.0 };
   const selectedEnvelope = selectedAnalysis ? extractEnvelope(selectedAnalysis) : [];
   const envelopeRows = downsampleMax(selectedEnvelope, 3);
   const envelopeFloor = (() => {
@@ -244,28 +255,26 @@ export default function SpectrumLibraryTab({
       ? [selectedAnalysis.primary_fault, ...(Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list.map((f) => `${f.title ?? ""} ${f.frequency ?? ""}`) : [])].join(" ")
       : ""
   );
-  const useRecordedFaultAnchor = diagnosisImpliesBearingFault && rowRpm == null;
+  const useRecordedFaultAnchor = diagnosisImpliesBearingFault && rowRpm == null && geometryModel != null;
 
   const demodBearing = (() => {
-    const ratio = DEMOD_GEOMETRY.bd / DEMOD_GEOMETRY.pd;
-    const bpfoOrder = (DEMOD_GEOMETRY.n / 2) * (1 - ratio);
-    const bpfiOrder = (DEMOD_GEOMETRY.n / 2) * (1 + ratio);
-    const bsfOrder = (DEMOD_GEOMETRY.pd / (2 * DEMOD_GEOMETRY.bd)) * (1 - ratio * ratio);
-    const ftfOrder = 0.5 * (1 - ratio);
-    const make = (bpfo: number) => ({
-      BPFO: { order: bpfoOrder, hz: bpfo },
-      BPFI: { order: bpfiOrder, hz: bpfo * (bpfiOrder / bpfoOrder) },
-      BSF: { order: bsfOrder, hz: bpfo * (bsfOrder / bpfoOrder) },
-      FTF: { order: ftfOrder, hz: bpfo * (ftfOrder / bpfoOrder) },
-    });
-    if (useRecordedFaultAnchor) {
+    if (useRecordedFaultAnchor && geometryModel) {
+      const geo = BEARING_GEOMETRY[geometryModel];
+      const r = (geo.bd / geo.pd) * Math.cos((geo.angle * Math.PI) / 180);
+      const bpfoOrder = (geo.n / 2) * (1 - r);
+      const bpfiOrder = (geo.n / 2) * (1 + r);
+      const bsfOrder = (geo.pd / (2 * geo.bd)) * (1 - r * r);
+      const ftfOrder = 0.5 * (1 - r);
       const peaks = selectedAnalysis ? extractPeaks(selectedAnalysis) : [];
       const bpfo = peaks.reduce((m, p) => (p.amplitude > m.amplitude ? p : m), { frequency: 0, amplitude: 0 }).frequency;
-      return make(bpfo);
+      return {
+        BPFO: { order: bpfoOrder, hz: bpfo },
+        BPFI: { order: bpfiOrder, hz: bpfo * (bpfiOrder / bpfoOrder) },
+        BSF: { order: bsfOrder, hz: bpfo * (bsfOrder / bpfoOrder) },
+        FTF: { order: ftfOrder, hz: bpfo * (ftfOrder / bpfoOrder) },
+      };
     }
-    if (bearingHz) return bearingHz;
-    if (!hasRpm) return null;
-    return make(bpfoOrder * rpmHz);
+    return bearingHz;
   })();
   const demodShaftHz = useRecordedFaultAnchor && demodBearing ? demodBearing.BPFO.hz / demodBearing.BPFO.order : rpmHz;
 
@@ -333,8 +342,14 @@ export default function SpectrumLibraryTab({
           ? "record RPM (context)"
           : rpmSource === "asset"
             ? "asset nameplate RPM"
-            : "manual reference RPM";
-  const geometryNote = `geometry: ${geometryModel}`;
+            : rpmSource === "manual"
+              ? "manual reference RPM"
+              : "RPM not recorded";
+  const geometryNote = geometryModel
+    ? `geometry: ${geometryModel}`
+    : assetBearingModel
+      ? `geometry: bearing ${assetBearingModel} not in library`
+      : "geometry: bearing not recorded";
   const energyNote = hasBearingEnergy
     ? "bearing family energy present (SIM)"
     : "quiet demod band - no bearing fault energy in this record (SIM floor)";
@@ -361,12 +376,12 @@ export default function SpectrumLibraryTab({
       ) : (
         <>
           {/* -- Only control: Bearing harmonics & sidebands -- */}
-          <label className={`flex items-center gap-2 ${hasRpm ? "cursor-pointer" : "opacity-50"}`} title={hasRpm ? undefined : "requires RPM"}>
+          <label className={`flex items-center gap-2 ${demodBearing ? "cursor-pointer" : "opacity-50"}`} title={demodBearing ? undefined : hasRpm ? "requires bearing geometry" : "requires RPM"}>
             <input
               type="checkbox"
               checked={showBearingHarmonics}
               onChange={() => setShowBearingHarmonics((v) => !v)}
-              disabled={!hasRpm}
+              disabled={!demodBearing}
               className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
             />
             <span className="text-sm text-slate-300">Bearing harmonics & sidebands</span>
@@ -378,7 +393,7 @@ export default function SpectrumLibraryTab({
             const title = (
               <div className="flex items-center justify-between gap-2 px-1 mb-3">
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                  ENVELOPE / DEMOD - {geometryModel}
+                  ENVELOPE / DEMOD - {geometryModel ?? (assetBearingModel ? `${assetBearingModel} - not in library` : "bearing not recorded")}
                   <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400 normal-case tracking-normal">SIM</span>
                 </h4>
                 <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
@@ -388,10 +403,16 @@ export default function SpectrumLibraryTab({
                   ) : (
                     <input
                       type="number"
-                      value={manualRefRpm}
+                      value={manualRefRpm ?? ""}
+                      placeholder="not recorded"
                       onChange={(e) => {
-                        const v = Number(e.target.value);
-                        if (Number.isFinite(v) && v > 0) setManualRefRpm(v);
+                        const raw = e.target.value;
+                        if (raw === "") {
+                          setManualRefRpm(null);
+                          return;
+                        }
+                        const v = Number(raw);
+                        if (Number.isFinite(v) && v >= 0) setManualRefRpm(v);
                       }}
                       className="w-24 text-xs rounded bg-slate-950/70 border border-slate-600 px-1.5 py-0.5 text-cyan-400 tabular-nums focus:outline-none focus:ring-1 focus:ring-cyan-500"
                     />
@@ -428,7 +449,7 @@ export default function SpectrumLibraryTab({
                         return hiddenNearby ? `${freq} Hz (${hiddenNearby})` : `${freq} Hz`;
                       }} />
                       <Line type="monotone" dataKey="amplitude" stroke="#38bdf8" strokeWidth={1} dot={false} isAnimationActive={false} name="Demod" />
-                      {hasRpm && demodBearing && (
+                      {demodBearing && (
                         <>
                           {demodCursorDefs.map((def) => (
                             <ReferenceLine
@@ -459,6 +480,18 @@ export default function SpectrumLibraryTab({
             const ampToHeight = (a: number) => (a / waterfallMaxAmp) * 45;
             const xLabels = [0, xMax / 4, xMax / 2, (3 * xMax) / 4, xMax].map((v) => Math.round(Number(v)));
             const allSpectral = waterfallRuns.length > 0 && waterfallRuns.every((r) => r.spectral.length > 0);
+            if (waterfallRuns.length === 0) {
+              return (
+                <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
+                  <div className="flex items-center justify-between gap-2 px-1 mb-2">
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Historical Waterfall</h4>
+                  </div>
+                  <div className="h-[240px] bg-slate-950 rounded-xl border border-slate-800 p-3 flex items-center justify-center text-center">
+                    <p className="text-slate-500 text-sm max-w-md">no vibration runs recorded for this asset</p>
+                  </div>
+                </div>
+              );
+            }
             return (
               <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
                 <div className="flex items-center justify-between gap-2 px-1 mb-2">

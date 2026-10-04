@@ -160,7 +160,7 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
                 return lastRun ? zoneFor(overallMmS(lastRun), lastRun.health_score) : "—";
               })();
               return (
-                <div key={fh.title} className="flex items-center gap-3 text-xs">
+                <div key={`${fh.title}-${fh.frequencyHz.toFixed(1)}`} className="flex items-center gap-3 text-xs">
                   <div className="flex-1 min-w-0">
                     <p className="text-slate-300 truncate">{fh.title} <span className="text-slate-500">({fh.frequencyHz?.toFixed(1)} Hz)</span></p>
                     <div className="flex items-center gap-2 mt-0.5">
@@ -187,7 +187,7 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
               </button>
             )}
             {showMoreFaults && moreFaults.map((fh) => (
-              <div key={fh.title} className="flex items-center gap-3 text-xs pl-4">
+              <div key={`${fh.title}-${fh.frequencyHz.toFixed(1)}`} className="flex items-center gap-3 text-xs pl-4">
                 <div className="flex-1 min-w-0">
                   <p className="text-slate-400 truncate">{fh.title} <span className="text-slate-500">({fh.frequencyHz?.toFixed(1)} Hz)</span></p>
                   <div className="flex items-center gap-2 mt-0.5">
@@ -370,7 +370,7 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
               const lastDate = fh.series.length ? dateFmt(fh.series[fh.series.length - 1].ts) : "—";
               const absentCount = vibrationRuns.length - fh.series.length;
               return (
-                <p key={fh.title} className="text-[10px] text-slate-500">
+                <p key={`${fh.title}-${fh.frequencyHz.toFixed(1)}`} className="text-[10px] text-slate-500">
                   <span className="text-slate-400">{fh.title}</span>: first seen {firstDate}, last seen {lastDate} · absent in {absentCount} run{absentCount > 1 ? "s" : ""}
                 </p>
               );
