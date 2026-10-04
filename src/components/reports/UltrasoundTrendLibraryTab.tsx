@@ -7,11 +7,13 @@ import React, { useMemo, useState } from "react";
 import { Info, Waves } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
+import { US_CATASTROPHIC_DB } from "../../lib/maintenance/prescriptiveDictionary";
 import {
-  US_CATASTROPHIC_DB,
   US_DDB_SOURCE,
-} from "../../lib/maintenance/prescriptiveDictionary";
-import { US_PAGE_LADDER, evaluateUsDeltaClass } from "./UltrasoundResultsTab";
+  US_PAGE_LADDER,
+  US_RUNGS,
+  evaluateUsDeltaClass,
+} from "./UltrasoundResultsTab";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
 
 export interface UltrasoundTrendLibraryTabProps {
@@ -206,17 +208,38 @@ export default function UltrasoundTrendLibraryTab({
   const missingB = validSpans(rows.map((r) => r.deltaDb == null));
   const missY = PT + (H - PT - PB) / 2;
 
-  // bracket lines for Panel B (class boundaries from the page ladder; the
-  // catastrophic threshold keeps its own dedicated line below)
-  const bracketLines = US_PAGE_LADDER.slice(1, -1).map((b) => ({
-    y: pyB(b.minDb),
-    label: `${b.minDb} dB`,
-    desc: b.action,
-    color: classColor(b.clazz),
+  // rung lines for Panel B (label text from the shared rung table; the
+  // catastrophic rung keeps its own dedicated line below)
+  const catRung = US_RUNGS.find((r) => r.db === US_CATASTROPHIC_DB);
+  const bracketLines = US_RUNGS.filter(
+    (r) => r.db !== US_CATASTROPHIC_DB,
+  ).map((r) => ({
+    y: pyB(r.db),
+    label: `${r.db} dB`,
+    desc: r.name,
+    color: classColor(evaluateUsDeltaClass(r.db).clazz),
   }));
   // catastrophic line
   const catY = pyB(US_CATASTROPHIC_DB);
   const showCat = US_CATASTROPHIC_DB <= bMax;
+  // When the 8/12/16 rungs crowd together, shift labels up (never down) with a
+  // guaranteed clearance so all four sit fully inside the panel, non-overlapping
+  const labelYs = (() => {
+    const naturals = [...bracketLines.map((l) => l.y), catY];
+    const placed = [...naturals];
+    let prev = Number.POSITIVE_INFINITY;
+    const bottomFirst = naturals
+      .map((y, i) => ({ y, i }))
+      .sort((a, b) => b.y - a.y);
+    for (const { y, i } of bottomFirst) {
+      const candidate =
+        prev === Number.POSITIVE_INFINITY ? y : Math.min(y, prev - 10);
+      placed[i] = Math.max(candidate, PT + 4);
+      prev = placed[i];
+    }
+    return placed;
+  })();
+  const catLabelY = labelYs[bracketLines.length];
 
   return (
     <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
@@ -435,7 +458,7 @@ export default function UltrasoundTrendLibraryTab({
                 dB
               </text>
               {/* bracket lines */}
-              {bracketLines.map((bl) => (
+              {bracketLines.map((bl, bi) => (
                 <g key={bl.label}>
                   <line
                     x1={PL}
@@ -449,7 +472,7 @@ export default function UltrasoundTrendLibraryTab({
                   />
                   <text
                     x={W - PR + 2}
-                    y={bl.y + 2}
+                    y={labelYs[bi] + 2}
                     fontSize="7"
                     fill={bl.color}
                     dominantBaseline="middle"
@@ -459,7 +482,7 @@ export default function UltrasoundTrendLibraryTab({
                 </g>
               ))}
               {/* catastrophic line */}
-              {showCat && (
+              {catRung && showCat && (
                 <g>
                   <line
                     x1={PL}
@@ -472,12 +495,12 @@ export default function UltrasoundTrendLibraryTab({
                   />
                   <text
                     x={W - PR + 2}
-                    y={catY + 2}
+                    y={catLabelY + 2}
                     fontSize="7"
                     fill="#dc2626"
                     dominantBaseline="middle"
                   >
-                    {US_CATASTROPHIC_DB} dB catastrophic
+                    {catRung.db} dB {catRung.name}
                   </text>
                 </g>
               )}

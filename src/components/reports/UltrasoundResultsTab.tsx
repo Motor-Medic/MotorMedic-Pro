@@ -11,7 +11,6 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
 import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
-import { US_DDB_SOURCE } from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
 
 export interface UsPageTier {
@@ -30,6 +29,24 @@ export const US_PAGE_LADDER: readonly UsPageTier[] = [
   { minDb: 16, maxDb: 35, clazz: "Class 2 — Moderate", action: "Incipient failure" },
   { minDb: 35, maxDb: Infinity, clazz: "Class 1 — Critical", action: "Advanced failure" },
 ];
+
+export interface UsRung {
+  readonly db: number;
+  readonly name: string;
+  /** threshold range suffix the source line prints for this rung (e.g. "-50") */
+  readonly span?: string;
+}
+
+/** Shared rung thresholds + names. Bracket labels and the source attribution
+ * line both derive from this table, so they cannot drift apart. */
+export const US_RUNGS: readonly UsRung[] = [
+  { db: 8, name: "lubrication deficiency / pre-failure" },
+  { db: 12, name: "incipient" },
+  { db: 16, name: "advanced" },
+  { db: 35, name: "catastrophic", span: "-50" },
+];
+
+export const US_DDB_SOURCE = `UE Systems bearing-condition ladder (structure-borne delta-dB over baseline): ${US_RUNGS.map((r) => `+${r.db}${r.span ?? ""} ${r.name}`).join(", ")}; applied as program practice to survey delta-dB`;
 
 export function evaluateUsDeltaClass(deltaDb: number): UsPageTier {
   for (const b of US_PAGE_LADDER) {
