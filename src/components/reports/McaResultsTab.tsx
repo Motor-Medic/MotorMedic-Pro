@@ -16,6 +16,7 @@ import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/f
 import {
   evaluateMcaSeverity,
   MCA_IMBALANCE_SOURCE,
+  MCA_IR_CITATION,
 } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   mcaPeakBlob,
@@ -308,8 +309,7 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
             <span className="font-semibold">PI interpretation: </span>
             {piInterpretation}{" "}
             <span className="italic text-slate-600">
-              &mdash; IEEE 43 reference bands - test-method guidance, not a
-              severity class
+              &mdash; {MCA_IR_CITATION}
             </span>
           </p>
         )}

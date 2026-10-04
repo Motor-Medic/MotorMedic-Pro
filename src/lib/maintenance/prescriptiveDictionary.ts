@@ -1502,6 +1502,11 @@ export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
 
 export const MCA_IMBALANCE_SOURCE = "NEMA MG-1 practice - voltage unbalance <=5%, current unbalance >2-3% warrants investigation; no ISO severity class standard exists for MCA";
 
+// Single source for the IEEE Std 43 citation - both MCA tabs import it here
+// so the guidance wording is byte-identical everywhere it renders.
+export const MCA_IR_CITATION =
+  "IEEE Std 43 - recommended practice for insulation-resistance testing; cited as guidance, not a severity class";
+
 export interface McaImbalanceBracket {
   readonly minPct: number;
   readonly maxPct: number;

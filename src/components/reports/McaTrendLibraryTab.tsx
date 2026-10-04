@@ -14,6 +14,7 @@ import {
   evaluateMcaSeverity,
   MCA_IMBALANCE_BRACKETS,
   MCA_IMBALANCE_SOURCE,
+  MCA_IR_CITATION,
 } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   mcaPeakBlob,
@@ -26,12 +27,6 @@ export interface McaTrendLibraryTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
   allAnalyses?: SavedAnalysisResult[];
 }
-
-/** Single source of truth for the IEEE Std 43 citation - every citation
- * render site in this tab reads this constant, so the wording cannot fork
- * or drift back to legacy phrasing. */
-export const MCA_IR_CITATION =
-  "IEEE Std 43 - recommended practice for insulation-resistance testing; cited as guidance, not a severity class";
 
 interface TrendRow {
   date: string;
