@@ -1,6 +1,6 @@
 /**
  * UltrasoundPatternDossierTab — acoustic pattern history, condition-indicator
- * log, survey program practice & competency validity for ultrasound.
+ * log, survey program practice & operator attribution for ultrasound.
  * ISO 18436-8 cited for personnel competency only; all intervals are
  * "practice" not "rule"; guidance labeled; absence != normal.
  */
@@ -8,6 +8,10 @@ import React, { useMemo, useState } from "react";
 import { Activity, CalendarDays, ClipboardList, Info, Waves } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
+import {
+  dedupeAnalysisResults,
+  evaluateUsCrestBand,
+} from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
 
 export interface UltrasoundPatternDossierTabProps {
@@ -31,21 +35,17 @@ const num = (v: unknown): number | null =>
 
 const card = "rounded-xl border border-white/10 bg-slate-950/40 p-4";
 
+// Crest bands are single-sourced in the practice dictionary and consumed by
+// the results tab's interpretation guide too, so a boundary reading (exactly
+// 6) lands in the same band on both surfaces: moderate here reads "mixed",
+// never "burst-like".
 function patternFromCrest(crest: number | null, family: string): string {
   if (crest == null) return "not classified";
   if (family === "leak") return "continuous";
-  if (crest >= 6) return "burst-like";
-  if (crest >= 2) return "mixed";
+  const band = evaluateUsCrestBand(crest);
+  if (band === "high") return "burst-like";
+  if (band === "moderate") return "mixed";
   return "continuous";
-}
-
-function crestNote(crest: number | null): string | null {
-  if (crest == null) return null;
-  if (crest < 2)
-    return "Low crest — broad-band signal suggests airborne or turbulence rather than a discrete mechanical event.";
-  if (crest <= 6)
-    return "Moderate crest — intermittent mechanical contact typical of dry or rubbing surfaces.";
-  return "High crest — burst-like signature consistent with spalling or discrete impacts.";
 }
 
 function rowFor(r: SavedAnalysisResult): SurveyRow {
@@ -91,16 +91,21 @@ export default function UltrasoundPatternDossierTab({
       </div>
     );
 
+  // Identity-dedupe first (same helper as the trend library's Runs table, so
+  // both surfaces always show the same rows), then order newest -> oldest for
+  // the log. dedupeAnalysisResults returns a fresh array, so the sort below
+  // never mutates the caller's allAnalyses prop.
   const rows = useMemo<SurveyRow[]>(
     () =>
-      (allAnalyses ?? [])
-        .filter(
+      dedupeAnalysisResults(
+        (allAnalyses ?? []).filter(
           (r) =>
             (r.analysis_type ?? "vibration").toLowerCase() === "ultrasound" &&
             r.asset_id === selectedAnalysis.asset_id &&
             (!selectedAnalysis.component ||
               r.component === selectedAnalysis.component),
-        )
+        ),
+      )
         .sort(
           (a, b) =>
             new Date(b.timestamp).getTime() -
@@ -291,17 +296,17 @@ export default function UltrasoundPatternDossierTab({
         )}
       </div>
 
-      {/* ===== S4: Competency & Validity Line ===== */}
+      {/* ===== S4: Competency & Operator Attribution ===== */}
       <div className={card}>
         <div className="flex items-center gap-2 mb-3">
           <Info className="h-4 w-4 text-sky-400 shrink-0" />
           <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">
-            Competency &amp; Validity
+            Competency &amp; Operator Attribution
           </h4>
         </div>
         <p className="text-[11px] text-slate-500">
-          ultrasound practitioner competency per ISO 18436-8 (personnel
-          certification); operator ID not recorded at capture
+          ultrasound practitioner certification per ISO 18436-8; operator ID
+          not recorded at capture
         </p>
       </div>
 

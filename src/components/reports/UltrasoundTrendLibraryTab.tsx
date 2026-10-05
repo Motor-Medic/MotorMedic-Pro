@@ -7,7 +7,7 @@ import React, { useMemo, useState } from "react";
 import { Info, Waves } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
-import { US_CATASTROPHIC_DB } from "../../lib/maintenance/prescriptiveDictionary";
+import { US_CATASTROPHIC_DB, dedupeAnalysisResults } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   US_DDB_SOURCE,
   US_PAGE_LADDER,
@@ -147,16 +147,21 @@ export default function UltrasoundTrendLibraryTab({
       </div>
     );
 
+  // Identity-dedupe first (shared with the pattern dossier's log so both
+  // surfaces show exactly the same rows), then order oldest -> newest for the
+  // date axis. dedupeAnalysisResults returns a fresh array, so the sort below
+  // never mutates the caller's allAnalyses prop.
   const rows = useMemo<TrendRow[]>(
     () =>
-      (allAnalyses ?? [])
-        .filter(
+      dedupeAnalysisResults(
+        (allAnalyses ?? []).filter(
           (r) =>
             (r.analysis_type ?? "vibration").toLowerCase() === "ultrasound" &&
             r.asset_id === selectedAnalysis.asset_id &&
             (!selectedAnalysis.component ||
               r.component === selectedAnalysis.component),
-        )
+        ),
+      )
         .sort(
           (a, b) =>
             new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),

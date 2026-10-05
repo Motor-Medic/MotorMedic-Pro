@@ -1493,6 +1493,57 @@ export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
 }
 
 // ---------------------------------------------------------------------------
+// Ultrasound crest-factor bands - dimensionless peak/RMS ratio applied as
+// program practice for the interpretation guide (results tab) and the pattern
+// classifier (pattern dossier tab). Inclusive ceiling: a crest of exactly 6
+// is moderate and anything above it is high, so a boundary value classifies
+// identically at every consumer. Never interpolate between bands.
+// ---------------------------------------------------------------------------
+
+/** Below this crest (exclusive) the signal reads low / broad-band. */
+export const US_CREST_LOW_BELOW = 2;
+/** At or below this crest (inclusive) the signal reads moderate. */
+export const US_CREST_MODERATE_UP_TO = 6;
+
+export type UsCrestBand = "low" | "moderate" | "high";
+
+/** null when the crest is absent or non-finite - consumers must confess the
+ * gap, never classify a missing reading as a band. */
+export function evaluateUsCrestBand(crest: number | null): UsCrestBand | null {
+  if (crest == null || !Number.isFinite(crest)) return null;
+  if (crest < US_CREST_LOW_BELOW) return "low";
+  if (crest <= US_CREST_MODERATE_UP_TO) return "moderate";
+  return "high";
+}
+
+// ---------------------------------------------------------------------------
+// Saved-analysis row dedupe - one row per analysis identity (analysis id,
+// falling back to timestamp|asset|component when an id is absent). Pure
+// Set/filter: returns a new array and never mutates the input, so caller-owned
+// prop arrays stay untouched. Shared by the ultrasound trend library's Runs
+// table and the pattern dossier's condition-indicator log so both surfaces
+// always render the same rows.
+// ---------------------------------------------------------------------------
+
+export function dedupeAnalysisResults<
+  T extends {
+    id?: string | null;
+    timestamp?: string | null;
+    asset_id?: string | null;
+    component?: string | null;
+  },
+>(rows: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return rows.filter((r) => {
+    const key =
+      r.id ?? `${r.timestamp ?? ""}|${r.asset_id ?? ""}|${r.component ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // MCA phase-unbalance brackets — NEMA MG-1 practice.  No ISO severity class
 // standard exists for MCA.  Exclusive lower, inclusive upper.  Values are
 // stated as whole-percent in the source practice; a rounding gap is

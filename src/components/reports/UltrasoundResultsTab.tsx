@@ -11,6 +11,7 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
 import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
+import { evaluateUsCrestBand } from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
 
 export interface UsPageTier {
@@ -70,7 +71,16 @@ function meta(r: SavedAnalysisResult) {
 function Field({ label, value, unit }: { label: string; value: unknown; unit?: string }) {
   return (<div className={cell}><p className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</p><p className={`text-sm font-mono mt-0.5 ${value != null ? "text-white" : "text-slate-500 italic"}`}>{value != null ? `${value}${unit ? ` ${unit}` : ""}` : "not recorded"}</p></div>);
 }
-const crestGuide = (c: number | null) => c == null ? null : c < 2 ? "Compact signal — low crest suggests broad-band (airborne/turbulence) rather than a discrete bearing event." : c <= 6 ? "Moderate crest — intermittent mechanical contact typical of dry/rubbing surfaces." : "High crest — burst-like signature consistent with spalling or discrete impacts.";
+// Crest wording is local; the band boundary is single-sourced in the practice
+// dictionary so this guide and the tab-3 pattern classifier can never disagree
+// on where low ends or moderate stops (exactly 6 reads moderate in both).
+const crestGuide = (c: number | null) => {
+  const band = evaluateUsCrestBand(c);
+  if (band === "low") return "Compact signal — low crest suggests broad-band (airborne/turbulence) rather than a discrete bearing event.";
+  if (band === "moderate") return "Moderate crest — intermittent mechanical contact typical of dry/rubbing surfaces.";
+  if (band === "high") return "High crest — burst-like signature consistent with spalling or discrete impacts.";
+  return null;
+};
 const sevClass = (r: SavedAnalysisResult): ReportSeverity => { const s = (r.severity ?? "").toUpperCase(); return s.includes("CRITICAL") || s.includes("HIGH") ? "CRITICAL" : s.includes("MODERATE") || s.includes("MEDIUM") ? "ANOMALY" : s.includes("MINOR") || s.includes("LOW") ? "NORMAL" : "NO_DATA"; };
 const sevTone = (c: string | null) => c == null ? "" : c.includes("Class 1") ? "border-red-500/50 text-red-400 bg-red-500/10" : c.includes("Class 2") ? "border-amber-500/30 text-amber-400 bg-amber-500/10" : c.includes("Class 3") ? "border-sky-500/30 text-sky-400 bg-sky-500/10" : "border-emerald-500/30 text-emerald-400 bg-emerald-500/10";
 
