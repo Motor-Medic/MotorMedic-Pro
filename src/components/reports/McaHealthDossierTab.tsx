@@ -1,7 +1,7 @@
 /**
  * McaHealthDossierTab — Motor Health & Test Practice Dossier for MCA.
  * S1 Winding Health Summary; S2 Test History Log; S3 Test Program Practice;
- * S4 Test-Method Citations; S5 Competency & Validity.
+ * S4 Test-Method Citation; S5 Competency & Validity.
  * IEEE 43 / IEEE 286 / NETA MTS cited only as test-method standards;
  * ISO 18436-4 cited only for personnel competency; every interval labeled
  * "practice"; guidance labeled as guidance; absence != normal.
@@ -12,7 +12,13 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily } from "../../lib/diagnostics/faultFamily";
 import {
   evaluateMcaSeverity,
+  MCA_COMPETENCY_CITATION,
   MCA_IMBALANCE_SOURCE,
+  MCA_INTERVAL_PRACTICE_SOURCE,
+  MCA_IR_CITATION,
+  MCA_MAINTENANCE_TESTING_CITATION,
+  MCA_TEST_CONDITIONS_CONFESSION,
+  MCA_WINDING_RESISTANCE_CITATION,
 } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   mcaPeakBlob,
@@ -34,6 +40,7 @@ interface DossierRow {
   pi: number | null;
   testVoltage: number | null;
   windingTemp: number | null;
+  leadCompensation: number | null;
   clazz: string;
   family: string;
 }
@@ -93,20 +100,21 @@ function rowFor(r: SavedAnalysisResult): DossierRow {
     }),
     ts: r.timestamp,
     imbalancePct,
-    irMohm: groundwall.ir1mMOmega != null ? groundwall.ir1mMOmega : null,
-    pi: groundwall.reportPi ?? null,
+    irMohm: groundwall.fromTelemetry ? num(groundwall.ir1mMOmega) : null,
+    pi: num(groundwall.reportPi),
     testVoltage: groundwall.testVoltageV > 0 ? groundwall.testVoltageV : null,
     windingTemp: winding.windingTempC ?? null,
+    leadCompensation: num(blob.lead_compensation ?? blob.leadCompensation),
     clazz,
     family,
   };
 }
 
 function piInterpretation(pi: number): string {
-  if (pi < 1.0) return "IEEE 43: retest recommended before energizing";
-  if (pi < 2.0) return "IEEE 43: acceptable for some machines - test-method guidance only";
-  if (pi < 4.0) return "IEEE 43: good insulation condition - test-method guidance only";
-  return "IEEE 43: excellent insulation condition - test-method guidance only";
+  if (pi < 1.0) return "retest recommended before energizing";
+  if (pi < 2.0) return "acceptable for some machines - test-method guidance only";
+  if (pi < 4.0) return "good insulation condition - test-method guidance only";
+  return "excellent insulation condition - test-method guidance only";
 }
 
 export default function McaHealthDossierTab({
@@ -226,6 +234,36 @@ export default function McaHealthDossierTab({
                     </span>
                   )}
                 </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">Test voltage:</span>
+                  {latest.testVoltage != null ? (
+                    <span className="font-mono text-slate-300">
+                      {latest.testVoltage} V
+                    </span>
+                  ) : (
+                    <span className="text-slate-500 italic">not recorded</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">Winding temperature:</span>
+                  {latest.windingTemp != null ? (
+                    <span className="font-mono text-slate-300">
+                      {latest.windingTemp} °C
+                    </span>
+                  ) : (
+                    <span className="text-slate-500 italic">not recorded</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-slate-500">Lead compensation:</span>
+                  {latest.leadCompensation != null ? (
+                    <span className="font-mono text-slate-300">
+                      {latest.leadCompensation}
+                    </span>
+                  ) : (
+                    <span className="text-slate-500 italic">not recorded</span>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -313,23 +351,23 @@ export default function McaHealthDossierTab({
                   </div>
                 )}
                 <p className="text-[10px] text-slate-500 mt-1">
-                  Source: IEEE 43 / NETA MTS test-interval practice - practice, not a rule
+                  Source: {MCA_INTERVAL_PRACTICE_SOURCE}
                 </p>
               </div>
             )}
           </div>
 
-          {/* ===== S4: Test-Method Citations ===== */}
+          {/* ===== S4: Test-Method Citation ===== */}
           <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-4 mt-3">
             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">
-              S4 — Test-Method Citations
+              S4 — Test-Method Citation
             </h4>
             <div className="space-y-1.5 text-xs text-slate-400">
-              <p>Insulation resistance test method per IEEE 43.</p>
-              <p>Winding resistance measurement per IEEE 286.</p>
-              <p>Maintenance testing per NETA MTS.</p>
+              <p>{MCA_IR_CITATION}</p>
+              <p>{MCA_WINDING_RESISTANCE_CITATION}</p>
+              <p>{MCA_MAINTENANCE_TESTING_CITATION}</p>
               <p className="text-[10px] text-slate-500 mt-2">
-                Each cited for test method only - no ISO severity class standard exists for MCA.
+                Each cited for test method only.
               </p>
             </div>
           </div>
@@ -340,7 +378,7 @@ export default function McaHealthDossierTab({
               S5 — Competency &amp; Validity
             </h4>
             <div className="space-y-1.5 text-xs text-slate-400">
-              <p>no ISO 18436 part covers motor circuit analysis; practitioner competency per industry training practice and vendor certification.</p>
+              <p>{MCA_COMPETENCY_CITATION}</p>
               <p>Operator ID not recorded at capture.</p>
             </div>
           </div>
@@ -349,9 +387,7 @@ export default function McaHealthDossierTab({
           <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 mt-3">
             <p className="text-[11px] text-slate-500">
               <Info className="h-3 w-3 inline text-slate-400 mr-1" />
-              MCA trend assumes comparable test conditions &mdash; winding
-              temperature, lead compensation, and test voltage affect absolute
-              values
+              {MCA_TEST_CONDITIONS_CONFESSION}
             </p>
             <p className="text-[11px] text-slate-500 mt-1">
               <Info className="h-3 w-3 inline text-slate-400 mr-1" />

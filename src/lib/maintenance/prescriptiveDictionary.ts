@@ -1553,10 +1553,28 @@ export function dedupeAnalysisResults<
 
 export const MCA_IMBALANCE_SOURCE = "NEMA MG-1 practice - voltage unbalance <=5%, current unbalance >2-3% warrants investigation; no ISO severity class standard exists for MCA";
 
-// Single source for the IEEE Std 43 citation - both MCA tabs import it here
-// so the guidance wording is byte-identical everywhere it renders.
+// Single source for the IEEE Std 43 citation - MCA tabs import it here so
+// the guidance wording is byte-identical everywhere it renders.
 export const MCA_IR_CITATION =
   "IEEE Std 43 - recommended practice for insulation-resistance testing; cited as guidance, not a severity class";
+
+// Single source for the test-conditions confession - the condition list
+// (winding temperature, lead compensation, test voltage) must not drift
+// between MCA tabs that render it next to absent-value disclosures.
+export const MCA_TEST_CONDITIONS_CONFESSION =
+  "MCA trend assumes comparable test conditions — winding temperature, lead compensation, and test voltage affect absolute values";
+
+export const MCA_INTERVAL_PRACTICE_SOURCE =
+  "IEEE 43 / NETA MTS test-interval practice - practice, not a rule";
+
+export const MCA_WINDING_RESISTANCE_CITATION =
+  "Winding resistance measurement per IEEE 286.";
+
+export const MCA_MAINTENANCE_TESTING_CITATION =
+  "Maintenance testing per NETA MTS.";
+
+export const MCA_COMPETENCY_CITATION =
+  "no ISO 18436 part covers motor circuit analysis; practitioner competency per industry training practice and vendor certification.";
 
 export interface McaImbalanceBracket {
   readonly minPct: number;
