@@ -14,6 +14,7 @@ interface DirRow { date: string; ts: string; deltaT: number | null; unit: "°F" 
 
 const NUM = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 const dTfmt = (dT: number | null, u: string) => dT == null ? "—" : `${dT.toFixed(1)}${u}`;
+const sitePracticeLabel = (repairWindow: string) => `site practice: ${repairWindow.charAt(0).toLowerCase()}${repairWindow.slice(1)}`;
 
 /**
  * Provenance: NFPA 70B-2023 describes an annual IR inspection cadence, but no
@@ -88,10 +89,7 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Governing class — {latest.date}</p>
                   <p className="text-xs text-slate-300"><span className="font-bold uppercase">{latest.gov?.netaClass ?? "—"}</span><span className="text-slate-500 ml-1">· {latest.gov ? `axis ${latest.axis ?? "—"}` : "no verdict"}</span></p>
-                  {latest.gov && (<p className="text-xs text-amber-300 mt-1">
-                    {latest.gov.requiresImmediateAction && <span className="inline-block rounded border border-red-500/50 bg-red-500/10 text-red-400 px-1.5 py-0.5 text-[9px] font-bold uppercase mr-1">MANDATORY</span>}
-                    {latest.gov.repairWindow}
-                  </p>)}
+                  {latest.gov && <p className="text-xs text-amber-300 mt-1">{sitePracticeLabel(latest.gov.repairWindow)}</p>}
                   <p className="text-[10px] text-slate-500 mt-1">NFPA 70B-2023 (enforceable) / NETA severity classes · Axis basis: each run's ΔT, converted to °C, is classified on the point-to-point (P-P) axis always and on point-to-ambient (P-A) only when ambient temperature is recorded; the Class column below names the governing axis per run</p>
                 </div>
               </div>
