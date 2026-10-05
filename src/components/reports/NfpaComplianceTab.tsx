@@ -10,24 +10,33 @@ import { evaluateIrSeverity, IR_PP_BRACKETS, IR_PA_BRACKETS, type IrSeverityBrac
 import { peakOfType, resolveTempUnit } from "../../lib/diagnostics/sensorFusion";
 
 export interface NfpaComplianceTabProps { selectedAnalysis: SavedAnalysisResult | null; allAnalyses?: SavedAnalysisResult[]; }
-interface DirRow { date: string; ts: string; deltaT: number | null; unit: "°F" | "°C"; dTC: number | null; pp: IrSeverityBracket | null; pa: IrSeverityBracket | null; gov: IrSeverityBracket | null; axis: string; eps: string; measured: number | null; rated: number | null; }
+interface DirRow { date: string; ts: string; deltaT: number | null; unit: "°F" | "°C"; dTC: number | null; pp: IrSeverityBracket | null; pa: IrSeverityBracket | null; gov: IrSeverityBracket | null; axis: string | null; eps: string; measured: number | null; rated: number | null; }
 
 const NUM = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 const dTfmt = (dT: number | null, u: string) => dT == null ? "—" : `${dT.toFixed(1)}${u}`;
 
-function diskRow(r: SavedAnalysisResult): DirRow | null {
+/**
+ * Provenance: NFPA 70B-2023 describes an annual IR inspection cadence, but no
+ * site interval is recorded anywhere in this app. 365 days is therefore an
+ * ASSUMED projection interval — every due date below is computed from it, and
+ * the "Next inspection due" caption must confess that assumption to the reader
+ * rather than presenting the projection as fact. Date math is intentionally left
+ * in its original form (see the due-date memo).
+ */
+const ASSUMED_TEST_INTERVAL_DAYS = 365;
+
+function diskRow(r: SavedAnalysisResult): DirRow {
   const peak = peakOfType(r, "thermography") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
   const dT = NUM(peak?.delta_t ?? peak?.deltaT ?? null);
-  if (dT == null) return null;
   const unit = resolveTempUnit(r) ?? "°F";
-  const dTC = unit === "°F" ? dT * (5 / 9) : dT;
-  const pp = evaluateIrSeverity(dTC, "P-P");
+  const dTC = dT == null ? null : unit === "°F" ? dT * (5 / 9) : dT;
+  const pp = dTC == null ? null : evaluateIrSeverity(dTC, "P-P");
   const td = (r.telemetry_data ?? {}) as Record<string, unknown>;
   const env = (td.environmental ?? {}) as Record<string, unknown>;
   const ambient = NUM(td.ambient_temp ?? td.ambientTemp ?? env.ambient_temp ?? env.ambientTemp ?? null);
-  const pa = ambient != null ? evaluateIrSeverity(dTC, "P-A") : null;
-  const gov = pa ? (IR_PP_BRACKETS.indexOf(pp) <= IR_PA_BRACKETS.indexOf(pa) ? pp : pa) : pp;
-  const axis = pa ? (gov === pa ? "P-A" : "P-P") : "P-P";
+  const pa = dTC != null && ambient != null ? evaluateIrSeverity(dTC, "P-A") : null;
+  const gov = pa == null ? pp : pp == null ? pa : IR_PP_BRACKETS.indexOf(pp) <= IR_PA_BRACKETS.indexOf(pa) ? pp : pa;
+  const axis = pa ? (gov === pa ? "P-A" : "P-P") : pp ? "P-P" : null;
   const epsRaw = td.emissivity ?? env.emissivity ?? null;
   const measured = NUM(r.measured_amps ?? td.measured_amps ?? env.measured_amps ?? peak?.measured_amps ?? null);
   const rated = NUM(r.rated_amps ?? td.rated_amps ?? env.rated_amps ?? peak?.rated_amps ?? null);
@@ -46,14 +55,14 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
   const rows = useMemo<DirRow[]>(() => (allAnalyses ?? [])
     .filter((r) => (r.analysis_type ?? "vibration").toLowerCase() === "thermography" && r.asset_id === selectedAnalysis.asset_id && (!selectedAnalysis.component || r.component === selectedAnalysis.component))
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .map(diskRow).filter((x) => x != null), [selectedAnalysis, allAnalyses]);
+    .map(diskRow), [selectedAnalysis, allAnalyses]);
 
   const [showAll, setShowAll] = useState(false);
   const latest = rows[0];
 
   const due = useMemo(() => {
-    if (!latest) return null;
-    const d = new Date(latest.ts); d.setDate(d.getDate() + 365);
+    if (latest == null) return null;
+    const d = new Date(latest.ts); d.setDate(d.getDate() + ASSUMED_TEST_INTERVAL_DAYS);
     const days = Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000));
     return { date: d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), overdue: Date.now() - d.getTime() > 0 ? days : 0 };
   }, [latest]);
@@ -78,20 +87,20 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
                 {latest.gov?.requiresImmediateAction ? <ShieldAlert className="h-5 w-5 text-red-400 shrink-0 mt-0.5" /> : <Shield className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />}
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Governing class — {latest.date}</p>
-                  <p className="text-xs text-slate-300">Governing class: <span className="font-bold uppercase">{latest.gov?.netaClass ?? "—"}</span><span className="text-slate-500 ml-1">· {latest.gov ? `axis ${latest.axis}` : "no verdict"}</span></p>
+                  <p className="text-xs text-slate-300"><span className="font-bold uppercase">{latest.gov?.netaClass ?? "—"}</span><span className="text-slate-500 ml-1">· {latest.gov ? `axis ${latest.axis ?? "—"}` : "no verdict"}</span></p>
                   {latest.gov && (<p className="text-xs text-amber-300 mt-1">
                     {latest.gov.requiresImmediateAction && <span className="inline-block rounded border border-red-500/50 bg-red-500/10 text-red-400 px-1.5 py-0.5 text-[9px] font-bold uppercase mr-1">MANDATORY</span>}
                     {latest.gov.repairWindow}
                   </p>)}
-                  <p className="text-[10px] text-slate-500 mt-1">NFPA 70B-2023 (enforceable) / NETA severity classes</p>
+                  <p className="text-[10px] text-slate-500 mt-1">NFPA 70B-2023 (enforceable) / NETA severity classes · Axis basis: each run's ΔT, converted to °C, is classified on the point-to-point (P-P) axis always and on point-to-ambient (P-A) only when ambient temperature is recorded; the Class column below names the governing axis per run</p>
                 </div>
               </div>
             </div>
           )}
 
-          {due && <p className="text-[11px] text-slate-400 mt-1"><CalendarDays className="h-3 w-3 inline text-slate-400 mr-1" /> Next inspection due <span className="font-mono text-white">{due.date}</span> per NFPA 70B-2023 annual interval — a rule, not a measurement.{due.overdue > 0 && <span className="text-red-400 font-semibold"> OVERDUE by {due.overdue} days.</span>}</p>}
+          {due && <p className="text-[11px] text-slate-400 mt-1"><CalendarDays className="h-3 w-3 inline text-slate-400 mr-1" /> Next inspection due <span className="font-mono text-white">{due.date}</span> — projection from an assumed {ASSUMED_TEST_INTERVAL_DAYS}-day test interval - site practice may vary; not a measurement.{due.overdue > 0 && <span className="text-red-400 font-semibold"> OVERDUE by {due.overdue} days.</span>}</p>}
 
-          {latest && <p className="text-[11px] text-slate-500 mt-1"><Info className="h-3 w-3 inline text-slate-400 mr-1" /> {latest.measured != null && latest.rated != null ? "Severity evaluated at measured load; square-law projection to rated load shown in Tab 1." : latest.rated != null ? "Severity is based on available data — measured amps not recorded; rated amps present. Peak load conditions will accelerate this failure mode." : latest.measured != null ? "Severity reflects measured load only — rated amps not recorded; peak load conditions will accelerate this failure mode." : "Severity evaluated from ΔT alone — neither measured nor rated amps recorded; load state unknown."}</p>}
+          {latest && <p className="text-[11px] text-slate-500 mt-1"><Info className="h-3 w-3 inline text-slate-400 mr-1" /> {latest.deltaT == null ? latest.measured != null || latest.rated != null ? "ΔT not recorded for the latest run — severity not evaluated; no class can be issued without ΔT, though amps are recorded." : "ΔT not recorded for the latest run — severity not evaluated; load state unknown." : latest.measured != null && latest.rated != null ? "Severity evaluated at measured load; square-law projection to rated load shown in Tab 1." : latest.rated != null ? "Severity is based on available data — measured amps not recorded; rated amps present. Peak load conditions will accelerate this failure mode." : latest.measured != null ? "Severity reflects measured load only — rated amps not recorded; peak load conditions will accelerate this failure mode." : "Severity evaluated from ΔT alone — neither measured nor rated amps recorded; load state unknown."}</p>}
 
           <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-3 mt-3">
             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Dossier</h4>
@@ -103,9 +112,9 @@ export default function NfpaComplianceTab({ selectedAnalysis, allAnalyses }: Nfp
                 {(showAll ? rows : rows.slice(0, 10)).map((r) => (
                   <tr key={r.ts} className="text-slate-300 border-t border-slate-800">
                     <td className="py-1">{r.date}</td>
-                    <td className="py-1 text-right font-mono">{dTfmt(r.deltaT, r.unit)}</td>
+                    <td className="py-1 text-right font-mono">{r.deltaT == null ? <span className="font-sans text-slate-500">no data recorded</span> : dTfmt(r.deltaT, r.unit)}</td>
                     <td className="py-1 text-right font-mono pr-4">{r.dTC != null ? `${r.dTC.toFixed(1)}°C` : "—"}</td>
-                    <td className="py-1 text-left text-slate-400 pl-1"><span className="font-semibold text-slate-300">{r.pa == null ? "P-P only" : r.axis}</span>{r.pa == null && <span className="text-slate-500"> (P-A unavailable — ambient not recorded)</span>}</td>
+                    <td className="py-1 text-left text-slate-400 pl-1">{r.pp == null ? <span className="text-slate-500">—</span> : <><span className="font-semibold text-slate-300">{r.pa == null ? "P-P only" : r.axis ?? "—"}</span>{r.pa == null && <span className="text-slate-500"> (P-A unavailable — ambient not recorded)</span>}</>}</td>
                     <td className="py-1"><span className="font-bold uppercase">{r.gov?.netaClass ?? "—"}</span></td>
                     <td className="py-1 text-slate-400">{r.gov?.repairWindow ?? "—"}</td>
                     <td className="py-1 text-slate-400">{r.eps}</td>
