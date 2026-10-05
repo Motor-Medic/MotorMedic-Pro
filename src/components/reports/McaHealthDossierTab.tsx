@@ -12,6 +12,7 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily } from "../../lib/diagnostics/faultFamily";
 import {
   evaluateMcaSeverity,
+  formatMcaPi,
   MCA_COMPETENCY_CITATION,
   MCA_IMBALANCE_SOURCE,
   MCA_INTERVAL_PRACTICE_SOURCE,
@@ -37,6 +38,7 @@ interface DossierRow {
   ts: string;
   imbalancePct: number | null;
   irMohm: number | null;
+  ir10Mohm: number | null;
   pi: number | null;
   testVoltage: number | null;
   windingTemp: number | null;
@@ -101,6 +103,7 @@ function rowFor(r: SavedAnalysisResult): DossierRow {
     ts: r.timestamp,
     imbalancePct,
     irMohm: groundwall.fromTelemetry ? num(groundwall.ir1mMOmega) : null,
+    ir10Mohm: groundwall.fromTelemetry ? num(groundwall.ir10mMOmega) : null,
     pi: num(groundwall.reportPi),
     testVoltage: groundwall.testVoltageV > 0 ? groundwall.testVoltageV : null,
     windingTemp: winding.windingTempC ?? null,
@@ -221,18 +224,16 @@ export default function McaHealthDossierTab({
                 </div>
                 <div className="flex items-start gap-3">
                   <span className="text-slate-500">PI:</span>
-                  {latest.pi != null ? (
-                    <div>
-                      <span className="font-mono text-slate-300">{latest.pi.toFixed(2)}</span>
+                  <div>
+                    <span className="font-mono text-slate-300">
+                      {formatMcaPi(latest.pi, latest.irMohm, latest.ir10Mohm)}
+                    </span>
+                    {latest.pi != null && (
                       <span className="text-slate-500 ml-2">
                         {piInterpretation(latest.pi)}
                       </span>
-                    </div>
-                  ) : (
-                    <span className="text-slate-500 italic">
-                      polarization index not recorded
-                    </span>
-                  )}
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-slate-500">Test voltage:</span>
@@ -298,7 +299,7 @@ export default function McaHealthDossierTab({
                       {r.irMohm != null ? r.irMohm.toFixed(1) : "—"}
                     </td>
                     <td className="py-1 px-2 text-right font-mono">
-                      {r.pi != null ? r.pi.toFixed(2) : "—"}
+                      {formatMcaPi(r.pi, r.irMohm, r.ir10Mohm)}
                     </td>
                     <td className="py-1 px-2 text-right font-mono text-slate-400">
                       {r.testVoltage != null ? r.testVoltage.toFixed(0) : "—"}

@@ -1597,6 +1597,33 @@ export function evaluateMcaSeverity(imbalancePct: number): McaImbalanceBracket {
   return MCA_IMBALANCE_BRACKETS[MCA_IMBALANCE_BRACKETS.length - 1];
 }
 
+// ---------------------------------------------------------------------------
+// MCA polarization-index display — one PI null vocabulary for every MCA tab:
+// a stored finite PI formats to 2 decimals; with no stored PI, both raw
+// resistances absent renders the repo's literal em-dash, a zero/missing R1
+// (or missing R10) renders "cannot compute", and a usable R1 divides R10
+// by R1. The division is guarded — finite inputs, non-zero R1, finite
+// quotient — so NaN/Infinity can never render. Plain string only: no JSX
+// lives in this .ts module; styling belongs to the call site.
+// ---------------------------------------------------------------------------
+const finiteOrNull = (v: number | null | undefined): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
+export function formatMcaPi(
+  pi: number | null | undefined,
+  r1: number | null | undefined,
+  r10: number | null | undefined,
+): string {
+  const stored = finiteOrNull(pi);
+  if (stored != null) return stored.toFixed(2);
+  const one = finiteOrNull(r1);
+  const ten = finiteOrNull(r10);
+  if (one == null && ten == null) return "—";
+  if (one == null || one === 0 || ten == null) return "cannot compute";
+  const ratio = ten / one;
+  return Number.isFinite(ratio) ? ratio.toFixed(2) : "cannot compute";
+}
+
 export function isMapped(diagnosis: string): boolean {
   return getPrescription(diagnosis).isMapped;
 }

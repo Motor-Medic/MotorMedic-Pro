@@ -12,9 +12,11 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import {
   evaluateMcaSeverity,
+  formatMcaPi,
   MCA_IMBALANCE_BRACKETS,
   MCA_IMBALANCE_SOURCE,
   MCA_IR_CITATION,
+  MCA_TEST_CONDITIONS_CONFESSION,
 } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   mcaPeakBlob,
@@ -34,6 +36,7 @@ interface TrendRow {
   imbalancePct: number | null;
   audit: string;
   irMohm: number | null;
+  ir10Mohm: number | null;
   pi: number | null;
   clazz: string;
   testVoltage: number | null;
@@ -140,6 +143,7 @@ function rowFor(r: SavedAnalysisResult): TrendRow {
     imbalancePct,
     audit,
     irMohm: groundwall.fromTelemetry ? num(groundwall.ir1mMOmega) : null,
+    ir10Mohm: groundwall.fromTelemetry ? num(groundwall.ir10mMOmega) : null,
     pi: num(groundwall.reportPi),
     clazz,
     testVoltage: groundwall.testVoltageV > 0 ? groundwall.testVoltageV : null,
@@ -695,11 +699,7 @@ export default function McaTrendLibraryTab({
                       {r.irMohm != null ? r.irMohm.toFixed(1) : "\u2014"}
                     </td>
                     <td className="py-1 px-2 text-right font-mono">
-                      {r.pi != null
-                        ? r.pi.toFixed(2)
-                        : r.irMohm != null
-                          ? "cannot compute"
-                          : "\u2014"}
+                      {formatMcaPi(r.pi, r.irMohm, r.ir10Mohm)}
                     </td>
                     <td className="py-1 px-2">
                       <span
@@ -739,9 +739,7 @@ export default function McaTrendLibraryTab({
           <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 mt-3">
             <p className="text-[11px] text-slate-500">
               <Info className="h-3 w-3 inline text-slate-400 mr-1" />
-              MCA trend assumes comparable test conditions &mdash; winding
-              temperature, lead compensation, and test voltage affect absolute
-              values
+              {MCA_TEST_CONDITIONS_CONFESSION}
             </p>
             <p className="text-[11px] text-slate-500 mt-1">
               <Info className="h-3 w-3 inline text-slate-400 mr-1" />
