@@ -11,23 +11,45 @@ import { peakOfType, resolveTempUnit } from "../../lib/diagnostics/sensorFusion"
 export interface ThermalLibraryTabProps { selectedAnalysis: SavedAnalysisResult | null; allAnalyses?: SavedAnalysisResult[]; }
 interface IrRow { date: string; ts: string; hotspot: number | null; deltaT: number | null; unit: "°F" | "°C"; dTC: number | null; bracket: IrSeverityBracket | null; eps: string; }
 
-const CLASS_FILL: Record<string, string> = { "Class 1": "#ef4444", "Class 2": "#f59e0b", "Class 3": "#eab308", "Normal": "#22c55e" };
+const IR_COLORS = {
+  "Class 1": "#ef4444",
+  "Class 2": "#f59e0b",
+  "Class 3": "#eab308",
+  "Normal": "#22c55e",
+  unclassified: "#64748b",
+  grid: "#334155",
+  axis: "#38bdf8",
+} as const;
+
+const IR_CLASS_KEYS = ["Class 1", "Class 2", "Class 3", "Normal"] as const;
+type IrClassKey = (typeof IR_CLASS_KEYS)[number];
+const isIrClassKey = (k: string): k is IrClassKey => (IR_CLASS_KEYS as readonly string[]).includes(k);
+
+const classKey = (b: IrSeverityBracket | null): IrClassKey | null => {
+  if (b == null) return null;
+  const key = b.netaClass.split(" — ")[0];
+  return isIrClassKey(key) ? key : null;
+};
+
+const cat = (b: IrSeverityBracket | null): string => {
+  const key = classKey(b);
+  return key != null ? IR_COLORS[key] : IR_COLORS.unclassified;
+};
 
 const num = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) ? v : null;
 
-function rowFor(r: SavedAnalysisResult): IrRow | null {
+function rowFor(r: SavedAnalysisResult): IrRow {
   const peak = peakOfType(r, "thermography") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
   const dT = num(peak?.delta_t ?? peak?.deltaT ?? null);
-  if (dT == null) return null;
   const hs = num(peak?.hotspot_temp ?? peak?.hotspotTemp ?? null);
   const unit = resolveTempUnit(r) ?? "°F";
-  const dTC = unit === "°F" ? dT * (5 / 9) : dT;
+  const dTC = dT == null ? null : unit === "°F" ? dT * (5 / 9) : dT;
   const td = (r.telemetry_data ?? {}) as Record<string, unknown>;
   const epsRaw = td.emissivity ?? (td.environmental as Record<string, unknown> | null)?.emissivity ?? null;
-  return { date: new Date(r.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), ts: r.timestamp, hotspot: hs, deltaT: dT, unit, dTC, bracket: evaluateIrSeverity(dTC, "P-P"), eps: epsRaw == null ? "not recorded" : String(epsRaw) };
+  return { date: new Date(r.timestamp).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }), ts: r.timestamp, hotspot: hs, deltaT: dT, unit, dTC, bracket: dTC == null ? null : evaluateIrSeverity(dTC, "P-P"), eps: epsRaw == null ? "not recorded" : String(epsRaw) };
 }
 
-const W = 520, H = 150, PL = 54, PR = 12, PT = 16, PB = 30, PADX = 32;
+const W = 520, H = 150, PL = 54, PR = 26, PT = 16, PB = 30, PADX = 32;
 
 export default function ThermalLibraryTab({ selectedAnalysis, allAnalyses }: ThermalLibraryTabProps) {
   if (!selectedAnalysis?.asset_id) return (
@@ -41,14 +63,22 @@ export default function ThermalLibraryTab({ selectedAnalysis, allAnalyses }: The
   const rows = useMemo<IrRow[]>(() => (allAnalyses ?? [])
     .filter((r) => (r.analysis_type ?? "vibration").toLowerCase() === "thermography" && r.asset_id === selectedAnalysis.asset_id && (!selectedAnalysis.component || r.component === selectedAnalysis.component))
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    .map(rowFor).filter((x) => x != null), [selectedAnalysis, allAnalyses]);
+    .map(rowFor), [selectedAnalysis, allAnalyses]);
 
   const [showAll, setShowAll] = useState(false);
   const unit = rows[0]?.unit ?? "°F";
-  const maxV = Math.max(...rows.map((r) => Math.max(r.hotspot ?? 0, r.deltaT ?? 0)), 10) * 1.15;
+  const values = rows.flatMap((r) => [r.hotspot, r.deltaT]).filter((v): v is number => v != null);
+  const maxV = Math.max(10, ...values) * 1.15;
+  const rowsWithData = rows.filter((r) => r.hotspot != null || r.deltaT != null);
+  const gapRuns = rows.filter((r) => r.hotspot == null || r.deltaT == null).length;
+  const fillSample = rowsWithData.find((r) => r.hotspot != null);
+  const ringSample = rowsWithData.find((r) => r.deltaT != null);
+  const fillColor = fillSample ? cat(fillSample.bracket) : null;
+  const ringColor = ringSample ? cat(ringSample.bracket) : null;
+  const legendClasses = IR_CLASS_KEYS.filter((k) => rowsWithData.some((r) => classKey(r.bracket) === k));
+  const hasUnclassified = rowsWithData.some((r) => classKey(r.bracket) == null);
   const px = (i: number, n: number) => n === 1 ? (PL + W - PR) / 2 : (PL + PADX) + i * (W - PR - PL - PADX) / (n - 1);
   const py = (v: number) => PT + (1 - Math.max(0, v) / maxV) * (H - PT - PB);
-  const cat = (b: IrSeverityBracket | null) => b ? CLASS_FILL[b.netaClass.split(" — ")[0]] ?? "#64748b" : "#64748b";
   const grid = [0, 0.5, 1].map((f) => ({ v: maxV * f, y: py(maxV * f) }));
   const unitLabel = unit === "°F" ? "degF" : "degC";
 
@@ -71,21 +101,28 @@ export default function ThermalLibraryTab({ selectedAnalysis, allAnalyses }: The
               <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Timeline — hotspot &amp; ΔT</h4>
               <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400">Y axes in {unit}</span>
             </div>
-            <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-48" preserveAspectRatio="none">
-              {grid.map((g) => (<g key={g.v.toFixed(1)}><line x1={PL} x2={W - PR} y1={g.y} y2={g.y} stroke="#334155" strokeDasharray="3 3" /><text x={PL - 6} y={g.y + 2} fontSize="8" fill="#64748b" textAnchor="end" dominantBaseline="middle">{g.v.toFixed(0)}</text></g>))}
-              <text x={PL - 10} y={(PT + H - PB) / 2} fontSize="8" fill="#38bdf8" transform={`rotate(-90 ${PL - 10} ${(PT + H - PB) / 2})`} textAnchor="middle">Temp ({unitLabel})</text>
-              {rows.map((r, i) => (<g key={r.ts}>
-                {i === 0 || rows[i - 1].ts.slice(0, 10) !== r.ts.slice(0, 10) ? <text x={px(i, rows.length)} y={H - 10} fontSize="8" fill="#64748b" textAnchor="middle">{r.date.split(",")[0]}</text> : null}
-                <circle cx={px(i, rows.length)} cy={py(r.hotspot ?? 0)} r="2.6" fill={cat(r.bracket)} />
-                <circle cx={px(i, rows.length)} cy={py(r.deltaT ?? 0)} r="2.6" fill="none" stroke={cat(r.bracket)} strokeWidth="1" />
-                {r.bracket && <text x={px(i, rows.length)} y={py(r.hotspot ?? 0) - 6} fontSize="7" fill={cat(r.bracket)} textAnchor="middle">{r.bracket.netaClass.split(" — ")[0]}</text>}
-              </g>))}
-            </svg>
-            <div className="flex flex-wrap gap-1.5 mt-1">
-              <span className="inline-flex items-center gap-1 text-[9px] text-slate-500"><span className="w-2 h-2 rounded-full" style={{ background: "#38bdf8" }} />hotspot (filled) · <span className="w-2 h-2 rounded-full border border-slate-400" style={{ background: "transparent" }} />ΔT (ring)</span>
-              {Object.entries(CLASS_FILL).map(([l, f]) => <span key={l} className="inline-flex items-center gap-1 text-[9px] text-slate-500"><span className="w-2 h-2 rounded-full" style={{ background: f }} />{l}</span>)}
-            </div>
-            <p className="text-[10px] text-slate-500 mt-1">ΔT conversion: {unit === "°F" ? "°C = °F × 5/9" : "°F = °C × 9/5 + 32 for absolute temps; ΔT scales multiplicatively (offset-free)"} · shared date axis</p>
+            {rowsWithData.length === 0 ? (
+              <p className="text-sm text-slate-400 italic mt-3">Runs stored, but no data recorded: every run is missing hotspot and ΔT values, so there is nothing to plot.</p>
+            ) : (<>
+              <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-48" preserveAspectRatio="none">
+                {grid.map((g) => (<g key={g.v.toFixed(1)}><line x1={PL} x2={W - PR} y1={g.y} y2={g.y} stroke={IR_COLORS.grid} strokeDasharray="3 3" /><text x={PL - 6} y={g.y + 2} fontSize="8" fill={IR_COLORS.unclassified} textAnchor="end" dominantBaseline="middle">{g.v.toFixed(0)}</text></g>))}
+                <text x={PL - 34} y={(PT + H - PB) / 2} fontSize="8" fill={IR_COLORS.axis} transform={`rotate(-90 ${PL - 34} ${(PT + H - PB) / 2})`} textAnchor="middle">Temp ({unitLabel})</text>
+                {rows.map((r, i) => (<g key={r.ts}>
+                  {i === 0 || rows[i - 1].ts.slice(0, 10) !== r.ts.slice(0, 10) ? <text x={px(i, rows.length)} y={H - 10} fontSize="8" fill={IR_COLORS.unclassified} textAnchor="middle">{r.date.split(",")[0]}</text> : null}
+                  {r.hotspot == null && r.deltaT == null && <line x1={px(i, rows.length)} x2={px(i, rows.length)} y1={PT} y2={H - PB} stroke={IR_COLORS.unclassified} strokeDasharray="2 3" strokeOpacity={0.5} />}
+                  {r.hotspot != null && <circle cx={px(i, rows.length)} cy={py(r.hotspot)} r="2.6" fill={cat(r.bracket)} />}
+                  {r.deltaT != null && <circle cx={px(i, rows.length)} cy={py(r.deltaT)} r="2.6" fill="none" stroke={cat(r.bracket)} strokeWidth="1" />}
+                  {r.bracket && r.hotspot != null && <text x={px(i, rows.length)} y={py(r.hotspot) - 6} fontSize="7" fill={cat(r.bracket)} textAnchor="middle">{r.bracket.netaClass.split(" — ")[0]}</text>}
+                </g>))}
+              </svg>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {fillColor && <span className="inline-flex items-center gap-1 text-[9px] text-slate-500"><span className="w-2 h-2 rounded-full" style={{ background: fillColor }} />hotspot (filled)</span>}
+                {ringColor && <span className="inline-flex items-center gap-1 text-[9px] text-slate-500"><span className="w-2 h-2 rounded-full border" style={{ background: "transparent", borderColor: ringColor }} />ΔT (ring)</span>}
+                {legendClasses.map((l) => <span key={l} className="inline-flex items-center gap-1 text-[9px] text-slate-500"><span className="w-2 h-2 rounded-full" style={{ background: IR_COLORS[l] }} />{l}</span>)}
+                {hasUnclassified && <span className="inline-flex items-center gap-1 text-[9px] text-slate-500"><span className="w-2 h-2 rounded-full" style={{ background: IR_COLORS.unclassified }} />no class</span>}
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">ΔT conversion: {unit === "°F" ? "°C = °F × 5/9" : "°F = °C × 9/5 + 32 for absolute temps; ΔT scales multiplicatively (offset-free)"} · shared date axis · Y max: {maxV.toFixed(0)}{unit} (shared scale){gapRuns > 0 && <> · {gapRuns} run{gapRuns !== 1 ? "s" : ""} with gaps: no data recorded</>}</p>
+            </>)}
           </div>
           <div className="rounded-xl border border-slate-700 bg-slate-950/50 p-3 mt-3">
             <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Runs</h4>
