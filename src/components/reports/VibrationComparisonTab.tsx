@@ -84,6 +84,44 @@ function Sparkline({ points, color }: { points: number[]; color: string }) {
   );
 }
 
+/* One source of truth for both zone-provenance footers (S2 + S4). The bands are
+   ISO 10816-3 velocity limits, carried into (superseded by) ISO 20816-1 — shown
+   as guidance for a health-score fallback, not as a compliance limit. */
+const ZONE_PROVENANCE =
+  "Zone provenance: guidance only — ISO 10816-3 velocity bands (A < 2.3, B < 4.5, C < 7.1, D ≥ 7.1 mm/s RMS), superseded by ISO 20816-1; health-score fallback when overall velocity is absent.";
+
+interface SpectralTooltipProps {
+  active?: boolean;
+  label?: number | string;
+  payload?: ReadonlyArray<{ dataKey?: unknown; value?: unknown }>;
+  runALabel: string;
+  runBLabel: string;
+  unitLabel: string;
+}
+
+/* Custom spectral-diff tooltip: rows are keyed off the bar's dataKey ("a"/"b"),
+   so A is always labelled A and B always labelled B — one row per series. */
+function SpectralTooltip({ active, label, payload, runALabel, runBLabel, unitLabel }: SpectralTooltipProps) {
+  if (!active || !payload) return null;
+  const rows = payload.filter((e) => (e.dataKey === "a" || e.dataKey === "b") && e.value != null && Number.isFinite(Number(e.value)));
+  if (rows.length === 0) return null;
+  return (
+    <div className="spectral-diff-tooltip rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] shadow-lg">
+      <div className="mb-1 text-slate-400">{label != null ? `${label} Hz` : "frequency"}</div>
+      {rows.map((e) => {
+        const isA = e.dataKey === "a";
+        return (
+          <div key={String(e.dataKey)} className="flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-sm" style={{ background: isA ? "#38bdf8" : "#f472b6" }} />
+            <span className="text-slate-300">{isA ? runALabel : runBLabel}</span>
+            <span className="ml-3 font-mono text-white">{Number(e.value).toFixed(3)} {unitLabel}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function VibrationComparisonTab({ isActive, selectedAnalysis, loadedAnalyses }: VibrationComparisonTabProps) {
   const [selA, setSelA] = useState<string | null>(null);
   const [selB, setSelB] = useState<string | null>(null);
@@ -98,6 +136,13 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
   const vibrationRuns = useMemo(() => loadedAnalyses
     .filter((r) => (r.analysis_type ?? "vibration") === "vibration" && r.asset_id === asset && (!component || r.component === component))
     .sort((x, y) => new Date(x.timestamp).getTime() - new Date(y.timestamp).getTime()), [loadedAnalyses, asset, component]);
+
+  const sameAssetRunCount = loadedAnalyses.filter((r) => (r.analysis_type ?? "vibration") === "vibration" && r.asset_id === asset).length;
+  const emptyRunsMessage = !selectedAnalysis
+    ? "Open a report to see stored vibration runs."
+    : sameAssetRunCount === 0
+      ? "No stored vibration runs for this asset."
+      : `No runs match the current filter — ${sameAssetRunCount} vibration run${sameAssetRunCount === 1 ? "" : "s"} for this asset, none with component "${component ?? "any"}".`;
 
   useEffect(() => {
     if (!isActive || !selectedAnalysis) return;
@@ -136,6 +181,30 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
   };
 
+  /* ── S3: normalize shapes — a derived view, never a mutation of stemData ── */
+  const maxA = useMemo(() => stemData.reduce((m, r) => Math.max(m, r.a ?? 0), 0), [stemData]);
+  const maxB = useMemo(() => stemData.reduce((m, r) => Math.max(m, r.b ?? 0), 0), [stemData]);
+  const hasPeaksA = stemData.some((r) => r.a != null);
+  const hasPeaksB = stemData.some((r) => r.b != null);
+  const normalizeApplicable = hasPeaksA && hasPeaksB && maxA > 0 && maxB > 0;
+  const normalizeOn = normalize && normalizeApplicable;
+  const chartData = useMemo(() => (normalizeOn
+    ? stemData.map((r) => ({
+        frequency: r.frequency,
+        a: r.a != null ? (r.a / maxA) * 100 : undefined,
+        b: r.b != null ? (r.b / maxB) * 100 : undefined,
+      }))
+    : stemData), [normalizeOn, stemData, maxA, maxB]);
+  const chartYMax = normalizeOn ? 100 : stemYMax;
+  const chartUnit = normalizeOn ? "%" : unit;
+  const normalizeReason = !hasPeaksA && !hasPeaksB
+    ? "neither run has stored peaks"
+    : !hasPeaksA
+      ? `run A (${dateFmt(runA?.timestamp ?? "")}) has no stored peaks`
+      : !hasPeaksB
+        ? `run B (${dateFmt(runB?.timestamp ?? "")}) has no stored peaks`
+        : "the stored peaks are unusable";
+
   /* ── S4: Audit strip zone history ── */
   const zoneHistory = useMemo(() => vibrationRuns.map((r) => ({ id: r.id, ts: r.timestamp, zone: zoneFor(overallMmS(r), r.health_score) })), [vibrationRuns]);
 
@@ -150,19 +219,23 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Fault Track Board</div>
         {!selectedAnalysis ? (
           <p className="text-xs text-slate-400 italic">Open a report to see fault evolution.</p>
+        ) : vibrationRuns.length === 0 ? (
+          <p className="text-xs text-slate-400 italic">{emptyRunsMessage}</p>
         ) : faultHistory.length === 0 ? (
           <p className="text-xs text-slate-400 italic">No faults with tracked frequencies across runs.</p>
         ) : (
           <div className="space-y-2">
-            {topFaults.map((fh) => {
+            {topFaults.map((fh, i) => {
               const latestZone = (() => {
                 const lastRun = vibrationRuns.find((r) => fh.series.some((s) => s.runId === r.id));
                 return lastRun ? zoneFor(overallMmS(lastRun), lastRun.health_score) : "—";
               })();
+              const freqLabel = fh.frequencyHz != null && Number.isFinite(fh.frequencyHz) ? fh.frequencyHz.toFixed(1) : null;
+              const rowTitle = `${fh.title}${freqLabel ? ` (${freqLabel} Hz)` : " (frequency not recorded)"}`;
               return (
-                <div key={`${fh.title}-${fh.frequencyHz.toFixed(1)}`} className="flex items-center gap-3 text-xs">
+                <div key={`${fh.title}-${freqLabel ?? `n${i}`}`} className="flex items-center gap-3 text-xs">
                   <div className="flex-1 min-w-0">
-                    <p className="text-slate-300 truncate">{fh.title} <span className="text-slate-500">({fh.frequencyHz?.toFixed(1)} Hz)</span></p>
+                    <p className="text-slate-300 truncate" title={rowTitle}>{fh.title} <span className="text-slate-500">{freqLabel ? `(${freqLabel} Hz)` : "(frequency not recorded)"}</span></p>
                     <div className="flex items-center gap-2 mt-0.5">
                       <Sparkline points={fh.series.map((s) => s.amplitude)} color={fh.delta > 0.005 ? "#f87171" : fh.delta < -0.005 ? "#34d399" : "#94a3b8"} />
                       <span className="text-[10px] text-slate-500">
@@ -186,23 +259,27 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
                 +{moreFaults.length} more fault{moreFaults.length > 1 ? "s" : ""}
               </button>
             )}
-            {showMoreFaults && moreFaults.map((fh) => (
-              <div key={`${fh.title}-${fh.frequencyHz.toFixed(1)}`} className="flex items-center gap-3 text-xs pl-4">
-                <div className="flex-1 min-w-0">
-                  <p className="text-slate-400 truncate">{fh.title} <span className="text-slate-500">({fh.frequencyHz?.toFixed(1)} Hz)</span></p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <Sparkline points={fh.series.map((s) => s.amplitude)} color={fh.delta > 0.005 ? "#f87171" : fh.delta < -0.005 ? "#34d399" : "#94a3b8"} />
-                    <span className="text-[10px] text-slate-500">
-                      Δ <span className={`font-mono ${fh.delta > 0.005 ? "text-red-400" : fh.delta < -0.005 ? "text-emerald-400" : "text-slate-500"}`}>{fh.delta >= 0 ? "+" : ""}{fh.delta.toFixed(2)}</span>
-                    </span>
+            {showMoreFaults && moreFaults.map((fh, i) => {
+              const freqLabel = fh.frequencyHz != null && Number.isFinite(fh.frequencyHz) ? fh.frequencyHz.toFixed(1) : null;
+              const rowTitle = `${fh.title}${freqLabel ? ` (${freqLabel} Hz)` : " (frequency not recorded)"}`;
+              return (
+                <div key={`${fh.title}-${freqLabel ?? `n${i}`}`} className="flex items-center gap-3 text-xs pl-4">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-slate-400 truncate" title={rowTitle}>{fh.title} <span className="text-slate-500">{freqLabel ? `(${freqLabel} Hz)` : "(frequency not recorded)"}</span></p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <Sparkline points={fh.series.map((s) => s.amplitude)} color={fh.delta > 0.005 ? "#f87171" : fh.delta < -0.005 ? "#34d399" : "#94a3b8"} />
+                      <span className="text-[10px] text-slate-500">
+                        Δ <span className={`font-mono ${fh.delta > 0.005 ? "text-red-400" : fh.delta < -0.005 ? "text-emerald-400" : "text-slate-500"}`}>{fh.delta >= 0 ? "+" : ""}{fh.delta.toFixed(2)}</span>
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
         <p className="text-[9px] text-slate-600 border-t border-slate-800 pt-2">
-          Zone provenance: ISO 10816 velocity bands — A {"<"} 2.3, B {"<"} 4.5, C {"<"} 7.1, D ≥ 7.1 mm/s RMS (health-score fallback when overall velocity is absent).
+          {ZONE_PROVENANCE}
         </p>
       </div>
 
@@ -230,7 +307,9 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
               </label>
             </div>
 
-            {runA == null || runB == null ? (
+            {vibrationRuns.length === 0 ? (
+              <p className="text-xs text-slate-400 italic">{emptyRunsMessage}</p>
+            ) : runA == null || runB == null ? (
               <p className="text-xs text-slate-400 italic">Select two distinct runs to compare.</p>
             ) : runA.id === runB.id ? (
               <p className="text-xs text-slate-400 italic">Select two distinct runs.</p>
@@ -240,21 +319,27 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
 
                 {stemData.length === 0 ? (
                   <p className="text-xs text-slate-400 italic">No stored peaks for {dateFmt(runA.timestamp)} or {dateFmt(runB.timestamp)}.</p>
-                ) : normalize ? (
-                  <p className="text-[10px] text-amber-400/80 italic">Shape view — each series scaled to its own maximum; do not compare amplitudes across series.</p>
                 ) : (
-                  <div className="h-[200px] bg-slate-950/80 rounded-lg border border-slate-800">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={stemData} margin={{ top: 8, right: 12, bottom: 24, left: 40 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                        <XAxis type="number" dataKey="frequency" domain={[0, "dataMax"]} stroke="#94a3b8" tick={{ fontSize: 9 }} tickFormatter={(v) => String(Math.round(Number(v)))} label={{ value: "Hz", position: "insideBottom", offset: -8, fill: "#64748b", fontSize: 10 }} />
-                        <YAxis stroke="#38bdf8" tick={{ fontSize: 9 }} domain={[0, stemYMax]} label={{ value: unit, angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 10 }} />
-                        <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 11 }} formatter={(value: number, name: string) => [`${Number(value).toFixed(3)} ${unit}`, name === "a" ? `A (${dateFmt(runA.timestamp)})` : `B (${dateFmt(runB.timestamp)})`]} labelFormatter={(l) => `${l} Hz`} />
-                        <Bar dataKey="a" fill="#38bdf8" fillOpacity={0.5} barSize={3} isAnimationActive={false} name="A" />
-                        <Bar dataKey="b" fill="#f472b6" fillOpacity={0.5} barSize={3} isAnimationActive={false} name="B" />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </div>
+                  <>
+                    {normalize && normalizeApplicable && (
+                      <p className="text-[10px] text-amber-400/80 italic">Shape view — each series scaled to its own maximum; do not compare amplitudes across series.</p>
+                    )}
+                    {normalize && !normalizeApplicable && (
+                      <p className="text-[10px] text-amber-400/80 italic">Normalize shapes unavailable — {normalizeReason}; showing unnormalized amplitudes.</p>
+                    )}
+                    <div className="h-[200px] bg-slate-950/80 rounded-lg border border-slate-800">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 24, left: 40 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                          <XAxis type="number" dataKey="frequency" domain={[0, "dataMax"]} stroke="#94a3b8" tick={{ fontSize: 9 }} tickFormatter={(v) => String(Math.round(Number(v)))} label={{ value: "Hz", position: "insideBottom", offset: -8, fill: "#64748b", fontSize: 10 }} />
+                          <YAxis stroke="#38bdf8" tick={{ fontSize: 9 }} domain={[0, chartYMax]} label={{ value: chartUnit, angle: -90, position: "insideLeft", fill: "#38bdf8", fontSize: 10 }} />
+                          <Tooltip content={<SpectralTooltip runALabel={`A (${dateFmt(runA.timestamp)})`} runBLabel={`B (${dateFmt(runB.timestamp)})`} unitLabel={chartUnit} />} />
+                          <Bar dataKey="a" fill="#38bdf8" fillOpacity={0.5} barSize={3} isAnimationActive={false} name="A" />
+                          <Bar dataKey="b" fill="#f472b6" fillOpacity={0.5} barSize={3} isAnimationActive={false} name="B" />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </>
                 )}
 
                 {(diff.appeared.length > 0 || diff.grew.length > 0 || diff.settled.length > 0) && (
@@ -335,8 +420,8 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
       {/* ═══ S4: AUDIT STRIP ═══ */}
       <div className="bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 space-y-2">
         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Audit Strip</div>
-        {zoneHistory.length === 0 ? (
-          <p className="text-xs text-slate-400 italic">No stored vibration runs.</p>
+        {vibrationRuns.length === 0 ? (
+          <p className="text-xs text-slate-400 italic">{emptyRunsMessage}</p>
         ) : (
           <>
             <div className="flex items-center gap-0.5 flex-wrap">
@@ -370,7 +455,7 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
               const lastDate = fh.series.length ? dateFmt(fh.series[fh.series.length - 1].ts) : "—";
               const absentCount = vibrationRuns.length - fh.series.length;
               return (
-                <p key={`${fh.title}-${fh.frequencyHz.toFixed(1)}`} className="text-[10px] text-slate-500">
+                <p key={`${fh.title}-${fh.frequencyHz?.toFixed(1) ?? "unknown"}`} className="text-[10px] text-slate-500">
                   <span className="text-slate-400">{fh.title}</span>: first seen {firstDate}, last seen {lastDate} · absent in {absentCount} run{absentCount > 1 ? "s" : ""}
                 </p>
               );
@@ -378,7 +463,7 @@ export default function VibrationComparisonTab({ isActive, selectedAnalysis, loa
           </>
         )}
         <p className="text-[9px] text-slate-600 border-t border-slate-800 pt-2">
-          Zone provenance: ISO 10816 velocity bands — A {"<"} 2.3, B {"<"} 4.5, C {"<"} 7.1, D ≥ 7.1 mm/s RMS (health-score fallback when overall velocity is absent).
+          {ZONE_PROVENANCE}
         </p>
       </div>
     </div>
