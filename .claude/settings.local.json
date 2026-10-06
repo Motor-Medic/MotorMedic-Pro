@@ -103,6 +103,7 @@
     "AgentsRoom-Chrome",
     "AgentsRoom-MCP",
     "AgentsRoom-Test-Runner",
-    "AgentsRoom-QA-Tester"
+    "AgentsRoom-QA-Tester",
+    "AgentsRoom-Browser"
   ]
 }

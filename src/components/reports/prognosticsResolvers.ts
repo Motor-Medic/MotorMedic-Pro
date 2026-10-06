@@ -13,14 +13,25 @@ import {
   getPrescription,
   oilWearMetalDef,
   WEAR_METAL_KEYS,
-  PF_NOT_COMPUTED,
-  PF_TREND_NOT_ESTABLISHED,
-  PF_STABLE_TREND_LEAD,
-  PF_STABLE_TREND_TAIL,
-  PF_IMPROVING_TREND_LEAD,
-  PF_IMPROVING_TREND_TAIL,
-  PF_NO_THRESHOLD_SLOPE_ONLY,
+  PROGNOSTICS_PF_DISCLOSURES,
 } from "../../lib/maintenance/prescriptiveDictionary";
+
+const {
+  notComputed: PF_NOT_COMPUTED,
+  trendNotEstablished: PF_TREND_NOT_ESTABLISHED,
+  stableTrendLead: PF_STABLE_TREND_LEAD,
+  stableTrendTail: PF_STABLE_TREND_TAIL,
+  improvingTrendLead: PF_IMPROVING_TREND_LEAD,
+  improvingTrendTail: PF_IMPROVING_TREND_TAIL,
+  noThresholdSlopeOnly: PF_NO_THRESHOLD_SLOPE_ONLY,
+  projectionNotComputable,
+  vibrationThresholdIso20816Proxy,
+  infraredThresholdNfpaNetaProxy,
+  ultrasoundThresholdUeLadderProxy,
+  mcaThresholdNemaProxy,
+  mcaThresholdIeee43Hook,
+  oilThresholdDefaultAlarmHook,
+} = PROGNOSTICS_PF_DISCLOSURES;
 import {
   extractMcaGroundwallFromSaved,
   extractMcaWindingFromSaved,
@@ -158,7 +169,7 @@ export function vibrationThreshold(
   return {
     threshold: {
       value: ISO_C_D_BOUNDARY,
-      provenance: "site-practice proxy - not a stored functional limit (ISO 20816 zone C/D boundary)",
+      provenance: vibrationThresholdIso20816Proxy,
     },
     kind: "named proxy",
   };
@@ -217,7 +228,7 @@ export function thermographyThreshold(
     return {
       threshold: {
         value: 15,
-        provenance: "site-practice proxy — NFPA 70B/NETA Class 1 ΔT boundary (15 °C), not a stored functional limit",
+        provenance: infraredThresholdNfpaNetaProxy,
       },
       kind: "named proxy",
     };
@@ -269,7 +280,7 @@ export function ultrasoundThreshold(
     return {
       threshold: {
         value: 16,
-        provenance: "site-practice proxy — UE Systems bearing-condition ladder Class 1 boundary (+16 dB), not a stored functional limit",
+        provenance: ultrasoundThresholdUeLadderProxy,
       },
       kind: "named proxy",
     };
@@ -357,7 +368,7 @@ export function mcaThreshold(
     return {
       threshold: {
         value: 8,
-        provenance: "site-practice proxy — NEMA MG-1 Class 1 unbalance boundary (8 %), not a stored functional limit; no ISO severity standard exists for MCA",
+        provenance: mcaThresholdNemaProxy,
       },
       kind: "named proxy",
     };
@@ -379,7 +390,7 @@ export function mcaThreshold(
         return {
           threshold: {
             value: result.irIeeeMinMOmega,
-            provenance: "IEEE 43 minimum (groundwall calculator irIeeeMinMOmega from test voltage / winding class)",
+            provenance: mcaThresholdIeee43Hook,
           },
           kind: "named proxy",
         };
@@ -456,7 +467,7 @@ export function oilThreshold(
   const def = metalKey != null ? DEFAULT_ALARM_LIMITS[metalKey] : undefined;
   if (def != null && def > 0) {
     return {
-      threshold: { value: def, provenance: "DEFAULT_ALARM_LIMITS (lab/OEM practice defaults in oilAnalysis.ts)" },
+      threshold: { value: def, provenance: oilThresholdDefaultAlarmHook },
       kind: "named proxy",
     };
   }
@@ -465,6 +476,7 @@ export function oilThreshold(
 
 export function fWindowSentence(fWindow: FWindow | null, thr: Threshold | null): string | null {
   if (!fWindow || !thr) return null;
+  if (!Number.isFinite(fWindow.median)) return projectionNotComputable;
   return fWindow.median >= 0
     ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
         Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`

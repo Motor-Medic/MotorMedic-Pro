@@ -20,9 +20,12 @@
  * significant healthy trend (IMPROVING) is as false as extrapolating noise.
  */
 
-import { PF_SELECTION_POLICY_CORE, TREND_GATE_LABEL } from "../../lib/maintenance/prescriptiveDictionary";
+import { PROGNOSTICS_PF_DISCLOSURES } from "../../lib/maintenance/prescriptiveDictionary";
 
-export { TREND_GATE_LABEL };
+const { trendGateLabel, selectionPolicyCore, projectionNotComputable } =
+  PROGNOSTICS_PF_DISCLOSURES;
+
+export { trendGateLabel as TREND_GATE_LABEL };
 
 export const MIN_POINTS = 4;
 export const MIN_SPAN_DAYS = 7;
@@ -120,6 +123,14 @@ export function leastSquares(pts: SeriesPoint[]): Fit | null {
   }
   const se = n > 2 ? Math.sqrt(sse / (n - 2)) : 0;
   const seOfSlope = sxx > 0 ? se / Math.sqrt(sxx) : 0;
+  if (
+    !Number.isFinite(slope) ||
+    !Number.isFinite(intercept) ||
+    !Number.isFinite(se) ||
+    !Number.isFinite(seOfSlope)
+  ) {
+    return null;
+  }
   return { slope, intercept, stdErr: se, seOfSlope };
 }
 
@@ -230,7 +241,11 @@ export interface DerivePfInput {
 }
 
 export function derivePf(input: DerivePfInput): PfDerivation {
-  const { candidates, threshold, storedDetection } = input;
+  const { candidates, storedDetection } = input;
+  const threshold =
+    input.threshold && Number.isFinite(input.threshold.value)
+      ? input.threshold
+      : null;
   const selectedId = resolveSelectedId(candidates, input.overrideId);
   const selected = candidates.find((c) => c.id === selectedId) ?? null;
   const isDefault =
@@ -239,7 +254,11 @@ export function derivePf(input: DerivePfInput): PfDerivation {
       selectDefaultCandidate(candidates)?.id === selected.id);
 
   const worsening: WorseningDirection = selected?.worsening ?? "increase";
-  const pts = selected ? toDayOffsets(selected.points) : [];
+  const pts = selected
+    ? toDayOffsets(selected.points).filter(
+        (p) => Number.isFinite(p.day) && Number.isFinite(p.value),
+      )
+    : [];
   const n = pts.length;
   const spanDays = spanDaysOf(pts);
   const fit = n >= 2 ? leastSquares(pts) : null;
@@ -288,7 +307,7 @@ export function derivePf(input: DerivePfInput): PfDerivation {
       upper: Number.isFinite(dSlow) ? dSlow : Infinity,
       median: dMed,
     };
-    rulLabel = Number.isFinite(dMed) ? dayLabel(dMed) : `Unconstrained (>${MAX_WINDOW_DAYS}d)`;
+    rulLabel = Number.isFinite(dMed) ? dayLabel(dMed) : projectionNotComputable;
   }
 
   const seriesLabel = selected
@@ -297,7 +316,7 @@ export function derivePf(input: DerivePfInput): PfDerivation {
 
   const selectionNote = selected
     ? isDefault
-      ? `projected series: ${selected.label} — longest history, ${selected.points.length} points (policy: ${PF_SELECTION_POLICY_CORE})`
+      ? `projected series: ${selected.label} — longest history, ${selected.points.length} points (policy: ${selectionPolicyCore})`
       : `projected series: ${selected.label} — analyst override (${selected.points.length} points; default was ${
           selectDefaultCandidate(candidates)?.label ?? "—"
         })`

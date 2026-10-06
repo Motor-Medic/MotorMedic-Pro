@@ -11,7 +11,6 @@ import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
-  MAX_WINDOW_DAYS,
   TREND_GATE_LABEL,
   dayLabel,
   derivePf,
@@ -26,24 +25,27 @@ import {
   thermographyThreshold,
   type RunsSplit,
 } from "./prognosticsResolvers";
-import {
-  PF_PROJECTION_G8,
-  PF_ABSENCE_G9,
-  PF_COMPARISON_VIBRATION_ONLY,
-  PF_SELECTION_POLICY,
-  PF_RUL_MODELED_G8,
-  PF_NO_THRESHOLD_CROSSING,
-  PF_NO_STORED_DETECTION,
-  PF_DEFAULT_SERIES_OPTION,
-  PF_TREND_NOT_ESTABLISHED,
-  PF_STABLE_TREND_LEAD,
-  PF_STABLE_TREND_TAIL,
-  PF_IMPROVING_TREND_LEAD,
-  PF_IMPROVING_TREND_TAIL,
-  PF_NO_THRESHOLD_SLOPE_ONLY,
-  PF_NOT_COMPUTED,
-  PF_FIT_REGRESSION_NOTE,
-} from "../../lib/maintenance/prescriptiveDictionary";
+import { PROGNOSTICS_PF_DISCLOSURES } from "../../lib/maintenance/prescriptiveDictionary";
+
+const {
+  projectionG8: PF_PROJECTION_G8,
+  absenceG9: PF_ABSENCE_G9,
+  comparisonVibrationOnly: PF_COMPARISON_VIBRATION_ONLY,
+  selectionPolicy: PF_SELECTION_POLICY,
+  rulModeledG8: PF_RUL_MODELED_G8,
+  noThresholdCrossing: PF_NO_THRESHOLD_CROSSING,
+  noStoredDetection: PF_NO_STORED_DETECTION,
+  defaultSeriesOption: PF_DEFAULT_SERIES_OPTION,
+  trendNotEstablished: PF_TREND_NOT_ESTABLISHED,
+  stableTrendLead: PF_STABLE_TREND_LEAD,
+  stableTrendTail: PF_STABLE_TREND_TAIL,
+  improvingTrendLead: PF_IMPROVING_TREND_LEAD,
+  improvingTrendTail: PF_IMPROVING_TREND_TAIL,
+  noThresholdSlopeOnly: PF_NO_THRESHOLD_SLOPE_ONLY,
+  notComputed: PF_NOT_COMPUTED,
+  fitRegressionNote: PF_FIT_REGRESSION_NOTE,
+  projectionNotComputable,
+} = PROGNOSTICS_PF_DISCLOSURES;
 
 interface Props {
   isActive: boolean;
@@ -115,18 +117,18 @@ export default function InfraredPrognosticsTab({ isActive, selectedAnalysis, loa
       }).join(" ")} Z`
     : "";
   const fWindowTxt = fWindow && thr
-    ? fWindow.median >= 0
-      ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
-          Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`
-        }`
-      : fWindow.upper < 0
-        ? `F window: already crossed (median ~${Math.abs(Math.round(fWindow.median))} days ago, upper ~${Math.abs(Math.round(fWindow.upper))} days ago)`
-        : `F window: median already crossed (~${Math.abs(Math.round(fWindow.median))} days ago) - upper bound in ~${Math.round(fWindow.upper)} days`
+    ? !Number.isFinite(fWindow.median)
+      ? projectionNotComputable
+      : fWindow.median >= 0
+        ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${Math.round(fWindow.median)} days`
+        : fWindow.upper < 0
+          ? `F window: already crossed (median ~${Math.abs(Math.round(fWindow.median))} days ago, upper ~${Math.abs(Math.round(fWindow.upper))} days ago)`
+          : `F window: median already crossed (~${Math.abs(Math.round(fWindow.median))} days ago) - upper bound in ~${Math.round(fWindow.upper)} days`
     : null;
 
   if (!candidates.length) {
     return (
-      <div className="flex flex-col items-center justify-center text-center py-16 px-4">
+      <div className="flex flex-col items-center justify-center text-center py-16 px-4 min-w-0">
         <Flame className="h-8 w-8 text-slate-600 mb-3" />
         <p className="text-sm font-semibold text-slate-300">No IR series stored for this component</p>
         <p className="text-xs text-slate-500 mt-1">Run a thermography inspection to seed the P-F series.</p>
@@ -135,10 +137,10 @@ export default function InfraredPrognosticsTab({ isActive, selectedAnalysis, loa
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4 p-4 min-w-0 break-words">
       <div className="bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 space-y-2">
         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Basis</div>
-        <label className="flex items-center gap-2 text-xs text-slate-400">
+        <label className="flex items-center gap-2 text-xs text-slate-400 min-w-0">
           <span className="shrink-0">Series</span>
           <select
             value={overrideId ?? ""}

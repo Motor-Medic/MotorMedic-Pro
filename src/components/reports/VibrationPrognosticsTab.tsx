@@ -5,7 +5,6 @@ import {
   MIN_POINTS,
   MIN_SPAN_DAYS,
   ISO_C_D_BOUNDARY,
-  MAX_WINDOW_DAYS,
   TREND_GATE_LABEL,
   dayLabel,
   derivePf,
@@ -13,23 +12,26 @@ import {
   type Threshold,
 } from "./pfEngine";
 import { storedDetectionOf, vibrationCandidates, vibrationRuns, vibrationThreshold } from "./prognosticsResolvers";
-import {
-  PF_PROJECTION_G8,
-  PF_ABSENCE_G9,
-  PF_COMPARISON_VIBRATION_ONLY,
-  PF_SELECTION_POLICY_VIBRATION,
-  PF_RUL_MODELED_G8,
-  PF_NO_THRESHOLD_CROSSING,
-  PF_NO_STORED_DETECTION,
-  PF_DEFAULT_SERIES_OPTION,
-  PF_TREND_NOT_ESTABLISHED,
-  PF_STABLE_TREND_LEAD,
-  PF_STABLE_TREND_TAIL,
-  PF_IMPROVING_TREND_LEAD,
-  PF_IMPROVING_TREND_TAIL,
-  PF_NO_THRESHOLD_SLOPE_ONLY,
-  PF_NOT_COMPUTED,
-} from "../../lib/maintenance/prescriptiveDictionary";
+import { PROGNOSTICS_PF_DISCLOSURES } from "../../lib/maintenance/prescriptiveDictionary";
+
+const {
+  projectionG8: PF_PROJECTION_G8,
+  absenceG9: PF_ABSENCE_G9,
+  comparisonVibrationOnly: PF_COMPARISON_VIBRATION_ONLY,
+  selectionPolicyVibration: PF_SELECTION_POLICY_VIBRATION,
+  rulModeledG8: PF_RUL_MODELED_G8,
+  noThresholdCrossing: PF_NO_THRESHOLD_CROSSING,
+  noStoredDetection: PF_NO_STORED_DETECTION,
+  defaultSeriesOption: PF_DEFAULT_SERIES_OPTION,
+  trendNotEstablished: PF_TREND_NOT_ESTABLISHED,
+  stableTrendLead: PF_STABLE_TREND_LEAD,
+  stableTrendTail: PF_STABLE_TREND_TAIL,
+  improvingTrendLead: PF_IMPROVING_TREND_LEAD,
+  improvingTrendTail: PF_IMPROVING_TREND_TAIL,
+  noThresholdSlopeOnly: PF_NO_THRESHOLD_SLOPE_ONLY,
+  notComputed: PF_NOT_COMPUTED,
+  projectionNotComputable,
+} = PROGNOSTICS_PF_DISCLOSURES;
 
 interface VibrationPrognosticsTabProps {
   isActive: boolean;
@@ -119,22 +121,22 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
     : "";
 
   const fWindowTxt = fWindow
-    ? fWindow.median >= 0
-      ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${
-          Number.isFinite(fWindow.median) ? `${Math.round(fWindow.median)} days` : `Unconstrained (>${MAX_WINDOW_DAYS}d)`
-        }`
-      : fWindow.upper < 0
-        ? `F window: already crossed (median ~${Math.abs(Math.round(fWindow.median))} days ago, upper ~${Math.abs(Math.round(fWindow.upper))} days ago)`
-        : `F window: median already crossed (~${Math.abs(Math.round(fWindow.median))} days ago) - upper bound in ~${Math.round(fWindow.upper)} days`
+    ? !Number.isFinite(fWindow.median)
+      ? projectionNotComputable
+      : fWindow.median >= 0
+        ? `F window: ${dayLabel(fWindow.lower)}–${dayLabel(fWindow.upper)} from today, median ${Math.round(fWindow.median)} days`
+        : fWindow.upper < 0
+          ? `F window: already crossed (median ~${Math.abs(Math.round(fWindow.median))} days ago, upper ~${Math.abs(Math.round(fWindow.upper))} days ago)`
+          : `F window: median already crossed (~${Math.abs(Math.round(fWindow.median))} days ago) - upper bound in ~${Math.round(fWindow.upper)} days`
     : null;
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4 p-4 min-w-0 break-words">
       <div className="bg-slate-800/50 border border-slate-700/60 rounded-lg p-3 space-y-2">
-        <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+        <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2 min-w-0">
           <Clock className="h-3 w-3" />Basis
         </div>
-        <label className="flex items-center gap-2 text-xs text-slate-400">
+        <label className="flex items-center gap-2 text-xs text-slate-400 min-w-0">
           <span className="shrink-0">Series</span>
           <select
             value={overrideId ?? ""}

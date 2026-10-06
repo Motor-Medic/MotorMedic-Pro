@@ -1733,58 +1733,53 @@ export function isMapped(diagnosis: string): boolean {
 // ---------------------------------------------------------------------------
 // Tab 4 (Prognostics & P-F Window) — shared confession strings, one wording
 // per truth across all five modality tiles (vibration, thermography,
-// ultrasound, oil, MCA). The trend-gate formula and the selection-policy
-// core live here so every statement of them is byte-identical; per-modality
-// framing (guidance flags, no-ISO notes, wear-limit practice) stays in the
-// tab that owns it. Plain strings only: no JSX in this .ts module; styling
-// belongs to the call site (caption typography: small, muted, break-words).
+// ultrasound, oil, MCA), published under the frozen typed
+// PROGNOSTICS_PF_DISCLOSURES namespace: trend-gate formula, selection-policy
+// core, and genuine standards hooks attached to thresholds / test methods
+// only — never to a projection. Per-modality framing (guidance flags,
+// no-ISO notes, wear-limit practice) stays in the tab that owns it. Plain
+// strings only: no JSX in this .ts module; styling belongs to the call site
+// (caption typography: small, muted, break-words).
 // ---------------------------------------------------------------------------
-/** Wording stated on every tab's basis card and stable verdict. */
-export const TREND_GATE_LABEL = "trend gate: |slope| >= 2 x SE";
+const PF_GATE_TEXT = "trend gate: |slope| >= 2 x SE";
+const PF_SELECTION_CORE_TEXT = "largest N, ties by severity";
 
-/** Core series-selection policy truth; each tile frames it with its own lead-in. */
-export const PF_SELECTION_POLICY_CORE = "largest N, ties by severity";
-
-export const PF_SELECTION_POLICY = `Selection policy: ${PF_SELECTION_POLICY_CORE}.`;
-
-export const PF_SELECTION_POLICY_VIBRATION = `Series selection policy: ${PF_SELECTION_POLICY_CORE}; override does not borrow another curve.`;
-
-export const PF_PROJECTION_G8 =
-  "Projections are modeled estimates from stored history (G8) — not measurements.";
-
-export const PF_ABSENCE_G9 =
-  "Absence of sufficient history is confessed, not extrapolated (G9).";
-
-export const PF_COMPARISON_VIBRATION_ONLY =
-  "Comparison tools remain vibration-only this slice (declared).";
-
-export const PF_RUL_MODELED_G8 = "modeled projection (G8) - not a measurement";
-
-export const PF_NO_THRESHOLD_SLOPE_ONLY =
-  "no functional threshold stored - slope only, no F window";
-
-export const PF_NO_THRESHOLD_CROSSING = "no threshold crossing on record";
-
-export const PF_NO_STORED_DETECTION = "no stored detection date";
-
-export const PF_DEFAULT_SERIES_OPTION = "default — longest history (largest N)";
-
-export const PF_NOT_COMPUTED = "not computed";
-
-export const PF_FIT_REGRESSION_NOTE =
-  "ordinary linear regression; not a physics failure model";
-
-export const PF_TREND_NOT_ESTABLISHED = "degradation trend not established";
-
-export const PF_STABLE_TREND_LEAD = "no degradation trend - slope ";
-
-export const PF_STABLE_TREND_TAIL = ` not statistically distinguishable from flat (${TREND_GATE_LABEL}); RUL not computed`;
-
-export const PF_IMPROVING_TREND_LEAD =
-  "trend improving - significant slope in the healthy direction: ";
-
-export const PF_IMPROVING_TREND_TAIL =
-  "; no RUL computed (no degradation trend to project)";
+export const PROGNOSTICS_PF_DISCLOSURES = Object.freeze({
+  /** Wording stated on every tab's basis card and stable verdict. */
+  trendGateLabel: PF_GATE_TEXT,
+  /** Core series-selection policy truth; each tile frames it with its own lead-in. */
+  selectionPolicyCore: PF_SELECTION_CORE_TEXT,
+  selectionPolicy: `Selection policy: ${PF_SELECTION_CORE_TEXT}.`,
+  selectionPolicyVibration: `Series selection policy: ${PF_SELECTION_CORE_TEXT}; override does not borrow another curve.`,
+  projectionG8: "Projections are modeled estimates from stored history (G8) — not measurements.",
+  absenceG9: "Absence of sufficient history is confessed, not extrapolated (G9).",
+  comparisonVibrationOnly: "Comparison tools remain vibration-only this slice (declared).",
+  rulModeledG8: "modeled projection (G8) - not a measurement",
+  projectionNotComputable: "insufficient or flat history - projection not computed (confessed, not extrapolated)",
+  noThresholdSlopeOnly: "no functional threshold stored - slope only, no F window",
+  noThresholdCrossing: "no threshold crossing on record",
+  noStoredDetection: "no stored detection date",
+  defaultSeriesOption: "default — longest history (largest N)",
+  notComputed: "not computed",
+  fitRegressionNote: "ordinary linear regression; not a physics failure model",
+  trendNotEstablished: "degradation trend not established",
+  stableTrendLead: "no degradation trend - slope ",
+  stableTrendTail: ` not statistically distinguishable from flat (${PF_GATE_TEXT}); RUL not computed`,
+  improvingTrendLead: "trend improving - significant slope in the healthy direction: ",
+  improvingTrendTail: "; no RUL computed (no degradation trend to project)",
+  vibrationThresholdIso20816Proxy:
+    "site-practice proxy - not a stored functional limit (ISO 20816 zone C/D boundary)",
+  infraredThresholdNfpaNetaProxy:
+    "site-practice proxy — NFPA 70B/NETA Class 1 ΔT boundary (15 °C), not a stored functional limit",
+  ultrasoundThresholdUeLadderProxy:
+    "site-practice proxy — UE Systems bearing-condition ladder Class 1 boundary (+16 dB), not a stored functional limit",
+  mcaThresholdNemaProxy:
+    "site-practice proxy — NEMA MG-1 Class 1 unbalance boundary (8 %), not a stored functional limit; no ISO severity standard exists for MCA",
+  mcaThresholdIeee43Hook:
+    "IEEE 43 minimum (groundwall calculator irIeeeMinMOmega from test voltage / winding class)",
+  oilThresholdDefaultAlarmHook:
+    "DEFAULT_ALARM_LIMITS (lab/OEM practice defaults in oilAnalysis.ts)",
+} as const);
 
 // ---------------------------------------------------------------------------
 // Coverage Table — every active diagnosis string → mapped/unmapped
