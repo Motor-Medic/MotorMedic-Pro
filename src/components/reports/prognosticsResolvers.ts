@@ -9,7 +9,18 @@
 import type { SavedAnalysisResult, SavedFaultItem } from "../../lib/analysisPersistence";
 import { buildFaultHistory, faultFreq } from "../../lib/diagnostics/spectralDiff";
 import { peakOfType, resolveTempUnit } from "../../lib/diagnostics/sensorFusion";
-import { getPrescription, oilWearMetalDef, WEAR_METAL_KEYS } from "../../lib/maintenance/prescriptiveDictionary";
+import {
+  getPrescription,
+  oilWearMetalDef,
+  WEAR_METAL_KEYS,
+  PF_NOT_COMPUTED,
+  PF_TREND_NOT_ESTABLISHED,
+  PF_STABLE_TREND_LEAD,
+  PF_STABLE_TREND_TAIL,
+  PF_IMPROVING_TREND_LEAD,
+  PF_IMPROVING_TREND_TAIL,
+  PF_NO_THRESHOLD_SLOPE_ONLY,
+} from "../../lib/maintenance/prescriptiveDictionary";
 import {
   extractMcaGroundwallFromSaved,
   extractMcaWindingFromSaved,
@@ -23,7 +34,6 @@ import {
   MAX_WINDOW_DAYS,
   MIN_POINTS,
   MIN_SPAN_DAYS,
-  TREND_GATE_LABEL,
   dayLabel,
   type FWindow,
   type PfDerivation,
@@ -475,19 +485,19 @@ export function summaryVerdict(d: PfDerivation): SummaryVerdict {
 }
 
 export function summarySentence(d: PfDerivation): string {
-  const slopeTxt = d.fit ? `${d.fit.slope.toFixed(4)} ${d.unit || "units"} per day` : "not computed";
+  const slopeTxt = d.fit ? `${d.fit.slope.toFixed(4)} ${d.unit || "units"} per day` : PF_NOT_COMPUTED;
   const seTxt = d.fit ? `± ${d.fit.seOfSlope.toFixed(4)}` : "—";
   if (d.verdict === "thin") {
-    return `degradation trend not established - ${d.n} points over ${Math.round(d.spanDays)} days (minimum ${MIN_POINTS} over ${MIN_SPAN_DAYS} days)`;
+    return `${PF_TREND_NOT_ESTABLISHED} - ${d.n} points over ${Math.round(d.spanDays)} days (minimum ${MIN_POINTS} over ${MIN_SPAN_DAYS} days)`;
   }
   if (d.verdict === "stable") {
-    return `no degradation trend - slope ${slopeTxt} (SE ${seTxt}) not statistically distinguishable from flat (${TREND_GATE_LABEL}); RUL not computed`;
+    return `${PF_STABLE_TREND_LEAD}${slopeTxt} (SE ${seTxt})${PF_STABLE_TREND_TAIL}`;
   }
   if (d.verdict === "improving") {
-    return `trend improving - significant slope in the healthy direction: ${slopeTxt} (SE ${seTxt}); no RUL computed (no degradation trend to project)`;
+    return `${PF_IMPROVING_TREND_LEAD}${slopeTxt} (SE ${seTxt})${PF_IMPROVING_TREND_TAIL}`;
   }
   if (d.verdict === "no-threshold") {
-    return `no functional threshold stored - slope only, no F window`;
+    return PF_NO_THRESHOLD_SLOPE_ONLY;
   }
   return fWindowSentence(d.fWindow, d.functionalThreshold) ?? `F window unavailable - no functional threshold stored`;
 }

@@ -13,6 +13,23 @@ import {
   type Threshold,
 } from "./pfEngine";
 import { storedDetectionOf, vibrationCandidates, vibrationRuns, vibrationThreshold } from "./prognosticsResolvers";
+import {
+  PF_PROJECTION_G8,
+  PF_ABSENCE_G9,
+  PF_COMPARISON_VIBRATION_ONLY,
+  PF_SELECTION_POLICY_VIBRATION,
+  PF_RUL_MODELED_G8,
+  PF_NO_THRESHOLD_CROSSING,
+  PF_NO_STORED_DETECTION,
+  PF_DEFAULT_SERIES_OPTION,
+  PF_TREND_NOT_ESTABLISHED,
+  PF_STABLE_TREND_LEAD,
+  PF_STABLE_TREND_TAIL,
+  PF_IMPROVING_TREND_LEAD,
+  PF_IMPROVING_TREND_TAIL,
+  PF_NO_THRESHOLD_SLOPE_ONLY,
+  PF_NOT_COMPUTED,
+} from "../../lib/maintenance/prescriptiveDictionary";
 
 interface VibrationPrognosticsTabProps {
   isActive: boolean;
@@ -77,7 +94,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
   if (!isActive) return null;
 
   const thr = functionalThreshold ?? { value: ISO_C_D_BOUNDARY, provenance: "no threshold" };
-  const slopeTxt = fit ? `${fit.slope.toFixed(4)} mm/s per day` : "not computed";
+  const slopeTxt = fit ? `${fit.slope.toFixed(4)} mm/s per day` : PF_NOT_COMPUTED;
   const seTxt = fit ? `± ${fit.seOfSlope.toFixed(4)}` : "—";
 
   const yMin = pts.length ? Math.min(...pts.map((p) => p.value), thr.value) * 0.95 : 0;
@@ -124,7 +141,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
             onChange={(e) => setOverrideId(e.target.value || null)}
             className="h-7 flex-1 min-w-0 px-2 rounded bg-slate-900 border border-slate-700 text-xs text-slate-200 focus:outline-none focus:border-cyan-500/60"
           >
-            <option value="">default — longest history (largest N)</option>
+            <option value="">{PF_DEFAULT_SERIES_OPTION}</option>
             {candidateSummaries.map((c) => (
               <option key={c.id} value={c.id}>{c.label} (N = {c.n})</option>
             ))}
@@ -143,7 +160,7 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
           Detection point:{" "}
           {detectionDate
             ? <span className="text-amber-300">{new Date(detectionDate).toLocaleDateString()}</span>
-            : <span className="italic text-slate-500">no threshold crossing on record</span>}
+            : <span className="italic text-slate-500">{PF_NO_THRESHOLD_CROSSING}</span>}
         </p>
         <p className="text-xs text-slate-400">
           Functional threshold: <span className="text-white font-mono">{thr.value} mm/s</span> — {thr.provenance}
@@ -152,29 +169,29 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
 
       {verdict === "thin" ? (
         <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
-          degradation trend not established - {n} points over {Math.round(spanDays)} days (minimum {MIN_POINTS} over {MIN_SPAN_DAYS} days)
+          {PF_TREND_NOT_ESTABLISHED} - {n} points over {Math.round(spanDays)} days (minimum {MIN_POINTS} over {MIN_SPAN_DAYS} days)
         </p>
       ) : verdict === "stable" ? (
         <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
-          no degradation trend - slope {slopeTxt} (SE {seTxt}) not statistically distinguishable from flat ({TREND_GATE_LABEL}); RUL not computed
+          {PF_STABLE_TREND_LEAD}{slopeTxt} (SE {seTxt}){PF_STABLE_TREND_TAIL}
         </p>
       ) : verdict === "improving" ? (
         <p className="text-xs italic text-emerald-400 border-l-2 border-emerald-400/40 pl-3">
-          trend improving - significant slope in the healthy direction: {slopeTxt} (SE {seTxt}); no RUL computed (no degradation trend to project)
+          {PF_IMPROVING_TREND_LEAD}{slopeTxt} (SE {seTxt}){PF_IMPROVING_TREND_TAIL}
         </p>
       ) : verdict === "no-threshold" ? (
         <p className="text-xs italic text-amber-400 border-l-2 border-amber-400/40 pl-3">
-          no functional threshold stored - slope only, no F window
+          {PF_NO_THRESHOLD_SLOPE_ONLY}
         </p>
       ) : (
         <div className="space-y-2">
           <p className="text-xs text-slate-300">
-            P marker: {detectionDate ? new Date(detectionDate).toLocaleDateString() : "no stored detection date"} · current value:{" "}
+            P marker: {detectionDate ? new Date(detectionDate).toLocaleDateString() : PF_NO_STORED_DETECTION} · current value:{" "}
             <span className="font-mono text-white">{pts.length ? pts[pts.length - 1].value.toFixed(2) : "—"} mm/s</span>
           </p>
           {fWindowTxt && <p className="text-xs text-amber-300">{fWindowTxt}</p>}
           <p className="text-[11px] text-slate-500 italic">
-            RUL: {rulLabel ?? "—"} — modeled projection (G8) - not a measurement
+            RUL: {rulLabel ?? "—"} — {PF_RUL_MODELED_G8}
           </p>
           <svg viewBox="0 0 360 130" className="w-full h-32 bg-slate-950/60 rounded border border-slate-800" role="img" aria-label="P-F curve with uncertainty band">
             <line x1="0" y1="120" x2="360" y2="120" stroke="#334155" strokeWidth="1" />
@@ -207,8 +224,8 @@ export default function VibrationPrognosticsTab({ isActive, selectedAnalysis, lo
       )}
 
       <footer className="border-t border-slate-800 pt-3 space-y-1">
-        <p className="text-[10px] text-slate-500 italic">
-          Projections are modeled estimates from stored history (G8) — not measurements. Absence of sufficient history is confessed, not extrapolated (G9). Guidance flags are guidance, not diagnoses. Series selection policy: largest N, ties by severity; override does not borrow another curve.
+        <p className="text-[10px] text-slate-500 italic break-words">
+          {PF_PROJECTION_G8} {PF_ABSENCE_G9} Guidance flags are guidance, not diagnoses. {PF_COMPARISON_VIBRATION_ONLY} {PF_SELECTION_POLICY_VIBRATION}
         </p>
         <p className="text-[10px] text-slate-500">Watchlist: {watchlist}</p>
       </footer>

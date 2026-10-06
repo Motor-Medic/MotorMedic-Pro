@@ -20,14 +20,16 @@
  * significant healthy trend (IMPROVING) is as false as extrapolating noise.
  */
 
+import { PF_SELECTION_POLICY_CORE, TREND_GATE_LABEL } from "../../lib/maintenance/prescriptiveDictionary";
+
+export { TREND_GATE_LABEL };
+
 export const MIN_POINTS = 4;
 export const MIN_SPAN_DAYS = 7;
 export const ISO_C_D_BOUNDARY = 7.1;
 export const MAX_WINDOW_DAYS = 180;
-/** Statistical significance factor for the trend gate: |slope| ≥ factor × SE. */
+/** Statistical significance factor for the trend gate: |slope| �%� factor A- SE. */
 export const TREND_SIG_FACTOR = 2;
-/** Wording stated on every tab's basis card. */
-export const TREND_GATE_LABEL = "trend gate: |slope| >= 2 x SE";
 
 /** Which message the tab renders; every kind names its own reason. */
 export type PfVerdict = "window" | "stable" | "improving" | "thin" | "no-threshold";
@@ -295,7 +297,7 @@ export function derivePf(input: DerivePfInput): PfDerivation {
 
   const selectionNote = selected
     ? isDefault
-      ? `projected series: ${selected.label} — longest history, ${selected.points.length} points (policy: largest N, ties by severity)`
+      ? `projected series: ${selected.label} — longest history, ${selected.points.length} points (policy: ${PF_SELECTION_POLICY_CORE})`
       : `projected series: ${selected.label} — analyst override (${selected.points.length} points; default was ${
           selectDefaultCandidate(candidates)?.label ?? "—"
         })`

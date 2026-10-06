@@ -1731,6 +1731,62 @@ export function isMapped(diagnosis: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Tab 4 (Prognostics & P-F Window) — shared confession strings, one wording
+// per truth across all five modality tiles (vibration, thermography,
+// ultrasound, oil, MCA). The trend-gate formula and the selection-policy
+// core live here so every statement of them is byte-identical; per-modality
+// framing (guidance flags, no-ISO notes, wear-limit practice) stays in the
+// tab that owns it. Plain strings only: no JSX in this .ts module; styling
+// belongs to the call site (caption typography: small, muted, break-words).
+// ---------------------------------------------------------------------------
+/** Wording stated on every tab's basis card and stable verdict. */
+export const TREND_GATE_LABEL = "trend gate: |slope| >= 2 x SE";
+
+/** Core series-selection policy truth; each tile frames it with its own lead-in. */
+export const PF_SELECTION_POLICY_CORE = "largest N, ties by severity";
+
+export const PF_SELECTION_POLICY = `Selection policy: ${PF_SELECTION_POLICY_CORE}.`;
+
+export const PF_SELECTION_POLICY_VIBRATION = `Series selection policy: ${PF_SELECTION_POLICY_CORE}; override does not borrow another curve.`;
+
+export const PF_PROJECTION_G8 =
+  "Projections are modeled estimates from stored history (G8) — not measurements.";
+
+export const PF_ABSENCE_G9 =
+  "Absence of sufficient history is confessed, not extrapolated (G9).";
+
+export const PF_COMPARISON_VIBRATION_ONLY =
+  "Comparison tools remain vibration-only this slice (declared).";
+
+export const PF_RUL_MODELED_G8 = "modeled projection (G8) - not a measurement";
+
+export const PF_NO_THRESHOLD_SLOPE_ONLY =
+  "no functional threshold stored - slope only, no F window";
+
+export const PF_NO_THRESHOLD_CROSSING = "no threshold crossing on record";
+
+export const PF_NO_STORED_DETECTION = "no stored detection date";
+
+export const PF_DEFAULT_SERIES_OPTION = "default — longest history (largest N)";
+
+export const PF_NOT_COMPUTED = "not computed";
+
+export const PF_FIT_REGRESSION_NOTE =
+  "ordinary linear regression; not a physics failure model";
+
+export const PF_TREND_NOT_ESTABLISHED = "degradation trend not established";
+
+export const PF_STABLE_TREND_LEAD = "no degradation trend - slope ";
+
+export const PF_STABLE_TREND_TAIL = ` not statistically distinguishable from flat (${TREND_GATE_LABEL}); RUL not computed`;
+
+export const PF_IMPROVING_TREND_LEAD =
+  "trend improving - significant slope in the healthy direction: ";
+
+export const PF_IMPROVING_TREND_TAIL =
+  "; no RUL computed (no degradation trend to project)";
+
+// ---------------------------------------------------------------------------
 // Coverage Table — every active diagnosis string → mapped/unmapped
 // All mapped entries now include safety field (LOTO + PPE by fault domain).
 // ---------------------------------------------------------------------------
