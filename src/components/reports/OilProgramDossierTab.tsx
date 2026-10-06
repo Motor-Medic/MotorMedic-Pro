@@ -11,6 +11,16 @@ import { Droplet, Info } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
 import type { OilSample } from "../../types/oilAnalysis";
+import {
+  OIL_COMPETENCY_CITATION,
+  OIL_ISO4406_CITATION,
+  OIL_LAB_ACCREDITATION_NOT_RECORDED,
+  OIL_SPECTROSCOPY_CITATION,
+  OIL_TARGET_INTERVAL_DAYS,
+  OIL_TARGET_INTERVAL_PRACTICE,
+  OIL_VISCOSITY_CITATION,
+  OIL_WEAR_LIMIT_CITATION,
+} from "../../lib/maintenance/prescriptiveDictionary";
 
 export interface OilProgramDossierTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
@@ -36,9 +46,9 @@ export default function OilProgramDossierTab({
   equipmentAssetId,
 }: OilProgramDossierTabProps) {
   const assetId = equipmentAssetId ?? selectedAnalysis?.asset_id ?? (() => {
-    if (!allAnalyses?.length) return null;
-    const ids = [...new Set(allAnalyses.map((r) => r.asset_id).filter(Boolean))];
-    return ids.length === 1 ? ids[0]! : null;
+    if (allAnalyses == null || allAnalyses.length === 0) return null;
+    const ids = [...new Set(allAnalyses.map((r) => r.asset_id).filter((id) => id != null && id !== ""))];
+    return ids.length === 1 ? (ids[0] ?? null) : null;
   })();
 
   const [samples, setSamples] = useState<OilSample[]>([]);
@@ -46,7 +56,7 @@ export default function OilProgramDossierTab({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!assetId) { setSamples([]); return; }
+    if (assetId == null || assetId === "") { setSamples([]); return; }
     let cancelled = false;
     setLoading(true);
     fetchOilSamples(assetId)
@@ -70,6 +80,10 @@ export default function OilProgramDossierTab({
   const avgInterval = intervals.length > 0
     ? Math.round(intervals.reduce((a, b) => a + b, 0) / intervals.length)
     : 0;
+
+  /* Missed windows: any inter-sample gap past the confessed default target. */
+  const missedGaps = intervals.filter((d) => d > OIL_TARGET_INTERVAL_DAYS);
+  const longestGap = intervals.length > 0 ? Math.max(...intervals) : 0;
 
   const firstSampleDate = sorted.length > 0 ? sorted[0].sampleDate : null;
   const lastSampleDate = sorted.length > 0 ? sorted[sorted.length - 1].sampleDate : null;
@@ -110,7 +124,7 @@ export default function OilProgramDossierTab({
     ? ((latest as Record<string, unknown>).makeUpOilLiters as number)
     : null;
 
-  if (!assetId) {
+  if (assetId == null || assetId === "") {
     return (
       <div className="flex flex-col items-center justify-center text-center py-16 px-4">
         <Droplet className="h-8 w-8 text-slate-600 mb-3" />
@@ -175,7 +189,7 @@ export default function OilProgramDossierTab({
               {firstSampleDate && lastSampleDate && (
                 <div className="flex items-center gap-3">
                   <span className="text-slate-500">Coverage window:</span>
-                  <span className="font-mono text-slate-300">
+                  <span className="font-mono text-slate-300 min-w-0 break-words">
                     {fmtDate(firstSampleDate)} &mdash; {fmtDate(lastSampleDate)}
                   </span>
                   <span className="text-[10px] text-slate-500">
@@ -186,19 +200,27 @@ export default function OilProgramDossierTab({
               <div className="flex items-center gap-3">
                 <span className="text-slate-500">Sampling cadence:</span>
                 {avgInterval > 0 ? (
-                  <span className="font-mono text-slate-300">
+                  <span className="font-mono text-slate-300 min-w-0 break-words">
                     actual trailing average: {avgInterval} days
                   </span>
                 ) : (
-                  <span className="font-mono text-slate-500 italic">
+                  <span className="font-mono text-slate-500 italic min-w-0 break-words">
                     sampling cadence requires 2+ samples &mdash; {n} recorded
                   </span>
                 )}
               </div>
               <p className="text-[10px] text-slate-500 italic mt-1">
-                target cadence not recorded &mdash; actual trailing average:{" "}
+                defaulting to a {OIL_TARGET_INTERVAL_DAYS}-day{" "}
+                {OIL_TARGET_INTERVAL_PRACTICE}; actual trailing average:{" "}
                 {avgInterval > 0 ? `${avgInterval} days` : "insufficient samples"}{" "}
                 (practice, not a rule)
+              </p>
+              <p className="text-[10px] text-slate-500 italic mt-1">
+                {intervals.length === 0
+                  ? `missed windows not evaluated - sampling cadence requires 2+ samples, ${n} recorded`
+                  : missedGaps.length > 0
+                    ? `missed sampling windows: ${missedGaps.length} gap${missedGaps.length !== 1 ? "s" : ""} exceeded the ${OIL_TARGET_INTERVAL_DAYS}-day target - longest ${longestGap} days between samples`
+                    : `no sampling window exceeded the ${OIL_TARGET_INTERVAL_DAYS}-day default target`}
               </p>
             </div>
           </div>
@@ -209,13 +231,10 @@ export default function OilProgramDossierTab({
               S2 &mdash; Test-Method Citations
             </h4>
             <div className="space-y-1.5 text-xs text-slate-400">
-              <p>kinematic viscosity per ASTM D445.</p>
-              <p>elemental spectroscopy per ASTM D5185.</p>
-              <p>particle-count cleanliness coding per ISO 4406.</p>
-              <p className="text-[10px] text-slate-500 mt-2">
-                wear limits and cleanliness targets are lab and OEM practice &mdash;
-                no universal ISO severity class standard exists for oil analysis
-              </p>
+              <p>{OIL_VISCOSITY_CITATION}</p>
+              <p>{OIL_SPECTROSCOPY_CITATION}</p>
+              <p>{OIL_ISO4406_CITATION}</p>
+              <p className="text-[10px] text-slate-500 mt-2">{OIL_WEAR_LIMIT_CITATION}</p>
             </div>
           </div>
 
@@ -225,19 +244,18 @@ export default function OilProgramDossierTab({
               S3 &mdash; Competency &amp; Validity
             </h4>
             <div className="space-y-1.5 text-xs text-slate-400">
-              <p>
-                lubrication-analysis personnel certification per ISO 18436-4 and
-                ICML credentials (MLT / MLA).
-              </p>
-              <p>
-                {samplerId
+              <p className="break-words">{OIL_COMPETENCY_CITATION}</p>
+              <p className="break-words">
+                {samplerId != null && samplerId !== ""
                   ? `sampler ID: ${samplerId}`
-                  : <span className="italic text-slate-500">sampler ID not recorded at capture</span>}
+                  : <span className="italic text-slate-500">
+                      sampler ID not recorded at capture &mdash; competency attribution unavailable
+                    </span>}
               </p>
-              <p>
-                {labName
+              <p className="break-words">
+                {labName != null && labName !== ""
                   ? `lab: ${labName}`
-                  : <span className="italic text-slate-500">lab accreditation (ISO/IEC 17025) not recorded</span>}
+                  : <span className="italic text-slate-500">{OIL_LAB_ACCREDITATION_NOT_RECORDED}</span>}
               </p>
             </div>
           </div>
@@ -248,19 +266,23 @@ export default function OilProgramDossierTab({
               S4 &mdash; Fluid &amp; Program Record
             </h4>
             <div className="space-y-2 text-xs text-slate-400">
-              <div>
+              <div className="break-words">
                 <span className="text-slate-500">Oil grade: </span>
-                {grade
+                {grade != null && grade !== ""
                   ? <span className="text-slate-300">{grade}</span>
                   : <span className="italic text-slate-500">
                       oil grade not recorded &mdash; viscosity as measured only
                     </span>}
               </div>
-              <div>
+              <div className="break-words">
                 <span className="text-slate-500">Sampling port / method: </span>
-                {samplePoint || samplingPort || samplingMethod
+                {samplePoint != null && samplePoint !== ""
+                || samplingPort != null && samplingPort !== ""
+                || samplingMethod != null && samplingMethod !== ""
                   ? <span className="text-slate-300">
-                      {[samplePoint, samplingPort, samplingMethod].filter(Boolean).join(" / ")}
+                      {[samplePoint, samplingPort, samplingMethod]
+                        .filter((v) => v != null && v !== "")
+                        .join(" / ")}
                     </span>
                   : <span className="italic text-slate-500">
                       sampling port/method not recorded &mdash; bottom-drain
@@ -268,13 +290,17 @@ export default function OilProgramDossierTab({
                       to live circulating fluid
                     </span>}
               </div>
-              <div>
+              <div className="break-words">
                 <span className="text-slate-500">Top-off / oil-change log: </span>
                 {hasMakeUpOil
                   ? <span className="text-slate-300">
-                      {topOffVal != null && topOffVal > 0
-                        ? `${topOffVal} L make-up oil recorded`
-                        : "no make-up oil added"}
+                      {topOffVal != null
+                        ? (topOffVal > 0
+                            ? `${topOffVal} L make-up oil recorded`
+                            : "no make-up oil added")
+                        : <span className="italic text-slate-500">
+                            make-up oil quantity not recorded &mdash; dilution history unavailable
+                          </span>}
                     </span>
                   : <span className="italic text-slate-500">
                       top-off log not recorded &mdash; dilution history unavailable

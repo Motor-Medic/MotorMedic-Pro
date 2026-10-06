@@ -1675,6 +1675,23 @@ export const OIL_ISO4406_CITATION =
 export const OIL_WEAR_LIMIT_CITATION =
   "wear limits are lab and OEM practice - cited as guidance, not as a measured threshold; no universal ISO severity class standard exists for oil analysis";
 
+export const OIL_VISCOSITY_CITATION =
+  "kinematic viscosity per ASTM D445 - cited as a test method, not a rating";
+
+export const OIL_SPECTROSCOPY_CITATION =
+  "elemental spectroscopy per ASTM D5185 - cited as a test method, not a rating";
+
+export const OIL_COMPETENCY_CITATION =
+  "lubrication-analysis personnel certification per ISO 18436-4 and ICML credentials (MLT / MLA) - guidance, not a measurement";
+
+export const OIL_LAB_ACCREDITATION_NOT_RECORDED =
+  "lab accreditation (ISO/IEC 17025) not recorded - lab practice cannot be verified from this record";
+
+export const OIL_TARGET_INTERVAL_DAYS = 90;
+
+export const OIL_TARGET_INTERVAL_PRACTICE =
+  "target interval - OEM guidance, site practice may vary";
+
 export function isMapped(diagnosis: string): boolean {
   return getPrescription(diagnosis).isMapped;
 }
