@@ -15,6 +15,7 @@ import {
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import {
   evaluateMcaSeverity,
+  formatMcaPi,
   MCA_IMBALANCE_SOURCE,
   MCA_IR_CITATION,
 } from "../../lib/maintenance/prescriptiveDictionary";
@@ -289,7 +290,11 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
           />
           <Field
             label="Polarization Index"
-            value={groundwall.reportPi ?? null}
+            value={formatMcaPi(
+              num(groundwall.reportPi),
+              groundwall.fromTelemetry ? num(groundwall.ir1mMOmega) : null,
+              groundwall.fromTelemetry ? num(groundwall.ir10mMOmega) : null,
+            )}
           />
           <Field
             label="Max Phase Resistance"
