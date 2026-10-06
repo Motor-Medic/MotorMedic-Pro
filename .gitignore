@@ -13,3 +13,4 @@ server.err
 .agentsroom/handoff-transcript-*.txt
 .agentsroom/handoff-summary-*.md
 .agentsroom/fork-context-*.txt
+.grok/config.toml
