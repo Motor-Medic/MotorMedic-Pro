@@ -9,7 +9,17 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Droplet, Info } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
-import type { OilSample } from "../../types/oilAnalysis";
+import type { OilSample, WearMetalKey } from "../../types/oilAnalysis";
+import {
+  formatOilPpm,
+  OIL_ALARM_LIMIT_PRACTICE,
+  OIL_ISO4406_CITATION,
+  OIL_ISO4406_STANDARD,
+  OIL_NOT_TESTED,
+  OIL_WEAR_LIMIT_CITATION,
+  OIL_WEAR_METALS,
+  type OilWearMetalDef,
+} from "../../lib/maintenance/prescriptiveDictionary";
 
 export interface OilTrendLibraryTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
@@ -21,23 +31,22 @@ const card = "rounded-xl border border-white/10 bg-slate-950/40 p-4";
 const subcard = "rounded-lg border border-slate-700 bg-slate-900/50 p-3";
 const lbl = "text-[10px] font-bold uppercase tracking-wider text-slate-500";
 
-interface ElementDef {
-  key: keyof OilSample;
-  symbol: string;
-  unit: string;
-  color: string;
-  alarmKey: keyof OilSample;
-  baselineKey?: keyof OilSample;
-}
+/** Presentation only — wear-metal identity is single-sourced in the dictionary. */
+const ELEMENT_COLOR: Record<WearMetalKey, string> = {
+  iron: "#eab308",
+  copper: "#22d3ee",
+  lead: "#a78bfa",
+  chromium: "#94a3b8",
+  aluminum: "#f472b6",
+  silicon: "#fb923c",
+};
 
-const ELEMENTS: ElementDef[] = [
-  { key: "iron", symbol: "Fe", unit: "PPM", color: "#eab308", alarmKey: "ironAlarmLimit", baselineKey: "baselineIron" },
-  { key: "copper", symbol: "Cu", unit: "PPM", color: "#22d3ee", alarmKey: "copperAlarmLimit", baselineKey: "baselineCopper" },
-  { key: "lead", symbol: "Pb", unit: "PPM", color: "#a78bfa", alarmKey: "leadAlarmLimit" },
-  { key: "chromium", symbol: "Cr", unit: "PPM", color: "#94a3b8", alarmKey: "chromiumAlarmLimit", baselineKey: "baselineChromium" },
-  { key: "aluminum", symbol: "Al", unit: "PPM", color: "#f472b6", alarmKey: "aluminumAlarmLimit" },
-  { key: "silicon", symbol: "Si", unit: "PPM", color: "#fb923c", alarmKey: "siliconAlarmLimit" },
-];
+type ElementDef = OilWearMetalDef & { color: string };
+
+const ELEMENTS: ElementDef[] = OIL_WEAR_METALS.map((el) => ({
+  ...el,
+  color: ELEMENT_COLOR[el.key],
+}));
 
 const ADDITIVE_ELEMENTS: { symbol: string; label: string }[] = [
   { symbol: "Zn", label: "Zinc" },
@@ -58,6 +67,14 @@ function fmtDate(iso: string): string {
   const d = new Date(iso);
   return Number.isFinite(d.getTime())
     ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : iso;
+}
+
+/** Chart date label — formatted short, never cut out of a longer string. */
+function fmtDateShort(iso: string): string {
+  const d = new Date(iso);
+  return Number.isFinite(d.getTime())
+    ? d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
     : iso;
 }
 
@@ -182,13 +199,18 @@ export default function OilTrendLibraryTab({
   /* P1 data */
   const elementRows = ELEMENTS.map((el) => {
     const values = sorted.map((s) => val(s, el.key));
-    const hasData = values.some((v) => v != null && v > 0);
+    const hasData = values.some((v) => v != null);
     const latestVal = latest ? val(latest, el.key) : undefined;
     const prevVal = prev ? val(prev, el.key) : undefined;
     const delta = latestVal != null && prevVal != null ? latestVal - prevVal : undefined;
     const alarmVal = latest ? val(latest, el.alarmKey) : undefined;
     return { ...el, values, hasData, latestVal, delta, alarmVal };
   });
+
+  /* Metals the latest sample never reported — confessed, never omitted silently */
+  const untestedLatest = elementRows
+    .filter((el) => el.latestVal == null)
+    .map((el) => el.symbol);
 
   /* P2 data — two charts: viscosity + acid/base number */
   const hasViscosity = sorted.some((s) => s.viscosity40C != null);
@@ -207,8 +229,8 @@ export default function OilTrendLibraryTab({
 
   /* P3 data */
   const hasVirginBaseline = ELEMENTS.some((el) => {
-    if (!el.baselineKey) return false;
-    return latest && val(latest, el.baselineKey) != null;
+    if (el.baselineKey == null) return false;
+    return latest != null && val(latest, el.baselineKey) != null;
   });
 
   /* P4 data */
@@ -230,7 +252,8 @@ export default function OilTrendLibraryTab({
           <h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Tribology & Wear Trend Library</h4>
           <span className="text-[10px] text-slate-500">({n} sample{n !== 1 ? "s" : ""})</span>
         </div>
-        <p className="text-[10px] text-slate-500">wear limits are lab and OEM practice — no universal ISO severity class standard exists for oil analysis</p>
+        <p className="text-[10px] text-slate-500">{OIL_WEAR_LIMIT_CITATION}</p>
+        <p className="text-[10px] text-slate-500 mt-1">{OIL_ISO4406_CITATION}</p>
       </div>
 
       {loading && (
@@ -270,18 +293,18 @@ export default function OilTrendLibraryTab({
               </thead>
               <tbody>
                 {elementRows.map((el) => {
-                  const tested = el.hasData;
-                  const latestStr = el.latestVal != null ? el.latestVal.toFixed(1) : "—";
+                  const latestStr = formatOilPpm(el.latestVal);
                   const deltaStr = el.delta != null ? `${el.delta >= 0 ? "+" : ""}${el.delta.toFixed(1)}` : "—";
                   const alarmStr = el.alarmVal != null ? el.alarmVal.toFixed(0) : "—";
                   const overAlarm = el.latestVal != null && el.alarmVal != null && el.latestVal > el.alarmVal;
+                  const tested = el.latestVal != null;
                   return (
                     <tr key={el.key} className="border-t border-slate-800/50">
                       <td className="py-1.5 pr-2 font-mono font-bold" style={{ color: el.color }}>
                         {el.symbol} <span className="text-slate-500 font-normal normal-case">{el.unit}</span>
                       </td>
                       <td className="py-1.5 px-1">
-                        {tested ? (
+                        {el.hasData ? (
                           <RowSparkline points={el.values.filter((v): v is number => v != null)} color={el.color} />
                         ) : (
                           <span className="text-slate-600">—</span>
@@ -298,7 +321,7 @@ export default function OilTrendLibraryTab({
                         ) : tested ? (
                           <span className="text-[9px] text-slate-500">within limit</span>
                         ) : (
-                          <span className="text-[9px] text-slate-600">not tested</span>
+                          <span className="text-[9px] text-slate-600">{OIL_NOT_TESTED}</span>
                         )}
                       </td>
                     </tr>
@@ -313,7 +336,7 @@ export default function OilTrendLibraryTab({
           </p>
           <p className="text-[10px] text-slate-500 mt-1">
             <Info className="h-3 w-3 inline text-slate-400 mr-1" />
-            alarm limits per stored lab practice — not a universal standard
+            {OIL_ALARM_LIMIT_PRACTICE}
           </p>
           {n < 2 && (
             <p className="text-[10px] text-amber-400/80 mt-1">
@@ -389,6 +412,12 @@ export default function OilTrendLibraryTab({
               elements={ELEMENTS}
             />
           )}
+          {latest != null && untestedLatest.length > 0 && (
+            <p className="text-[10px] text-slate-500 mt-2">
+              <Info className="h-3 w-3 inline text-slate-400 mr-1" />
+              {OIL_NOT_TESTED} in latest sample: {untestedLatest.join(", ")}
+            </p>
+          )}
           {!hasVirginBaseline && (
             <p className="text-[10px] text-slate-500 mt-2">
               <Info className="h-3 w-3 inline text-slate-400 mr-1" />
@@ -436,7 +465,7 @@ export default function OilTrendLibraryTab({
             Three pillars: trend direction, rate of change, and context — none alone is a diagnosis.
           </p>
           <p className="text-[10px] text-slate-500 mt-1">
-            Watchlist: rising wear metals, declining TBN, increasing viscosity, ISO code drift.
+            Watchlist: rising wear metals, declining TBN, increasing viscosity, {OIL_ISO4406_STANDARD} code drift.
           </p>
           <p className="text-[10px] text-slate-500 mt-1">
             This library presents guided trending — every interpretation requires site-specific context and professional judgment.
@@ -532,7 +561,7 @@ function FluidChart({
         ))}
         {pts.map((p, i) => (
           <text key={`d${i}`} x={px(i)} y={H - 10} fontSize="7" fill="#64748b" textAnchor="middle">
-            {fmtDate(p.date).split(",")[0]}
+            {fmtDateShort(p.date)}
           </text>
         ))}
       </svg>
@@ -576,7 +605,10 @@ function BaselineBars({
     const pctChange = refVal === 0 ? (currVal > 0 ? 100 : 0) : ((currVal - refVal) / refVal) * 100;
     const absDelta = currVal - refVal;
     return { ...el, pctChange, absDelta, refLabel };
-  }).filter(Boolean) as (ElementDef & { pctChange: number; absDelta: number; refLabel: string })[];
+  }).filter(
+    (b): b is ElementDef & { pctChange: number; absDelta: number; refLabel: string } =>
+      b != null,
+  );
 
   if (bars.length === 0) {
     return <p className="text-[10px] text-slate-500 italic">insufficient data for baseline comparison</p>;
@@ -652,7 +684,7 @@ function CadenceBars({
                 }}
               />
               <span className="text-[7px] text-slate-600 mt-0.5">
-                {fmtDate(sorted[i].sampleDate).split(",")[0]}
+                {fmtDateShort(sorted[i].sampleDate)}
               </span>
             </div>
           );

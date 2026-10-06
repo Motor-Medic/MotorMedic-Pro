@@ -6,6 +6,8 @@
  * Versioned: bump DICTIONARY_VERSION when entries change.
  */
 
+import type { OilSample, WearMetalKey } from "../../types/oilAnalysis";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1623,6 +1625,55 @@ export function formatMcaPi(
   const ratio = ten / one;
   return Number.isFinite(ratio) ? ratio.toFixed(2) : "cannot compute";
 }
+
+// ---------------------------------------------------------------------------
+// Oil wear-metal display — one wear-metals mapper and one ppm vocabulary for
+// every oil surface that renders metals:
+//   * a stored finite reading formats to one decimal plus the unit, so a
+//     stored zero is a reading and renders "0.0 ppm" (never "not tested");
+//   * an untested metal (null / undefined / non-finite) confesses
+//     OIL_NOT_TESTED instead of 0 or a dash — absence is never normal;
+//   * alarm/limit numbers are lab/OEM practice, never a measured threshold,
+//     and the standards cited here are guidance, never severity classes.
+// Plain strings and data only: no JSX lives in this .ts module; styling
+// belongs to the call site.
+// ---------------------------------------------------------------------------
+export const OIL_PPM_UNIT = "ppm";
+export const OIL_NOT_TESTED = "not tested";
+
+export interface OilWearMetalDef {
+  key: WearMetalKey;
+  symbol: string;
+  label: string;
+  unit: string;
+  alarmKey: keyof OilSample;
+  baselineKey?: keyof OilSample;
+}
+
+export const OIL_WEAR_METALS: readonly OilWearMetalDef[] = [
+  { key: "iron", symbol: "Fe", label: "Iron", unit: OIL_PPM_UNIT, alarmKey: "ironAlarmLimit", baselineKey: "baselineIron" },
+  { key: "copper", symbol: "Cu", label: "Copper", unit: OIL_PPM_UNIT, alarmKey: "copperAlarmLimit", baselineKey: "baselineCopper" },
+  { key: "lead", symbol: "Pb", label: "Lead", unit: OIL_PPM_UNIT, alarmKey: "leadAlarmLimit" },
+  { key: "chromium", symbol: "Cr", label: "Chromium", unit: OIL_PPM_UNIT, alarmKey: "chromiumAlarmLimit", baselineKey: "baselineChromium" },
+  { key: "aluminum", symbol: "Al", label: "Aluminum", unit: OIL_PPM_UNIT, alarmKey: "aluminumAlarmLimit" },
+  { key: "silicon", symbol: "Si", label: "Silicon", unit: OIL_PPM_UNIT, alarmKey: "siliconAlarmLimit" },
+];
+
+export function formatOilPpm(v: number | null | undefined): string {
+  const n = typeof v === "number" && Number.isFinite(v) ? v : null;
+  return n == null ? OIL_NOT_TESTED : `${n.toFixed(1)} ${OIL_PPM_UNIT}`;
+}
+
+export const OIL_ALARM_LIMIT_PRACTICE =
+  "default alarm limits - lab and OEM practice (DEFAULT_ALARM_LIMITS), not a measured threshold; a stored per-sample lab limit is used when recorded";
+
+export const OIL_ISO4406_STANDARD = "ISO 4406";
+
+export const OIL_ISO4406_CITATION =
+  `${OIL_ISO4406_STANDARD} particle-count cleanliness coding - cited as guidance, never as a severity class`;
+
+export const OIL_WEAR_LIMIT_CITATION =
+  "wear limits are lab and OEM practice - cited as guidance, not as a measured threshold; no universal ISO severity class standard exists for oil analysis";
 
 export function isMapped(diagnosis: string): boolean {
   return getPrescription(diagnosis).isMapped;
