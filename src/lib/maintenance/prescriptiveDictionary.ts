@@ -1694,6 +1694,10 @@ export const WEAR_METAL_KEYS: readonly WearMetalKey[] = [
   "silicon",
 ];
 
+export const OIL_TIN_PPM_LABEL = "Tin (Sn)";
+
+export const OIL_NICKEL_PPM_LABEL = "Nickel (Ni)";
+
 export const OIL_ALARM_LIMIT_PRACTICE =
   "default alarm limits - lab and OEM practice (DEFAULT_ALARM_LIMITS), not a measured threshold; a stored per-sample lab limit is used when recorded";
 

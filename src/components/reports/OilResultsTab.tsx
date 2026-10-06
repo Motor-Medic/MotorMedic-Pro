@@ -12,7 +12,7 @@ import { classifyFaultFamily } from "../../lib/diagnostics/faultFamily";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
 import type { OilSample } from "../../types/oilAnalysis";
 import { DEFAULT_ALARM_LIMITS, ISO_CLEANLINESS_TARGET } from "../../types/oilAnalysis";
-import { OIL_WEAR_METALS } from "../../lib/maintenance/prescriptiveDictionary";
+import { OIL_NOT_TESTED, OIL_WEAR_METALS } from "../../lib/maintenance/prescriptiveDictionary";
 
 export interface OilResultsTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
@@ -25,6 +25,7 @@ export interface OilResultsTabProps {
 const card = "rounded-xl border border-slate-700 bg-slate-950/50 p-4";
 const label = "text-[10px] font-bold uppercase tracking-wider text-slate-500";
 const dash = <span className="text-slate-600">&mdash;</span>;
+const notTested = <span className="text-slate-600">{OIL_NOT_TESTED}</span>;
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -320,7 +321,7 @@ export default function OilResultsTab({
                   <div key={el.key}>
                     <span className={label}>{`${el.symbol} (${el.unit})`}</span>
                     <p className="text-slate-300 font-mono">
-                      {v != null ? v.toFixed(0) : dash}
+                      {v != null ? v.toFixed(0) : notTested}
                     </p>
                   </div>
                 );

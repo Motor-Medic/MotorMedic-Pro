@@ -17,9 +17,9 @@ import { classifyFaultFamily, familiesCorroborate } from "../lib/diagnostics/fau
 import {
   DEFAULT_ALARM_LIMITS,
   ISO_CLEANLINESS_TARGET,
-  type OilSample,
-  type WearMetalKey
+  type OilSample
 } from "../types/oilAnalysis";
+import { oilWearMetalDef, WEAR_METAL_KEYS } from "../lib/maintenance/prescriptiveDictionary";
 import { formatSampleDate } from "../lib/oilAnalysisMetrics";
 import SensorFusionMatrix from "./diagnostics/SensorFusionMatrix";
 import PrognosisPanel from "./diagnostics/PrognosisPanel";
@@ -81,15 +81,6 @@ export interface IdentifiedFault {
   severity?: string | null;
   description?: string | null;
 }
-
-const WEAR_METALS: { key: WearMetalKey; label: string }[] = [
-  { key: "iron", label: "Fe" },
-  { key: "copper", label: "Cu" },
-  { key: "chromium", label: "Cr" },
-  { key: "lead", label: "Pb" },
-  { key: "aluminum", label: "Al" },
-  { key: "silicon", label: "Si" }
-];
 
 const PANEL =
   "rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0 flex flex-col";
@@ -187,11 +178,15 @@ function IsoContaminationGrid({ sample }: { sample: OilSample | null }) {
 function WearMetalsSnapshot({ sample }: { sample: OilSample | null }) {
   const data = useMemo(() => {
     if (!sample) return [];
-    return WEAR_METALS.filter((m) => sample[m.key] != null).map((m) => ({
-      metal: m.label,
-      measured: sample[m.key] as number,
-      limit: DEFAULT_ALARM_LIMITS[m.key]
-    }));
+    return WEAR_METAL_KEYS.flatMap((key) => {
+      const measured = sample[key];
+      if (measured == null) return [];
+      return [{
+        metal: oilWearMetalDef(key).symbol,
+        measured,
+        limit: DEFAULT_ALARM_LIMITS[key]
+      }];
+    });
   }, [sample]);
 
   if (!sample || data.length === 0) {

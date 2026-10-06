@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { OilReportData } from "../types/oilVision";
+import type { WearMetalKey } from "../types/oilAnalysis";
+import { oilWearMetalDef, OIL_TIN_PPM_LABEL, OIL_NICKEL_PPM_LABEL } from "../lib/maintenance/prescriptiveDictionary";
 import OilVisionDropzone from "./trendAnalyzer/OilVisionDropzone";
 
 type OilAccordionSection = "identity" | "telemetry" | "spectroscopy" | "degradation";
@@ -48,14 +50,19 @@ const BASE_CHEMISTRIES: BaseOilChemistry[] = [
 
 const BETA_RATINGS = ["β₆ ≥ 100", "β₁₀ ≥ 1000", "β₁₄ ≥ 1000"] as const;
 
-const WEAR_METALS: { key: string; label: string }[] = [
-  { key: "fe", label: "Iron (Fe)" },
-  { key: "cu", label: "Copper (Cu)" },
-  { key: "pb", label: "Lead (Pb)" },
-  { key: "sn", label: "Tin (Sn)" },
-  { key: "al", label: "Aluminum (Al)" },
-  { key: "cr", label: "Chromium (Cr)" },
-  { key: "ni", label: "Nickel (Ni)" }
+const spectroPpmLabel = (key: WearMetalKey): string => {
+  const metal = oilWearMetalDef(key);
+  return `${metal.label} (${metal.symbol})`;
+};
+
+const SPECTRO_PPM_FIELDS: readonly { key: string; label: string }[] = [
+  { key: "fe", label: spectroPpmLabel("iron") },
+  { key: "cu", label: spectroPpmLabel("copper") },
+  { key: "pb", label: spectroPpmLabel("lead") },
+  { key: "sn", label: OIL_TIN_PPM_LABEL },
+  { key: "al", label: spectroPpmLabel("aluminum") },
+  { key: "cr", label: spectroPpmLabel("chromium") },
+  { key: "ni", label: OIL_NICKEL_PPM_LABEL }
 ];
 
 const CONTAMINANTS: { key: string; label: string }[] = [
@@ -836,7 +843,7 @@ export default function OilInputAccordions({
             Wear Metals (PPM)
           </p>
           <div className="grid grid-cols-3 gap-3 sm:gap-4">
-            {WEAR_METALS.map(({ key: ppmKey, label }) => (
+            {SPECTRO_PPM_FIELDS.map(({ key: ppmKey, label }) => (
               <React.Fragment key={ppmKey}>
                 <PpmField
                   label={label}
