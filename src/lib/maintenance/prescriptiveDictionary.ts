@@ -1664,6 +1664,36 @@ export function formatOilPpm(v: number | null | undefined): string {
   return n == null ? OIL_NOT_TESTED : `${n.toFixed(1)} ${OIL_PPM_UNIT}`;
 }
 
+/**
+ * One mapper for every wear-metal render site: WearMetalKey -> the single
+ * OIL_WEAR_METALS definition (label, symbol, alarm key). OIL_WEAR_METALS
+ * remains the only home of label strings; presentation shapes are derived
+ * at the call site (`label (symbol)` vs bare `symbol`). Throws on an unknown
+ * key instead of fabricating a fallback - the key set is fixed by WearMetalKey.
+ */
+export function oilWearMetalDef(key: WearMetalKey): OilWearMetalDef {
+  const found = OIL_WEAR_METALS.find((m) => m.key === key);
+  if (found == null) throw new Error(`unknown wear-metal key: ${key}`);
+  return found;
+}
+
+/**
+ * Diagnostic iteration order (Fe, Cu, Cr, Pb, Al, Si). This diverges from
+ * the OIL_WEAR_METALS array order (Fe, Cu, Pb, Cr, Al, Si) at the Pb/Cr pair:
+ * the prognosis, sensor-fusion, technology-summary and prognostics-resolver
+ * sites have always emitted Cr before Pb, and rendered output is kept
+ * byte-identical, so the divergence is named here instead of force-merged.
+ * Display surfaces that follow OIL_WEAR_METALS keep the array order.
+ */
+export const WEAR_METAL_KEYS: readonly WearMetalKey[] = [
+  "iron",
+  "copper",
+  "chromium",
+  "lead",
+  "aluminum",
+  "silicon",
+];
+
 export const OIL_ALARM_LIMIT_PRACTICE =
   "default alarm limits - lab and OEM practice (DEFAULT_ALARM_LIMITS), not a measured threshold; a stored per-sample lab limit is used when recorded";
 

@@ -18,6 +18,7 @@ import {
 } from "../analysisPersistence";
 import { fetchOilSamples } from "../oilSampleRow";
 import { mpcBand } from "../oilAnalysisMetrics";
+import { oilWearMetalDef, WEAR_METAL_KEYS } from "../maintenance/prescriptiveDictionary";
 import {
   DEFAULT_ALARM_LIMITS,
   ISO_CLEANLINESS_TARGET,
@@ -97,15 +98,6 @@ const SEVERITY_CLASS_SCORE: Record<string, number> = {
   "class 2": 50,
   "class 3": 75,
   "class 4": 100
-};
-
-const WEAR_METAL_LABEL: Record<WearMetalKey, string> = {
-  iron: "Fe",
-  copper: "Cu",
-  chromium: "Cr",
-  lead: "Pb",
-  aluminum: "Al",
-  silicon: "Si"
 };
 
 /**
@@ -453,12 +445,13 @@ export interface OilExceedance {
 export function oilExceedances(sample: OilSample): OilExceedance[] {
   const anomalies: OilExceedance[] = [];
 
-  for (const key of Object.keys(WEAR_METAL_LABEL) as WearMetalKey[]) {
+  for (const key of WEAR_METAL_KEYS) {
+    const metal = oilWearMetalDef(key);
     const value = sample[key];
     const limit = DEFAULT_ALARM_LIMITS[key];
     if (value != null && limit != null && value > limit) {
       anomalies.push({
-        text: `${WEAR_METAL_LABEL[key]} ${value} ppm > ${limit} ppm limit`,
+        text: `${metal.symbol} ${value} ppm > ${limit} ppm limit`,
         family: WEAR_METAL_FAMILY[key]
       });
     }

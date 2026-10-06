@@ -14,11 +14,11 @@
 import type { SavedAnalysisResult } from "../analysisPersistence";
 import { latestOfType, peakOfType, resolveTempUnit } from "../diagnostics/sensorFusion";
 import { mpcBand } from "../oilAnalysisMetrics";
+import { oilWearMetalDef, WEAR_METAL_KEYS } from "../maintenance/prescriptiveDictionary";
 import {
   DEFAULT_ALARM_LIMITS,
   ISO_CLEANLINESS_TARGET,
-  type OilSample,
-  type WearMetalKey
+  type OilSample
 } from "../../types/oilAnalysis";
 
 export type ReportTechnologyId =
@@ -263,15 +263,6 @@ function mcaReadings(record: SavedAnalysisResult): ReportReading[] {
  */
 const OIL_CRITICAL_MULTIPLE = 2;
 
-const WEAR_METAL_LABEL: Record<WearMetalKey, string> = {
-  iron: "Fe",
-  copper: "Cu",
-  chromium: "Cr",
-  lead: "Pb",
-  aluminum: "Al",
-  silicon: "Si"
-};
-
 function buildOil(sample: OilSample | null): TechnologyReport {
   if (!sample) return emptyTechnology("oil");
 
@@ -279,11 +270,12 @@ function buildOil(sample: OilSample | null): TechnologyReport {
   let anyOver = false;
   let anyCritical = false;
 
-  for (const key of Object.keys(WEAR_METAL_LABEL) as WearMetalKey[]) {
+  for (const key of WEAR_METAL_KEYS) {
+    const metal = oilWearMetalDef(key);
     const value = sample[key];
     const limit = DEFAULT_ALARM_LIMITS[key];
     if (value == null) continue;
-    pushReading(readings, WEAR_METAL_LABEL[key], value, {
+    pushReading(readings, metal.symbol, value, {
       unit: " ppm",
       limit
     });

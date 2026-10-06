@@ -12,6 +12,7 @@ import { classifyFaultFamily } from "../../lib/diagnostics/faultFamily";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
 import type { OilSample } from "../../types/oilAnalysis";
 import { DEFAULT_ALARM_LIMITS, ISO_CLEANLINESS_TARGET } from "../../types/oilAnalysis";
+import { OIL_WEAR_METALS } from "../../lib/maintenance/prescriptiveDictionary";
 
 export interface OilResultsTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
@@ -313,42 +314,17 @@ export default function OilResultsTab({
               Wear Debris
             </h5>
             <div className="grid grid-cols-3 gap-2 text-xs">
-              <div>
-                <span className={label}>Fe (ppm)</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.iron != null ? latest.iron.toFixed(0) : dash}
-                </p>
-              </div>
-              <div>
-                <span className={label}>Cu (ppm)</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.copper != null ? latest.copper.toFixed(0) : dash}
-                </p>
-              </div>
-              <div>
-                <span className={label}>Pb (ppm)</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.lead != null ? latest.lead.toFixed(0) : dash}
-                </p>
-              </div>
-              <div>
-                <span className={label}>Cr (ppm)</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.chromium != null ? latest.chromium.toFixed(0) : dash}
-                </p>
-              </div>
-              <div>
-                <span className={label}>Al (ppm)</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.aluminum != null ? latest.aluminum.toFixed(0) : dash}
-                </p>
-              </div>
-              <div>
-                <span className={label}>Si (ppm)</span>
-                <p className="text-slate-300 font-mono">
-                  {latest.silicon != null ? latest.silicon.toFixed(0) : dash}
-                </p>
-              </div>
+              {OIL_WEAR_METALS.map((el) => {
+                const v = latest[el.key];
+                return (
+                  <div key={el.key}>
+                    <span className={label}>{`${el.symbol} (${el.unit})`}</span>
+                    <p className="text-slate-300 font-mono">
+                      {v != null ? v.toFixed(0) : dash}
+                    </p>
+                  </div>
+                );
+              })}
               <div>
                 <span className={label}>PQ index</span>
                 <p className="text-slate-300 font-mono">

@@ -18,11 +18,8 @@ import {
   projectHoursToThreshold
 } from "../oilAnalysisMetrics";
 import type { SavedAnalysisResult } from "../analysisPersistence";
-import {
-  DEFAULT_ALARM_LIMITS,
-  type OilSample,
-  type WearMetalKey
-} from "../../types/oilAnalysis";
+import { oilWearMetalDef, WEAR_METAL_KEYS } from "../maintenance/prescriptiveDictionary";
+import { DEFAULT_ALARM_LIMITS, type OilSample } from "../../types/oilAnalysis";
 
 /** Whether hours are machine run-time or wall-clock elapsed time. */
 export type TimeBasis = "operating" | "calendar";
@@ -67,15 +64,6 @@ export const RULER_THRESHOLD = 25;
  * on the Run Diagnostics envelope chart.
  */
 export const ENVELOPE_DANGER_GE = 2.5;
-
-const WEAR_METAL_LABEL: Record<WearMetalKey, string> = {
-  iron: "Iron (Fe)",
-  copper: "Copper (Cu)",
-  chromium: "Chromium (Cr)",
-  lead: "Lead (Pb)",
-  aluminum: "Aluminum (Al)",
-  silicon: "Silicon (Si)"
-};
 
 interface MetricPoint {
   hours: number;
@@ -206,11 +194,12 @@ export function buildOilProjections(samples: OilSample[]): {
     })
   );
 
-  for (const key of Object.keys(WEAR_METAL_LABEL) as WearMetalKey[]) {
+  for (const key of WEAR_METAL_KEYS) {
+    const metal = oilWearMetalDef(key);
     collect(
       project({
         id: `oil-${key}`,
-        label: `${WEAR_METAL_LABEL[key]} vs alarm limit`,
+        label: `${metal.label} (${metal.symbol}) vs alarm limit`,
         source: `oil_samples.${key}`,
         points: pointsFor((s) => s[key]),
         threshold: DEFAULT_ALARM_LIMITS[key],

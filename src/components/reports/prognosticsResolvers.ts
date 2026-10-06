@@ -9,7 +9,7 @@
 import type { SavedAnalysisResult, SavedFaultItem } from "../../lib/analysisPersistence";
 import { buildFaultHistory, faultFreq } from "../../lib/diagnostics/spectralDiff";
 import { peakOfType, resolveTempUnit } from "../../lib/diagnostics/sensorFusion";
-import { getPrescription } from "../../lib/maintenance/prescriptiveDictionary";
+import { getPrescription, oilWearMetalDef, WEAR_METAL_KEYS } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   extractMcaGroundwallFromSaved,
   extractMcaWindingFromSaved,
@@ -392,30 +392,15 @@ export function resolveOilAssetId(
   })();
 }
 
-interface ElementDef {
-  key: keyof OilSample;
-  symbol: string;
-  label: string;
-  alarmKey: keyof OilSample;
-  defaultLimit: number;
-}
-
-const ELEMENTS: ElementDef[] = [
-  { key: "iron", symbol: "Fe", label: "Iron", alarmKey: "ironAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.iron },
-  { key: "copper", symbol: "Cu", label: "Copper", alarmKey: "copperAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.copper },
-  { key: "chromium", symbol: "Cr", label: "Chromium", alarmKey: "chromiumAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.chromium },
-  { key: "lead", symbol: "Pb", label: "Lead", alarmKey: "leadAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.lead },
-  { key: "aluminum", symbol: "Al", label: "Aluminum", alarmKey: "aluminumAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.aluminum },
-  { key: "silicon", symbol: "Si", label: "Silicon", alarmKey: "siliconAlarmLimit", defaultLimit: DEFAULT_ALARM_LIMITS.silicon },
-];
-
 function numVal(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
 export function oilCandidates(sorted: OilSample[]): SeriesCandidate[] {
   const out: SeriesCandidate[] = [];
-  for (const el of ELEMENTS) {
+  for (const key of WEAR_METAL_KEYS) {
+    const el = oilWearMetalDef(key);
+    const defaultLimit = DEFAULT_ALARM_LIMITS[key];
     const points: { value: number; date: string }[] = [];
     let maxRatio = 0;
     let storedLimit = false;
@@ -423,7 +408,7 @@ export function oilCandidates(sorted: OilSample[]): SeriesCandidate[] {
       const v = numVal(s[el.key]);
       if (v == null) continue;
       points.push({ value: v, date: s.sampleDate });
-      const lim = numVal(s[el.alarmKey]) ?? el.defaultLimit;
+      const lim = numVal(s[el.alarmKey]) ?? defaultLimit;
       if (numVal(s[el.alarmKey]) != null) storedLimit = true;
       if (lim > 0) maxRatio = Math.max(maxRatio, v / lim);
     }
@@ -457,7 +442,8 @@ export function oilThreshold(
       kind: "stored",
     };
   }
-  const def = ELEMENTS.find((e) => e.key === key)?.defaultLimit;
+  const metalKey = WEAR_METAL_KEYS.find((k) => k === key);
+  const def = metalKey != null ? DEFAULT_ALARM_LIMITS[metalKey] : undefined;
   if (def != null && def > 0) {
     return {
       threshold: { value: def, provenance: "DEFAULT_ALARM_LIMITS (lab/OEM practice defaults in oilAnalysis.ts)" },
