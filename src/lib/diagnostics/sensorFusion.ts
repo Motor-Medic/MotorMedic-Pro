@@ -214,6 +214,19 @@ export function scoreVibration(
     detail.push(`Health score: ${record.health_score}/100`);
   }
 
+  if (!severity) {
+    return {
+      ...base,
+      hasRecord: true,
+      score: null,
+      unscoredReason: "no_usable_metric",
+      reason: "Severity not recorded - not scored.",
+      detail,
+      recordedAt: record.timestamp,
+      family
+    };
+  }
+
   let score: number;
   let reason: string;
 
@@ -517,6 +530,27 @@ export function scoreOil(
   const matching = anomalies.filter((a) =>
     familiesCorroborate(a.family, diagnosisFamily)
   );
+  const hasAnyMeasurement =
+    WEAR_METAL_KEYS.some((key) => sample[key] != null) ||
+    sample.iso4um != null ||
+    sample.iso6um != null ||
+    sample.iso14um != null ||
+    sample.mpcDeltaE != null ||
+    sample.rulerPercent != null ||
+    sample.waterPpm != null;
+
+  if (!hasAnyMeasurement && anomalies.length === 0) {
+    return {
+      ...base,
+      hasRecord: true,
+      score: null,
+      unscoredReason: "no_usable_metric",
+      reason: "No oil parameters recorded - not scored.",
+      detail,
+      recordedAt: sample.sampleDate,
+      family: null
+    };
+  }
 
   let score: number;
   let reason: string;

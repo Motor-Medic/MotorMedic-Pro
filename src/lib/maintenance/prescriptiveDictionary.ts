@@ -1782,6 +1782,56 @@ export const PROGNOSTICS_PF_DISCLOSURES = Object.freeze({
 } as const);
 
 // ---------------------------------------------------------------------------
+// Diagnose page (AR-19) — derived-score confessions and missing-input badges.
+// One wording per truth across every Diagnose surface card (health gauge,
+// confidence, fusion aggregate, ROI, severity engine, sample-data panels).
+// Projection confessions are consumed from PROGNOSTICS_PF_DISCLOSURES above;
+// threshold citations from their established dictionary entries. Missing
+// inputs confess absence ("not recorded") and are never coerced to 0 or to a
+// default. Plain strings only: no JSX in this .ts module.
+// ---------------------------------------------------------------------------
+export const DIAGNOSE_NOT_RECORDED = "not recorded";
+
+export const DIAGNOSE_NOT_RECORDED_FOR_ASSET = "not recorded for this asset";
+
+export const DIAGNOSE_HEALTH_SCORE_SOURCE =
+  "derived health index from the stored analysis record (0-100) - not a direct measurement";
+
+export const DIAGNOSE_CONFIDENCE_SOURCE =
+  "consensus-engine confidence from the saved record - not a measured value";
+
+export const DIAGNOSE_FUSION_METHOD =
+  "unweighted mean of scored technologies, rounded; withheld below two scored technologies";
+
+export const DIAGNOSE_FUSION_AGGREGATE_LABEL = "Cross-tech corroboration";
+
+export const DIAGNOSE_SAMPLE_DATASET =
+  "sample dataset - not this asset's measured values";
+
+export const DIAGNOSE_NORMALIZATION_NOT_APPLIED =
+  "normalization not applied - values as stored";
+
+export const DIAGNOSE_SAVINGS_NOT_DERIVABLE_NEGATIVE =
+  "Savings not derivable - computed value negative.";
+
+export const DIAGNOSE_COMPUTED_COST_IMPACT = "computed cost impact";
+
+export const DIAGNOSE_ROI_SOURCE =
+  "ROI = (failure estimate - preventive estimate) / preventive estimate x 100, from the stored financial estimates";
+
+export const DIAGNOSE_FAILURE_ESTIMATE_SOURCE =
+  "stored failure estimate from the analysis record - not a recomputed projection";
+
+export const DIAGNOSE_ENVELOPE_LIMIT_SOURCE =
+  "envelope warning and danger limits - site practice, not a stored functional limit";
+
+export const DIAGNOSE_SEVERITY_NOT_COMPUTED =
+  "severity not recorded - severity-derived guidance not computed";
+
+export const DIAGNOSE_SEVERITY_SOURCE =
+  "severity status from the stored analysis record - not recomputed here";
+
+// ---------------------------------------------------------------------------
 // Coverage Table — every active diagnosis string → mapped/unmapped
 // All mapped entries now include safety field (LOTO + PPE by fault domain).
 // ---------------------------------------------------------------------------

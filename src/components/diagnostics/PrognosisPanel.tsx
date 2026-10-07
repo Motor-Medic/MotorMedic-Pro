@@ -14,6 +14,14 @@ import {
   type PrognosisResult,
   type Projection
 } from "../../lib/diagnostics/prognosis";
+import { PROGNOSTICS_PF_DISCLOSURES } from "../../lib/maintenance/prescriptiveDictionary";
+
+const { projectionG8, rulModeledG8, absenceG9, projectionNotComputable } =
+  PROGNOSTICS_PF_DISCLOSURES;
+
+function finiteHoursLabel(hours: number): string {
+  return Number.isFinite(hours) ? formatHours(hours) : projectionNotComputable;
+}
 
 export interface PrognosisPanelProps {
   prognosis: PrognosisResult;
@@ -23,7 +31,8 @@ export interface PrognosisPanelProps {
  * Fraction of the countdown already elapsed, for the bar width. Anchored to
  * the longest projection on screen so the bars are comparable to each other.
  */
-function barPercent(hours: number, longest: number): number {
+function barPercent(hours: number, longest: number): number | null {
+  if (!Number.isFinite(hours) || !Number.isFinite(longest)) return null;
   if (longest <= 0) return 100;
   return Math.max(4, Math.min(100, ((longest - hours) / longest) * 100));
 }
@@ -33,6 +42,7 @@ function renderProjectionRow(
   longest: number,
   isHorizon: boolean
 ) {
+  const pct = barPercent(projection.hoursRemaining, longest);
   return (
     <div
       key={projection.id}
@@ -43,7 +53,7 @@ function renderProjectionRow(
       }`}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-sm font-semibold text-white">
+        <span className="text-sm font-semibold text-white break-words min-w-0">
           {projection.label}
           {isHorizon && (
             <span className="ml-2 rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-red-300">
@@ -52,27 +62,32 @@ function renderProjectionRow(
           )}
         </span>
         <span className="font-mono text-sm text-slate-200">
-          {formatHours(projection.hoursRemaining)}
+          {finiteHoursLabel(projection.hoursRemaining)}
         </span>
       </div>
 
-      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-        <div
-          className={`h-full rounded-full ${isHorizon ? "bg-red-500" : "bg-slate-500"}`}
-          style={{
-            width: `${barPercent(projection.hoursRemaining, longest)}%`
-          }}
-        />
-      </div>
+      {pct !== null && (
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+          <div
+            className={`h-full rounded-full ${isHorizon ? "bg-red-500" : "bg-slate-500"}`}
+            style={{
+              width: `${pct}%`
+            }}
+          />
+        </div>
+      )}
 
-      <p className="mt-2 text-xs text-slate-500">
+      <p className="mt-2 text-xs text-slate-500 break-words">
         {projection.currentValue}
         {projection.unit} now → {projection.threshold}
         {projection.unit} limit · {projection.sampleCount} stored readings ·{" "}
         {TIME_BASIS_LABEL[projection.basis]}
       </p>
-      <p className="mt-0.5 font-mono text-[11px] text-slate-600">
+      <p className="mt-0.5 font-mono text-[11px] text-slate-600 break-words">
         {projection.source}
+      </p>
+      <p className="mt-1 text-[11px] text-slate-600 italic break-words">
+        {rulModeledG8}
       </p>
     </div>
   );
@@ -90,26 +105,30 @@ export default function PrognosisPanel({ prognosis }: PrognosisPanelProps) {
         <h3 className="text-lg font-bold text-white">
           Computed Prognosis &amp; RUL
         </h3>
-        <p className="text-sm text-slate-500 mt-0.5">
+        <p className="text-sm text-slate-500 mt-0.5 break-words">
           Linear extrapolation of stored metrics toward their documented limits
         </p>
+        <p className="mt-1 text-[11px] text-slate-600 break-words">{projectionG8}</p>
       </div>
 
       {horizon ? (
         <>
           <div className="mb-5 rounded-lg border border-red-500/40 bg-red-500/10 p-4">
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3 min-w-0">
               <TrendingDown className="mt-0.5 h-5 w-5 shrink-0 text-red-400" />
-              <div>
+              <div className="min-w-0 flex-1">
                 <div className="text-[10px] font-bold uppercase tracking-widest text-red-300/80">
                   Unmitigated Horizon
                 </div>
                 <div className="text-2xl font-bold text-white">
-                  {formatHours(horizon.hoursRemaining)}
+                  {finiteHoursLabel(horizon.hoursRemaining)}
                 </div>
-                <p className="mt-1 text-sm text-red-200/80">
+                <p className="mt-1 text-sm text-red-200/80 break-words">
                   Driven by {horizon.label}, measured in{" "}
                   {TIME_BASIS_LABEL[horizon.basis]}.
+                </p>
+                <p className="mt-1 text-[11px] italic text-red-200/60 break-words">
+                  {rulModeledG8}
                 </p>
               </div>
             </div>
@@ -154,7 +173,7 @@ export default function PrognosisPanel({ prognosis }: PrognosisPanelProps) {
           {mixedBasis && (
             <div className="mt-4 flex items-start gap-2 rounded-lg border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-300">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <p>
+              <p className="min-w-0 break-words">
                 These projections mix time bases. Oil trends use machine
                 operating hours; vibration trends use calendar hours between
                 saved analyses, because no operating hours are stored with them.
@@ -168,10 +187,13 @@ export default function PrognosisPanel({ prognosis }: PrognosisPanelProps) {
           <p className="text-sm font-semibold text-slate-300">
             No failure horizon projected on current trends
           </p>
-          <p className="mx-auto mt-2 max-w-lg text-xs leading-relaxed text-slate-500">
+          <p className="mx-auto mt-2 max-w-lg text-xs leading-relaxed text-slate-500 break-words">
             {nonConverging.length > 0
               ? "Stored metrics are flat, improving, or already past their limits, so no countdown can be computed."
               : "At least two readings of the same metric are needed before a rate can be measured."}
+          </p>
+          <p className="mx-auto mt-2 max-w-lg text-[11px] text-slate-600 break-words">
+            {absenceG9}
           </p>
         </div>
       )}

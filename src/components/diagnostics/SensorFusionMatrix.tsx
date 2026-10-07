@@ -17,6 +17,11 @@ import {
   type FusionResult,
   type TechnologyEvidence
 } from "../../lib/diagnostics/sensorFusion";
+import {
+  DIAGNOSE_NOT_RECORDED,
+  DIAGNOSE_FUSION_METHOD,
+  DIAGNOSE_FUSION_AGGREGATE_LABEL
+} from "../../lib/maintenance/prescriptiveDictionary";
 
 export interface SensorFusionMatrixProps {
   fusion: FusionResult;
@@ -42,7 +47,7 @@ function formatRecordedAt(raw: string | null): string {
 }
 
 function renderEvidenceRow(row: TechnologyEvidence) {
-  const unavailable = row.score == null;
+  const unavailable = row.score == null || !Number.isFinite(row.score);
 
   return (
     <tr
@@ -57,27 +62,27 @@ function renderEvidenceRow(row: TechnologyEvidence) {
             <CheckCircle2 className="h-4 w-4 text-slate-500 shrink-0" />
           )}
           <span
-            className={`font-semibold ${unavailable ? "text-slate-500" : "text-white"}`}
+            className={`font-semibold break-words min-w-0 ${unavailable ? "text-slate-500" : "text-white"}`}
           >
             {row.label}
           </span>
         </div>
       </td>
 
-      <td className="px-4 py-3 align-top whitespace-nowrap">
-        {row.score == null ? (
-          <span className="text-xs text-slate-600">—</span>
+      <td className="px-4 py-3 align-top">
+        {row.score == null || !Number.isFinite(row.score) ? (
+          <span className="text-xs text-slate-600">{DIAGNOSE_NOT_RECORDED}</span>
         ) : (
           <span
             className={`inline-flex rounded-full border px-2.5 py-0.5 text-xs font-bold ${scoreStyles(row.score)}`}
           >
-            {row.score}%
+            {Math.round(row.score)}%
           </span>
         )}
       </td>
 
       <td className="px-4 py-3 align-top">
-        <p className={unavailable ? "text-slate-500" : "text-slate-300"}>
+        <p className={`break-words ${unavailable ? "text-slate-500" : "text-slate-300"}`}>
           {row.reason}
         </p>
         {row.detail.length > 0 && (
@@ -94,7 +99,7 @@ function renderEvidenceRow(row: TechnologyEvidence) {
         )}
       </td>
 
-      <td className="px-4 py-3 align-top whitespace-nowrap text-xs text-slate-500">
+      <td className="px-4 py-3 align-top text-xs text-slate-500 break-words">
         {formatRecordedAt(row.recordedAt)}
       </td>
     </tr>
@@ -140,10 +145,10 @@ export default function SensorFusionMatrix({
           </p>
         </div>
 
-        {aggregate != null ? (
-          <div className="text-right">
+        {aggregate != null && Number.isFinite(aggregate) ? (
+          <div className="text-right min-w-0">
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-              Aggregated Corroboration
+              {DIAGNOSE_FUSION_AGGREGATE_LABEL}
             </div>
             <div
               className={`text-3xl font-bold ${
@@ -154,18 +159,18 @@ export default function SensorFusionMatrix({
                     : "text-orange-300"
               }`}
             >
-              {aggregate}%
+              {Math.round(aggregate)}%
             </div>
-            <div className="text-[11px] text-slate-500">
+            <div className="text-[11px] text-slate-500 break-words">
               mean of {scored.length} scored technologies
             </div>
           </div>
         ) : (
-          <div className="max-w-xs rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-right">
-            <div className="text-xs font-semibold text-cyan-300">
+          <div className="max-w-xs rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-right min-w-0">
+            <div className="text-xs font-semibold text-cyan-300 break-words">
               Single-domain diagnosis - cross-validation pending
             </div>
-            <div className="mt-1 text-[11px] text-cyan-200/70">
+            <div className="mt-1 text-[11px] text-cyan-200/70 break-words">
               {withRecords === 0
                 ? "No technology has a saved record for this asset yet."
                 : `Only ${scored.length} technolog${scored.length === 1 ? "y" : "ies"} could be scored; at least 2 are needed for an aggregate.`}
@@ -173,6 +178,10 @@ export default function SensorFusionMatrix({
           </div>
         )}
       </div>
+
+      <p className="-mt-2 mb-4 text-[11px] text-slate-600 break-words">
+        {DIAGNOSE_FUSION_METHOD}
+      </p>
 
       <div className="overflow-x-auto rounded-lg border border-slate-800">
         <table className="w-full text-left text-sm">
@@ -242,8 +251,7 @@ export default function SensorFusionMatrix({
           </p>
           <p>
             <span className="font-semibold text-slate-400">Aggregate:</span>{" "}
-            unweighted mean of scored technologies, rounded. Withheld entirely
-            below two scored technologies.
+            {DIAGNOSE_FUSION_METHOD}.
           </p>
         </div>
       </details>

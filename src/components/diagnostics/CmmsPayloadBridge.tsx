@@ -346,13 +346,13 @@ export default function CmmsPayloadBridge({
         {/* CUSTOM CMMS SUB-PANEL */}
         {target === "custom" && (
           <div className="space-y-4 border border-slate-700/50 rounded-xl p-4 bg-slate-950/30">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                 Custom CMMS Configuration
               </span>
               {selectedTemplate && (
-                <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                  <Check className="h-3 w-3" />
+                <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 min-w-0 break-words">
+                  <Check className="h-3 w-3 shrink-0" />
                   Template loaded: {selectedTemplate.program_name}
                 </span>
               )}
@@ -383,7 +383,7 @@ export default function CmmsPayloadBridge({
                         className="w-full text-left px-3 py-2 text-sm text-white hover:bg-slate-800 flex items-center gap-2"
                       >
                         <FileText className="h-4 w-4 text-slate-400" />
-                        <span className="truncate">{tmpl.program_name}</span>
+                        <span className="min-w-0 break-words">{tmpl.program_name}</span>
                         <span className="text-[10px] text-slate-500 ml-auto">
                           {new Date(tmpl.created_at).toLocaleDateString()}
                         </span>
@@ -517,7 +517,7 @@ export default function CmmsPayloadBridge({
                   {editedFields.map((field, index) => (
                     <div
                       key={index}
-                      className={`flex gap-2 items-start p-3 bg-slate-950 rounded-lg border ${
+                      className={`flex flex-wrap gap-2 items-start p-3 bg-slate-950 rounded-lg border ${
                         editingPreview ? "border-slate-600" : "border-slate-700"
                       }`}
                     >
@@ -565,9 +565,9 @@ export default function CmmsPayloadBridge({
                         </>
                       ) : (
                         <>
-                          <span className="w-32 font-mono text-[10px] text-slate-400 truncate">{field.key}</span>
-                          <span className="flex-1 text-sm text-white truncate">{field.label}</span>
-                          <span className="w-40 font-mono text-[10px] text-slate-500 truncate">{field.sourcePath || "—"}</span>
+                          <span className="w-32 font-mono text-[10px] text-slate-400 break-words">{field.key}</span>
+                          <span className="flex-1 min-w-0 text-sm text-white break-words">{field.label}</span>
+                          <span className="w-40 font-mono text-[10px] text-slate-500 break-words">{field.sourcePath || "—"}</span>
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${
                             field.multiline ? "bg-cyan-500/15 text-cyan-400" : "bg-slate-500/15 text-slate-400"
                           }`}>

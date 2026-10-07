@@ -19,7 +19,18 @@ import {
   ISO_CLEANLINESS_TARGET,
   type OilSample
 } from "../types/oilAnalysis";
-import { oilWearMetalDef, WEAR_METAL_KEYS } from "../lib/maintenance/prescriptiveDictionary";
+import {
+  oilWearMetalDef,
+  WEAR_METAL_KEYS,
+  OIL_ISO4406_CITATION,
+  OIL_ALARM_LIMIT_PRACTICE,
+  DIAGNOSE_NOT_RECORDED,
+  DIAGNOSE_FUSION_AGGREGATE_LABEL,
+  DIAGNOSE_FUSION_METHOD,
+  DIAGNOSE_CONFIDENCE_SOURCE,
+  DIAGNOSE_SAVINGS_NOT_DERIVABLE_NEGATIVE,
+  DIAGNOSE_COMPUTED_COST_IMPACT
+} from "../lib/maintenance/prescriptiveDictionary";
 import { formatSampleDate } from "../lib/oilAnalysisMetrics";
 import SensorFusionMatrix from "./diagnostics/SensorFusionMatrix";
 import PrognosisPanel from "./diagnostics/PrognosisPanel";
@@ -41,19 +52,24 @@ interface OilFinancialsResult {
   fullSumpFormatted: string;
   kidneyCostFormatted: string;
   savingsFormatted: string;
+  savingsValue: number | null;
   lifeImpactFormatted: string;
   sumpFootnote: string;
   lifeFootnote: string;
 }
 
 function calculateOilFinancials({ capacityGallons, tanValue }: DynamicOilMetrics): OilFinancialsResult {
-  const hasCapacity = typeof capacityGallons === "number" && capacityGallons > 0;
-  const hasTan = typeof tanValue === "number" && !isNaN(tanValue);
+  const hasCapacity =
+    typeof capacityGallons === "number" && Number.isFinite(capacityGallons) && capacityGallons > 0;
+  const hasTan = typeof tanValue === "number" && Number.isFinite(tanValue);
 
   const fullSumpReplacement = hasCapacity ? capacityGallons * OIL_COST_PER_GAL : null;
   const kidneyHours = hasCapacity ? Math.max(6, (capacityGallons * TURNOVERS_TARGET) / FLOW_RATE_GPH) : null;
-  const kidneyCost = kidneyHours !== null ? kidneyHours * KIDNEY_LOOP_CART_RATE : null;
-  const savings = fullSumpReplacement !== null && kidneyCost !== null ? fullSumpReplacement - kidneyCost : null;
+  const kidneyCost = kidneyHours !== null && Number.isFinite(kidneyHours) ? kidneyHours * KIDNEY_LOOP_CART_RATE : null;
+  const savings =
+    fullSumpReplacement !== null && kidneyCost !== null && Number.isFinite(fullSumpReplacement - kidneyCost)
+      ? fullSumpReplacement - kidneyCost
+      : null;
 
   const sumpFootnote = hasCapacity
     ? `${capacityGallons} gal x $${OIL_COST_PER_GAL}/gal = $${fullSumpReplacement?.toLocaleString()}`
@@ -65,9 +81,10 @@ function calculateOilFinancials({ capacityGallons, tanValue }: DynamicOilMetrics
     : "Awaiting TAN measurement";
 
   return {
-    fullSumpFormatted: fullSumpReplacement !== null ? `$${fullSumpReplacement.toLocaleString()}` : "-",
-    kidneyCostFormatted: kidneyCost !== null ? `$${kidneyCost.toLocaleString()}` : "-",
-    savingsFormatted: savings !== null ? `$${savings.toLocaleString()}` : "-",
+    fullSumpFormatted: fullSumpReplacement !== null ? `$${fullSumpReplacement.toLocaleString()}` : DIAGNOSE_NOT_RECORDED,
+    kidneyCostFormatted: kidneyCost !== null ? `$${kidneyCost.toLocaleString()}` : DIAGNOSE_NOT_RECORDED,
+    savingsFormatted: savings !== null ? `$${savings.toLocaleString()}` : DIAGNOSE_NOT_RECORDED,
+    savingsValue: savings,
     lifeImpactFormatted: lifeImpactPct !== null ? `-${lifeImpactPct.toFixed(1)}%` : "-",
     sumpFootnote,
     lifeFootnote,
@@ -167,6 +184,7 @@ function IsoContaminationGrid({ sample }: { sample: OilSample | null }) {
         Current Code: {iso.join("/")} ({over ? "above" : "within"} target{" "}
         {ISO_CLEANLINESS_TARGET.join("/")})
       </p>
+      <p className="text-[11px] text-slate-600 mt-1 break-words">{OIL_ISO4406_CITATION}</p>
     </div>
   );
 }
@@ -276,6 +294,7 @@ function WearMetalsSnapshot({ sample }: { sample: OilSample | null }) {
           ? `Over limit: ${overLimit.map((d) => `${d.metal} ${d.measured}/${d.limit} ppm`).join(", ")}`
           : "All measured wear metals within alarm limits"}
       </p>
+      <p className="text-[11px] text-slate-600 mt-1 break-words">{OIL_ALARM_LIMIT_PRACTICE}</p>
     </div>
   );
 }
@@ -441,8 +460,8 @@ export default function OilResultsDashboard({
         if (stored != null) {
           confidenceLabel = `${stored}% AI confidence`;
           confidenceKind = "ai";
-        } else if (index === 0 && fusion.aggregate != null) {
-          confidenceLabel = `${fusion.aggregate}% Multi-domain confidence`;
+        } else if (index === 0 && fusion.aggregate != null && Number.isFinite(fusion.aggregate)) {
+          confidenceLabel = `${DIAGNOSE_FUSION_AGGREGATE_LABEL} ${fusion.aggregate}%`;
           confidenceKind = "fusion";
         } else {
           confidenceLabel = "Cross-validation pending";
@@ -582,6 +601,16 @@ export default function OilResultsDashboard({
                   >
                     {h.confidenceLabel}
                   </span>
+                  {h.confidenceKind === "fusion" && (
+                    <p className="text-[11px] text-slate-600 leading-relaxed w-full break-words">
+                      {DIAGNOSE_FUSION_METHOD}
+                    </p>
+                  )}
+                  {h.confidenceKind === "ai" && (
+                    <p className="text-[11px] text-slate-600 leading-relaxed w-full break-words">
+                      {DIAGNOSE_CONFIDENCE_SOURCE}
+                    </p>
+                  )}
                 </div>
 
                 {h.evidence.length > 0 ? (
@@ -643,28 +672,44 @@ export default function OilResultsDashboard({
             </p>
             {(() => {
               const capacity = capacityGallonsProp ?? null;
+              const hasCap = capacity != null && Number.isFinite(capacity) && capacity > 0;
               const tan = latestOilSample?.acidNumber ?? null;
-              const { fullSumpFormatted, kidneyCostFormatted, savingsFormatted, sumpFootnote } = calculateOilFinancials({ capacityGallons: capacity, tanValue: tan });
-              const kidneyHours = capacity ? Math.max(6, (capacity * TURNOVERS_TARGET) / FLOW_RATE_GPH) : null;
+              const { fullSumpFormatted, kidneyCostFormatted, savingsFormatted, savingsValue, sumpFootnote } = calculateOilFinancials({ capacityGallons: capacity, tanValue: tan });
+              const kidneyHours = hasCap ? Math.max(6, (capacity * TURNOVERS_TARGET) / FLOW_RATE_GPH) : null;
 
               return (
                 <>
                   <div className="rounded-xl border-2 border-red-500/50 bg-red-500/5 p-5">
-                    <p className="text-sm text-slate-400">Full Sump Replacement{capacity ? ` (${capacity} gal)` : ""}</p>
+                    <p className="text-sm text-slate-400 break-words">Full Sump Replacement{hasCap ? ` (${capacity} gal)` : ""}</p>
                     <p className="text-3xl font-black text-red-400 tracking-tight">{fullSumpFormatted}</p>
-                    {capacity && <p className="text-[11px] text-slate-500 mt-1">{sumpFootnote}</p>}
+                    {hasCap && <p className="text-[11px] text-slate-500 mt-1 break-words">{sumpFootnote}</p>}
                   </div>
                   <div className="rounded-xl border-2 border-emerald-500/40 bg-emerald-500/5 p-5">
-                    <p className="text-sm text-slate-400">
+                    <p className="text-sm text-slate-400 break-words">
                       Kidney-Loop Filtration ({kidneyHours ? `${kidneyHours.toFixed(1)}` : "6"} hours minimum - {TURNOVERS_TARGET} volume turnovers)
                     </p>
                     <p className="text-3xl font-black text-emerald-400 tracking-tight">{kidneyCostFormatted}</p>
-                    {capacity && <p className="text-[11px] text-slate-500 mt-2">{sumpFootnote}</p>}
+                    {hasCap && <p className="text-[11px] text-slate-500 mt-2 break-words">{sumpFootnote}</p>}
                   </div>
-                  <p className="text-sm text-slate-300">
+                  <p className="text-sm text-slate-300 break-words">
                     Action Advised:{" "}
-                    <span className="text-yellow-400 font-bold">Filter Sump</span>. Potential Savings:{" "}
-                    <span className="text-emerald-400 font-bold">{savingsFormatted}</span>.
+                    <span className="text-yellow-400 font-bold">Filter Sump</span>.{" "}
+                    {savingsValue !== null && savingsValue >= 0 ? (
+                      <>
+                        Potential Savings:{" "}
+                        <span className="text-emerald-400 font-bold">{savingsFormatted}</span>.
+                      </>
+                    ) : savingsValue !== null ? (
+                      <span className="text-amber-300">
+                        {DIAGNOSE_SAVINGS_NOT_DERIVABLE_NEGATIVE}{" "}
+                        {DIAGNOSE_COMPUTED_COST_IMPACT}:{" "}
+                        <span className="font-mono">{savingsFormatted}</span>
+                      </span>
+                    ) : (
+                      <span className="text-slate-500">
+                        Potential Savings: {DIAGNOSE_NOT_RECORDED}
+                      </span>
+                    )}
                   </p>
                 </>
               );
@@ -681,7 +726,7 @@ export default function OilResultsDashboard({
               return (
                 <>
                   <p className="text-4xl sm:text-5xl font-black text-red-400 tracking-tight">{lifeImpactFormatted}</p>
-                  <p className="text-sm text-slate-400">{tan !== null ? `TAN ${tan.toFixed(1)}: ${lifeFootnote}` : lifeFootnote}</p>
+                  <p className="text-sm text-slate-400 break-words">{tan !== null && Number.isFinite(tan) ? `TAN ${tan.toFixed(1)}: ${lifeFootnote}` : lifeFootnote}</p>
                 </>
               );
             })()}

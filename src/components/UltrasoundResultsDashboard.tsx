@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import {
   AlertTriangle,
   AudioWaveform,
@@ -22,6 +22,14 @@ import {
 import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 import type { VibrationAnalysisResult } from "../lib/consensusEngine";
+import {
+  US_DDB_SOURCE,
+  evaluateUsSeverity,
+  DIAGNOSE_NOT_RECORDED,
+  DIAGNOSE_NOT_RECORDED_FOR_ASSET,
+  DIAGNOSE_SAMPLE_DATASET,
+  DIAGNOSE_HEALTH_SCORE_SOURCE
+} from "../lib/maintenance/prescriptiveDictionary";
 
 const PLAYBACK_SPEEDS = [0.5, 1.0, 2.0] as const;
 const EQ_FILTERS = ["Low Pass", "High Pass", "Band Pass"] as const;
@@ -217,24 +225,35 @@ export default function UltrasoundResultsDashboard({
     savedAnalysisId
   });
 
-  const baselineDb = ultrasoundPeaks?.baseline_dbmv ?? 28;
-  const currentDb = ultrasoundPeaks?.peak_dbmv ?? 44;
+  const baselineDb =
+    ultrasoundPeaks?.baseline_dbmv != null && Number.isFinite(ultrasoundPeaks.baseline_dbmv)
+      ? ultrasoundPeaks.baseline_dbmv
+      : null;
+  const currentDb =
+    ultrasoundPeaks?.peak_dbmv != null && Number.isFinite(ultrasoundPeaks.peak_dbmv)
+      ? ultrasoundPeaks.peak_dbmv
+      : null;
   const deltaDb =
-    ultrasoundPeaks?.delta_db ??
-    Math.round((currentDb - baselineDb) * 10) / 10;
+    ultrasoundPeaks?.delta_db != null && Number.isFinite(ultrasoundPeaks.delta_db)
+      ? ultrasoundPeaks.delta_db
+      : currentDb != null && baselineDb != null
+        ? Math.round((currentDb - baselineDb) * 10) / 10
+        : null;
+  const usSeverity = deltaDb != null ? evaluateUsSeverity(deltaDb) : null;
   const healthDisplay =
-    gaugeScore != null
+    gaugeScore != null && Number.isFinite(gaugeScore)
       ? gaugeScore
-      : analysis?.overallHealthScore != null
+      : analysis?.overallHealthScore != null &&
+          Number.isFinite(analysis.overallHealthScore)
         ? analysis.overallHealthScore
         : null;
   const primaryFaultTitle =
     analysis?.primaryFault?.title || analysis?.summary || null;
 
-  const bearingBarPct = useMemo(
-    () => Math.min(100, Math.round((currentDb / 60) * 100)),
-    [currentDb]
-  );
+  const bearingBarPct =
+    currentDb != null ? Math.min(100, Math.round((currentDb / 60) * 100)) : null;
+  const baselineBarPct =
+    baselineDb != null ? Math.min(100, Math.round((baselineDb / 60) * 100)) : null;
 
   return (
     <div className="relative space-y-6" style={{ animation: "techParamFade 0.35s ease-out" }}>
@@ -280,13 +299,35 @@ export default function UltrasoundResultsDashboard({
                   <span className="font-bold text-sky-400">{primaryFaultTitle}</span>
                 </span>
               )}
-              <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
-                Peak:{" "}
-                <span className="font-mono text-cyan-400">{currentDb}</span> dBµV
-                <span className="text-slate-500 mx-1">·</span>Δ{" "}
-                <span className="font-mono text-amber-400">{deltaDb}</span> dB
-              </span>
+              {currentDb != null || deltaDb != null ? (
+                <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
+                  Peak:{" "}
+                  {currentDb != null ? (
+                    <span className="font-mono text-cyan-400">{currentDb}</span>
+                  ) : (
+                    <span className="text-slate-500">{DIAGNOSE_NOT_RECORDED}</span>
+                  )}{" "}
+                  dBµV
+                  <span className="text-slate-500 mx-1">·</span>Δ{" "}
+                  {deltaDb != null ? (
+                    <span className="font-mono text-amber-400">{deltaDb}</span>
+                  ) : (
+                    <span className="text-slate-500">{DIAGNOSE_NOT_RECORDED}</span>
+                  )}{" "}
+                  dB
+                </span>
+              ) : (
+                <span className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-slate-200">
+                  Peak/Δ:{" "}
+                  <span className="text-slate-500">{DIAGNOSE_NOT_RECORDED}</span>
+                </span>
+              )}
             </div>
+          )}
+          {healthDisplay != null && (
+            <p className="mt-2 text-[11px] text-slate-600 break-words">
+              {DIAGNOSE_HEALTH_SCORE_SOURCE}
+            </p>
           )}
         </div>
       </div>
@@ -360,7 +401,12 @@ export default function UltrasoundResultsDashboard({
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            <h4 className="text-sm font-bold text-white mb-3">Time Waveform (TWF)</h4>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <h4 className="text-sm font-bold text-white">Time Waveform (TWF)</h4>
+              <span className="inline-flex rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-300 break-words">
+                {DIAGNOSE_SAMPLE_DATASET}
+              </span>
+            </div>
             <div className="h-48 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={TWF_IMPACT_DATA} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -391,13 +437,18 @@ export default function UltrasoundResultsDashboard({
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            <p className="text-[11px] text-slate-500 mt-2">
-              Sharp vertical spikes indicate repetitive mechanical impacts (Stage 2 bearing).
+            <p className="text-[11px] text-slate-500 mt-2 break-words">
+              {DIAGNOSE_SAMPLE_DATASET}
             </p>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            <h4 className="text-sm font-bold text-white mb-3">Frequency Spectrum (FFT)</h4>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <h4 className="text-sm font-bold text-white">Frequency Spectrum (FFT)</h4>
+              <span className="inline-flex rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-300 break-words">
+                {DIAGNOSE_SAMPLE_DATASET}
+              </span>
+            </div>
             <div className="h-48 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
@@ -440,8 +491,8 @@ export default function UltrasoundResultsDashboard({
                 </AreaChart>
               </ResponsiveContainer>
             </div>
-            <p className="text-[11px] text-slate-500 mt-2">
-              Broad spectral hump consistent with turbulent compressed-air leak energy.
+            <p className="text-[11px] text-slate-500 mt-2 break-words">
+              {DIAGNOSE_SAMPLE_DATASET}
             </p>
           </div>
         </div>
@@ -450,7 +501,12 @@ export default function UltrasoundResultsDashboard({
       {/* 2 — Automated Fault Classification */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-5">
-          <h3 className="text-lg font-bold text-white">Automated Fault Classification</h3>
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <h3 className="text-lg font-bold text-white">Automated Fault Classification</h3>
+            <span className="inline-flex rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-300 break-words">
+              {DIAGNOSE_SAMPLE_DATASET}
+            </span>
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {UE_DEMO_MODES.map((m) => (
               <button
@@ -470,37 +526,60 @@ export default function UltrasoundResultsDashboard({
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {ueResultMode === "mechanical" && (
-            <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3 md:col-span-3">
+            <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 space-y-3 md:col-span-3 min-w-0">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
                 Bearing 4-Stage Health
               </p>
-              <div className="flex items-end gap-3 h-24 max-w-md">
-                <div className="flex-1 h-full flex flex-col justify-end gap-1">
-                  <div className="text-[10px] text-slate-500 font-mono">
-                    Baseline {baselineDb} dB
-                  </div>
-                  <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
-                    <div
-                      className="h-full bg-slate-500 rounded-full"
-                      style={{ width: `${Math.round((baselineDb / 60) * 100)}%` }}
-                    />
-                  </div>
-                  <div className="text-[10px] text-orange-400 font-mono mt-1">
-                    Current {currentDb} dB
-                  </div>
-                  <div className="h-3 rounded-full bg-slate-800 overflow-hidden">
-                    <div
-                      className="h-full bg-orange-500 rounded-full transition-all"
-                      style={{ width: `${bearingBarPct}%` }}
-                    />
+              {baselineBarPct != null && bearingBarPct != null ? (
+                <div className="flex items-end gap-3 h-24 max-w-md">
+                  <div className="flex-1 h-full flex flex-col justify-end gap-1">
+                    <div className="text-[10px] text-slate-500 font-mono break-words">
+                      Baseline {baselineDb} dB
+                    </div>
+                    <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-slate-500 rounded-full"
+                        style={{ width: `${baselineBarPct}%` }}
+                      />
+                    </div>
+                    <div className="text-[10px] text-orange-400 font-mono mt-1 break-words">
+                      Current {currentDb} dB
+                    </div>
+                    <div className="h-3 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-orange-500 rounded-full transition-all"
+                        style={{ width: `${bearingBarPct}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
-              <p className="text-sm font-bold text-orange-400">+{deltaDb} dB over baseline</p>
-              <p className="text-sm text-slate-300">
-                Stage 2: Minor Damage{" "}
-                <span className="text-orange-400 font-semibold">(Orange)</span>
-              </p>
+              ) : (
+                <span className="inline-flex rounded border border-slate-500/40 bg-slate-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  {DIAGNOSE_NOT_RECORDED}
+                </span>
+              )}
+              {deltaDb != null ? (
+                <>
+                  <p className="text-sm font-bold text-orange-400 break-words">
+                    +{deltaDb} dB over baseline
+                  </p>
+                  {usSeverity && (
+                    <p className="text-sm text-slate-300 break-words">
+                      <span className="text-orange-400 font-semibold">{usSeverity.clazz}</span>
+                      {" — "}
+                      {usSeverity.action}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-slate-300 break-words">
+                  Stage:{" "}
+                  <span className="inline-flex rounded border border-slate-500/40 bg-slate-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    {DIAGNOSE_NOT_RECORDED}
+                  </span>
+                </p>
+              )}
+              <p className="text-[11px] text-slate-600 break-words">{US_DDB_SOURCE}</p>
             </div>
           )}
 
@@ -575,7 +654,7 @@ export default function UltrasoundResultsDashboard({
               <p className="text-sm text-slate-300">
                 Measured Leak Rate:{" "}
                 <span className="text-cyan-400 font-bold">
-                  {leakCfm != null ? `${leakCfm} CFM continuous` : "—"}
+                  {leakCfm != null ? `${leakCfm} CFM continuous` : DIAGNOSE_NOT_RECORDED}
                 </span>
               </p>
               <p className="text-sm text-slate-300">
@@ -583,7 +662,7 @@ export default function UltrasoundResultsDashboard({
                 <span className="text-white font-bold">
                   {leakKwhPerYear != null
                     ? `${Math.round(leakKwhPerYear).toLocaleString()} kWh`
-                    : "—"}
+                    : DIAGNOSE_NOT_RECORDED}
                 </span>
               </p>
               <p className="text-[11px] text-slate-500">
@@ -596,10 +675,10 @@ export default function UltrasoundResultsDashboard({
               <p className="text-[10px] font-bold uppercase tracking-wider text-yellow-500/80">
                 Total Annual Cost
               </p>
-              <p className="text-4xl sm:text-5xl font-black text-yellow-400 tracking-tight">
+              <p className="text-4xl sm:text-5xl font-black text-yellow-400 tracking-tight break-words">
                 {leakAnnualCost != null
                   ? `$${Math.round(leakAnnualCost).toLocaleString()}`
-                  : "—"}
+                  : DIAGNOSE_NOT_RECORDED}
               </p>
               {leakCfm != null ? (
                 <p className="text-[11px] text-slate-400 leading-relaxed">
@@ -672,6 +751,9 @@ export default function UltrasoundResultsDashboard({
               <p className="text-[10px] font-bold uppercase tracking-wider text-yellow-500/90 mb-2">
                 Live Acoustic Trend (dBµV)
               </p>
+              <span className="inline-flex mb-2 rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-cyan-300 break-words">
+                {DIAGNOSE_SAMPLE_DATASET}
+              </span>
               <div className="h-24 w-full rounded-lg border border-white/5 bg-slate-950/80 px-1">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart
@@ -830,11 +912,15 @@ export default function UltrasoundResultsDashboard({
       {/* 5 — AI Procurement & BOM (directly above CMMS) */}
       {(ueResultMode === "leak" || ueResultMode === "mechanical") && (
         <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-          <h3 className="text-lg font-bold text-white">AI Procurement &amp; Bill of Materials (BOM)</h3>
-          <p className="text-sm text-slate-500 mt-0.5 mb-5">
-            {ueResultMode === "leak"
-              ? "Auto-matched to compressed-air fitting specs"
-              : "Auto-matched to bearing lubrication schedule"}
+          <div className="flex flex-wrap items-center gap-2 mb-1 min-w-0">
+            <h3 className="text-lg font-bold text-white">AI Procurement &amp; Bill of Materials (BOM)</h3>
+            <span className="inline-flex rounded border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-300 break-words">
+              {DIAGNOSE_SAMPLE_DATASET}
+            </span>
+          </div>
+          <p className="text-sm text-slate-500 mt-0.5 mb-5 break-words">
+            {DIAGNOSE_NOT_RECORDED_FOR_ASSET} - auto-match to{" "}
+            {ueResultMode === "leak" ? "compressed-air fitting specs" : "bearing lubrication schedule"}
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {ueResultMode === "leak" ? (

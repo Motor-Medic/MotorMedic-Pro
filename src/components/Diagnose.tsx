@@ -153,6 +153,17 @@ import { buildBridgeContext, fetchPlanningBundle, type PlanningBundle } from "..
 import type { SavedFaultItem } from "../lib/analysisPersistence";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
+import {
+  DIAGNOSE_NOT_RECORDED,
+  DIAGNOSE_NOT_RECORDED_FOR_ASSET,
+  DIAGNOSE_SAMPLE_DATASET,
+  DIAGNOSE_SEVERITY_NOT_COMPUTED,
+  DIAGNOSE_HEALTH_SCORE_SOURCE,
+  DIAGNOSE_CONFIDENCE_SOURCE,
+  DIAGNOSE_ROI_SOURCE,
+  DIAGNOSE_FAILURE_ESTIMATE_SOURCE,
+  PROGNOSTICS_PF_DISCLOSURES
+} from "../lib/maintenance/prescriptiveDictionary";
 
 /* ========================================================================== */
 /* Props (keep App.tsx contract)                                              */
@@ -248,8 +259,13 @@ interface FaultFinding {
   title: string;
   frequency: string;
   amplitude: string;
-  confidence: number;
+  confidence: number | null;
   detail: string;
+}
+
+/** Absent / uncalibrated numeric signals stay absent — never coerced to 0. */
+function finiteOrNull(v: number | null | undefined): number | null {
+  return Number.isFinite(v) ? v : null;
 }
 
 async function blobUrlToDataUrl(url: string): Promise<string> {
@@ -320,7 +336,7 @@ function CroppedChartPanel({
               title={`${p.label || "Peak"} · ${p.frequencyHz} Hz · ${p.amplitude}`}
             >
               <div className="flex flex-col items-center">
-                <span className="mb-0.5 max-w-[9rem] truncate rounded bg-red-950/90 px-1.5 py-0.5 text-[9px] font-semibold text-red-200 border border-red-500/40">
+                <span className="mb-0.5 max-w-[9rem] break-words rounded bg-red-950/90 px-1.5 py-0.5 text-[9px] font-semibold text-red-200 border border-red-500/40">
                   {p.label || `${p.frequencyHz} Hz`}
                 </span>
                 <span className="h-0 w-0 border-l-[5px] border-r-[5px] border-t-[6px] border-l-transparent border-r-transparent border-t-red-400" />
@@ -408,6 +424,7 @@ function CroppedChartExpandModal({
                 <div
                   key={`modal-${regionKind}-${p.frequencyHz}-${i}`}
                   className="pointer-events-none absolute z-10"
+                  title={`${p.label || "Peak"} · ${p.frequencyHz} Hz · ${p.amplitude}`}
                   style={{
                     left: `${left}%`,
                     top: `${top}%`,
@@ -415,7 +432,7 @@ function CroppedChartExpandModal({
                   }}
                 >
                   <div className="flex flex-col items-center">
-                    <span className="mb-0.5 max-w-[12rem] truncate rounded bg-red-950/90 px-2 py-0.5 text-[11px] font-semibold text-red-200 border border-red-500/40">
+                    <span className="mb-0.5 max-w-[12rem] break-words rounded bg-red-950/90 px-2 py-0.5 text-[11px] font-semibold text-red-200 border border-red-500/40">
                       {p.label || `${p.frequencyHz} Hz`}
                     </span>
                     <span className="h-0 w-0 border-l-[6px] border-r-[6px] border-t-[7px] border-l-transparent border-r-transparent border-t-red-400" />
@@ -450,12 +467,6 @@ function apiSeverityRank(sev: ApiSeverity | string | undefined): number {
   if (sev === "CRITICAL") return 3;
   if (sev === "ANOMALY") return 2;
   return 1;
-}
-
-function healthScoreForSeverity(sev: ApiSeverity): number {
-  if (sev === "CRITICAL") return 32;
-  if (sev === "ANOMALY") return 58;
-  return 92;
 }
 
 type IdentifiedFault = VibrationAnalysisResult["identifiedFaults"][number];
@@ -600,9 +611,9 @@ function reconcileAnalysisResult(
       {
         title: raw.primaryFault.title,
         frequencyHz: Number(raw.primaryFault.frequencyHz) || 0,
-        confidencePercent: Math.round(
-          Number(raw.primaryFault.confidencePercent) || 80
-        ),
+        confidencePercent: Number.isFinite(Number(raw.primaryFault.confidencePercent))
+          ? Math.round(Number(raw.primaryFault.confidencePercent))
+          : Number.NaN,
         severity: (raw.primaryFault.severity as ApiSeverity) || "ANOMALY",
         description:
           raw.summary ||
@@ -651,7 +662,9 @@ function reconcileAnalysisResult(
     primaryFault = {
       title: top.title,
       frequencyHz: Number(top.frequencyHz) || 0,
-      confidencePercent: Math.round(Number(top.confidencePercent) || 0),
+      confidencePercent: Number.isFinite(Number(top.confidencePercent))
+        ? Math.round(Number(top.confidencePercent))
+        : Number.NaN,
       severity: (top.severity as ApiSeverity) || severity,
       actionWindow:
         top.severity === "CRITICAL"
@@ -661,10 +674,13 @@ function reconcileAnalysisResult(
             : "Continue routine monitoring."
     };
   } else if (identifiedFaults.length === 0) {
+    const priorConfidence = Number(primaryFault?.confidencePercent);
     primaryFault = {
       title: "None Detected",
       frequencyHz: 0,
-      confidencePercent: Math.max(Number(primaryFault?.confidencePercent) || 0, 90),
+      confidencePercent: Number.isFinite(priorConfidence)
+        ? Math.round(priorConfidence)
+        : Number.NaN,
       severity: "NORMAL",
       actionWindow: "Continue routine monitoring."
     };
@@ -672,24 +688,9 @@ function reconcileAnalysisResult(
     primaryFault.severity = (primaryFault.severity as ApiSeverity) || severity;
   }
 
-  let overallHealthScore = Number(raw.overallHealthScore);
-  if (!Number.isFinite(overallHealthScore)) {
-    overallHealthScore = healthScoreForSeverity(severity);
-  }
-  if (
-    identifiedFaults.length > 0 &&
-    severity !== "NORMAL" &&
-    overallHealthScore > 75
-  ) {
-    overallHealthScore = healthScoreForSeverity(severity);
-  }
-  if (
-    severity === "NORMAL" &&
-    identifiedFaults.length === 0 &&
-    overallHealthScore < 80
-  ) {
-    overallHealthScore = healthScoreForSeverity("NORMAL");
-  }
+  const overallHealthScore = Number.isFinite(Number(raw.overallHealthScore))
+    ? Number(raw.overallHealthScore)
+    : Number.NaN;
 
   let summary = String(raw.summary || "").trim();
   if (identifiedFaults.length > 0) {
@@ -727,8 +728,9 @@ function reconcileAnalysisResult(
   };
 }
 
-function formatUsd(n: number | undefined): string {
-  const value = Number.isFinite(n as number) ? Number(n) : 0;
+function formatUsd(n: number | undefined | null): string {
+  if (!Number.isFinite(n as number)) return DIAGNOSE_NOT_RECORDED;
+  const value = Number(n);
   return value.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
@@ -918,11 +920,18 @@ function computeFinancialImpactFromFault(primaryFaultTitle: string | undefined |
  * via mapThermographyToUiResult (src/lib/thermographyAnalysis.ts).
  */
 
-function severityBannerCopy(sev: ApiSeverity | string | undefined): {
+function severityBannerCopy(sev: ApiSeverity | string | null | undefined): {
   title: string;
   wrap: string;
   icon: string;
 } {
+  if (sev === null || sev === undefined || sev === "") {
+    return {
+      title: DIAGNOSE_SEVERITY_NOT_COMPUTED,
+      wrap: "border-slate-600/60 bg-gradient-to-r from-slate-800 via-slate-700/60 to-slate-800 text-slate-200 shadow-[0_0_24px_rgba(15,23,42,0.4)]",
+      icon: "text-slate-300"
+    };
+  }
   if (sev === "CRITICAL") {
     return {
       title: "Critical Fault / Immediate Repair Required",
@@ -1327,7 +1336,6 @@ async function fetchWithTimeout(
   }
 }
 
-const HEALTH_SCORE_TARGET = 38;
 /** Flip on when building fault list / recommendations in a later pass */
 const SHOW_EXTENDED_RESULTS = false;
 const BPFO_BAND = { x1: 145, x2: 160, hz: 152 };
@@ -1955,23 +1963,30 @@ export default function Diagnose({
   const displayFaults: FaultFinding[] = useMemo(() => {
     // Never mix API NORMAL/"None" headers with the demo FAULTS mock list.
     if (analysisResult) {
-      return (analysisResult.identifiedFaults || []).map((f, i) => ({
-        id: `api-fault-${i}`,
-        severity: mapApiSeverityToUi(f.severity),
-        title: f.title,
-        frequency: f.frequencyHz
-          ? `${f.frequencyHz} Hz`
-          : selectedTech === "ir"
-            ? "ΔT"
-            : /noise|floor|broadband/i.test(f.title)
-              ? "Broadband"
-              : "—",
-        amplitude: "—",
-        confidence: Math.round(f.confidencePercent ?? 0),
-        detail: f.description || ""
-      }));
+      return (analysisResult.identifiedFaults || []).map((f, i) => {
+        const conf = finiteOrNull(f.confidencePercent);
+        return {
+          id: `api-fault-${i}`,
+          severity: mapApiSeverityToUi(f.severity),
+          title: f.title,
+          frequency: f.frequencyHz
+            ? `${f.frequencyHz} Hz`
+            : selectedTech === "ir"
+              ? "ΔT"
+              : /noise|floor|broadband/i.test(f.title)
+                ? "Broadband"
+                : "—",
+          amplitude: "—",
+          confidence: conf !== null ? Math.round(conf) : null,
+          detail: f.description || ""
+        };
+      });
     }
-    return FAULTS;
+    return FAULTS.map((f) => ({
+      ...f,
+      frequency: DIAGNOSE_NOT_RECORDED,
+      confidence: null
+    }));
   }, [analysisResult, selectedTech]);
 
   const repairSteps = useMemo(
@@ -1985,25 +2000,30 @@ export default function Diagnose({
   );
 
   const financial = analysisResult?.financialImpact;
-  const preventiveCost = Number(financial?.preventiveRepairCost) || 0;
-  const failureCost = Number(financial?.failureCostIfDelayed) || 0;
+  const preventiveCost = Number(financial?.preventiveRepairCost);
+  const failureCost = Number(financial?.failureCostIfDelayed);
   // downtimeLossPerHour stores total downtime loss (cost-dock downtime rate × repair hours)
-  const downtimeLoss = Number(financial?.downtimeLossPerHour) || 0;
+  const downtimeLoss = Number(financial?.downtimeLossPerHour);
   const dockDowntime = loadCostModel().downtimeCostPerHour;
   const downtimeFigure = dockDowntime ? formatUsd(downtimeLoss) : "suppressed";
   const downtimeLabel = dockDowntime
     ? `downtime rate ${formatUsd(dockDowntime.value)}/hr - cost dock entry by ${dockDowntime.enteredBy} on ${new Date(dockDowntime.enteredAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
     : "downtime cost per hour not configured in the cost dock - figure withheld";
   const roiPercent =
-    preventiveCost > 0
+    Number.isFinite(preventiveCost) &&
+    preventiveCost > 0 &&
+    Number.isFinite(failureCost)
       ? Math.round(((failureCost - preventiveCost) / preventiveCost) * 100)
-      : 0;
+      : null;
   const primaryFault = analysisResult?.primaryFault;
-  const apiSeverity = analysisResult?.severity ?? (analysisResult ? "NORMAL" : "CRITICAL");
+  const apiSeverity: string | null = analysisResult?.severity ?? null;
   const banner = severityBannerCopy(apiSeverity);
-  const primaryUiSeverity = mapApiSeverityToUi(
-    primaryFault?.severity ?? apiSeverity
-  );
+  const primaryUiSeverity: Severity | null =
+    primaryFault?.severity != null
+      ? mapApiSeverityToUi(primaryFault.severity)
+      : analysisResult
+        ? mapApiSeverityToUi(analysisResult.severity)
+        : null;
   const hasDetectedFaults = displayFaults.length > 0;
   const primaryTitleDisplay = primaryFault?.title
     ? primaryFault.title
@@ -2012,19 +2032,20 @@ export default function Diagnose({
       : analysisResult
         ? "None Detected"
         : "Outer Race Bearing Defect (BPFO)";
-  const primaryFreqDisplay =
-    selectedTech === "ir"
-      ? "ΔT 50°F"
-      : primaryFault?.frequencyHz && primaryFault.frequencyHz > 0
-        ? `${primaryFault.frequencyHz} Hz`
-        : hasDetectedFaults
-          ? displayFaults[0].frequency
-          : analysisResult
-            ? "—"
-            : "152 Hz";
-  const primaryConfidenceDisplay =
-    primaryFault?.confidencePercent ??
-    (hasDetectedFaults ? displayFaults[0].confidence : analysisResult ? 90 : 94);
+  const primaryFreqDisplay = analysisResult
+    ? primaryFault?.frequencyHz && primaryFault.frequencyHz > 0
+      ? `${primaryFault.frequencyHz} Hz`
+      : hasDetectedFaults
+        ? displayFaults[0].frequency
+        : "—"
+    : DIAGNOSE_NOT_RECORDED;
+  const primaryFaultConfidence = finiteOrNull(primaryFault?.confidencePercent);
+  const primaryConfidenceDisplay: number | null =
+    primaryFaultConfidence !== null
+      ? Math.round(primaryFaultConfidence)
+      : hasDetectedFaults
+        ? displayFaults[0].confidence
+        : null;
   const specTabs = useMemo(() => getSpecTabs(componentType), [componentType]);
   const activeSpecFields = useMemo(
     () => fieldsFor(componentType, specTab),
@@ -2300,7 +2321,11 @@ useEffect(() => {
       setGaugeScore(0);
       return;
     }
-    const target = analysisResult?.overallHealthScore ?? HEALTH_SCORE_TARGET;
+    const target = Number(analysisResult?.overallHealthScore);
+    if (!Number.isFinite(target)) {
+      setGaugeScore(Number.NaN);
+      return;
+    }
     let frame = 0;
     const start = performance.now();
     const duration = 1000;
@@ -2387,8 +2412,8 @@ useEffect(() => {
               : analysisType === "ultrasound"
                 ? "dBµV"
                 : undefined,
-        confidence: f.confidencePercent,
-        confidencePercent: f.confidencePercent,
+        confidence: finiteOrNull(f.confidencePercent) ?? undefined,
+        confidencePercent: finiteOrNull(f.confidencePercent) ?? undefined,
         severity: f.severity,
         description: f.description,
         detail: f.description
@@ -2585,37 +2610,39 @@ useEffect(() => {
           : spectrumUpload?.preview || null;
 
       const downtimeRateUsd = siteDowntimeRatePerHourUsd();
+      const savedFinancialImpact: Record<string, number> = (() => {
+        const p = Number(reconciled.financialImpact?.preventiveRepairCost);
+        const fc = Number(reconciled.financialImpact?.failureCostIfDelayed);
+        const dl = Number(reconciled.financialImpact?.downtimeLossPerHour);
+        const hours =
+          Number.isFinite(dl) && downtimeRateUsd != null && downtimeRateUsd > 0
+            ? Math.round(dl / downtimeRateUsd)
+            : null;
+        const roi =
+          Number.isFinite(p) && p > 0 && Number.isFinite(fc)
+            ? Math.round(((fc - p) / p) * 100)
+            : null;
+        return {
+          ...(Number.isFinite(p) ? { preventiveRepairCost: p } : {}),
+          ...(Number.isFinite(fc) ? { failureCostIfDelayed: fc } : {}),
+          ...(Number.isFinite(dl) ? { downtimeLossPerHour: dl } : {}),
+          ...(downtimeRateUsd != null && Number.isFinite(downtimeRateUsd)
+            ? { downtimeRatePerHour: downtimeRateUsd }
+            : {}),
+          ...(hours != null ? { estimatedRepairHours: hours } : {}),
+          ...(roi != null ? { roiPercent: roi } : {})
+        };
+      })();
       const saved = await saveAnalysisResult({
         asset_id: assetKey,
         component: browseComponent || null,
-        health_score: reconciled.overallHealthScore,
+        health_score: finiteOrNull(reconciled.overallHealthScore),
         primary_fault: reconciled.primaryFault?.title || null,
         fault_list: faultListForSave,
         peaks: peaksForSave,
         spectrum_image_url: imageUrl,
         recommendations: reconciled.repairRecommendations || [],
-        financial_impact: {
-          preventiveRepairCost: reconciled.financialImpact?.preventiveRepairCost ?? 0,
-          failureCostIfDelayed: reconciled.financialImpact?.failureCostIfDelayed ?? 0,
-          downtimeLossPerHour: reconciled.financialImpact?.downtimeLossPerHour ?? 0,
-          downtimeRatePerHour: downtimeRateUsd ?? 0,
-          estimatedRepairHours:
-            downtimeRateUsd != null && downtimeRateUsd > 0
-              ? Math.round(
-                  (Number(reconciled.financialImpact?.downtimeLossPerHour) || 0) /
-                    downtimeRateUsd
-                )
-              : 0,
-          roiPercent:
-            (Number(reconciled.financialImpact?.preventiveRepairCost) || 0) > 0
-              ? Math.round(
-                  (((Number(reconciled.financialImpact?.failureCostIfDelayed) || 0) -
-                    (Number(reconciled.financialImpact?.preventiveRepairCost) || 0)) /
-                    (Number(reconciled.financialImpact?.preventiveRepairCost) || 1)) *
-                    100
-                )
-              : 0
-        },
+        financial_impact: savedFinancialImpact,
         severity: reconciled.severity,
         summary: reconciled.summary,
         consensus_details: reconciled.consensusDetails || null,
@@ -2727,13 +2754,18 @@ useEffect(() => {
       doc.setFontSize(11);
       doc.text(`Asset: ${asset}`, 14, y0 + 10);
       doc.text(`Component: ${browseComponent || "—"}`, 14, y0 + 17);
+      const pdfHealth =
+        finiteOrNull(analysisResult?.overallHealthScore) ??
+        finiteOrNull(gaugeScore);
       doc.text(
-        `Health Score: ${analysisResult?.overallHealthScore ?? gaugeScore} / 100`,
+        `Health Score: ${pdfHealth ?? DIAGNOSE_NOT_RECORDED}${
+          pdfHealth != null ? " / 100" : ""
+        }`,
         14,
         y0 + 24
       );
       doc.text(
-        `Severity: ${analysisResult?.severity || apiSeverity}`,
+        `Severity: ${analysisResult?.severity || apiSeverity || DIAGNOSE_SEVERITY_NOT_COMPUTED}`,
         14,
         y0 + 31
       );
@@ -2744,7 +2776,11 @@ useEffect(() => {
       );
       doc.text(`Frequency: ${primaryFreqDisplay}`, 14, y0 + 45);
       doc.text(
-        `Confidence: ${primaryConfidenceDisplay}%`,
+        `Confidence: ${
+          primaryConfidenceDisplay != null
+            ? `${primaryConfidenceDisplay}%`
+            : DIAGNOSE_NOT_RECORDED
+        }`,
         14,
         y0 + 52
       );
@@ -2753,13 +2789,19 @@ useEffect(() => {
       doc.setFontSize(12);
       doc.text("Identified Faults", 14, y);
       y += 7;
+      if (!analysisResult) {
+        doc.setFontSize(9);
+        doc.text(DIAGNOSE_SAMPLE_DATASET, 14, y);
+        y += 5;
+      }
       doc.setFontSize(10);
       const faults =
         displayFaults.length > 0
           ? displayFaults
-          : [{ title: "None Detected", frequency: "—", confidence: 0, severity: "LOW" as const, detail: "", id: "none", amplitude: "—" }];
+          : [{ title: "None Detected", frequency: "—", confidence: null, severity: "LOW" as const, detail: "", id: "none", amplitude: "—" }];
       for (const f of faults.slice(0, 8)) {
-        const line = `• ${f.title} | ${f.frequency} | ${f.confidence}% | ${f.severity}`;
+        const confText = f.confidence != null ? `${f.confidence}%` : DIAGNOSE_NOT_RECORDED;
+        const line = `• ${f.title} | ${f.frequency} | ${confText} | ${f.severity}`;
         doc.text(line.substring(0, 95), 14, y);
         y += 6;
         if (y > 270) {
@@ -3989,6 +4031,10 @@ useEffect(() => {
     const faultTitle =
       analysisResult?.primaryFault?.title ||
       "Outer Race Bearing Defect (BPFO)";
+    const woHz = finiteOrNull(analysisResult?.primaryFault?.frequencyHz);
+    const woConfidence = finiteOrNull(
+      analysisResult?.primaryFault?.confidencePercent
+    );
     onSaveReport?.(
       "Mechanical",
       `${faultTitle} — ${browseComponent || "Motor DE"}`,
@@ -3997,15 +4043,15 @@ useEffect(() => {
         component: browseComponent,
         bearing: bearingType || a.bearing,
         rpm: vibRpm || String(a.rpm),
-        bpfo_hz: String(analysisResult?.primaryFault?.frequencyHz ?? 152),
-        amplitude_mm_s: "4.2",
-        confidence: `${analysisResult?.primaryFault?.confidencePercent ?? 94}%`,
-        ttf: analysisResult?.primaryFault?.actionWindow || "14-21 days",
+        bpfo_hz: woHz != null && woHz > 0 ? String(woHz) : DIAGNOSE_NOT_RECORDED_FOR_ASSET,
+        amplitude_mm_s: DIAGNOSE_NOT_RECORDED_FOR_ASSET,
+        confidence: woConfidence != null ? `${Math.round(woConfidence)}%` : DIAGNOSE_NOT_RECORDED_FOR_ASSET,
+        ttf: analysisResult?.primaryFault?.actionWindow || DIAGNOSE_NOT_RECORDED_FOR_ASSET,
         technology,
         observations: observations || symptomTags.join(", ")
       },
       {
-        health_score: analysisResult?.overallHealthScore ?? 38,
+        health_score: finiteOrNull(analysisResult?.overallHealthScore),
         primary_fault: faultTitle,
         faults: displayFaults,
         recommendations: repairSteps,
@@ -4292,7 +4338,7 @@ useEffect(() => {
               <button
                 type="button"
                 onClick={handlePrefillActiveDbSelection}
-                className="min-h-[36px] px-3 rounded-lg bg-amber-500/15 border border-amber-400/50 text-amber-300 text-xs font-bold cursor-pointer hover:bg-amber-500/25 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+                className="min-h-[36px] px-3 rounded-lg bg-amber-500/15 border border-amber-400/50 text-amber-300 text-xs font-bold cursor-pointer hover:bg-amber-500/25 transition-colors inline-flex items-center gap-1.5"
               >
                 <Zap className="h-3.5 w-3.5" />
                 Pre-fill Active DB Selection
@@ -4364,7 +4410,7 @@ useEffect(() => {
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-xs">
                 <span className="font-mono font-bold text-yellow-400">{selectedAsset.tag}</span>
                 <span className="text-slate-600">|</span>
-                <span className="text-slate-300 truncate">{selectedAsset.location}</span>
+                <span className="text-slate-300 break-words">{selectedAsset.location}</span>
                 <span className="text-slate-600">|</span>
                 <span className="text-cyan-300 font-semibold">{browseComponent || "—"}</span>
               </div>
@@ -5608,7 +5654,7 @@ useEffect(() => {
               >
                 <span className="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-400/10 to-transparent animate-pulse" />
                 <Loader2 className="h-4 w-4 text-cyan-400 animate-spin shrink-0 relative z-10" />
-                <span className="relative z-10 text-xs sm:text-sm font-semibold tracking-wide text-cyan-400">
+                <span className="relative z-10 min-w-0 break-words text-xs sm:text-sm font-semibold tracking-wide text-cyan-400">
                   {AI_LOADING_MESSAGES[currentMessageIndex]}
                 </span>
               </div>
@@ -5743,10 +5789,7 @@ useEffect(() => {
                     {banner.title}
                   </p>
                   <p className="text-[11px] opacity-80 mt-0.5">
-                    {analysisResult?.summary ||
-                      `Master Vibration AI correlated spectrum imagery with verified kinematics (DE ${
-                        bearingType || reportAsset.bearing
-                      } @ ${vibRpm || reportAsset.rpm} RPM).`}
+                    {analysisResult?.summary || DIAGNOSE_NOT_RECORDED}
                   </p>
                 </div>
               </div>
@@ -5769,7 +5812,9 @@ useEffect(() => {
                           ? "drop-shadow-[0_0_16px_rgba(16,185,129,0.35)]"
                           : apiSeverity === "ANOMALY"
                             ? "drop-shadow-[0_0_16px_rgba(245,158,11,0.35)]"
-                            : "drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
+                            : apiSeverity == null
+                              ? "drop-shadow-[0_0_12px_rgba(148,163,184,0.25)]"
+                              : "drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
                       }`}
                     >
                       <defs>
@@ -5781,7 +5826,9 @@ useEffect(() => {
                                 ? "#34d399"
                                 : apiSeverity === "ANOMALY"
                                   ? "#fbbf24"
-                                  : "#f97316"
+                                  : apiSeverity == null
+                                    ? "#94a3b8"
+                                    : "#f97316"
                             }
                           />
                           <stop
@@ -5791,7 +5838,9 @@ useEffect(() => {
                                 ? "#10b981"
                                 : apiSeverity === "ANOMALY"
                                   ? "#f59e0b"
-                                  : "#ef4444"
+                                  : apiSeverity == null
+                                    ? "#64748b"
+                                    : "#ef4444"
                             }
                           />
                         </linearGradient>
@@ -5807,49 +5856,66 @@ useEffect(() => {
                         fill="none"
                         stroke="url(#healthGrad)"
                         strokeWidth="3.5"
-                        strokeDasharray={`${gaugeScore}, 100`}
+                        strokeDasharray={
+                          Number.isFinite(gaugeScore)
+                            ? `${gaugeScore}, 100`
+                            : "0, 100"
+                        }
                         strokeLinecap="round"
                         style={{ transition: "stroke-dasharray 80ms linear" }}
                       />
                     </svg>
                     <div className="absolute inset-0 flex items-center justify-center">
                       <span
-                        className={`text-2xl font-black leading-none ${
+                        className={`text-2xl font-black leading-none text-center break-words px-1 ${
                           apiSeverity === "NORMAL"
                             ? "text-emerald-400"
                             : apiSeverity === "ANOMALY"
                               ? "text-amber-400"
-                              : "text-red-500"
+                              : apiSeverity == null
+                                ? "text-slate-300"
+                                : "text-red-500"
                         }`}
                       >
-                        {gaugeScore}
+                        {Number.isFinite(gaugeScore)
+                          ? gaugeScore
+                          : DIAGNOSE_NOT_RECORDED}
                       </span>
                     </div>
                   </div>
                   <div className="min-w-0">
                     <p
-                      className={`text-xl font-bold ${
+                      className={`text-xl font-bold break-words ${
                         apiSeverity === "NORMAL"
                           ? "text-emerald-400"
                           : apiSeverity === "ANOMALY"
                             ? "text-amber-400"
-                            : "text-red-500"
+                            : apiSeverity == null
+                              ? "text-slate-300"
+                              : "text-red-500"
                       }`}
                     >
-                      {gaugeScore} / 100
+                      {Number.isFinite(gaugeScore)
+                        ? `${gaugeScore} / 100`
+                        : DIAGNOSE_NOT_RECORDED}
                     </p>
                     <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-                      {apiSeverity === "CRITICAL"
-                        ? "Immediate attention required."
-                        : apiSeverity === "ANOMALY"
-                          ? "Elevated risk — plan corrective action."
-                          : "Within acceptable operating envelope."}{" "}
+                      {apiSeverity == null
+                        ? DIAGNOSE_SEVERITY_NOT_COMPUTED
+                        : apiSeverity === "CRITICAL"
+                          ? "Immediate attention required."
+                          : apiSeverity === "ANOMALY"
+                            ? "Elevated risk — plan corrective action."
+                            : "Within acceptable operating envelope."}{" "}
                       {apiSeverity === "CRITICAL" && (
                         <span className="inline-flex items-center gap-1 text-red-400 font-semibold">
                           <TrendingDown className="h-3.5 w-3.5" />
                           Priority repair window.
                         </span>
                       )}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
+                      {DIAGNOSE_HEALTH_SCORE_SOURCE}
                     </p>
                   </div>
                 </div>
@@ -5882,7 +5948,9 @@ useEffect(() => {
                       {primaryFreqDisplay}{" "}
                       <span className="text-slate-600">|</span>{" "}
                       <span className="text-emerald-400 font-semibold">
-                        {primaryConfidenceDisplay}% Confidence
+                        {primaryConfidenceDisplay != null
+                          ? `${primaryConfidenceDisplay}% Confidence`
+                          : `Confidence: ${DIAGNOSE_NOT_RECORDED}`}
                       </span>{" "}
                       <span className="text-slate-600">|</span>{" "}
                       <span
@@ -5891,12 +5959,21 @@ useEffect(() => {
                             ? "text-red-400"
                             : primaryUiSeverity === "MEDIUM"
                               ? "text-amber-400"
-                              : "text-emerald-400"
+                              : primaryUiSeverity === null
+                                ? "text-slate-400"
+                                : "text-emerald-400"
                         }`}
                       >
-                        {primaryUiSeverity} Severity
+                        {primaryUiSeverity != null
+                          ? `${primaryUiSeverity} Severity`
+                          : DIAGNOSE_NOT_RECORDED}
                       </span>
                     </p>
+                    {primaryConfidenceDisplay != null && (
+                      <p className="text-[10px] text-slate-500 leading-snug">
+                        {DIAGNOSE_CONFIDENCE_SOURCE}
+                      </p>
+                    )}
                     <p className="text-sm text-yellow-400/90 font-semibold pt-1">
                       {primaryFault?.actionWindow ||
                         (hasDetectedFaults
@@ -5932,7 +6009,10 @@ useEffect(() => {
                 </div>
                 <p className="text-sm text-slate-400 mt-3 leading-relaxed">
                   <span className="text-yellow-400 font-bold">
-                    ROI: {roiPercent.toLocaleString()}%
+                    ROI:{" "}
+                    {roiPercent != null
+                      ? `${roiPercent.toLocaleString()}%`
+                      : DIAGNOSE_NOT_RECORDED}
                   </span>
                   {" "}
                   <span className="text-slate-600">|</span>
@@ -5943,6 +6023,9 @@ useEffect(() => {
                   </span>{" "}
                   <span className="text-[10px] text-slate-500">{downtimeLabel}</span>
                 </p>
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  {DIAGNOSE_ROI_SOURCE}
+                </p>
               </div>
             </div>
           </section>
@@ -5950,7 +6033,14 @@ useEffect(() => {
           {/* PART 3 — Multi-Fault Diagnostics */}
           <section className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 mb-6 hover:border-amber-500/30 transition-all">
             <div className="mb-5">
-              <h3 className="text-lg font-bold text-white">Identified Fault List</h3>
+              <h3 className="text-lg font-bold text-white">
+                Identified Fault List
+                {!analysisResult && (
+                  <span className="ml-2 inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30 align-middle">
+                    {DIAGNOSE_SAMPLE_DATASET}
+                  </span>
+                )}
+              </h3>
               <p className="text-sm text-slate-500 mt-0.5">
                 Prioritized by severity with confidence scores
               </p>
@@ -5978,7 +6068,9 @@ useEffect(() => {
                           {f.frequency}{" "}
                           <span className="text-slate-600">|</span>{" "}
                           <span className={meta.confBadge.includes("emerald") ? "text-emerald-400" : "text-slate-300"}>
-                            {f.confidence}% Confidence
+                            {f.confidence != null
+                              ? `${f.confidence}% Confidence`
+                              : `Confidence: ${DIAGNOSE_NOT_RECORDED}`}
                           </span>
                         </p>
                         <p className="text-sm text-slate-400 mt-2 leading-relaxed">{f.detail}</p>
@@ -6006,7 +6098,12 @@ useEffect(() => {
                     ? "Detecting chart panels with OpenAI Vision…"
                     : useCroppedFft || useCroppedTwf || useCroppedEnvelope
                       ? "Cropped from uploaded analyzer screenshot · fault markers overlaid"
-                      : "Spectral proof & waveform analysis"}
+                      : <>
+                          Spectral proof &amp; waveform analysis{" "}
+                          <span className="inline-block px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                            {DIAGNOSE_SAMPLE_DATASET}
+                          </span>
+                        </>}
                   {chartRegionError ? (
                     <span className="block text-amber-500/90 mt-0.5">{chartRegionError}</span>
                   ) : null}
@@ -6136,7 +6233,7 @@ useEffect(() => {
                       if (!d || !swappedDetection?.regions.fft) return null;
                       return (
                         <div className="flex items-center gap-2 mt-1">
-                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${d.borderline ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-700/50 text-slate-400'}`}>role: fft via wider-panel rule ({Math.round(d.fftWidth * 100)}%, {d.fftTicks} labels)</span>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${d.borderline ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-700/50 text-slate-400'}`}>role: fft via wider-panel rule ({Number.isFinite(d.fftWidth) ? Math.round(d.fftWidth * 100) : "—"}%, {d.fftTicks} labels)</span>
                           {d.borderline && <button type="button" onClick={() => setManualRoleSwaps(p => ({ ...p, fft: !p.fft }))} className="text-[10px] text-amber-400 hover:text-amber-300 underline cursor-pointer">Swap FFT / Envelope</button>}
                         </div>
                       );
@@ -6339,7 +6436,7 @@ useEffect(() => {
                       if (!d || !swappedDetection?.regions.envelope) return null;
                       return (
                         <div className="flex items-center gap-2 mt-1">
-                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${d.borderline ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-700/50 text-slate-400'}`}>role: envelope via wider-panel rule ({Math.round(d.envWidth * 100)}%, {d.envTicks} labels)</span>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${d.borderline ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-700/50 text-slate-400'}`}>role: envelope via wider-panel rule ({Number.isFinite(d.envWidth) ? Math.round(d.envWidth * 100) : "—"}%, {d.envTicks} labels)</span>
                           {d.borderline && <button type="button" onClick={() => setManualRoleSwaps(p => ({ ...p, envelope: !p.envelope }))} className="text-[10px] text-amber-400 hover:text-amber-300 underline cursor-pointer">Swap FFT / Envelope</button>}
                         </div>
                       );
@@ -6408,6 +6505,12 @@ useEffect(() => {
                 ? "Chart panels were cropped from the uploaded analyzer screenshot. Peak markers use Vision-extracted frequencies when available."
                 : "Hovering over an impact peak in the TWF automatically highlights the corresponding frequency component in the FFT spectrum."}
             </p>
+            {!useCroppedFft && (
+              <p className="text-[11px] text-slate-500 mt-1">
+                ISO 10816-3 limit line:{" "}
+                {PROGNOSTICS_PF_DISCLOSURES.vibrationThresholdIso20816Proxy}
+              </p>
+            )}
           </section>
 
           {/* PART 5 — Prescriptive Action Plan & Verification */}
@@ -6449,16 +6552,6 @@ useEffect(() => {
                           <span className={`min-w-0 ${on ? "text-white" : ""}`}>
                             <span className="text-yellow-500/80 font-bold mr-1.5">{idx + 1}.</span>
                             {step}
-                            {analysisSource !== "api" && idx === 0 && (
-                              <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-green-500/10 text-green-400 border border-green-500/30 ml-2">
-                                2x SKF 6320 C3 verified in Tool Crib - Bin 14A
-                              </span>
-                            )}
-                            {analysisSource !== "api" && idx === 1 && (
-                              <span className="inline-block px-2 py-0.5 rounded text-[10px] bg-red-500/10 text-red-400 border border-red-500/30 ml-2">
-                                Auto-PO generated for Alignment Shims (0 in stock)
-                              </span>
-                            )}
                           </span>
                         </label>
                       </li>
@@ -6487,11 +6580,17 @@ useEffect(() => {
                   <p className="text-2xl font-bold text-red-400 mt-1">
                     {formatUsd(failureCost)}
                   </p>
+                  <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+                    {DIAGNOSE_FAILURE_ESTIMATE_SOURCE}
+                  </p>
                 </div>
 
                 <p className="text-sm text-slate-400 text-center">
                   <span className="text-yellow-400 font-bold">
-                    ROI: {roiPercent.toLocaleString()}%
+                    ROI:{" "}
+                    {roiPercent != null
+                      ? `${roiPercent.toLocaleString()}%`
+                      : DIAGNOSE_NOT_RECORDED}
                   </span>
                   {" "}
                   <span className="text-slate-600">|</span>
@@ -6501,6 +6600,9 @@ useEffect(() => {
                     {downtimeFigure}
                   </span>{" "}
                   <span className="text-[10px] text-slate-500">{downtimeLabel}</span>
+                </p>
+                <p className="text-[10px] text-slate-500 text-center leading-snug">
+                  {DIAGNOSE_ROI_SOURCE}
                 </p>
 
                 <div className="mt-auto pt-4 border-t border-slate-800 space-y-3">
@@ -6602,9 +6704,9 @@ useEffect(() => {
                 }
                 severity={analysisResult.severity}
                 confidencePercent={
-                  analysisResult.primaryFault?.confidencePercent ?? null
+                  finiteOrNull(analysisResult.primaryFault?.confidencePercent)
                 }
-                healthScore={analysisResult.overallHealthScore ?? null}
+                healthScore={finiteOrNull(analysisResult.overallHealthScore)}
                 recommendations={analysisResult.repairRecommendations ?? []}
                 savedAnalysisId={savedAnalysisId}
                 engineerName={signOffEngineerName}
@@ -6619,11 +6721,11 @@ useEffect(() => {
                   fault_list: [
                     ...(analysisResult.identifiedFaults ?? []).map((f) => {
                       const peak = chartOverlayPeaks.find((p) => Math.abs(p.frequencyHz - f.frequencyHz) < 2);
-                      return { title: f.title, frequencyHz: f.frequencyHz, confidencePercent: f.confidencePercent, severity: f.severity, description: f.description, amplitude: peak?.amplitude ?? 0 };
+                      return { title: f.title, frequencyHz: f.frequencyHz, confidencePercent: finiteOrNull(f.confidencePercent) ?? undefined, severity: f.severity, description: f.description, amplitude: peak?.amplitude ?? 0 };
                     }),
-                    ...(analysisResult.primaryFault && !analysisResult.identifiedFaults?.some((f) => f.title === analysisResult.primaryFault.title) ? [{ title: analysisResult.primaryFault.title, frequencyHz: analysisResult.primaryFault.frequencyHz, confidencePercent: analysisResult.primaryFault.confidencePercent, severity: analysisResult.primaryFault.severity, amplitude: chartOverlayPeaks.find((p) => Math.abs(p.frequencyHz - analysisResult.primaryFault.frequencyHz) < 2)?.amplitude ?? 0 }] : [])
+                    ...(analysisResult.primaryFault && !analysisResult.identifiedFaults?.some((f) => f.title === analysisResult.primaryFault.title) ? [{ title: analysisResult.primaryFault.title, frequencyHz: analysisResult.primaryFault.frequencyHz, confidencePercent: finiteOrNull(analysisResult.primaryFault.confidencePercent) ?? undefined, severity: analysisResult.primaryFault.severity, amplitude: chartOverlayPeaks.find((p) => Math.abs(p.frequencyHz - analysisResult.primaryFault.frequencyHz) < 2)?.amplitude ?? 0 }] : [])
                   ] as SavedFaultItem[],
-                  health_score: analysisResult.overallHealthScore,
+                  health_score: finiteOrNull(analysisResult.overallHealthScore),
                   primary_fault: analysisResult.primaryFault?.title ?? analysisResult.summary ?? null,
                   severity: analysisResult.severity,
                   summary: analysisResult.summary,
@@ -6678,8 +6780,8 @@ useEffect(() => {
             assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
             primaryFault={analysisResult.primaryFault?.title ?? ""}
             severity={analysisResult.severity ?? null}
-            confidencePercent={analysisResult.primaryFault?.confidencePercent ?? null}
-            healthScore={analysisResult.overallHealthScore ?? null}
+            confidencePercent={finiteOrNull(analysisResult.primaryFault?.confidencePercent)}
+            healthScore={finiteOrNull(analysisResult.overallHealthScore)}
             recommendations={analysisResult.repairRecommendations ?? []}
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}
@@ -6709,8 +6811,8 @@ useEffect(() => {
             assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
             primaryFault={analysisResult.primaryFault?.title ?? ""}
             severity={analysisResult.severity ?? null}
-            confidencePercent={analysisResult.primaryFault?.confidencePercent ?? null}
-            healthScore={analysisResult.overallHealthScore ?? null}
+            confidencePercent={finiteOrNull(analysisResult.primaryFault?.confidencePercent)}
+            healthScore={finiteOrNull(analysisResult.overallHealthScore)}
             recommendations={analysisResult.repairRecommendations ?? []}
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}
@@ -6739,8 +6841,8 @@ useEffect(() => {
             assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
             primaryFault={analysisResult.primaryFault?.title ?? ""}
             severity={analysisResult.severity ?? null}
-            confidencePercent={analysisResult.primaryFault?.confidencePercent ?? null}
-            healthScore={analysisResult.overallHealthScore ?? null}
+            confidencePercent={finiteOrNull(analysisResult.primaryFault?.confidencePercent)}
+            healthScore={finiteOrNull(analysisResult.overallHealthScore)}
             recommendations={analysisResult.repairRecommendations ?? []}
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}
@@ -6764,10 +6866,10 @@ useEffect(() => {
             assetTag={browseAssetTag || reportAsset.tag || reportAsset.label}
             primaryFault={analysisResult?.primaryFault?.title ?? ""}
             severity={analysisResult?.severity ?? null}
-            confidencePercent={
-              analysisResult?.primaryFault?.confidencePercent ?? null
-            }
-            healthScore={analysisResult?.overallHealthScore ?? null}
+            confidencePercent={finiteOrNull(
+              analysisResult?.primaryFault?.confidencePercent
+            )}
+            healthScore={finiteOrNull(analysisResult?.overallHealthScore)}
             recommendations={analysisResult?.repairRecommendations}
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}
@@ -6823,14 +6925,25 @@ useEffect(() => {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
                     <p className="text-[10px] uppercase tracking-wider text-slate-500">Health</p>
-                    <p className="text-2xl font-black text-white mt-1">
-                      {analysisResult?.overallHealthScore ?? gaugeScore}
-                      <span className="text-sm text-slate-500"> / 100</span>
+                    <p className="text-2xl font-black text-white mt-1 break-words">
+                      {finiteOrNull(analysisResult?.overallHealthScore) ??
+                        finiteOrNull(gaugeScore) ??
+                        DIAGNOSE_NOT_RECORDED}
+                      {(finiteOrNull(analysisResult?.overallHealthScore) ??
+                        finiteOrNull(gaugeScore)) != null && (
+                        <span className="text-sm text-slate-500"> / 100</span>
+                      )}
                     </p>
                   </div>
                   <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-3">
                     <p className="text-[10px] uppercase tracking-wider text-slate-500">Severity</p>
-                    <p className="text-xl font-bold text-amber-300 mt-1">{apiSeverity}</p>
+                    <p
+                      className={`text-xl font-bold mt-1 break-words ${
+                        apiSeverity ? "text-amber-300" : "text-slate-400"
+                      }`}
+                    >
+                      {apiSeverity ?? DIAGNOSE_SEVERITY_NOT_COMPUTED}
+                    </p>
                   </div>
                 </div>
                 <div>
@@ -6839,7 +6952,10 @@ useEffect(() => {
                   </p>
                   <p className="text-white font-semibold">{primaryTitleDisplay}</p>
                   <p className="text-slate-400 mt-1">
-                    {primaryFreqDisplay} · {primaryConfidenceDisplay}% confidence
+                    {primaryFreqDisplay} ·{" "}
+                    {primaryConfidenceDisplay != null
+                      ? `${primaryConfidenceDisplay}% confidence`
+                      : `confidence ${DIAGNOSE_NOT_RECORDED}`}
                   </p>
                 </div>
                 <div>
@@ -7130,7 +7246,7 @@ function BpfoPeakLabel(props: { viewBox?: { x?: number; y?: number; width?: numb
       <line x1={x} y1={y + 28} x2={x} y2={y + 52} stroke="#ef4444" strokeWidth={2} />
       <foreignObject x={x - width / 2} y={Math.max(2, y - 4)} width={width} height={height}>
         <div className="flex justify-center">
-          <span className="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded shadow-lg whitespace-nowrap ring-1 ring-red-300/40">
+          <span className="bg-red-500 text-white text-xs font-bold px-2 py-1 rounded shadow-lg break-words ring-1 ring-red-300/40">
             152 Hz - BPFO (Outer Race)
           </span>
         </div>
