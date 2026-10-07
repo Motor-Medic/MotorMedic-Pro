@@ -63,6 +63,7 @@ import OilPrognosticsTab from "./reports/OilPrognosticsTab";
 import McaPrognosticsTab from "./reports/McaPrognosticsTab";
 import { useQueryParam } from "../lib/useQueryParam";
 import { fetchOilSamples } from "../lib/oilSampleRow";
+import { SAVED_ANALYSES_OIL_EMPTY_PROVENANCE } from "../lib/maintenance/prescriptiveDictionary";
 import {
   DEFAULT_ALARM_LIMITS,
   ISO_CLEANLINESS_TARGET,
@@ -6293,12 +6294,19 @@ export default function AnalysisReport({
 
   const rangeActive = startDate !== "" || endDate !== "";
   const datedAnalyses = useMemo(() => {
-    if (!rangeActive) return modalityAnalyses;
     const from = startDate ? new Date(`${startDate}T00:00:00`).getTime() : -Infinity;
     const to = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : Infinity;
-    return modalityAnalyses.filter((r) => {
-      const t = r.timestamp ? new Date(r.timestamp).getTime() : NaN;
-      return Number.isFinite(t) && t >= from && t <= to;
+    const base = rangeActive
+      ? modalityAnalyses.filter((r) => {
+          const t = r.timestamp ? new Date(r.timestamp).getTime() : NaN;
+          return Number.isFinite(t) && t >= from && t <= to;
+        })
+      : modalityAnalyses;
+    const seen = new Set<string>();
+    return base.filter((row) => {
+      if (seen.has(row.id)) return false;
+      seen.add(row.id);
+      return true;
     });
   }, [modalityAnalyses, startDate, endDate, rangeActive]);
 
@@ -7001,6 +7009,15 @@ export default function AnalysisReport({
                 );
               })}
             </div>
+            {selectedTech === "oil" &&
+              hasLoadedReport &&
+              !loadError &&
+              !rangeActive &&
+              datedAnalyses.length === 0 && (
+                <p className="text-[11px] text-slate-500">
+                  {SAVED_ANALYSES_OIL_EMPTY_PROVENANCE}
+                </p>
+              )}
             {hasLoadedReport && selectedAnalysis && (selectedAnalysis.analysis_type ?? "vibration") === selectedTech && (
               <div className="flex mt-2 mb-2 justify-start">
                 <RunHistoryTrigger

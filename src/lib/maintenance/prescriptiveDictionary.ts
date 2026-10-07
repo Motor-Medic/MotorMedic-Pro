@@ -1417,6 +1417,9 @@ for (const key of Object.keys(DICT)) {
 // Public API
 // ---------------------------------------------------------------------------
 
+export const SAVED_ANALYSES_OIL_EMPTY_PROVENANCE =
+  "0 saved analyses - dossier builds from stored samples";
+
 export const DICTIONARY_VERSION = "1.4.0";
 
 // NFPA 70B-2023 / NETA dual-axis IR severity brackets
