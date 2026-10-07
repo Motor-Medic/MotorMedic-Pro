@@ -34,7 +34,6 @@ import {
 import { formatSampleDate } from "../lib/oilAnalysisMetrics";
 import SensorFusionMatrix from "./diagnostics/SensorFusionMatrix";
 import PrognosisPanel from "./diagnostics/PrognosisPanel";
-import EngineerSignOff from "./diagnostics/EngineerSignOff";
 import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 
 /** Named financial constants (edit per site/fluid). */
@@ -540,16 +539,6 @@ export default function OilResultsDashboard({
           Could not load saved analysis records: {intelError}
         </div>
       )}
-
-      {/* Sign-off sits with the asset title so its status is visible up front. */}
-      <EngineerSignOff
-        diagnosisId={savedAnalysisId}
-        signOff={signOff}
-        defaultEngineerName={engineerName}
-        onSaved={setSignOff}
-        onToast={onToast}
-        onDispatchWorkOrder={dispatchWorkOrder}
-      />
 
       {/* 1 — Wear Particle Matrix (snapshot only — trends live in Trend Analyzer) */}
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">

@@ -14,7 +14,6 @@ import {
 import type { DiagnosisSignOff } from "../../lib/diagnostics/signOff";
 import SensorFusionMatrix from "./SensorFusionMatrix";
 import PrognosisPanel from "./PrognosisPanel";
-import EngineerSignOff from "./EngineerSignOff";
 
 export interface DiagnosticsIntelligencePanelProps
   extends UseDiagnosticsIntelligenceInput {
@@ -63,14 +62,6 @@ export default function DiagnosticsIntelligencePanel({
 
       <SensorFusionMatrix fusion={fusion} diagnosisLabel={input.primaryFault} />
       <PrognosisPanel prognosis={prognosis} />
-      <EngineerSignOff
-        diagnosisId={input.savedAnalysisId}
-        signOff={signOff}
-        defaultEngineerName={engineerName}
-        onSaved={setSignOff}
-        onToast={onToast}
-        onDispatchWorkOrder={onDispatchWorkOrder}
-      />
     </>
   );
 }
