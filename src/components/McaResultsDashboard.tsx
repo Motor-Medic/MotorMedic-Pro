@@ -19,6 +19,7 @@ import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsInt
 import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 import {
   MCA_IR_CITATION,
+  MCA_DEFAULT_SCORE_PROVENANCE,
   DIAGNOSE_NOT_RECORDED,
   DIAGNOSE_NOT_RECORDED_FOR_ASSET,
   DIAGNOSE_NORMALIZATION_NOT_APPLIED,
@@ -293,7 +294,7 @@ export default function McaResultsDashboard({
               </ResponsiveContainer>
             </div>
             <p className="text-[11px] text-slate-500 mt-1 text-center break-words">
-              {DIAGNOSE_SAMPLE_DATASET}
+              {MCA_DEFAULT_SCORE_PROVENANCE}
             </p>
           </div>
 

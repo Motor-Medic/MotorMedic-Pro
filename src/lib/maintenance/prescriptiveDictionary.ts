@@ -1603,6 +1603,13 @@ export function evaluateMcaSeverity(imbalancePct: number): McaImbalanceBracket {
 }
 
 // ---------------------------------------------------------------------------
+// MCA default-score provenance - rendered at the point of use under every
+// fallback score so a default can never masquerade as a measured result.
+// ---------------------------------------------------------------------------
+
+export const MCA_DEFAULT_SCORE_PROVENANCE = "default score - not a measured result";
+
+// ---------------------------------------------------------------------------
 // MCA polarization-index display — one PI null vocabulary for every MCA tab:
 // a stored finite PI formats to 2 decimals; with no stored PI, both raw
 // resistances absent renders the repo's literal em-dash, a zero/missing R1
