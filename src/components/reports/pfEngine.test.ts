@@ -287,3 +287,76 @@ describe("exclusion confession count", () => {
     expect(v.components).toEqual(["unlabeled"]);
   });
 });
+
+describe("P4 promoted hygiene — no NaN/Infinity leakage", () => {
+  it("dayLabel confesses non-finite inputs with an em dash", () => {
+    expect(dayLabel(Number.NaN)).toBe("—");
+    expect(dayLabel(Infinity)).toBe("—");
+    expect(dayLabel(-Infinity)).toBe("—");
+  });
+
+  it("dayLabel labels bounded, unconstrained and crossed windows", () => {
+    expect(dayLabel(45)).toBe("45 days");
+    expect(dayLabel(MAX_WINDOW_DAYS + 1)).toBe(`Unconstrained (>${MAX_WINDOW_DAYS}d)`);
+    expect(dayLabel(-3)).toBe("already crossed");
+  });
+
+  it("derivePf filters NaN/Infinity/invalid-date points — n is exact", () => {
+    const points: RawPoint[] = [
+      { value: 1, date: day(0) },
+      { value: Number.NaN, date: day(1) },
+      { value: 3, date: "not-a-date" },
+      { value: 4, date: day(2) },
+      { value: Infinity, date: day(3) },
+      { value: 5, date: day(4) },
+      { value: 6, date: day(5) },
+      { value: 7, date: day(6) },
+    ];
+    const d = derivePf({
+      candidates: [candidate(points)],
+      overrideId: null,
+      threshold: null,
+      storedDetection: null,
+    });
+    expect(d.n).toBe(5);
+    expect(d.pts).toHaveLength(5);
+    expect(d.pts.every((p) => Number.isFinite(p.day) && Number.isFinite(p.value))).toBe(true);
+  });
+
+  it("battery labels never contain NaN or Infinity", () => {
+    const d = derivePf({
+      candidates: [candidate(rising(8))],
+      overrideId: null,
+      threshold: thr(30),
+      storedDetection: null,
+    });
+    const battery: string[] = [d.seriesLabel, d.selectionNote];
+    if (d.rulLabel != null) battery.push(d.rulLabel);
+    if (d.detectionDate != null) battery.push(d.detectionDate);
+    if (d.fWindow != null) {
+      battery.push(dayLabel(d.fWindow.lower));
+      battery.push(dayLabel(d.fWindow.median));
+      battery.push(dayLabel(d.fWindow.upper));
+    }
+    expect(battery.length).toBeGreaterThan(3);
+    for (const text of battery) {
+      expect(text).not.toMatch(/NaN|Infinity/);
+    }
+  });
+
+  it("derivation and export guard non-finite numbers at the source", () => {
+    const engine = readFileSync(
+      fileURLToPath(new URL("./pfEngine.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(engine).toContain('if (!Number.isFinite(days)) return "—";');
+    expect(engine).toContain("Number.isFinite(p.day) && Number.isFinite(p.value)");
+
+    const exporter = readFileSync(
+      fileURLToPath(new URL("../../lib/reportExport.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(exporter).toContain('typeof v === "number" && Number.isFinite(v)');
+    expect(exporter).toContain('analysis.health_score == null ? "—"');
+  });
+});
