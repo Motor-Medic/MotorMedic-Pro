@@ -299,6 +299,7 @@ check("empty prognosis has no horizon", buildPrognosis({ oilSamples: [], analysi
 const ctx: CmmsPayloadContext = {
   assetTag: "PMP030", component: "Motor DE", faultTitle: "Outer Race Bearing Defect (BPFO)",
   severity: "CRITICAL", confidencePercent: 91, healthScore: 38,
+  healthScoreIsDefault: false,
   horizonHours: 6800, horizonDriver: "MPC ΔE", horizonBasis: "operating",
   corroborationPercent: 83, technologiesWithData: ["Vibration", "Oil Analysis"],
   signOffStatus: "approved", signOffEngineer: "J. Rivera, CAT III",

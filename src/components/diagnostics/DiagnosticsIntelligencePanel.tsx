@@ -12,6 +12,7 @@ import {
   type UseDiagnosticsIntelligenceInput
 } from "../../lib/diagnostics/useDiagnosticsIntelligence";
 import type { DiagnosisSignOff } from "../../lib/diagnostics/signOff";
+import { HEALTH_SCORE_DEFAULT_PROVENANCE } from "../../lib/maintenance/prescriptiveDictionary";
 import SensorFusionMatrix from "./SensorFusionMatrix";
 import PrognosisPanel from "./PrognosisPanel";
 
@@ -62,6 +63,14 @@ export default function DiagnosticsIntelligencePanel({
 
       <SensorFusionMatrix fusion={fusion} diagnosisLabel={input.primaryFault} />
       <PrognosisPanel prognosis={prognosis} />
+
+      {/* AR-20d — default-derived scores carry their provenance; measured
+          scores render this caption nowhere. */}
+      {cmmsContext.healthScoreIsDefault && (
+        <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-amber-300">
+          {HEALTH_SCORE_DEFAULT_PROVENANCE}
+        </p>
+      )}
     </>
   );
 }

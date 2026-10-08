@@ -421,6 +421,7 @@ export default function OilResultsDashboard({
     severity,
     confidencePercent,
     healthScore,
+    healthScoreIsDefault: false,
     recommendations,
     savedAnalysisId
   });

@@ -1397,6 +1397,7 @@ function CmmsIntegrationPanel({
           : "ANOMALY",
       confidencePercent: null,
       healthScore: null,
+      healthScoreIsDefault: false,
       horizonHours: null,
       horizonDriver: null,
       horizonBasis: null,

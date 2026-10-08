@@ -24,6 +24,7 @@ import {
   type CustomCmmsFieldSchema,
   type CustomCmmsTemplate
 } from "../../lib/diagnostics/cmmsPayload";
+import { HEALTH_SCORE_DEFAULT_PROVENANCE } from "../../lib/maintenance/prescriptiveDictionary";
 
 export interface CmmsPayloadBridgeProps {
   context: CmmsPayloadContext;
@@ -187,7 +188,12 @@ export default function CmmsPayloadBridge({
             faultTitle: context.faultTitle,
             severity: context.severity,
             confidencePercent: context.confidencePercent,
-            healthScore: context.healthScore,
+            // AR-20d — a default-derived score is never handed to the parser
+            // as measured; the provenance note travels in its place.
+            healthScore: context.healthScoreIsDefault ? null : context.healthScore,
+            healthScoreProvenance: context.healthScoreIsDefault
+              ? HEALTH_SCORE_DEFAULT_PROVENANCE
+              : null,
             recommendations: context.recommendations
           }
         })

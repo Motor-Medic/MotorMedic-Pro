@@ -142,6 +142,7 @@ const ctx: CmmsPayloadContext = {
   severity: "CRITICAL",
   confidencePercent: null,
   healthScore: null,
+  healthScoreIsDefault: false,
   horizonHours: prognosis.horizon?.hoursRemaining ?? null,
   horizonDriver: prognosis.horizon?.label ?? null,
   horizonBasis: prognosis.horizon?.basis ?? null,

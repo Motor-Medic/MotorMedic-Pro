@@ -557,6 +557,7 @@ export default function ThermographyResultsDashboard({
     severity,
     confidencePercent,
     healthScore,
+    healthScoreIsDefault: false,
     recommendations,
     savedAnalysisId
   });

@@ -221,6 +221,7 @@ export default function UltrasoundResultsDashboard({
     severity,
     confidencePercent,
     healthScore,
+    healthScoreIsDefault: false,
     recommendations,
     savedAnalysisId
   });

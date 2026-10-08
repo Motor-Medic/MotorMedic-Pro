@@ -1610,6 +1610,21 @@ export function evaluateMcaSeverity(imbalancePct: number): McaImbalanceBracket {
 export const MCA_DEFAULT_SCORE_PROVENANCE = "default score - not a measured result";
 
 // ---------------------------------------------------------------------------
+// Health-score provenance (AR-20d) - single vocabulary for score provenance
+// notes. When a health score is default-derived it is labelled at every point
+// of use and its numeric row is omitted from CMMS payloads, so a default can
+// never ship as measured. Plain string only: no JSX lives in this .ts module;
+// styling belongs to the call site.
+// ---------------------------------------------------------------------------
+
+/**
+ * Provenance note attached wherever a default-derived health score would
+ * otherwise appear: CMMS payloads omit the numeric HEALTH_SCORE row and
+ * carry this note instead; intelligence captions render it verbatim.
+ */
+export const HEALTH_SCORE_DEFAULT_PROVENANCE = "default-derived - not measured";
+
+// ---------------------------------------------------------------------------
 // MCA polarization-index display — one PI null vocabulary for every MCA tab:
 // a stored finite PI formats to 2 decimals; with no stored PI, both raw
 // resistances absent renders the repo's literal em-dash, a zero/missing R1

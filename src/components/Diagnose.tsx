@@ -590,6 +590,17 @@ function inferFaultsFromPeaks(
 }
 
 /**
+ * Analysis result carrying AR-20d health-score provenance. The MCA operator
+ * inputs origin sets healthScoreIsDefault from the default-table branch
+ * (85/40/75); every measured pipeline reports false. Required boolean — never
+ * optional, never cast, never inferred from the score value.
+ */
+interface DiagnoseAnalysisResult extends VibrationAnalysisResult {
+  /** true when overallHealthScore came from a default table, not a measurement. */
+  healthScoreIsDefault: boolean;
+}
+
+/**
  * Keep banner, primary fault, health score, and identified-fault list consistent.
  * Prefer API faults; if missing, seed from primaryFault and/or Vision peaks.
  */
@@ -1566,7 +1577,7 @@ export default function Diagnose({
   const [showResults, setShowResults] = useState(false);
   const [planningBundle, setPlanningBundle] = useState<PlanningBundle>({ planningInputs: null, repairCosts: {} });
   const [analysisResult, setAnalysisResult] =
-    useState<VibrationAnalysisResult | null>(null);
+    useState<DiagnoseAnalysisResult | null>(null);
   const [analysisError, setAnalysisError] = useState<{
     title: string;
     message: string;
@@ -2345,11 +2356,14 @@ useEffect(() => {
   };
 
   const applyAnalysisResult = (
-    result: VibrationAnalysisResult,
+    result: VibrationAnalysisResult & { healthScoreIsDefault?: boolean },
     source: "api" | "local",
     peaks?: SpectrumChartPeak[],
     options?: { analysisType?: string; skipPeakInference?: boolean }
   ) => {
+    // AR-20d — provenance rides with the result; pipelines that do not carry
+    // it are measured, so the normalised flag is false.
+    const healthScoreIsDefault = result.healthScoreIsDefault ?? false;
     const ratedRpm = Number(vibRpm) || Number(selectedAsset?.rpm) || undefined;
     const reconciled = reconcileAnalysisResult(result, {
       peaks: options?.skipPeakInference
@@ -2364,7 +2378,7 @@ useEffect(() => {
             ? ratedRpm
             : undefined
     });
-    setAnalysisResult(reconciled);
+    setAnalysisResult({ ...reconciled, healthScoreIsDefault });
     setAnalysisSource(source);
     setAnalysisError(null);
     setShowResults(true);
@@ -2382,14 +2396,17 @@ useEffect(() => {
     void persistAnalysisToDatabase(
       reconciled,
       peaks,
-      options?.analysisType || analysisTypeForTech()
+      options?.analysisType || analysisTypeForTech(),
+      healthScoreIsDefault
     );
   };
 
   const persistAnalysisToDatabase = async (
     reconciled: VibrationAnalysisResult,
     peaks?: SpectrumChartPeak[],
-    analysisType: string = "vibration"
+    analysisType: string = "vibration",
+    // AR-20d — in-memory provenance; only measured scores may be persisted.
+    healthScoreIsDefault: boolean = false
   ) => {
     setIsSavingAnalysis(true);
     try {
@@ -2636,7 +2653,9 @@ useEffect(() => {
       const saved = await saveAnalysisResult({
         asset_id: assetKey,
         component: browseComponent || null,
-        health_score: finiteOrNull(reconciled.overallHealthScore),
+        // AR-20d Option B — default-derived scores are never persisted, so the
+        // saved column can never be mistaken for a measured result.
+        health_score: healthScoreIsDefault ? null : finiteOrNull(reconciled.overallHealthScore),
         primary_fault: reconciled.primaryFault?.title || null,
         fault_list: faultListForSave,
         peaks: peaksForSave,
@@ -3347,6 +3366,10 @@ useEffect(() => {
               ? 85
               : 40
             : 75;
+        // AR-20d — 85/40/75 are default-table values; only the winding-balance
+        // branch computes a measured score. Provenance tag added at origin;
+        // the score computation itself is untouched.
+        const healthScoreIsDefault = !hasWinding;
         const apiSeverity =
           severityRaw === "CRITICAL"
             ? "CRITICAL"
@@ -3393,8 +3416,9 @@ useEffect(() => {
         mcaPeaksRef.current = payload.peaks;
         mcaTelemetryRef.current = payload.telemetry_data;
 
-        const mcaUiResult: VibrationAnalysisResult = {
+        const mcaUiResult: DiagnoseAnalysisResult = {
           overallHealthScore: healthScore,
+          healthScoreIsDefault,
           severity: apiSeverity,
           summary: hasWinding
             ? `${windingResult.fault} — max R/L unbalance ${windingResult.maxUnbalanceRL.toFixed(2)}%. ${windingResult.recommendation}`
@@ -6707,6 +6731,7 @@ useEffect(() => {
                   finiteOrNull(analysisResult.primaryFault?.confidencePercent)
                 }
                 healthScore={finiteOrNull(analysisResult.overallHealthScore)}
+                healthScoreIsDefault={analysisResult.healthScoreIsDefault}
                 recommendations={analysisResult.repairRecommendations ?? []}
                 savedAnalysisId={savedAnalysisId}
                 engineerName={signOffEngineerName}
@@ -6726,6 +6751,7 @@ useEffect(() => {
                     ...(analysisResult.primaryFault && !analysisResult.identifiedFaults?.some((f) => f.title === analysisResult.primaryFault.title) ? [{ title: analysisResult.primaryFault.title, frequencyHz: analysisResult.primaryFault.frequencyHz, confidencePercent: finiteOrNull(analysisResult.primaryFault.confidencePercent) ?? undefined, severity: analysisResult.primaryFault.severity, amplitude: chartOverlayPeaks.find((p) => Math.abs(p.frequencyHz - analysisResult.primaryFault.frequencyHz) < 2)?.amplitude ?? 0 }] : [])
                   ] as SavedFaultItem[],
                   health_score: finiteOrNull(analysisResult.overallHealthScore),
+                  healthScoreIsDefault: analysisResult.healthScoreIsDefault,
                   primary_fault: analysisResult.primaryFault?.title ?? analysisResult.summary ?? null,
                   severity: analysisResult.severity,
                   summary: analysisResult.summary,
@@ -6843,6 +6869,7 @@ useEffect(() => {
             severity={analysisResult.severity ?? null}
             confidencePercent={finiteOrNull(analysisResult.primaryFault?.confidencePercent)}
             healthScore={finiteOrNull(analysisResult.overallHealthScore)}
+            healthScoreIsDefault={analysisResult.healthScoreIsDefault}
             recommendations={analysisResult.repairRecommendations ?? []}
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}

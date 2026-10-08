@@ -20,6 +20,7 @@ import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 import {
   MCA_IR_CITATION,
   MCA_DEFAULT_SCORE_PROVENANCE,
+  HEALTH_SCORE_DEFAULT_PROVENANCE,
   DIAGNOSE_NOT_RECORDED,
   DIAGNOSE_NOT_RECORDED_FOR_ASSET,
   DIAGNOSE_NORMALIZATION_NOT_APPLIED,
@@ -147,6 +148,8 @@ export interface McaResultsDashboardProps {
   recommendations?: string[];
   /** Saved analysis_results id; null until the analysis is persisted. */
   savedAnalysisId?: string | null;
+  /** AR-20d provenance: true when healthScore is default-derived, not measured. */
+  healthScoreIsDefault?: boolean;
   /** Logged-in user, pre-fills the sign-off name field. */
   engineerName?: string;
   onNewAnalysis: () => void;
@@ -165,6 +168,7 @@ export default function McaResultsDashboard({
   severity = null,
   confidencePercent = null,
   healthScore = null,
+  healthScoreIsDefault = false,
   recommendations = NO_RECOMMENDATIONS,
   savedAnalysisId = null,
   engineerName,
@@ -190,6 +194,7 @@ export default function McaResultsDashboard({
     severity,
     confidencePercent,
     healthScore,
+    healthScoreIsDefault,
     recommendations,
     savedAnalysisId
   });
@@ -296,6 +301,13 @@ export default function McaResultsDashboard({
             <p className="text-[11px] text-slate-500 mt-1 text-center break-words">
               {MCA_DEFAULT_SCORE_PROVENANCE}
             </p>
+            {/* AR-20d — in-memory provenance flag: default-derived scores are
+                labelled beside the radar; measured runs render no caption. */}
+            {healthScoreIsDefault && (
+              <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mt-1 text-center break-words">
+                {HEALTH_SCORE_DEFAULT_PROVENANCE}
+              </p>
+            )}
           </div>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 space-y-2.5">

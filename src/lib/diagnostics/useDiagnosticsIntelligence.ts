@@ -29,6 +29,12 @@ export interface UseDiagnosticsIntelligenceInput {
   severity?: string | null;
   confidencePercent?: number | null;
   healthScore?: number | null;
+  /**
+   * AR-20d provenance: true when healthScore came from a default table, never
+   * a measurement. Required — every caller states it explicitly, so a default
+   * can never be rendered or shipped as measured.
+   */
+  healthScoreIsDefault: boolean;
   recommendations?: string[];
   /** Saved analysis_results id; null until the analysis is persisted. */
   savedAnalysisId: string | null;
@@ -57,6 +63,7 @@ export function useDiagnosticsIntelligence({
   severity,
   confidencePercent = null,
   healthScore = null,
+  healthScoreIsDefault,
   recommendations = EMPTY_RECOMMENDATIONS,
   savedAnalysisId
 }: UseDiagnosticsIntelligenceInput): DiagnosticsIntelligence {
@@ -176,6 +183,7 @@ export function useDiagnosticsIntelligence({
       severity: normalizeSeverity(severity),
       confidencePercent,
       healthScore,
+      healthScoreIsDefault,
       horizonHours: prognosis.horizon?.hoursRemaining ?? null,
       horizonDriver: prognosis.horizon?.label ?? null,
       horizonBasis: prognosis.horizon?.basis ?? null,
@@ -197,6 +205,7 @@ export function useDiagnosticsIntelligence({
       severity,
       confidencePercent,
       healthScore,
+      healthScoreIsDefault,
       prognosis.horizon,
       fusion.aggregate,
       fusion.scored,

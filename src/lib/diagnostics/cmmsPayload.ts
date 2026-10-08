@@ -18,7 +18,7 @@ import {
   type EvidenceGroup,
   type PriorityCode
 } from "./workOrderText";
-import { getPrescription, DICTIONARY_VERSION } from "../maintenance/prescriptiveDictionary";
+import { getPrescription, DICTIONARY_VERSION, HEALTH_SCORE_DEFAULT_PROVENANCE } from "../maintenance/prescriptiveDictionary";
 import type { SavedAnalysisResult, SavedFaultItem } from "../analysisPersistence";
 
 export type CmmsTargetId =
@@ -48,6 +48,13 @@ export interface CmmsPayloadContext {
   severity: DiagnosisSeverity;
   confidencePercent: number | null;
   healthScore: number | null;
+  /**
+   * AR-20d provenance for healthScore. True when the score came from a
+   * default table, never a measurement: the numeric HEALTH_SCORE row is
+   * omitted from the payload and HEALTH_SCORE_DEFAULT_PROVENANCE is
+   * attached in its place. Required — every context constructor states it.
+   */
+  healthScoreIsDefault: boolean;
   /** Soonest projected failure horizon, in hours. */
   horizonHours: number | null;
   horizonDriver: string | null;
@@ -332,6 +339,12 @@ export function buildCmmsFieldList(
   const parts = (ctx.requiredParts ?? []).join(" | ");
   const steps = ctx.recommendations.join(" | ");
   const footer = enrichmentFooter(ctx);
+  // AR-20d — a default-derived score never ships as measured: the numeric row
+  // is withheld and the provenance note takes its place.
+  const healthScore = ctx.healthScoreIsDefault ? null : ctx.healthScore;
+  const healthScoreProvenance = ctx.healthScoreIsDefault
+    ? HEALTH_SCORE_DEFAULT_PROVENANCE
+    : null;
 
   let result: CmmsField[];
   switch (target) {
@@ -346,7 +359,8 @@ export function buildCmmsFieldList(
         ["PMACTTYPE", "Maintenance Activity Type", "004"],
         ["USER_STATUS", "User Status", ctx.signOffStatus.toUpperCase()],
         ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
-        ["HEALTH_SCORE", "Health Score", ctx.healthScore],
+        ["HEALTH_SCORE", "Health Score", healthScore],
+        ["HEALTH_SCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
         ["FAILURE_HORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
         ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -369,7 +383,8 @@ export function buildCmmsFieldList(
         ["STATUS", "Status", ctx.signOffStatus === "approved" ? "APPR" : "WAPPR"],
         ["REPORTEDBY", "Reported By", "MOTORMEDIC-PDM"],
         ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
-        ["HEALTHSCORE", "Health Score", ctx.healthScore],
+        ["HEALTHSCORE", "Health Score", healthScore],
+        ["HEALTHSCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
         ["FAILUREHORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
         ["SIGNOFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -390,7 +405,8 @@ export function buildCmmsFieldList(
         ["priority", "Priority", priority],
         ["status", "Status", ctx.signOffStatus === "approved" ? "Open" : "On Hold"],
         ["confidence", "Diagnosis Confidence", confidence],
-        ["healthScore", "Health Score", ctx.healthScore],
+        ["healthScore", "Health Score", healthScore],
+        ["healthScoreProvenance", "Health Score Provenance", healthScoreProvenance],
         ["failureHorizon", "Failure Horizon", horizon],
         ["corroboration", "Corroboration", corroborationText(ctx)],
         ["signOff", "Engineer Sign-Off", signOffText(ctx)],
@@ -412,7 +428,8 @@ export function buildCmmsFieldList(
         ["strStatus", "Status", ctx.signOffStatus === "approved" ? "Open" : "Awaiting Approval"],
         ["strFailureCode", "Failure Code", ctx.faultTitle],
         ["intConfidence", "Diagnosis Confidence", confidence],
-        ["intHealthScore", "Health Score", ctx.healthScore],
+        ["intHealthScore", "Health Score", healthScore],
+        ["strHealthScoreProvenance", "Health Score Provenance", healthScoreProvenance],
         ["strFailureHorizon", "Failure Horizon", horizon],
         ["strCorroboration", "Corroboration", corroborationText(ctx)],
         ["strSignOff", "Engineer Sign-Off", signOffText(ctx)],
@@ -438,7 +455,8 @@ export function buildCmmsFieldList(
         ["FAILURE_CODE", "Failure Code", ctx.faultTitle],
         ["OWNING_DEPARTMENT", "Owning Department", "RELIABILITY"],
         ["CONFIDENCE_PCT", "Diagnosis Confidence", confidence],
-        ["HEALTH_SCORE", "Health Score", ctx.healthScore],
+        ["HEALTH_SCORE", "Health Score", healthScore],
+        ["HEALTH_SCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
         ["FAILURE_HORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
         ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -507,7 +525,12 @@ export function buildCustomCmmsFields(
   const out: CmmsField[] = [];
 
   for (const field of template.fields) {
-    let value = getValueFromContext(ctx, field.sourcePath);
+    // AR-20d — a template may map the health score; a default-derived value is
+    // withheld here and the provenance note is attached after the loop.
+    let value =
+      field.sourcePath === "healthScore" && ctx.healthScoreIsDefault
+        ? null
+        : getValueFromContext(ctx, field.sourcePath);
     if (value == null && field.staticValue != null) {
       value = field.staticValue;
     }
@@ -532,6 +555,15 @@ export function buildCustomCmmsFields(
     });
   }
 
+  // AR-20d — default-derived health score ships a provenance note, never a number.
+  if (ctx.healthScoreIsDefault) {
+    out.push({
+      key: "HEALTH_SCORE_PROVENANCE",
+      label: "Health Score Provenance",
+      value: HEALTH_SCORE_DEFAULT_PROVENANCE
+    });
+  }
+
   return out;
 }
 
@@ -547,6 +579,10 @@ function buildDefaultCustomFields(ctx: CmmsPayloadContext): CmmsField[] {
   const started = malfunctionStart(ctx);
   const parts = (ctx.requiredParts ?? []).join(" | ");
   const steps = ctx.recommendations.join(" | ");
+  const healthScore = ctx.healthScoreIsDefault ? null : ctx.healthScore;
+  const healthScoreProvenance = ctx.healthScoreIsDefault
+    ? HEALTH_SCORE_DEFAULT_PROVENANCE
+    : null;
 
   return fields([
     ["WORK_ORDER_TYPE", "Work Order Type", workType],
@@ -555,7 +591,8 @@ function buildDefaultCustomFields(ctx: CmmsPayloadContext): CmmsField[] {
     ["REPORTED_DATE", "Reported Date", started],
     ["PRIORITY", "Priority", priority],
     ["FAULT_TITLE", "Fault Title", ctx.faultTitle],
-    ["HEALTH_SCORE", "Health Score", ctx.healthScore],
+    ["HEALTH_SCORE", "Health Score", healthScore],
+    ["HEALTH_SCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
     ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
     ["FAILURE_HORIZON", "Failure Horizon", horizon],
     ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -690,10 +727,14 @@ export interface BuildBridgeOpts {
  * identity fields (id, timestamp, confidence, sign-off).
  */
 export function buildBridgeContext(
-  analysis: SavedAnalysisResult | { asset_id?: string | null; component?: string | null; id?: string; fault_list?: SavedFaultItem[]; health_score?: number | null; primary_fault?: string | null; severity?: string | null; summary?: string | null; recommendations?: string[]; analysis_type?: string | null; timestamp?: string; created_at?: string; telemetry_data?: Record<string, unknown> | null; peaks?: unknown[]; spectrum_image_url?: string | null; financial_impact?: Record<string, number> } | null,
+  analysis: SavedAnalysisResult | { asset_id?: string | null; component?: string | null; id?: string; fault_list?: SavedFaultItem[]; health_score?: number | null; healthScoreIsDefault?: boolean; primary_fault?: string | null; severity?: string | null; summary?: string | null; recommendations?: string[]; analysis_type?: string | null; timestamp?: string; created_at?: string; telemetry_data?: Record<string, unknown> | null; peaks?: unknown[]; spectrum_image_url?: string | null; financial_impact?: Record<string, number> } | null,
   opts: BuildBridgeOpts
 ): CmmsPayloadContext {
   const a = analysis;
+  // AR-20d — saved rows carry no provenance flag (default scores are never
+  // persisted); the live Diagnose context passes its in-memory flag here.
+  const healthScoreIsDefault =
+    a != null && "healthScoreIsDefault" in a && a.healthScoreIsDefault === true;
   const faults: SavedFaultItem[] = a?.fault_list ?? [];
   const rpm = a?.telemetry_data && typeof a.telemetry_data === "object"
     ? (a.telemetry_data as Record<string, unknown>).rpm ?? null
@@ -794,6 +835,7 @@ export function buildBridgeContext(
     severity: _mapSeverity(a?.severity),
     confidencePercent,
     healthScore: a?.health_score ?? null,
+    healthScoreIsDefault,
     horizonHours: null,
     horizonDriver: null,
     horizonBasis: null,
