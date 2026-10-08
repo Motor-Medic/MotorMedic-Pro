@@ -1649,6 +1649,15 @@ export default function Diagnose({
   const [mcaSnapshot, setMcaSnapshot] = useState<McaOperatorSnapshot | null>(
     null
   );
+  // Stable identity for McaInputAccordions' emit effect: captures only the
+  // stable setState and a module-scope merge, so [] cannot go stale, and the
+  // effect's `onSnapshotChange` dep no longer churns on every parent render.
+  const handleMcaSnapshotChange = useCallback(
+    (snap: McaOperatorSnapshot) => {
+      setMcaSnapshot((prev) => mergeMcaOperatorSnapshots(prev, snap));
+    },
+    []
+  );
   const mcaPeaksRef = useRef<unknown[] | null>(null);
   const mcaTelemetryRef = useRef<Record<string, unknown> | null>(null);
   const [thermoTelemetry, setThermoTelemetry] =
@@ -4598,9 +4607,7 @@ useEffect(() => {
             <McaInputAccordions
               onToast={(msg, type) => toast(msg, type ?? "info")}
               onExtractionStatusChange={setMcaExtracting}
-              onSnapshotChange={(snap) =>
-                setMcaSnapshot((prev) => mergeMcaOperatorSnapshots(prev, snap))
-              }
+              onSnapshotChange={handleMcaSnapshotChange}
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
