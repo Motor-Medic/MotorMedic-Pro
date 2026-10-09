@@ -8,6 +8,11 @@ const SRC_FILES = [
   "./diagnostics/HealthGauge.tsx",
   "./diagnostics/ConfidenceDisplay.tsx",
   "./diagnostics/RoiBlock.tsx",
+  "./diagnostics/KinematicsSpecsSection.tsx",
+  "./diagnostics/TelemetryContextSection.tsx",
+  "./diagnostics/MeasurementMetadataSection.tsx",
+  "./diagnostics/VisionIntakePanel.tsx",
+  "./diagnostics/HardwareRoiBar.tsx",
 ] as const;
 
 const src = SRC_FILES.map((path) =>
