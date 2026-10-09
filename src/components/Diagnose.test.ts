@@ -2,10 +2,17 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const src = readFileSync(
-  fileURLToPath(new URL("./Diagnose.tsx", import.meta.url)),
-  "utf8",
-);
+const SRC_FILES = [
+  "./Diagnose.tsx",
+  "./diagnostics/VibrationScoreCards.tsx",
+  "./diagnostics/HealthGauge.tsx",
+  "./diagnostics/ConfidenceDisplay.tsx",
+  "./diagnostics/RoiBlock.tsx",
+] as const;
+
+const src = SRC_FILES.map((path) =>
+  readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8"),
+).join("\n");
 
 const REQUIRED: string[] = [
   "function finiteOrNull(",

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import {
   Activity, AlertCircle, AlertTriangle, AudioWaveform, BarChart3, Bell, Bot, Check, CheckCircle2,
   ChevronDown, Clock, Database, Download, Droplet, Factory, FileText, Gauge, Image, Info, Keyboard,
-  Layers, Loader2, Package, Radio, Tag, Thermometer, TrendingDown, Upload, Wrench, Zap, ZoomIn, ZoomOut
+  Layers, Loader2, Package, Radio, Tag, Thermometer, Upload, Wrench, Zap, ZoomIn, ZoomOut
 } from "lucide-react";
 import {
   Area,
@@ -152,14 +152,13 @@ import { CmmsWorkOrderBridge as CmmsPayloadBridge } from "./CmmsWorkOrderBridge"
 import { buildBridgeContext, fetchPlanningBundle, type PlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import type { SavedFaultItem } from "../lib/analysisPersistence";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
+import VibrationScoreCards from "./diagnostics/VibrationScoreCards";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 import {
   DIAGNOSE_NOT_RECORDED,
   DIAGNOSE_NOT_RECORDED_FOR_ASSET,
   DIAGNOSE_SAMPLE_DATASET,
   DIAGNOSE_SEVERITY_NOT_COMPUTED,
-  DIAGNOSE_HEALTH_SCORE_SOURCE,
-  DIAGNOSE_CONFIDENCE_SOURCE,
   DIAGNOSE_ROI_SOURCE,
   DIAGNOSE_FAILURE_ESTIMATE_SOURCE,
   PROGNOSTICS_PF_DISCLOSURES
@@ -5828,237 +5827,21 @@ useEffect(() => {
 
           {/* PART 2 — Executive Control & Risk Analytics */}
           <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Card 1: Overall Health Score */}
-              <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 flex flex-col">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Overall Health Score
-                </p>
-                <div className="mt-4 flex items-center gap-4 flex-1">
-                  <div className="relative h-28 w-28 shrink-0">
-                    <svg
-                      viewBox="0 0 36 36"
-                      className={`h-full w-full -rotate-90 ${
-                        apiSeverity === "NORMAL"
-                          ? "drop-shadow-[0_0_16px_rgba(16,185,129,0.35)]"
-                          : apiSeverity === "ANOMALY"
-                            ? "drop-shadow-[0_0_16px_rgba(245,158,11,0.35)]"
-                            : apiSeverity == null
-                              ? "drop-shadow-[0_0_12px_rgba(148,163,184,0.25)]"
-                              : "drop-shadow-[0_0_16px_rgba(239,68,68,0.4)]"
-                      }`}
-                    >
-                      <defs>
-                        <linearGradient id="healthGrad" x1="0" y1="0" x2="1" y2="1">
-                          <stop
-                            offset="0%"
-                            stopColor={
-                              apiSeverity === "NORMAL"
-                                ? "#34d399"
-                                : apiSeverity === "ANOMALY"
-                                  ? "#fbbf24"
-                                  : apiSeverity == null
-                                    ? "#94a3b8"
-                                    : "#f97316"
-                            }
-                          />
-                          <stop
-                            offset="100%"
-                            stopColor={
-                              apiSeverity === "NORMAL"
-                                ? "#10b981"
-                                : apiSeverity === "ANOMALY"
-                                  ? "#f59e0b"
-                                  : apiSeverity == null
-                                    ? "#64748b"
-                                    : "#ef4444"
-                            }
-                          />
-                        </linearGradient>
-                      </defs>
-                      <path
-                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                        fill="none"
-                        stroke="#1e293b"
-                        strokeWidth="3.5"
-                      />
-                      <path
-                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                        fill="none"
-                        stroke="url(#healthGrad)"
-                        strokeWidth="3.5"
-                        strokeDasharray={
-                          Number.isFinite(gaugeScore)
-                            ? `${gaugeScore}, 100`
-                            : "0, 100"
-                        }
-                        strokeLinecap="round"
-                        style={{ transition: "stroke-dasharray 80ms linear" }}
-                      />
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span
-                        className={`text-2xl font-black leading-none text-center break-words px-1 ${
-                          apiSeverity === "NORMAL"
-                            ? "text-emerald-400"
-                            : apiSeverity === "ANOMALY"
-                              ? "text-amber-400"
-                              : apiSeverity == null
-                                ? "text-slate-300"
-                                : "text-red-500"
-                        }`}
-                      >
-                        {Number.isFinite(gaugeScore)
-                          ? gaugeScore
-                          : DIAGNOSE_NOT_RECORDED}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="min-w-0">
-                    <p
-                      className={`text-xl font-bold break-words ${
-                        apiSeverity === "NORMAL"
-                          ? "text-emerald-400"
-                          : apiSeverity === "ANOMALY"
-                            ? "text-amber-400"
-                            : apiSeverity == null
-                              ? "text-slate-300"
-                              : "text-red-500"
-                      }`}
-                    >
-                      {Number.isFinite(gaugeScore)
-                        ? `${gaugeScore} / 100`
-                        : DIAGNOSE_NOT_RECORDED}
-                    </p>
-                    <p className="text-sm text-slate-400 mt-2 leading-relaxed">
-                      {apiSeverity == null
-                        ? DIAGNOSE_SEVERITY_NOT_COMPUTED
-                        : apiSeverity === "CRITICAL"
-                          ? "Immediate attention required."
-                          : apiSeverity === "ANOMALY"
-                            ? "Elevated risk — plan corrective action."
-                            : "Within acceptable operating envelope."}{" "}
-                      {apiSeverity === "CRITICAL" && (
-                        <span className="inline-flex items-center gap-1 text-red-400 font-semibold">
-                          <TrendingDown className="h-3.5 w-3.5" />
-                          Priority repair window.
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
-                      {DIAGNOSE_HEALTH_SCORE_SOURCE}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Card 2: Primary Fault Identified */}
-              <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 flex flex-col">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Primary Fault Identified
-                </p>
-                <div className="mt-4 flex items-start gap-3 flex-1">
-                  <div
-                    className={`h-12 w-12 rounded-xl flex items-center justify-center shrink-0 border ${
-                      hasDetectedFaults
-                        ? "bg-red-500/15 border-red-500/40"
-                        : "bg-emerald-500/15 border-emerald-500/40"
-                    }`}
-                  >
-                    {hasDetectedFaults ? (
-                      <AlertTriangle className="h-6 w-6 text-red-400" />
-                    ) : (
-                      <CheckCircle2 className="h-6 w-6 text-emerald-400" />
-                    )}
-                  </div>
-                  <div className="min-w-0 space-y-2">
-                    <p className="text-lg font-bold text-white leading-snug">
-                      {primaryTitleDisplay}
-                    </p>
-                    <p className="text-sm text-slate-300 font-mono">
-                      {primaryFreqDisplay}{" "}
-                      <span className="text-slate-600">|</span>{" "}
-                      <span className="text-emerald-400 font-semibold">
-                        {primaryConfidenceDisplay != null
-                          ? `${primaryConfidenceDisplay}% Confidence`
-                          : `Confidence: ${DIAGNOSE_NOT_RECORDED}`}
-                      </span>{" "}
-                      <span className="text-slate-600">|</span>{" "}
-                      <span
-                        className={`font-bold ${
-                          primaryUiSeverity === "HIGH"
-                            ? "text-red-400"
-                            : primaryUiSeverity === "MEDIUM"
-                              ? "text-amber-400"
-                              : primaryUiSeverity === null
-                                ? "text-slate-400"
-                                : "text-emerald-400"
-                        }`}
-                      >
-                        {primaryUiSeverity != null
-                          ? `${primaryUiSeverity} Severity`
-                          : DIAGNOSE_NOT_RECORDED}
-                      </span>
-                    </p>
-                    {primaryConfidenceDisplay != null && (
-                      <p className="text-[10px] text-slate-500 leading-snug">
-                        {DIAGNOSE_CONFIDENCE_SOURCE}
-                      </p>
-                    )}
-                    <p className="text-sm text-yellow-400/90 font-semibold pt-1">
-                      {primaryFault?.actionWindow ||
-                        (hasDetectedFaults
-                          ? "Action required within 7 days."
-                          : "Continue routine monitoring.")}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Card 3: Financial Failure Horizon */}
-              <div className="rounded-xl border border-white/10 bg-slate-950/40 p-5 flex flex-col">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4">
-                  Financial Failure Horizon
-                </p>
-                <div className="grid grid-cols-2 gap-3 flex-1">
-                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400/80 mb-1">
-                      Preventive Repair
-                    </p>
-                    <p className="text-lg font-bold text-emerald-400">
-                      {formatUsd(preventiveCost)}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-red-400/80 mb-1">
-                      Failure if Delayed
-                    </p>
-                    <p className="text-lg font-bold text-red-400">
-                      {formatUsd(failureCost)}
-                    </p>
-                  </div>
-                </div>
-                <p className="text-sm text-slate-400 mt-3 leading-relaxed">
-                  <span className="text-yellow-400 font-bold">
-                    ROI:{" "}
-                    {roiPercent != null
-                      ? `${roiPercent.toLocaleString()}%`
-                      : DIAGNOSE_NOT_RECORDED}
-                  </span>
-                  {" "}
-                  <span className="text-slate-600">|</span>
-                  {" "}
-                  Production Downtime Loss:{" "}
-                  <span className="text-white font-semibold">
-                    {downtimeFigure}
-                  </span>{" "}
-                  <span className="text-[10px] text-slate-500">{downtimeLabel}</span>
-                </p>
-                <p className="text-[10px] text-slate-500 leading-snug">
-                  {DIAGNOSE_ROI_SOURCE}
-                </p>
-              </div>
-            </div>
+            <VibrationScoreCards
+              apiSeverity={apiSeverity}
+              gaugeScore={gaugeScore}
+              hasDetectedFaults={hasDetectedFaults}
+              primaryTitleDisplay={primaryTitleDisplay}
+              primaryFreqDisplay={primaryFreqDisplay}
+              primaryConfidenceDisplay={primaryConfidenceDisplay}
+              primaryUiSeverity={primaryUiSeverity}
+              primaryFault={primaryFault}
+              preventiveCostLabel={formatUsd(preventiveCost)}
+              failureCostLabel={formatUsd(failureCost)}
+              roiPercent={roiPercent}
+              downtimeFigure={downtimeFigure}
+              downtimeLabel={downtimeLabel}
+            />
           </section>
 
           {/* PART 3 — Multi-Fault Diagnostics */}
