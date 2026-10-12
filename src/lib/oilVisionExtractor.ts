@@ -9,7 +9,6 @@ import {
   OPENROUTER_CONSENSUS_MODEL,
   OPENROUTER_VISION_FALLBACK_MODEL,
   OPENROUTER_VISION_MODEL,
-  hasOpenRouterKey,
   isLmStudioDevMode,
   openRouterRefererHeaders
 } from "./openRouterModels";
@@ -39,13 +38,313 @@ export const OIL_VISION_API_PATH = "/api/oil-analysis/vision-extract";
 /** Primary vision model (kept for reference); the live fallback array below leads with gpt-4o. */
 export const VISION_MODEL = "google/gemini-3.1-pro-preview";
 
+/** OpenRouter candidate list (chain entry #5). Stale google/gemini-2.0-flash-001 retired (404). */
 export const OIL_VISION_MODELS = [
   "openai/gpt-4o",
   "google/gemini-3.1-pro-preview",
   "openai/gpt-4-turbo",
-  "qwen/qwen-2.5-vl-72b-instruct",
-  "google/gemini-2.0-flash-001"
+  "qwen/qwen-2.5-vl-72b-instruct"
 ] as const;
+
+/* ------------------------------------------------------------------ */
+/* Vision provider chain (AR-23c) — probe-verified 2026-10-09.         */
+/* Every model id below answered HTTP 200 with the exact production    */
+/* payload shape (image + MASTER_VISION_PROMPT + json mode) before      */
+/* landing here. Sequential, key-gated: entries whose env key is       */
+/* absent are skipped cleanly and never crashed on.                    */
+/* Probe outcomes that EXCLUDED entries:                               */
+/*  - gemini-3.8-flash: never 200 (repeated timeout / 503)             */
+/*  - gemini-2.5-flash, gemini-2.0-flash: 404 (retired)                */
+/*  - DashScope qwen3-vl-plus/qwen-vl-max: 401 on all four host        */
+/*    variants → key cannot be certified → entry withheld              */
+/* ------------------------------------------------------------------ */
+
+export interface VisionProviderSpec {
+  id: string;
+  label: string;
+  envKey: string;
+  transport: "gemini" | "openai-compatible" | "lm-studio";
+  /** Base URL — gemini entries append `/${model}:generateContent`. */
+  url: string;
+  models: readonly string[];
+}
+
+export const VISION_PROVIDER_CHAIN: readonly VisionProviderSpec[] = [
+  {
+    id: "gemini",
+    label: "Gemini",
+    envKey: "GEMINI_API_KEY",
+    transport: "gemini",
+    url: "https://generativelanguage.googleapis.com/v1beta/models",
+    models: ["gemini-3.5-flash"]
+  },
+  {
+    id: "groq",
+    label: "Groq",
+    envKey: "GROQ_API_KEY",
+    transport: "openai-compatible",
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    models: ["qwen/qwen3.8-27b"]
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    envKey: "MISTRAL_API_KEY",
+    transport: "openai-compatible",
+    url: "https://api.mistral.ai/v1/chat/completions",
+    models: ["pixtral-12b-2409"]
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    envKey: "OPENAI_API_KEY",
+    transport: "openai-compatible",
+    url: "https://api.openai.com/v1/chat/completions",
+    models: ["gpt-4o"]
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    envKey: "OPENROUTER_API_KEY",
+    transport: "openai-compatible",
+    url: `${OPENROUTER_API_BASE}/chat/completions`,
+    models: OIL_VISION_MODELS
+  }
+];
+
+interface VisionCandidate {
+  spec: VisionProviderSpec;
+  model: string;
+}
+
+interface VisionSkip {
+  label: string;
+  providerId: string;
+  envKey: string;
+}
+
+interface VisionAttemptRecord {
+  providerLabel: string;
+  providerId: string;
+  model: string;
+  httpStatus: number | null;
+  reason: string;
+}
+
+function visionKeyPresent(envKey: string): boolean {
+  const v = process.env[envKey];
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+/**
+ * Builds the ordered candidate list for one extraction run. LM Studio
+ * dev-mode short-circuits to the local endpoint (unchanged). Otherwise
+ * every chain entry whose env key is present contributes its models in
+ * chain order; absent keys are reported as skips, never thrown on.
+ * `models` (caller-supplied) overrides the OpenRouter entry's list,
+ * preserving the historical input.models contract.
+ */
+function buildVisionCandidates(
+  useLmStudio: boolean,
+  models?: string[]
+): { candidates: VisionCandidate[]; skipped: VisionSkip[] } {
+  const candidates: VisionCandidate[] = [];
+  const skipped: VisionSkip[] = [];
+  if (useLmStudio) {
+    const endpoint = process.env.LM_STUDIO_ENDPOINT;
+    if (endpoint && endpoint.trim()) {
+      const spec: VisionProviderSpec = {
+        id: "lm-studio",
+        label: "LM Studio",
+        envKey: "LM_STUDIO_ENDPOINT",
+        transport: "lm-studio",
+        url: endpoint.trim(),
+        models: [process.env.LM_STUDIO_MODEL || OIL_VISION_MODELS[0]]
+      };
+      const model = spec.models[0];
+      if (model) candidates.push({ spec, model });
+    } else {
+      skipped.push({ label: "LM Studio", providerId: "lm-studio", envKey: "LM_STUDIO_ENDPOINT" });
+    }
+    return { candidates, skipped };
+  }
+  const override =
+    models && models.length > 0 ? Array.from(new Set(models)) : null;
+  for (const spec of VISION_PROVIDER_CHAIN) {
+    if (!visionKeyPresent(spec.envKey)) {
+      skipped.push({ label: spec.label, providerId: spec.id, envKey: spec.envKey });
+      continue;
+    }
+    const list = override && spec.id === "openrouter" ? override : spec.models;
+    for (const model of list) candidates.push({ spec, model });
+  }
+  return { candidates, skipped };
+}
+
+function describeAttempt(a: VisionAttemptRecord): string {
+  const via = `(${a.model} via ${a.providerLabel})`;
+  if (a.httpStatus == null) return `vision: no response ${via} - ${a.reason}`;
+  return `vision: ${a.httpStatus} ${a.reason} ${via}`;
+}
+
+function describeSkip(s: VisionSkip): string {
+  return `vision: skipped - ${s.envKey} missing (${s.providerId} via ${s.label})`;
+}
+
+/** Per-provider failure list — the client toast renders this verbatim; never a bare VISION_FAILED. */
+function buildVisionFailureMessage(
+  attempts: VisionAttemptRecord[],
+  skipped: VisionSkip[]
+): string {
+  const parts = [...attempts.map(describeAttempt), ...skipped.map(describeSkip)];
+  if (parts.length === 0) return "No vision provider configured.";
+  return parts.join("; ");
+}
+
+function clipReason(s: string): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > 120 ? `${t.slice(0, 117)}...` : t;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function parseBodyJson(body: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(body);
+  return isRecord(parsed) ? parsed : {};
+}
+
+/** Human-readable upstream reason from an error body (OpenAI-shaped or Gemini-shaped). */
+function upstreamReason(body: string, status: number): string {
+  try {
+    const json = parseBodyJson(body);
+    const err: unknown = json.error;
+    if (typeof err === "string" && err.trim()) return clipReason(err);
+    if (isRecord(err) && typeof err.message === "string" && err.message.trim()) {
+      return clipReason(err.message);
+    }
+    if (typeof json.message === "string" && json.message.trim()) {
+      return clipReason(json.message);
+    }
+  } catch {
+    /* body is not JSON */
+  }
+  return `HTTP ${status}`;
+}
+
+function splitDataUrl(dataUrl: string): { mimeType: string; data: string } {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUrl);
+  if (match && match[1] && match[2] !== undefined) {
+    return { mimeType: match[1], data: match[2] };
+  }
+  return { mimeType: "image/png", data: dataUrl.replace(/^data:[^,]*,/, "") };
+}
+
+function readOpenAiContent(json: Record<string, unknown>): string | null {
+  const choices = json.choices;
+  if (Array.isArray(choices)) {
+    const first: unknown = choices[0];
+    if (isRecord(first) && isRecord(first.message)) {
+      const content: unknown = first.message.content;
+      if (typeof content === "string" && content) return content;
+    }
+  }
+  if (typeof json.content === "string" && json.content) return json.content;
+  return null;
+}
+
+function readGeminiText(json: Record<string, unknown>): string | null {
+  const candidates = json.candidates;
+  if (!Array.isArray(candidates)) return null;
+  const first: unknown = candidates[0];
+  if (!isRecord(first) || !isRecord(first.content)) return null;
+  const parts = first.content.parts;
+  if (!Array.isArray(parts)) return null;
+  const texts: string[] = [];
+  for (const part of parts) {
+    if (isRecord(part) && typeof part.text === "string") texts.push(part.text);
+  }
+  const joined = texts.join("");
+  return joined || null;
+}
+
+/** Non-2xx upstream response carrying its HTTP status + upstream reason. */
+class VisionHttpError extends Error {
+  readonly httpStatus: number;
+  readonly reason: string;
+  constructor(httpStatus: number, reason: string) {
+    super(`${reason} (HTTP ${httpStatus})`);
+    this.name = "VisionHttpError";
+    this.httpStatus = httpStatus;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Fires one provider attempt. Payload content is identical to the legacy
+ * OpenRouter call (same image data URL, same MASTER_VISION_PROMPT,
+ * max_tokens 6000, temperature 0.0, json mode) — only the wire envelope
+ * differs per transport.
+ */
+async function callVisionProvider(
+  candidate: VisionCandidate,
+  imageUrl: string,
+  maxTokens: number
+): Promise<{ status: number; body: string }> {
+  const { spec, model } = candidate;
+  if (spec.transport === "gemini") {
+    const { mimeType, data } = splitDataUrl(imageUrl);
+    const res = await fetch(`${spec.url}/${model}:generateContent`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": (process.env[spec.envKey] || "").trim()
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { inline_data: { mime_type: mimeType, data } },
+              { text: MASTER_VISION_PROMPT }
+            ]
+          }
+        ],
+        generationConfig: {
+          maxOutputTokens: maxTokens,
+          temperature: 0.0,
+          responseMimeType: "application/json"
+        }
+      })
+    });
+    return { status: res.status, body: await res.text().catch(() => "") };
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (spec.transport === "openai-compatible") {
+    headers.Authorization = `Bearer ${(process.env[spec.envKey] || "").trim()}`;
+    if (spec.id === "openrouter") Object.assign(headers, openRouterRefererHeaders());
+  }
+  const res = await fetch(spec.url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      temperature: 0.0,
+      ...(spec.transport === "lm-studio" ? {} : { response_format: { type: "json_object" } }),
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: imageUrl } },
+            { type: "text", text: MASTER_VISION_PROMPT }
+          ]
+        }
+      ]
+    })
+  });
+  return { status: res.status, body: await res.text().catch(() => "") };
+}
 
 const EXTRACTION_TIMEOUT_MS = 180_000;
 
@@ -1029,20 +1328,21 @@ export async function extractOilReportFromImageBase64(input: {
 
   logPayloadSize("oilVisionExtractor", imageUrl);
 
-  const useLmStudio = isLmStudioDevMode();
-  if (!useLmStudio && !hasOpenRouterKey()) {
-    logPipelineFail(
-      "oilVisionExtractor",
-      startTime,
-      new Error("OPENROUTER_API_KEY missing")
-    );
-    return {
-      success: false,
-      error: "MISSING_API_KEY",
-      message:
-        "OPENROUTER_API_KEY is not configured. Set it in .env for oil report vision extraction.",
-      httpStatus: 503
-    };
+  // Key-presence gate (AR-23c): no OpenRouter requirement — the chain runs
+  // on whatever providers have keys. Zero configured providers still fails
+  // honestly, with the per-provider skip reasons instead of a bare code.
+  if (!isLmStudioDevMode()) {
+    const { candidates, skipped } = buildVisionCandidates(false, input.models);
+    if (candidates.length === 0) {
+      const message = buildVisionFailureMessage([], skipped);
+      logPipelineFail("oilVisionExtractor", startTime, new Error(message));
+      return {
+        success: false,
+        error: "VISION_FAILED",
+        message,
+        httpStatus: 503
+      };
+    }
   }
 
   try {
@@ -1054,7 +1354,9 @@ export async function extractOilReportFromImageBase64(input: {
       success: false,
       error: "VISION_FAILED",
       message:
-        err instanceof Error ? err.message : "Vision extraction failed.",
+        err instanceof Error && err.message
+          ? err.message
+          : "Vision extraction failed.",
       httpStatus: 500
     };
   }
@@ -1118,10 +1420,16 @@ export async function extractOilReportFromImage(
   >;
 
   if (!response.ok) {
+    const code =
+      typeof result.error === "string" && result.error ? result.error : null;
+    const detail =
+      typeof result.message === "string" && result.message ? result.message : null;
+    // VISION_FAILED must never surface bare — the message carries the
+    // per-provider "vision: <code> <reason> (<model> via <provider>)" list.
     throw new Error(
-      (typeof result.error === "string" && result.error) ||
-        (typeof result.message === "string" && result.message) ||
-        `Oil vision extraction failed (${response.status}).`
+      code === "VISION_FAILED" && detail
+        ? detail
+        : code || detail || `Oil vision extraction failed (${response.status}).`
     );
   }
 
@@ -1147,6 +1455,8 @@ export async function extractOilReportFromImage(
 /* ------------------------------------------------------------------ */
 
 export interface MasterVisionParse {
+  provider?: string;
+  providerId?: string;
   model: string;
   parsed: Record<string, unknown>;
 }
@@ -1156,10 +1466,209 @@ export interface MasterVisionLoopResult {
   upstreamStatus: number | null;
 }
 
+/* ------------------------------------------------------------------ */
+/* AR-23c peaks amendment: vibration peaks-aware chain control        */
+/* (local mirrors of vibrationVisionExtractor helpers — importing     */
+/* would be circular, classification order must stay identical)       */
+/* ------------------------------------------------------------------ */
+
+type VibPeaksKind =
+  | "overallVelocity"
+  | "peakAccel"
+  | "rpm"
+  | "amp1x"
+  | "severity"
+  | "spectral";
+
+function normalizeVibHeaderForPeaks(h: unknown): string {
+  if (!h) return "";
+  return String(h)
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[):]/g, "")
+    .trim();
+}
+
+/** Mirrors vibrationVisionExtractor.resolveVibKind — classification order matters. */
+function vibKindForPeaks(h: unknown): VibPeaksKind | null {
+  const n = normalizeVibHeaderForPeaks(h);
+  if (!n) return null;
+  if (/(^|[^a-z])1x(\b|$)|1x amplitude|1x velocity|fundamental|running speed.*1x/i.test(n)) {
+    if (/amplitude|velocity|fundamental/.test(n)) return "amp1x";
+  }
+  if (/overall velocity|velocity|in\/s|mm\/s/.test(n)) return "overallVelocity";
+  if (/accel|g'?s|g-pk|peak accel/.test(n)) return "peakAccel";
+  if (/rpm|\bcpm\b|running speed|speed/.test(n)) return "rpm";
+  if (/\b1x\b|1 x|fundamental|order/.test(n)) return "amp1x";
+  if (/severity|alarm|status|condition/.test(n)) return "severity";
+  if (/hz|\bcp|\bfreq|peak|order|bp[foi]|fft|spectr|amplitude/.test(n)) return "spectral";
+  return null;
+}
+
+/* --- AR-23d peak sanity: amplitude, axis endpoint, interior-maximum rules --- */
+
+/** Amplitude of a spectral-peak row, parsed from header/unit/value text ("Hz @ 0.250 in/s"). */
+function peakAmplitudeOf(row: Record<string, unknown>): number | null {
+  const parts: string[] = [];
+  if (typeof row.header === "string") parts.push(row.header);
+  if (typeof row.unit_as_read === "string") parts.push(row.unit_as_read);
+  if (typeof row.value === "string") parts.push(row.value);
+  const text = parts.join(" ");
+  const m = /(?:^|[^a-z])(?:amp(?:litude)?|@)\s*[:=]?\s*(\d+(?:\.\d+)?)/i.exec(text);
+  if (!m || m[1] === undefined) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Peak number of a "Spectral peak <n>" header, or null. */
+function spectralPeakKey(h: unknown): string | null {
+  const m = /spectral peak\s*(\d+)/.exec(normalizeVibHeaderForPeaks(h));
+  return m && m[1] !== undefined ? m[1] : null;
+}
+
+/** A spectral row that states an amplitude rather than a frequency ("Spectral peak 1 amplitude"). */
+function isSpectralAmpRow(h: unknown): boolean {
+  return /amplitude|\bamp\b/.test(normalizeVibHeaderForPeaks(h));
+}
+
+/** Best-effort printed axis maximum (fmax) from axis-endpoint rows; null when unknown. */
+function axisMaxOf(parsed: Record<string, unknown>): number | null {
+  const rows: unknown = parsed.raw_table;
+  if (!Array.isArray(rows)) return null;
+  let max: number | null = null;
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    const n = normalizeVibHeaderForPeaks(raw.header);
+    if (!/(axis|fmax|full scale|frequency range)/.test(n)) continue;
+    if (!/(max|maximum|end|upper|limit|\bto\b)/.test(n)) continue;
+    const v = finiteNum(raw.value);
+    if (v != null && v > 0 && (max == null || v > max)) max = v;
+  }
+  return max;
+}
+
+/**
+ * Valid spectral-peak rows: interior positive frequency (strictly below the
+ * printed axis maximum when known) WITH a printed amplitude (inline in the
+ * row, or on a matching "Spectral peak n amplitude" sibling row). Axis ticks,
+ * the 0 origin, bare frequencies and amplitude-less rows are all rejected —
+ * a parse whose spectral rows are all invalid counts as having no peaks.
+ */
+function validSpectralPeakRows(parsed: Record<string, unknown>): Record<string, unknown>[] {
+  const rows: unknown = parsed.raw_table;
+  if (!Array.isArray(rows)) return [];
+  const axisMax = axisMaxOf(parsed);
+  const ampByKey = new Map<string, number>();
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    if (vibKindForPeaks(raw.header) !== "spectral") continue;
+    if (!isSpectralAmpRow(raw.header)) continue;
+    const key = spectralPeakKey(raw.header);
+    const amp = finiteNum(raw.value);
+    if (key != null && amp != null && amp > 0) ampByKey.set(key, amp);
+  }
+  const valid: Record<string, unknown>[] = [];
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    if (vibKindForPeaks(raw.header) !== "spectral") continue;
+    if (isSpectralAmpRow(raw.header)) continue;
+    const freq = finiteNum(raw.value);
+    if (freq == null || freq <= 0) continue;
+    if (axisMax != null && freq >= axisMax) continue;
+    const inline = peakAmplitudeOf(raw);
+    const key = spectralPeakKey(raw.header);
+    const amp = inline ?? (key != null ? (ampByKey.get(key) ?? null) : null);
+    if (amp == null || amp <= 0) continue;
+    valid.push(raw);
+  }
+  return valid;
+}
+
+/**
+ * Peak-frequency list for one parse — local mirror of the spectral-row branch of
+ * vibrationVisionExtractor.mapVibrationTranscription, plus AR-23d sanity:
+ * only amplitude-labelled interior peaks count; ticks and bare freqs are never
+ * peaks. Null when raw_table has no valid spectral rows.
+ */
+function parsePeaks(parsed: Record<string, unknown>): (number | string)[] | null {
+  const freqs: number[] = [];
+  for (const row of validSpectralPeakRows(parsed)) {
+    const v = finiteNum(row.value);
+    if (v != null) freqs.push(v);
+  }
+  return freqs.length > 0 ? freqs : null;
+}
+
+/**
+ * AR-23d: strip invalid spectral rows (axis ticks, endpoints, bare freqs,
+ * amplitude-only rows) from a VIBRATION parse so they can never surface as
+ * peaks — flagged or otherwise — in mapVibrationTranscription downstream.
+ */
+function sanitizeVibrationSpectralRows(parsed: Record<string, unknown>): Record<string, unknown> {
+  if (!isVibrationParse(parsed)) return parsed;
+  const rows: unknown = parsed.raw_table;
+  if (!Array.isArray(rows)) return parsed;
+  const validRows = new Set(validSpectralPeakRows(parsed));
+  const kept: unknown[] = [];
+  let dropped = 0;
+  for (const raw of rows) {
+    if (isRecord(raw) && vibKindForPeaks(raw.header) === "spectral") {
+      if (!validRows.has(raw)) {
+        dropped += 1;
+        continue;
+      }
+    }
+    kept.push(raw);
+  }
+  if (dropped === 0) return parsed;
+  console.info(
+    `[vision] peak sanity: dropped ${dropped} invalid spectral row(s) (axis tick / endpoint / missing amplitude)`
+  );
+  return { ...parsed, raw_table: kept };
+}
+
+/** Mirrors vibrationVisionExtractor.numClose merge tolerance. */
+function peaksNumClose(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(0.01 * Math.abs(a), 0.05);
+}
+
+function isVibrationParse(parsed: Record<string, unknown>): boolean {
+  return (
+    typeof parsed.detected_technology === "string" &&
+    parsed.detected_technology.toUpperCase() === "VIBRATION"
+  );
+}
+
+/** First element of a parse's peak list as a number, or null when absent/non-numeric. */
+function firstPeakOf(parse: MasterVisionParse): number | null {
+  const peaks = parsePeaks(parse.parsed);
+  if (!peaks || peaks.length === 0) return null;
+  return finiteNum(peaks[0]);
+}
+
+/** Two parses agree when both carry peaks and their first peaks are within merge tolerance. */
+function peaksAgree(a: MasterVisionParse, b: MasterVisionParse): boolean {
+  const pa = firstPeakOf(a);
+  const pb = firstPeakOf(b);
+  return pa != null && pb != null && peaksNumClose(pa, pb);
+}
+
+/** Earliest peaks-agreeing pair, or null. Vibration finalize only reads [0]/[1]. */
+function findAgreedPeaksPair(parses: MasterVisionParse[]): [number, number] | null {
+  for (let i = 0; i < parses.length; i += 1) {
+    for (let j = i + 1; j < parses.length; j += 1) {
+      if (peaksAgree(parses[i], parses[j])) return [i, j];
+    }
+  }
+  return null;
+}
+
 /**
  * Runs the master-vision model cascade once and returns every successful parse
- * (up to two — gpt-4o + gemini) for downstream per-technology consensus. Shared
- * by both the oil and vibration extractors so the model is only called once.
+ * for downstream per-technology consensus — two parses normally, or exactly the
+ * peaks-agreeing pair / a degraded single peaks parse when the lead parse is
+ * VIBRATION (AR-23c peaks amendment). Shared by both the oil and vibration
+ * extractors so the model is only called once.
  */
 export async function runMasterVisionModelLoop(input: {
   imageBase64: string;
@@ -1180,178 +1689,170 @@ export async function runMasterVisionModelLoop(input: {
   logPayloadSize("masterVisionLoop", imageUrl);
 
   const useLmStudio = isLmStudioDevMode();
-  if (!useLmStudio && !hasOpenRouterKey()) {
-    const e = new Error("OPENROUTER_API_KEY missing");
+  const { candidates, skipped } = buildVisionCandidates(useLmStudio, input.models);
+  console.info(
+    "[vision] chain:",
+    candidates.length > 0
+      ? candidates.map((c) => `${c.spec.id}/${c.model}`).join(" -> ")
+      : "(none)",
+    skipped.length > 0
+      ? `| skipped: ${skipped.map((s) => `${s.label} (${s.envKey})`).join(", ")}`
+      : ""
+  );
+
+  if (candidates.length === 0) {
+    const e = new Error(buildVisionFailureMessage([], skipped));
     logPipelineFail("masterVisionLoop", startTime, e);
-    return { parses: [], lastError: e, upstreamStatus: null };
+    throw e;
   }
 
-  const upstreamUrl = useLmStudio
-    ? process.env.LM_STUDIO_ENDPOINT!
-    : `${OPENROUTER_API_BASE}/chat/completions`;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (!useLmStudio) {
-    headers.Authorization = `Bearer ${process.env.OPENROUTER_API_KEY!.trim()}`;
-    Object.assign(headers, openRouterRefererHeaders());
-  }
-  const modelsToTry = (
-    useLmStudio
-      ? [process.env.LM_STUDIO_MODEL || OIL_VISION_MODELS[0]]
-      : input.models && input.models.length > 0
-        ? input.models
-        : [...OIL_VISION_MODELS]
-  ).filter((m, i, arr) => arr.indexOf(m) === i);
   const maxTokens = 6000;
-  const totalCandidates = modelsToTry.length;
+  const successes: MasterVisionParse[] = [];
+  const attempts: VisionAttemptRecord[] = [];
+  let lastError: unknown = null;
+  let upstreamStatus: number | null = null;
 
-  // --- Race-to-two state machine (first-two-wins consensus) ---
-  // Each candidate runs as an independent worker with its own AbortController.
-  // The outer promise resolves as soon as 2 parses succeed (consensus) or as
-  // soon as only 1 can ever succeed (degraded fallback), canceling stragglers.
-  return new Promise<MasterVisionLoopResult>((resolve, reject) => {
-    const successes: MasterVisionParse[] = [];
-    const controllers = new Map<string, AbortController>();
-    let failureCount = 0;
-    let resolved = false;
-    let lastError: unknown;
-    let upstreamStatus: number | null = null;
-
-    const abortAllPending = () => {
-      for (const ctrl of controllers.values()) {
-        try {
-          ctrl.abort();
-        } catch {
-          /* noop */
-        }
-      }
-    };
-
-    if (totalCandidates === 0) {
-      resolved = true;
-      logPipelineFail(
-        "masterVisionLoop",
-        startTime,
-        new Error("no vision models configured")
-      );
-      reject(new Error("No vision models configured for extraction."));
-      return;
+  // --- Sequential key-gated chain (AR-23c, peaks amendment) ---
+  // Walks providers in probed-live order. A non-VIBRATION lead parse keeps
+  // the classic rule: stop at the first TWO successful parses. A VIBRATION
+  // lead parse switches the chain into peaks mode: it only stops when two
+  // parses AGREE on a non-null first peak (merge tolerance); otherwise it
+  // advances past every pair — escalation through gpt-4o / OpenRouter —
+  // ending either degraded-single (some parse carries peaks) or VISION_FAILED
+  // with the per-provider list (chain exhausted, peaks still null).
+  for (const candidate of candidates) {
+    const leading = successes[0];
+    const vibrationMode = leading !== undefined && isVibrationParse(leading.parsed);
+    if (vibrationMode) {
+      if (findAgreedPeaksPair(successes) !== null) break;
+    } else if (successes.length >= 2) {
+      break;
     }
-
-    const evaluate = () => {
-      if (resolved) return;
-      if (successes.length === 2) {
-        resolved = true;
-        abortAllPending();
+    const { spec, model } = candidate;
+    let attemptStatus: number | null = null;
+    try {
+      const { status, body } = await callVisionProvider(candidate, imageUrl, maxTokens);
+      attemptStatus = status;
+      upstreamStatus = status;
+      logPipelineSend(`provider:${spec.id}`, { model, httpStatus: status });
+      if (status < 200 || status >= 300) {
+        throw new VisionHttpError(status, upstreamReason(body, status));
+      }
+      let json: Record<string, unknown>;
+      try {
+        json = parseBodyJson(body);
+      } catch {
+        throw new Error("response body is not JSON");
+      }
+      const text =
+        spec.transport === "gemini" ? readGeminiText(json) : readOpenAiContent(json);
+      if (!text) {
+        throw new Error(`Vision model ${model} returned no text content.`);
+      }
+      // Parse guard — only a successfully fetched AND parsed payload counts.
+      console.info("[vision] model:", model, "raw:", text);
+      const cleanedJson = salvageJsonString(text);
+      console.info("[vision] salvaged:", cleanedJson);
+      if (!cleanedJson || !cleanedJson.startsWith("{") || !cleanedJson.endsWith("}")) {
+        throw new Error("no JSON object in vision response");
+      }
+      successes.push({
+        provider: spec.label,
+        providerId: spec.id,
+        model,
+        parsed: sanitizeVibrationSpectralRows(parseMasterJsonStrict(cleanedJson))
+      });
+      console.info(`[vision] attempt ok: ${spec.label} ${model} http=${status}`);
+      console.info(
+        `[vision] answering provider: ${spec.label} (${spec.id}) model=${model} http=${status}`
+      );
+      const lead = successes[0];
+      if (lead !== undefined && isVibrationParse(lead.parsed)) {
+        const pair = findAgreedPeaksPair(successes);
+        if (pair) {
+          console.info(
+            `[vision] consensus locked (peaks): ${successes[pair[0]].model} + ${successes[pair[1]].model}; provider chain stopped`
+          );
+        } else {
+          console.info(
+            `[vision] vibration peaks not yet agreed (successes=${successes.length}); advancing chain`
+          );
+        }
+      } else if (successes.length === 2) {
+        const a = successes[0];
+        const b = successes[1];
         console.info(
-          `[vision] consensus locked: ${successes[0].model} + ${successes[1].model}; stragglers canceled`
-        );
-        resolve({ parses: successes, lastError, upstreamStatus });
-      } else if (successes.length === 1 && totalCandidates - failureCount < 2) {
-        resolved = true;
-        abortAllPending();
-        console.warn("[vision] degraded single-model fallback; stragglers canceled");
-        resolve({ parses: successes, lastError, upstreamStatus });
-      } else if (failureCount === totalCandidates) {
-        resolved = true;
-        logPipelineFail(
-          "masterVisionLoop",
-          startTime,
-          lastError || new Error("no content")
-        );
-        reject(
-          new Error(
-            lastError instanceof Error
-              ? `Vision extraction failed: ${lastError.message}`
-              : "All vision models failed to return a parseable report format."
-          )
+          `[vision] consensus locked: ${a ? a.model : "?"} + ${b ? b.model : "?"}; provider chain stopped`
         );
       }
-    };
-
-    const launchWorker = (tryModel: string) => {
-      const controller = new AbortController();
-      controllers.set(tryModel, controller);
-      (async () => {
-        let text: string | null = null;
-        try {
-          const upstream = await fetch(upstreamUrl, {
-            method: "POST",
-            headers,
-            signal: controller.signal,
-            body: JSON.stringify({
-              model: tryModel,
-              max_tokens: maxTokens,
-              temperature: 0.0,
-              ...(useLmStudio ? {} : { response_format: { type: "json_object" } }),
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    { type: "image_url", image_url: { url: imageUrl } },
-                    { type: "text", text: MASTER_VISION_PROMPT }
-                  ]
-                }
-              ]
-            })
-          });
-          upstreamStatus = upstream.status;
-          const upstreamJson = (await upstream.json().catch(() => ({}))) as Record<
-            string,
-            unknown
-          >;
-          if (!upstream.ok) {
-            throw new Error(
-              (typeof upstreamJson.error === "string" && upstreamJson.error) ||
-                `Vision provider HTTP ${upstream.status} (${tryModel})`
-            );
-          }
-          const choices = upstreamJson.choices;
-          const first =
-            Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
-              ? (choices[0] as { message?: { content?: string } })
-              : null;
-          const candidate =
-            first?.message?.content ||
-            (typeof upstreamJson.content === "string" ? upstreamJson.content : null);
-          if (!candidate || typeof candidate !== "string") {
-            throw new Error(`Vision model ${tryModel} returned no text content.`);
-          }
-          text = candidate;
-          // Parse guard — only a successfully fetched AND parsed payload counts.
-          console.info("[vision] model:", tryModel, "raw:", text);
-          const cleanedJson = salvageJsonString(text);
-          console.info("[vision] salvaged:", cleanedJson);
-          if (
-            !cleanedJson ||
-            !cleanedJson.startsWith("{") ||
-            !cleanedJson.endsWith("}")
-          ) {
-            throw new Error("no JSON object in vision response");
-          }
-          successes.push({
-            model: tryModel,
-            parsed: parseMasterJsonStrict(cleanedJson) as Record<string, unknown>
-          });
-          evaluate();
-        } catch (err) {
-          // Error guard — silently swallow aborts (straggler cancellation),
-          // count genuine failures so the state machine can degrade/reject.
-          const aborted =
-            err instanceof Error &&
-            (err.name === "AbortError" || err.message.toLowerCase().includes("aborted"));
-          if (aborted) return;
-          failureCount += 1;
-          lastError = err;
-          console.warn(`[masterVisionLoop] Model ${tryModel} failed:`, err);
-          evaluate();
-        }
-      })().catch(() => {
-        /* errors handled inside the worker */
+    } catch (err) {
+      const httpStatus = err instanceof VisionHttpError ? err.httpStatus : attemptStatus;
+      const reason =
+        err instanceof VisionHttpError
+          ? err.reason
+          : err instanceof Error && err.message
+            ? err.message
+            : String(err);
+      attempts.push({
+        providerLabel: spec.label,
+        providerId: spec.id,
+        model,
+        httpStatus,
+        reason: clipReason(reason)
       });
-    };
+      lastError = err;
+      console.warn(
+        `[vision] attempt failed: ${spec.label} ${model} http=${httpStatus ?? "n/a"} reason=${clipReason(reason)}`
+      );
+    }
+  }
 
-    modelsToTry.forEach(launchWorker);
-  });
+  const leadParse = successes[0];
+  if (leadParse !== undefined && isVibrationParse(leadParse.parsed)) {
+    const pair = findAgreedPeaksPair(successes);
+    if (pair) {
+      return {
+        parses: [successes[pair[0]], successes[pair[1]]],
+        lastError,
+        upstreamStatus
+      };
+    }
+    let peaksParse: MasterVisionParse | null = null;
+    for (const p of successes) {
+      if (parsePeaks(p.parsed) !== null) peaksParse = p;
+    }
+    if (peaksParse) {
+      console.warn(
+        `[vision] no provider pair agreed on vibration peaks; degraded single-parse fallback: ${peaksParse.model}`
+      );
+      return { parses: [peaksParse], lastError, upstreamStatus };
+    }
+    // Chain exhausted with every parse peaks-null: honest VISION_FAILED with
+    // the per-provider list — the HTTP-200 successes are reported too.
+    for (const s of successes) {
+      attempts.push({
+        providerLabel: s.provider ?? "unknown",
+        providerId: s.providerId ?? "unknown",
+        model: s.model,
+        httpStatus: 200,
+        reason: "no spectral peaks in response"
+      });
+    }
+    const vibFailure = new Error(buildVisionFailureMessage(attempts, skipped));
+    logPipelineFail("masterVisionLoop", startTime, vibFailure);
+    throw vibFailure;
+  }
+
+  if (successes.length > 0) {
+    if (successes.length === 1) {
+      console.warn("[vision] degraded single-model fallback; provider chain exhausted");
+    }
+    return { parses: successes, lastError, upstreamStatus };
+  }
+
+  const failure = new Error(buildVisionFailureMessage(attempts, skipped));
+  logPipelineFail("masterVisionLoop", startTime, failure);
+  throw failure;
 }
 
 /** Oil finalizer — consumes a set of master parses and returns oil-shaped data. */
@@ -1384,7 +1885,12 @@ export function finalizeOilFromParses(
   const primary = parses[0];
   const modelIds = parses.map((p) => p.model);
   const usedModel = primary.model;
-  console.info("[vision] extraction succeeded using model(s):", modelIds.join(" + "));
+  console.info(
+    "[vision] extraction succeeded using provider/model:",
+    parses
+      .map((p) => `${p.provider ?? "unknown"}/${p.model}`)
+      .join(" + ")
+  );
 
   const detectedTech = typeof primary.parsed.detected_technology === "string"
     ? primary.parsed.detected_technology.toUpperCase()

@@ -48,7 +48,13 @@ Output compact single-line JSON with no comments and no markdown.
 Before finalizing, silently re-read each header-to-value mapping. Include root "warnings" array: anomalous-but-printed values, deviant header matches, unreconciled cells.
 
 7. FINAL STRUCTURE
-{ "detected_technology": "OIL|VIBRATION|THERMOGRAPHY|ULTRASOUND|MCA|UNKNOWN", "data": { "oil": {}, "vibration": {}, "thermography": {}, "ultrasound": {}, "mca": {} }, "extra": {...}, "warnings": [], "raw_table": [...] }`;
+{ "detected_technology": "OIL|VIBRATION|THERMOGRAPHY|ULTRASOUND|MCA|UNKNOWN", "data": { "oil": {}, "vibration": {}, "thermography": {}, "ultrasound": {}, "mca": {} }, "extra": {...}, "warnings": [], "raw_table": [...] }
+
+8. SPECTRUM / FFT CHARTS (VIBRATION SCREENSHOTS)
+- A vibration spectrum, FFT, envelope, or time-waveform chart is NOT a table: transcribe printed spectral PEAKS into raw_table, never the axis scale.
+- A real peak is an INTERIOR maximum printed with BOTH a frequency and an amplitude. Axis ticks are scale, not measurements: NEVER emit the 0 origin, the axis maximum (fmax), or the evenly spaced round numbers along an axis as spectral peaks. NEVER emit a peak whose amplitude is not printed.
+- Emit ONE raw_table row per printed peak, header exactly "Spectral peak <n>" (n = 1, 2, 3...), value = frequency number as printed, unit_as_read = "<x unit> @ <amplitude> <y unit>": { "header": "Spectral peak 1", "value": 58.83, "unit_as_read": "Hz @ 0.250 in/s", "operator": null }.
+- If a visible spike has no printed amplitude, do NOT emit it; add warning "peak without printed amplitude omitted". If no amplitude-labelled interior peak exists, emit no "Spectral peak" rows and add warning "no amplitude-labelled spectral peaks visible".`;
 
 /* ------------------------------------------------------------------ */
 /* TypeScript types for the master prompt's per-technology schemas    */
