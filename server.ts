@@ -1864,7 +1864,7 @@ app.post(OIL_VISION_API_PATH, async (req, res) => {
       httpStatus?: number;
       detail?: string;
       flaggedFields?: string[];
-      extractionMode?: "consensus" | "single";
+      extractionMode?: "consensus" | "single" | "geometry-estimate";
       consensusModels?: string[];
     }
     let outcome: AnyVisionOutcome = finalizeVibrationFromParses(parses, lastError, baseInput);

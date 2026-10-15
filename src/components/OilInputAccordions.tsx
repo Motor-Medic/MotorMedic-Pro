@@ -481,6 +481,7 @@ export default function OilInputAccordions({
       const extractionMode = (data as unknown as Record<string, unknown>).extractionMode as
         | "consensus"
         | "single"
+        | "geometry-estimate"
         | undefined;
       const extractedFlagged = ((data as unknown as Record<string, unknown>).flaggedFields as
         | string[]
@@ -494,6 +495,10 @@ export default function OilInputAccordions({
           extractedFlagged.length > 0
             ? `${extractedFlagged.length} field(s) flagged for review (models disagreed).`
             : "both models agreed — no flags.";
+      } else if (extractionMode === "geometry-estimate") {
+        // Oil extraction never emits this mode (AR-23e is vibration-only);
+        // the exhaustive branch exists so a stray value is never mislabelled.
+        statusSuffix = "geometry-estimate extraction — derived, not measured.";
       } else {
         statusSuffix = "single-model extraction — review all fields.";
       }

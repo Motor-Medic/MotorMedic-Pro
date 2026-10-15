@@ -28,8 +28,13 @@ export interface ExtractedVibrationData {
   rpm?: number;
   spectralPeaks: Array<{
     frequency: number;
-    amplitude: number;
+    /** Null for AR-23e freq-only geometry estimates — never fabricated. */
+    amplitude: number | null;
     order?: number;
+    /** AR-23e provenance tag, e.g. "geometry (RPM/60)". */
+    source?: string;
+    confidence?: number;
+    estimated?: boolean;
   }>;
   envelopingPeaks?: Array<{
     frequency: number;

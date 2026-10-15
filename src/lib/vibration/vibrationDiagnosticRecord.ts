@@ -5,6 +5,7 @@
 
 import type { ExtractedVibrationData } from "./vibrationImageExtractor";
 import type { SavedAnalysisResult } from "../analysisPersistence";
+import type { VisionExtractionMode } from "../oilVisionExtractor";
 import {
   metricsFromWaveformSamples,
   normalizeWaveformMetrics
@@ -26,9 +27,14 @@ export interface VibrationTrendBroadband {
 
 export interface VibrationTrendPoint {
   frequency: number;
-  amplitude: number;
+  /** Null for AR-23e freq-only geometry estimates — never fabricated. */
+  amplitude: number | null;
   /** Present for enveloping / bearing-band points (BPFO, BPFI, …). */
   label?: string;
+  /** AR-23e provenance tag, e.g. "geometry (RPM/60)". */
+  source?: string;
+  estimated?: boolean;
+  confidence?: number;
 }
 
 export interface VibrationWaveformPoint {
@@ -67,6 +73,8 @@ export interface VibrationDiagnosticRecord {
     loadFactorPercent: number | null;
     analysisType: "vibration";
   };
+  /** AR-23e: how the spectral peaks were obtained ("consensus" | "single" | "geometry-estimate"). */
+  extractionMode?: VisionExtractionMode;
   metadata?: {
     sourceImage?: string;
     extractionConfidence?: number;
@@ -104,7 +112,9 @@ function envelopingFromExtracted(
     );
     rows.push({
       frequency: hz,
-      amplitude: near?.amplitude ?? 0.05,
+      // A matched freq-only geometry peak keeps its null amplitude (AR-23e) —
+      // the 0.05 placeholder applies only when no spectral match exists.
+      amplitude: near ? near.amplitude : 0.05,
       label
     });
   };
@@ -125,6 +135,8 @@ export function buildVibrationDiagnosticRecord(params: {
   healthScore?: number | null;
   primaryFault?: string | null;
   timestamp?: string;
+  /** AR-23e: persisted so downstream views badge estimates honestly. */
+  extractionMode?: VisionExtractionMode;
 }): VibrationDiagnosticRecord {
   const { extracted, assetId } = params;
   const velocity = finite(extracted.overallVelocity, 0);
@@ -160,7 +172,10 @@ export function buildVibrationDiagnosticRecord(params: {
 
   const spectral = (extracted.spectralPeaks || []).map((p) => ({
     frequency: p.frequency,
-    amplitude: p.amplitude
+    amplitude: p.amplitude,
+    ...(p.source ? { source: p.source } : {}),
+    ...(p.estimated ? { estimated: true } : {}),
+    ...(p.confidence != null ? { confidence: p.confidence } : {})
   }));
 
   const enveloping =
@@ -263,6 +278,7 @@ export function buildVibrationDiagnosticRecord(params: {
       loadFactorPercent: null,
       analysisType: "vibration"
     },
+    ...(params.extractionMode ? { extractionMode: params.extractionMode } : {}),
     metadata: {
       sourceImage: extracted.sourceImage,
       extractionConfidence: extracted.extractionConfidence,
@@ -410,8 +426,13 @@ function recordFromUnknown(raw: unknown): VibrationDiagnosticRecord | null {
         const row = p as Record<string, unknown>;
         return {
           frequency: finite(row.frequency),
-          amplitude: finite(row.amplitude),
-          ...(typeof row.label === "string" ? { label: row.label } : {})
+          amplitude: row.amplitude == null ? null : finite(row.amplitude),
+          ...(typeof row.label === "string" ? { label: row.label } : {}),
+          ...(typeof row.source === "string" ? { source: row.source } : {}),
+          ...(row.estimated === true ? { estimated: true } : {}),
+          ...(Number.isFinite(Number(row.confidence)) && row.confidence != null
+            ? { confidence: Number(row.confidence) }
+            : {})
         };
       }),
     enveloping: enveloping
@@ -440,6 +461,11 @@ function recordFromUnknown(raw: unknown): VibrationDiagnosticRecord | null {
       : {}),
     ...(Number.isFinite(Number(o.rpm)) ? { rpm: Number(o.rpm) } : {}),
     component: (o.component as string | null) ?? null,
+    ...(o.extractionMode === "geometry-estimate" ||
+    o.extractionMode === "consensus" ||
+    o.extractionMode === "single"
+      ? { extractionMode: o.extractionMode }
+      : {}),
     ...(o.waveformMetrics && typeof o.waveformMetrics === "object"
       ? {
           waveformMetrics: {
@@ -502,10 +528,14 @@ export function extractVibrationRecordFromAnalysis(
             const row = p as Record<string, unknown>;
             return {
               frequency: finite(row.frequency),
-              amplitude: finite(row.amplitude)
+              amplitude: row.amplitude == null ? null : finite(row.amplitude),
+              ...(typeof row.source === "string" ? { source: row.source } : {}),
+              ...(row.estimated === true ? { estimated: true } : {})
             };
           })
-          .filter((p) => p.frequency > 0 || p.amplitude > 0);
+          .filter(
+            (p) => p.frequency > 0 || (p.amplitude != null && p.amplitude > 0)
+          );
       }
       return merged;
     }
@@ -566,13 +596,13 @@ export interface EnvelopingTrendPoint {
 }
 
 function amplitudeForLabel(
-  points: Array<{ frequency: number; amplitude: number; label?: string }>,
+  points: Array<{ frequency: number; amplitude: number | null; label?: string }>,
   label: string
 ): number | null {
   const hit = points.find((p) =>
     String(p.label || "").toUpperCase().includes(label.toUpperCase())
   );
-  if (!hit || !(hit.amplitude > 0)) return null;
+  if (!hit || hit.amplitude == null || !(hit.amplitude > 0)) return null;
   return hit.amplitude;
 }
 

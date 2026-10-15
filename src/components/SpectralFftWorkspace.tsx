@@ -11,6 +11,10 @@ import {
   YAxis
 } from "recharts";
 import type { VibrationDiagnosticRecord } from "../lib/vibration/vibrationDiagnosticRecord";
+import {
+  ESTIMATED_PEAK_BADGE,
+  isEstimatedExtractionMode
+} from "../lib/oilVisionExtractor";
 
 const REFERENCE_SPECTRUM = [
   { frequency: 10, amplitude: 0.05 },
@@ -63,29 +67,55 @@ export default function SpectralFftWorkspace({
 
   const activeSpectralData = useMemo(() => {
     if (record?.spectral && record.spectral.length > 0) {
-      return record.spectral.map((p) => ({
-        frequency: p.frequency,
-        amplitude: p.amplitude
-      }));
+      // Amplitude chart: freq-only geometry estimates (amplitude null) never
+      // plot a fabricated y — they surface in the peak table with a dash.
+      const withAmplitude: { frequency: number; amplitude: number }[] = [];
+      for (const p of record.spectral) {
+        if (p.amplitude != null && Number.isFinite(p.amplitude)) {
+          withAmplitude.push({ frequency: p.frequency, amplitude: p.amplitude });
+        }
+      }
+      if (withAmplitude.length > 0) return withAmplitude;
     }
     return REFERENCE_SPECTRUM.map((p) => ({ ...p }));
   }, [record]);
-
   const h1 = referenceRPM / 60;
   const h2 = h1 * 2;
   const h3 = h1 * 3;
   const h4 = h1 * 4;
 
   const topPeaks = useMemo(() => {
-    return [...activeSpectralData]
-      .sort((a, b) => b.amplitude - a.amplitude)
+    // Table peaks: the record's spectral points as stored — including
+    // freq-only geometry estimates (amplitude null) with their provenance.
+    const points: Array<{
+      frequency: number;
+      amplitude: number | null;
+      estimated: boolean;
+      source?: string;
+    }> = [];
+    if (record?.spectral && record.spectral.length > 0) {
+      for (const p of record.spectral) {
+        points.push({
+          frequency: p.frequency,
+          amplitude: p.amplitude,
+          estimated: p.estimated === true,
+          ...(p.source ? { source: p.source } : {})
+        });
+      }
+    } else {
+      for (const p of activeSpectralData) {
+        points.push({ frequency: p.frequency, amplitude: p.amplitude, estimated: false });
+      }
+    }
+    return points
+      .sort((a, b) => (b.amplitude ?? -Infinity) - (a.amplitude ?? -Infinity))
       .slice(0, 3)
       .sort((a, b) => a.frequency - b.frequency)
       .map((peak) => ({
         ...peak,
         harmonicOrder: h1 > 0 ? peak.frequency / h1 : 0
       }));
-  }, [activeSpectralData, h1]);
+  }, [record, activeSpectralData, h1]);
 
   return (
     <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-6">
@@ -243,8 +273,13 @@ export default function SpectralFftWorkspace({
 
       <div className="bg-slate-800/60 border border-slate-700 rounded-xl overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2">
-          <h4 className="text-sm font-semibold text-cyan-300">
+          <h4 className="text-sm font-semibold text-cyan-300 inline-flex items-center gap-2">
             Peak Analysis &amp; Physics Proof
+            {isEstimatedExtractionMode(record?.extractionMode) && (
+              <span className="inline-flex items-center rounded border border-amber-400/50 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-300">
+                {ESTIMATED_PEAK_BADGE}
+              </span>
+            )}
           </h4>
           <span className="text-[10px] text-slate-500 font-mono">
             Top 3 amplitude peaks · order = f / 1X
@@ -270,7 +305,7 @@ export default function SpectralFftWorkspace({
                     {peak.frequency.toFixed(2)}
                   </td>
                   <td className="px-4 py-3 text-emerald-400 font-mono">
-                    {peak.amplitude.toFixed(3)}
+                    {peak.amplitude != null ? peak.amplitude.toFixed(3) : "—"}
                   </td>
                   <td className="px-4 py-3 text-yellow-400 font-mono font-semibold">
                     {peak.harmonicOrder.toFixed(2)}×
@@ -283,6 +318,12 @@ export default function SpectralFftWorkspace({
             </tbody>
           </table>
         </div>
+        {isEstimatedExtractionMode(record?.extractionMode) && (
+          <p className="px-4 py-2 text-[10px] text-amber-300/90 bg-amber-500/5 border-t border-amber-500/20">
+            Peak frequencies derived from chart geometry (RPM/60) — not
+            measurements. Amplitude shown only when the chart printed a scale.
+          </p>
+        )}
       </div>
     </div>
   );

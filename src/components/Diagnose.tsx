@@ -85,6 +85,11 @@ import {
   type VibrationReportData
 } from "../lib/vibrationVisionExtractor";
 import {
+  ESTIMATED_PEAK_BADGE,
+  GEOMETRY_PEAK_CONFIDENCE_CAP,
+  isEstimatedExtractionMode
+} from "../lib/oilVisionExtractor";
+import {
   SPECTRAL_EXTRACTION_FAILED_MSG,
   SPECTRAL_EXTRACTION_TIMEOUT_MSG,
   VISION_MODEL_CONFIG
@@ -1715,6 +1720,7 @@ export default function Diagnose({
   const [vibrationExtractSummary, setVibrationExtractSummary] = useState<{
     peakCount: number;
     confidence: number;
+    extractionMode?: "consensus" | "single" | "geometry-estimate";
   } | null>(null);
   const [vibSeverity, setVibSeverity] = useState<string>("");
   const [vibFlaggedFields, setVibFlaggedFields] = useState<string[]>([]);
@@ -2796,6 +2802,15 @@ useEffect(() => {
       doc.setFontSize(12);
       doc.text("Identified Faults", 14, y);
       y += 7;
+      if (isEstimatedExtractionMode(vibrationTrendRecordRef.current?.extractionMode)) {
+        doc.setFontSize(9);
+        doc.text(
+          `${ESTIMATED_PEAK_BADGE}: peak frequencies derived from chart geometry (RPM/60) - not measurements`,
+          14,
+          y
+        );
+        y += 5;
+      }
       if (!analysisResult) {
         doc.setFontSize(9);
         doc.text(DIAGNOSE_SAMPLE_DATASET, 14, y);
@@ -3933,16 +3948,31 @@ useEffect(() => {
 
       const filledKeys = [vr.overallVelocityRms, vr.peakAccelerationG, vr.runningSpeedRpm, vr.amplitude1x, vr.severity];
       const filledCount = filledKeys.filter((x) => x != null).length;
-      const confidenceScore = Math.round((filledCount / 5) * 100);
+      // AR-23e — geometry-estimate confidence is hard-capped below the
+      // measured baseline so an estimate can never read as a measurement.
+      const rawConfidence = Math.round((filledCount / 5) * 100);
+      const confidenceScore = isEstimatedExtractionMode(vr.extractionMode)
+        ? Math.min(rawConfidence, GEOMETRY_PEAK_CONFIDENCE_CAP)
+        : rawConfidence;
       vr.confidenceScore = confidenceScore;
 
       if (filledCount === 0) {
         throw new Error(SPECTRAL_EXTRACTION_FAILED_MSG);
       }
 
-      const spectralPeaks = (vr.peakFrequencies ?? [])
-        .map((f) => ({ frequency: Number(f) || 0, amplitude: 0 }))
-        .filter((p) => p.frequency > 0);
+      const spectralPeaks = isEstimatedExtractionMode(vr.extractionMode) &&
+        vr.geometryPeaks &&
+        vr.geometryPeaks.length > 0
+        ? vr.geometryPeaks.map((p) => ({
+            frequency: p.frequency,
+            amplitude: p.amplitude,
+            source: p.source,
+            confidence: p.confidence,
+            estimated: true
+          }))
+        : (vr.peakFrequencies ?? [])
+            .map((f) => ({ frequency: Number(f) || 0, amplitude: 0 }))
+            .filter((p) => p.frequency > 0);
 
       const extracted: ExtractedVibrationData = {
         overallVelocity: vr.overallVelocityRms ?? 0,
@@ -3969,7 +3999,8 @@ useEffect(() => {
         assetId: capturedAssetId,
         extracted,
         component: browseComponent || null,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        ...(vr.extractionMode ? { extractionMode: vr.extractionMode } : {})
       });
       vibrationTrendRecordRef.current = record;
       if (record.spectral.length > 0) {
@@ -3977,7 +4008,11 @@ useEffect(() => {
       }
 
       const flagged = vr.flaggedFields ?? [];
-      setVibrationExtractSummary({ peakCount: record.spectral.length, confidence: confidenceScore });
+      setVibrationExtractSummary({
+        peakCount: record.spectral.length,
+        confidence: confidenceScore,
+        ...(vr.extractionMode ? { extractionMode: vr.extractionMode } : {})
+      });
       setVibrationExtractStatus("ready");
       toast(
         flagged.length

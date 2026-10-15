@@ -1590,7 +1590,7 @@ function validSpectralPeakRows(parsed: Record<string, unknown>): Record<string, 
  * only amplitude-labelled interior peaks count; ticks and bare freqs are never
  * peaks. Null when raw_table has no valid spectral rows.
  */
-function parsePeaks(parsed: Record<string, unknown>): (number | string)[] | null {
+export function parsePeaks(parsed: Record<string, unknown>): (number | string)[] | null {
   const freqs: number[] = [];
   for (const row of validSpectralPeakRows(parsed)) {
     const v = finiteNum(row.value);
@@ -1599,15 +1599,211 @@ function parsePeaks(parsed: Record<string, unknown>): (number | string)[] | null
   return freqs.length > 0 ? freqs : null;
 }
 
+/* --- AR-23e geometry-estimate fallback (gated, RPM/60) --------------------- */
+
+export const VISION_EXTRACTION_MODES = ["consensus", "single", "geometry-estimate"] as const;
+export type VisionExtractionMode = (typeof VISION_EXTRACTION_MODES)[number];
+
+export const GEOMETRY_ESTIMATE_MODE: VisionExtractionMode = "geometry-estimate";
+export const GEOMETRY_PEAK_SOURCE = "geometry (RPM/60)";
+export const GEOMETRY_PEAK_SOURCE_BAR_HEIGHT = "geometry (RPM/60 + bar height)";
+export const GEOMETRY_BAR_HEIGHT_PROVENANCE =
+  "geometry estimate (bar height x printed amplitude scale)";
+export const FREQ_ONLY_GEOMETRY_PROVENANCE = "freq-only geometry (RPM/60)";
+/** Hard cap for any geometry-derived confidence — estimates never read as measurements. */
+export const GEOMETRY_PEAK_CONFIDENCE_CAP = 60;
+/** Baseline confidence of a measured (strict-path) peak — estimates must score strictly below. */
+export const MEASURED_PEAK_CONFIDENCE_BASELINE = 90;
+export const ESTIMATED_PEAK_BADGE = "ESTIMATED";
+
+export interface GeometryEstimatedPeak {
+  /** Order-snapped frequency (printed spike frequency rounded to the nearest shaft order). */
+  frequency: number;
+  /** Null when the chart printed no legible amplitude scale — never fabricated. */
+  amplitude: number | null;
+  source: string;
+  confidence: number;
+  provenance: string;
+  estimated: true;
+}
+
+export interface GeometrySpikeCandidate {
+  frequencyHz: number;
+  /** Spike bar height as a fraction of full scale (0–1], parsed from unit_as_read; null when illegible. */
+  barFraction: number | null;
+}
+
+/** UI/export helper — true only for the geometry-estimate extraction mode. */
+export function isEstimatedExtractionMode(
+  mode: VisionExtractionMode | string | null | undefined
+): boolean {
+  return mode === GEOMETRY_ESTIMATE_MODE;
+}
+
+/** Axis-like spectral headers (ticks/scales) — excluded in BOTH strict and estimate modes. */
+const AXIS_LIKE_SPECTRAL_HEADER =
+  /\b(axis|tick|ticks|scale|fmax|full\s*scale|frequency\s*range|origin|cursor|marker)\b/;
+
+/** Bar-height fraction from a §9 contract unit ("Hz @ bar 0.62"); null when absent or out of (0,1]. */
+function barFractionOf(unitAsRead: unknown): number | null {
+  if (typeof unitAsRead !== "string") return null;
+  const m = /(?:@|amp(?:litude)?)\s*bar\s*(\d*\.?\d+)/i.exec(unitAsRead);
+  if (!m || m[1] === undefined) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : null;
+}
+
+/**
+ * Printed amplitude-axis maximum ("Amplitude axis maximum" §9 row, or any
+ * amplitude/velocity/acceleration/y-axis top-of-scale row). Frequency-axis
+ * rows never qualify. Null when unknown.
+ */
+export function amplitudeAxisMaxOf(parsed: Record<string, unknown>): number | null {
+  const stashed = parsed.geometryEstimateInput;
+  if (isRecord(stashed)) {
+    const v = finiteNum(stashed.amplitudeAxisMax);
+    if (v != null && v > 0) return v;
+  }
+  const rows: unknown = parsed.raw_table;
+  if (!Array.isArray(rows)) return null;
+  let max: number | null = null;
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    const n = normalizeVibHeaderForPeaks(raw.header);
+    if (!n) continue;
+    if (!/(amplitude|velocity|acceleration|y[\s-]?axis|full\s*scale)/.test(n)) continue;
+    if (/(freq|hz|x[\s-]?axis)/.test(n)) continue;
+    if (!/(max|maximum|top|upper|end|limit|full)/.test(n)) continue;
+    const v = finiteNum(raw.value);
+    if (v != null && v > 0 && (max == null || v > max)) max = v;
+  }
+  return max;
+}
+
+/**
+ * Interior spike candidates for the geometry-estimate fallback: spectral-kind
+ * rows with NO printed amplitude, positive frequency strictly below the printed
+ * fmax (when known), excluding axis-like headers. Consults the AR-23e stash
+ * (the sanitizer drops these rows from raw_table) and falls back to scanning
+ * raw_table directly (unsanitized / test input). Ticks, the 0 origin and
+ * negative frequencies are excluded in BOTH modes — absolute rules.
+ */
+export function geometrySpikeCandidates(parsed: Record<string, unknown>): GeometrySpikeCandidate[] {
+  const stashed = parsed.geometryEstimateInput;
+  if (isRecord(stashed) && Array.isArray(stashed.spikes)) {
+    const out: GeometrySpikeCandidate[] = [];
+    for (const s of stashed.spikes) {
+      if (!isRecord(s)) continue;
+      const frequencyHz = finiteNum(s.frequencyHz);
+      if (frequencyHz == null || frequencyHz <= 0) continue;
+      const bar = finiteNum(s.barFraction);
+      out.push({ frequencyHz, barFraction: bar != null && bar > 0 && bar <= 1 ? bar : null });
+    }
+    if (out.length > 0) return out;
+  }
+  const rows: unknown = parsed.raw_table;
+  if (!Array.isArray(rows)) return [];
+  const axisMax = axisMaxOf(parsed);
+  const out: GeometrySpikeCandidate[] = [];
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    if (vibKindForPeaks(raw.header) !== "spectral") continue;
+    if (isSpectralAmpRow(raw.header)) continue; // printed amplitude → strict path owns it
+    const n = normalizeVibHeaderForPeaks(raw.header);
+    if (!n || AXIS_LIKE_SPECTRAL_HEADER.test(n)) continue;
+    const freq = finiteNum(raw.value);
+    if (freq == null || freq <= 0) continue;
+    if (axisMax != null && freq >= axisMax) continue;
+    if (peakAmplitudeOf(raw) != null) continue; // inline amplitude → strict path owns it
+    out.push({ frequencyHz: freq, barFraction: barFractionOf(raw.unit_as_read) });
+  }
+  return out;
+}
+
+/** First rpm-kind raw_table row with a positive finite value, or null. */
+export function readableRpmOf(parsed: Record<string, unknown>): number | null {
+  const rows: unknown = parsed.raw_table;
+  if (!Array.isArray(rows)) return null;
+  for (const raw of rows) {
+    if (!isRecord(raw)) continue;
+    if (vibKindForPeaks(raw.header) !== "rpm") continue;
+    const v = finiteNum(raw.value);
+    if (v != null && v > 0) return v;
+  }
+  return null;
+}
+
+/**
+ * AR-23e derive: snap each interior spike to the nearest shaft order
+ * (order = round(spike / (rpm/60))), emit order × shaft within
+ * max(1 Hz, 4 % of spike) tolerance, dedupe. Amplitude is
+ * barFraction × printed y-max when BOTH are legible, else null with the
+ * freq-only provenance — never fabricated. Confidence is hard-capped at
+ * GEOMETRY_PEAK_CONFIDENCE_CAP. Null when RPM or spikes are unreadable.
+ * Callers gate on parsePeaks === null — the strict path always wins.
+ */
+export function deriveGeometryEstimatePeaks(
+  parsed: Record<string, unknown>
+): GeometryEstimatedPeak[] | null {
+  if (!isVibrationParse(parsed)) return null;
+  const rpm = readableRpmOf(parsed);
+  if (rpm == null) return null;
+  const shaftHz = rpm / 60;
+  if (!(shaftHz > 0)) return null;
+  const spikes = geometrySpikeCandidates(parsed);
+  if (spikes.length === 0) return null;
+  const yMax = amplitudeAxisMaxOf(parsed);
+  const peaks: GeometryEstimatedPeak[] = [];
+  const seen = new Set<number>();
+  for (const spike of spikes) {
+    const order = Math.round(spike.frequencyHz / shaftHz);
+    if (order < 1) continue;
+    const snapped = order * shaftHz;
+    const tolerance = Math.max(1, 0.04 * spike.frequencyHz);
+    if (Math.abs(spike.frequencyHz - snapped) > tolerance) continue;
+    const frequency = Math.round(snapped * 100) / 100;
+    if (seen.has(frequency)) continue;
+    seen.add(frequency);
+    const bar = spike.barFraction;
+    let amplitude: number | null = null;
+    let source = GEOMETRY_PEAK_SOURCE;
+    let provenance = FREQ_ONLY_GEOMETRY_PROVENANCE;
+    if (bar != null && yMax != null) {
+      amplitude = Math.round(bar * yMax * 1000) / 1000;
+      source = GEOMETRY_PEAK_SOURCE_BAR_HEIGHT;
+      provenance = GEOMETRY_BAR_HEIGHT_PROVENANCE;
+    }
+    peaks.push({
+      frequency,
+      amplitude,
+      source,
+      confidence: GEOMETRY_PEAK_CONFIDENCE_CAP,
+      provenance,
+      estimated: true
+    });
+  }
+  return peaks.length > 0 ? peaks : null;
+}
+
+/** True when the parse could produce a geometry estimate (RPM + ≥1 interior spike). */
+export function geometryEstimateEligible(parsed: Record<string, unknown>): boolean {
+  return deriveGeometryEstimatePeaks(parsed) !== null;
+}
+
 /**
  * AR-23d: strip invalid spectral rows (axis ticks, endpoints, bare freqs,
  * amplitude-only rows) from a VIBRATION parse so they can never surface as
  * peaks — flagged or otherwise — in mapVibrationTranscription downstream.
+ * AR-23e: amplitude-less interior spikes (geometry-estimate candidates) and
+ * the printed amplitude-axis maximum are STASHED on the parse (they are
+ * dropped from raw_table under the same absolute rules in both modes).
  */
-function sanitizeVibrationSpectralRows(parsed: Record<string, unknown>): Record<string, unknown> {
+export function sanitizeVibrationSpectralRows(parsed: Record<string, unknown>): Record<string, unknown> {
   if (!isVibrationParse(parsed)) return parsed;
   const rows: unknown = parsed.raw_table;
   if (!Array.isArray(rows)) return parsed;
+  const spikes = geometrySpikeCandidates(parsed);
+  const amplitudeAxisMax = amplitudeAxisMaxOf(parsed);
   const validRows = new Set(validSpectralPeakRows(parsed));
   const kept: unknown[] = [];
   let dropped = 0;
@@ -1620,11 +1816,17 @@ function sanitizeVibrationSpectralRows(parsed: Record<string, unknown>): Record<
     }
     kept.push(raw);
   }
-  if (dropped === 0) return parsed;
-  console.info(
-    `[vision] peak sanity: dropped ${dropped} invalid spectral row(s) (axis tick / endpoint / missing amplitude)`
-  );
-  return { ...parsed, raw_table: kept };
+  let next = parsed;
+  if (dropped > 0) {
+    console.info(
+      `[vision] peak sanity: dropped ${dropped} invalid spectral row(s) (axis tick / endpoint / missing amplitude)`
+    );
+    next = { ...parsed, raw_table: kept };
+  }
+  if (spikes.length > 0 || amplitudeAxisMax != null) {
+    next = { ...next, geometryEstimateInput: { spikes, amplitudeAxisMax } };
+  }
+  return next;
 }
 
 /** Mirrors vibrationVisionExtractor.numClose merge tolerance. */
@@ -1827,6 +2029,18 @@ export async function runMasterVisionModelLoop(input: {
       );
       return { parses: [peaksParse], lastError, upstreamStatus };
     }
+    // AR-23e — strict path (printed amplitudes) is exhausted everywhere in the
+    // chain: engage the gated geometry-estimate fallback when the parse
+    // carries readable RPM + interior spike candidates. Strict peaks always
+    // win when present; estimates are never consensus/single-labelled.
+    const estimateParse =
+      successes.find((p) => geometryEstimateEligible(p.parsed)) ?? null;
+    if (estimateParse) {
+      console.warn(
+        `[vision] no printed-amplitude peaks; geometry-estimate fallback engaged (RPM/60): ${estimateParse.model}`
+      );
+      return { parses: [estimateParse], lastError, upstreamStatus };
+    }
     // Chain exhausted with every parse peaks-null: honest VISION_FAILED with
     // the per-provider list — the HTTP-200 successes are reported too.
     for (const s of successes) {
@@ -1917,7 +2131,7 @@ export function finalizeOilFromParses(
 
   let mergedTx: OilTranscriptionResult | undefined;
   let flaggedFields: string[] = [];
-  let extractionMode: "consensus" | "single" = "single";
+  let extractionMode: VisionExtractionMode = "single";
 
   if (parses.length >= 2) {
     extractionMode = "consensus";

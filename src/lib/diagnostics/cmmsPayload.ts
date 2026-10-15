@@ -41,6 +41,15 @@ export const CMMS_TARGETS: { id: CmmsTargetId; label: string }[] = [
 /** Normalized severity the priority tables key off. */
 export type DiagnosisSeverity = "CRITICAL" | "ANOMALY" | "NORMAL";
 
+/**
+ * AR-23e — spectrum peaks derived from chart geometry (RPM/60 [+ bar height])
+ * are estimates, never measurements: the numeric peak amplitude is withheld
+ * from the payload (timing, priority, trend) and this provenance note ships
+ * in its place — the AR-20d health-score pattern.
+ */
+export const SPECTRUM_PEAKS_ESTIMATED_PROVENANCE =
+  "spectrum peaks estimated from chart geometry (RPM/60) - not measurements; amplitude trend and severity ratio withheld";
+
 export interface CmmsPayloadContext {
   assetTag: string;
   component: string;
@@ -55,6 +64,14 @@ export interface CmmsPayloadContext {
    * attached in its place. Required — every context constructor states it.
    */
   healthScoreIsDefault: boolean;
+  /**
+   * AR-23e provenance for spectrum peaks. Set when any current-run spectral
+   * peak is a geometry estimate (RPM/60 [+ bar height]): numeric peak
+   * amplitudes are withheld from timing/priority/trend and this note ships
+   * in the payload instead. Optional — saved rows compute it in
+   * buildBridgeContext; live doors pass it through unchanged.
+   */
+  spectrumPeakProvenance?: string | null;
   /** Soonest projected failure horizon, in hours. */
   horizonHours: number | null;
   horizonDriver: string | null;
@@ -345,6 +362,9 @@ export function buildCmmsFieldList(
   const healthScoreProvenance = ctx.healthScoreIsDefault
     ? HEALTH_SCORE_DEFAULT_PROVENANCE
     : null;
+  // AR-23e — geometry-estimate peaks withhold their amplitudes; the
+  // provenance note ships wherever the health-score pattern does.
+  const spectrumPeakProvenance = ctx.spectrumPeakProvenance ?? null;
 
   let result: CmmsField[];
   switch (target) {
@@ -361,6 +381,7 @@ export function buildCmmsFieldList(
         ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
         ["HEALTH_SCORE", "Health Score", healthScore],
         ["HEALTH_SCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
+        ["SPECTRUM_PEAKS_PROVENANCE", "Spectrum Peak Provenance", spectrumPeakProvenance],
         ["FAILURE_HORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
         ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -385,6 +406,7 @@ export function buildCmmsFieldList(
         ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
         ["HEALTHSCORE", "Health Score", healthScore],
         ["HEALTHSCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
+        ["SPECTRUM_PEAKS_PROVENANCE", "Spectrum Peak Provenance", spectrumPeakProvenance],
         ["FAILUREHORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
         ["SIGNOFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -407,6 +429,7 @@ export function buildCmmsFieldList(
         ["confidence", "Diagnosis Confidence", confidence],
         ["healthScore", "Health Score", healthScore],
         ["healthScoreProvenance", "Health Score Provenance", healthScoreProvenance],
+        ["spectrumPeaksProvenance", "Spectrum Peak Provenance", spectrumPeakProvenance],
         ["failureHorizon", "Failure Horizon", horizon],
         ["corroboration", "Corroboration", corroborationText(ctx)],
         ["signOff", "Engineer Sign-Off", signOffText(ctx)],
@@ -430,6 +453,7 @@ export function buildCmmsFieldList(
         ["intConfidence", "Diagnosis Confidence", confidence],
         ["intHealthScore", "Health Score", healthScore],
         ["strHealthScoreProvenance", "Health Score Provenance", healthScoreProvenance],
+        ["strSpectrumPeaksProvenance", "Spectrum Peak Provenance", spectrumPeakProvenance],
         ["strFailureHorizon", "Failure Horizon", horizon],
         ["strCorroboration", "Corroboration", corroborationText(ctx)],
         ["strSignOff", "Engineer Sign-Off", signOffText(ctx)],
@@ -457,6 +481,7 @@ export function buildCmmsFieldList(
         ["CONFIDENCE_PCT", "Diagnosis Confidence", confidence],
         ["HEALTH_SCORE", "Health Score", healthScore],
         ["HEALTH_SCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
+        ["SPECTRUM_PEAKS_PROVENANCE", "Spectrum Peak Provenance", spectrumPeakProvenance],
         ["FAILURE_HORIZON", "Failure Horizon", horizon],
         ["CORROBORATION", "Corroboration", corroborationText(ctx)],
         ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -564,6 +589,16 @@ export function buildCustomCmmsFields(
     });
   }
 
+  // AR-23e — geometry-estimate spectrum peaks ship a provenance note; their
+  // amplitudes never reach the numeric fields above.
+  if (ctx.spectrumPeakProvenance) {
+    out.push({
+      key: "SPECTRUM_PEAKS_PROVENANCE",
+      label: "Spectrum Peak Provenance",
+      value: ctx.spectrumPeakProvenance
+    });
+  }
+
   return out;
 }
 
@@ -583,6 +618,7 @@ function buildDefaultCustomFields(ctx: CmmsPayloadContext): CmmsField[] {
   const healthScoreProvenance = ctx.healthScoreIsDefault
     ? HEALTH_SCORE_DEFAULT_PROVENANCE
     : null;
+  const spectrumPeakProvenance = ctx.spectrumPeakProvenance ?? null;
 
   return fields([
     ["WORK_ORDER_TYPE", "Work Order Type", workType],
@@ -593,6 +629,7 @@ function buildDefaultCustomFields(ctx: CmmsPayloadContext): CmmsField[] {
     ["FAULT_TITLE", "Fault Title", ctx.faultTitle],
     ["HEALTH_SCORE", "Health Score", healthScore],
     ["HEALTH_SCORE_PROVENANCE", "Health Score Provenance", healthScoreProvenance],
+    ["SPECTRUM_PEAKS_PROVENANCE", "Spectrum Peak Provenance", spectrumPeakProvenance],
     ["DIAGNOSIS_CONFIDENCE", "Diagnosis Confidence", confidence],
     ["FAILURE_HORIZON", "Failure Horizon", horizon],
     ["SIGN_OFF", "Engineer Sign-Off", signOffText(ctx)],
@@ -644,27 +681,43 @@ function _n(v: unknown): number {
   return (typeof v === "number" || typeof v === "string") && Number.isFinite(Number(v)) ? Number(v) : NaN;
 }
 
-function _parsePeaks(row: SavedAnalysisResult | { peaks?: unknown[]; telemetry_data?: Record<string, unknown> | null } | null): Array<{ frequency: number; amplitude: number }> {
+function _parsePeaks(row: SavedAnalysisResult | { peaks?: unknown[]; telemetry_data?: Record<string, unknown> | null } | null): Array<{ frequency: number; amplitude: number; source?: string }> {
   if (!row) return [];
-  const out: Array<{ frequency: number; amplitude: number }> = [];
-  const walk = (v: unknown): void => {
+  const out: Array<{ frequency: number; amplitude: number; source?: string }> = [];
+  const walk = (v: unknown, inheritedSource?: string): void => {
     if (!v || typeof v !== "object") return;
-    if (Array.isArray(v)) { for (const it of v) walk(it); return; }
+    if (Array.isArray(v)) { for (const it of v) walk(it, inheritedSource); return; }
     const o = v as Record<string, unknown>;
+    // AR-23e — carry geometry-estimate provenance with the peaks it belongs to.
+    const ownSource =
+      typeof o.source === "string" && o.source
+        ? o.source
+        : inheritedSource ??
+          (o.extractionMode === "geometry-estimate" ? "geometry (RPM/60)" : undefined);
     const f = _n(o.frequencyHz ?? o.frequency_hz ?? o.freqHz ?? o.freq_hz ?? o.frequency ?? o.freq ?? o.hz ?? o.count);
     const a = _n(o.amplitude ?? o.amp ?? o.value);
-    if (f > 0 && a > 0) { out.push({ frequency: f, amplitude: a }); return; }
+    if (f > 0 && a > 0) { out.push({ frequency: f, amplitude: a, ...(ownSource ? { source: ownSource } : {}) }); return; }
     for (const k of ["record", "telemetry_data", "telemetry", "vibration_trend_record", "spectral", "spectrum", "peaks", "fft_data", "vibration_peaks"]) {
-      if (o[k] != null) walk(o[k]);
+      if (o[k] != null) walk(o[k], ownSource);
     }
   };
   walk(row);
   return out;
 }
 
-function _findAmplitude(peaks: Array<{ frequency: number; amplitude: number }>, targetHz: number, tolHz = 2): number | null {
+/** AR-23e — a geometry-derived peak (source tag) is an estimate, never a measurement. */
+function _isGeometryPeakSource(source: string | undefined): boolean {
+  return typeof source === "string" && source.startsWith("geometry (");
+}
+
+function _findAmplitude(peaks: Array<{ frequency: number; amplitude: number; source?: string }>, targetHz: number, tolHz = 2): number | null {
   let best: number | null = null; let bestDist = Infinity;
-  for (const p of peaks) { const d = Math.abs(p.frequency - targetHz); if (d <= tolHz && d < bestDist) { bestDist = d; best = p.amplitude; } }
+  for (const p of peaks) {
+    // AR-23e — estimated amplitudes never feed numeric exports (trend, RUL).
+    if (_isGeometryPeakSource(p.source)) continue;
+    const d = Math.abs(p.frequency - targetHz);
+    if (d <= tolHz && d < bestDist) { bestDist = d; best = p.amplitude; }
+  }
   return best;
 }
 
@@ -756,7 +809,16 @@ export function buildBridgeContext(
   const topFault = faults[0] ?? null;
   const topRx = topFault ? getPrescription(topFault.title) : null;
   const topHz = topFault ? _faultFreq(topFault) : null;
-  const topAmplitude = topHz != null ? (_findAmplitude(_parsePeaks(a), topHz) ?? (topFault as SavedFaultItem & { amplitude?: number }).amplitude ?? null) : null;
+  const currentPeaks = _parsePeaks(a);
+  // AR-23e — _findAmplitude skips geometry-derived peaks, so an estimate-only
+  // match falls back to the fault's own recorded amplitude (or null) and
+  // topTrend/topTiming/RUL never consume estimated numbers.
+  const topAmplitude = topHz != null ? (_findAmplitude(currentPeaks, topHz) ?? (topFault as SavedFaultItem & { amplitude?: number }).amplitude ?? null) : null;
+  // AR-23e — when the current run's spectrum is geometry-estimated, the
+  // numeric amplitudes are withheld and the provenance note ships instead.
+  const spectrumPeakProvenance = currentPeaks.some((p) => _isGeometryPeakSource(p.source))
+    ? SPECTRUM_PEAKS_ESTIMATED_PROVENANCE
+    : null;
 
   // Trend for top fault
   let topTrend: { first: number; last: number; delta: number } | null = null;
@@ -857,6 +919,7 @@ export function buildBridgeContext(
     breakeven: topBreakeven,
     planningInputs: pi,
     dictionaryVersion: DICTIONARY_VERSION,
+    spectrumPeakProvenance,
   };
 }
 

@@ -14,6 +14,10 @@ import type {
   VibrationDiagnosticRecord,
   VibrationTrendPoint
 } from "../lib/vibration/vibrationDiagnosticRecord";
+import {
+  ESTIMATED_PEAK_BADGE,
+  isEstimatedExtractionMode
+} from "../lib/oilVisionExtractor";
 
 // Downsample by MAX-per-bucket (never first/mean) so bump heights and
 // positions survive (the max point keeps its own frequency).
@@ -99,6 +103,16 @@ export default function SpectrumLibraryTab({
     if (!td || typeof td !== "object") return null;
     const s = (td as Record<string, unknown>).spectral_source;
     return typeof s === "string" ? s : null;
+  };
+
+  // AR-23e: extraction mode persisted on the vibration trend record (or telemetry root).
+  const extractRowExtractionMode = (row: SavedAnalysisResult): string | null => {
+    const td = row.telemetry_data;
+    if (!td || typeof td !== "object") return null;
+    const o = td as Record<string, unknown>;
+    const vtr = o.vibration_trend_record as Record<string, unknown> | undefined;
+    const raw = o.extractionMode ?? vtr?.extractionMode;
+    return typeof raw === "string" ? raw : null;
   };
 
   const extractEnvelope = (row: SavedAnalysisResult): { frequency: number; amplitude: number }[] => {
@@ -213,6 +227,7 @@ export default function SpectrumLibraryTab({
       peaks: extractPeaks(row),
       spectral: extractSpectral(row),
       spectralSource: extractSpectralSource(row),
+      extractionMode: extractRowExtractionMode(row),
     }));
   })();
   const hasLaterVibrationRuns = selectedAnalysis != null && waterfallAssetId != null && allAnalyses.some(
@@ -593,6 +608,11 @@ export default function SpectrumLibraryTab({
                         }}
                       >
                         <span>{run.date}</span>
+                        {isEstimatedExtractionMode(run.extractionMode) && (
+                          <span className="text-[9px] border rounded px-1 border-amber-500/60 bg-amber-500/10 text-amber-300 font-bold">
+                            {ESTIMATED_PEAK_BADGE}
+                          </span>
+                        )}
                         {run.spectralSource === "synthesized-from-peaks" && (
                           <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400">SIM</span>
                         )}

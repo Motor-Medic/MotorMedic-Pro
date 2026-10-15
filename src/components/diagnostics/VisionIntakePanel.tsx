@@ -1,6 +1,10 @@
 import { BarChart3, CheckCircle2, FileText, Image, Loader2 } from "lucide-react";
 import type React from "react";
 import type { UploadedFileMeta } from "../Diagnose";
+import {
+  ESTIMATED_PEAK_BADGE,
+  isEstimatedExtractionMode
+} from "../../lib/oilVisionExtractor";
 import { sectionHint, sectionTitle } from "./intakeSectionStyles";
 
 export interface VisionIntakePanelProps {
@@ -20,7 +24,11 @@ export interface VisionIntakePanelProps {
   setRawUpload: React.Dispatch<React.SetStateAction<UploadedFileMeta | null>>;
   vibrationExtractStatus: "idle" | "extracting" | "ready" | "failed";
   vibrationExtractError: string | null;
-  vibrationExtractSummary: { peakCount: number; confidence: number } | null;
+  vibrationExtractSummary: {
+    peakCount: number;
+    confidence: number;
+    extractionMode?: "consensus" | "single" | "geometry-estimate";
+  } | null;
   currentMessageIndex: number;
   AI_LOADING_MESSAGES: string[];
 }
@@ -97,7 +105,13 @@ export default function VisionIntakePanel({
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                 Trend record ready — {vibrationExtractSummary.peakCount}{" "}
                 spectral peaks · {vibrationExtractSummary.confidence}%
-                confidence. Cached for Trend Analyzer; PostgreSQL on Run
+                confidence
+                {isEstimatedExtractionMode(vibrationExtractSummary.extractionMode) && (
+                  <span className="inline-flex items-center rounded border border-amber-400/50 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-widest text-amber-300">
+                    {ESTIMATED_PEAK_BADGE}
+                  </span>
+                )}
+                . Cached for Trend Analyzer; PostgreSQL on Run
                 Diagnostics.
               </span>
             )}

@@ -12,8 +12,13 @@
  */
 
 import {
+  deriveGeometryEstimatePeaks,
+  GEOMETRY_ESTIMATE_MODE,
+  parsePeaks,
   runMasterVisionModelLoop,
+  type GeometryEstimatedPeak,
   type MasterVisionParse,
+  type VisionExtractionMode,
   OIL_VISION_API_PATH
 } from "./oilVisionExtractor";
 
@@ -32,8 +37,11 @@ export interface VibrationReportData {
   model?: string;
   detectedTechnology?: string | null;
   flaggedFields?: string[];
-  extractionMode?: "consensus" | "single";
+  /** AR-23e: "consensus" | "single" | "geometry-estimate". */
+  extractionMode?: VisionExtractionMode;
   consensusModels?: string[];
+  /** AR-23e: derived geometry peaks — present only in geometry-estimate mode. */
+  geometryPeaks?: GeometryEstimatedPeak[];
 }
 
 interface VibTranscriptionRow {
@@ -374,7 +382,7 @@ export interface VibrationVisionExtractResult {
   data?: VibrationReportData;
   model?: string;
   flaggedFields?: string[];
-  extractionMode?: "consensus" | "single";
+  extractionMode?: VisionExtractionMode;
   consensusModels?: string[];
   error?: string;
   message?: string;
@@ -427,7 +435,7 @@ export function finalizeVibrationFromParses(
 
   let mergedTx: VibrationTranscriptionResult | undefined;
   let flaggedFields: string[] = [];
-  let extractionMode: "consensus" | "single" = "single";
+  let extractionMode: VisionExtractionMode = "single";
 
   if (parses.length >= 2) {
     extractionMode = "consensus";
@@ -443,11 +451,30 @@ export function finalizeVibrationFromParses(
   }
 
   const data = mapVisionJsonToVibrationReportData(primary.parsed, input.fileName, mergedTx);
-  (data as unknown as Record<string, unknown>).model = usedModel;
-  (data as unknown as Record<string, unknown>).detectedTechnology = "VIBRATION";
-  (data as unknown as Record<string, unknown>).flaggedFields = flaggedFields;
-  (data as unknown as Record<string, unknown>).extractionMode = extractionMode;
-  (data as unknown as Record<string, unknown>).consensusModels = modelIds;
+
+  // AR-23e — the strict path (printed-amplitude peaks) found nothing on the
+  // lead parse: engage the gated geometry-estimate fallback when readable RPM
+  // + interior spike candidates make derivation possible. Estimates override
+  // consensus/single labelling, rewrite peakFrequencies to the derived
+  // order-snapped values, and never invent amplitudes (null stays null).
+  const strictPeaks = parsePeaks(primary.parsed);
+  const geometryPeaks =
+    strictPeaks === null ? deriveGeometryEstimatePeaks(primary.parsed) : null;
+  if (geometryPeaks) {
+    extractionMode = GEOMETRY_ESTIMATE_MODE;
+    data.peakFrequencies = geometryPeaks.map((p) => p.frequency);
+    data.geometryPeaks = geometryPeaks;
+    if (!flaggedFields.includes("peakFrequencies")) flaggedFields.push("peakFrequencies");
+    console.warn(
+      `[vibration] AR-23e geometry-estimate mode: ${geometryPeaks.length} derived peak(s) from RPM/60 — frequencies are estimates, amplitudes are estimates or null`
+    );
+  }
+
+  data.model = usedModel;
+  data.detectedTechnology = "VIBRATION";
+  data.flaggedFields = flaggedFields;
+  data.extractionMode = extractionMode;
+  data.consensusModels = modelIds;
   logPipelineSuccessVib({ model: usedModel, extractionMode });
 
   return {

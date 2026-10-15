@@ -23,7 +23,7 @@ export const MASTER_VISION_PROMPT = `You are the Spectra CM Industrial Document 
 - Zero Rule: a printed "0" is a REAL measurement. Emit value 0 with status "extracted" and high confidence. Never omit, never substitute, never treat 0 as absent. Only blank or unmeasured cells are value null with status "absent".
 - BN is NOT TAN. Never derive one test from another. Never compute derived values (no delta-T, no totals).
 - No unit conversion. Emit value + unit exactly as printed; conversion happens in application code.
-- Never estimate values from plot shapes, bar lengths, or chart geometry. Prefer blank over wrong; never guess or interpolate.
+- Never estimate values from plot shapes, bar lengths, or chart geometry. Prefer blank over wrong; never guess or interpolate. Exception: §9 geometry-fallback rows (explicitly tagged "Geometry peak"; never amplitude-labelled peaks).
 - Poor visual quality or ambiguous label -> confidence strictly below 0.8.
 
 4. RAW_TABLE IS THE SOURCE OF TRUTH (MANDATORY)
@@ -52,9 +52,18 @@ Before finalizing, silently re-read each header-to-value mapping. Include root "
 
 8. SPECTRUM / FFT CHARTS (VIBRATION SCREENSHOTS)
 - A vibration spectrum, FFT, envelope, or time-waveform chart is NOT a table: transcribe printed spectral PEAKS into raw_table, never the axis scale.
-- A real peak is an INTERIOR maximum printed with BOTH a frequency and an amplitude. Axis ticks are scale, not measurements: NEVER emit the 0 origin, the axis maximum (fmax), or the evenly spaced round numbers along an axis as spectral peaks. NEVER emit a peak whose amplitude is not printed.
+- A real peak is an INTERIOR maximum printed with BOTH a frequency and an amplitude. Axis ticks are scale, not measurements: NEVER emit the 0 origin, the axis maximum (fmax), or the evenly spaced round numbers along an axis as spectral peaks. NEVER emit a peak whose amplitude is not printed as a "Spectral peak" row.
 - Emit ONE raw_table row per printed peak, header exactly "Spectral peak <n>" (n = 1, 2, 3...), value = frequency number as printed, unit_as_read = "<x unit> @ <amplitude> <y unit>": { "header": "Spectral peak 1", "value": 58.83, "unit_as_read": "Hz @ 0.250 in/s", "operator": null }.
-- If a visible spike has no printed amplitude, do NOT emit it; add warning "peak without printed amplitude omitted". If no amplitude-labelled interior peak exists, emit no "Spectral peak" rows and add warning "no amplitude-labelled spectral peaks visible".`;
+- If a visible spike has no printed amplitude, do NOT emit it as a "Spectral peak" row; if no amplitude-labelled interior peak exists, emit no "Spectral peak" rows and add warning "no amplitude-labelled spectral peaks visible". Visible amplitude-less interior spikes then follow §9 (geometry-fallback rows).
+
+9. GEOMETRY FALLBACK ROWS (VIBRATION, ONLY WHEN §8 PEAKS ARE ABSENT)
+- If (and only if) NO amplitude-labelled interior peak exists, emit geometry-fallback rows for visible interior spikes INSTEAD of "Spectral peak" rows:
+  - header exactly "Geometry peak <n>" (n = 1, 2, 3...), value = spike frequency as printed, unit_as_read = "<x unit> @ bar <fraction>" when the spike's bar height is legible as a fraction of full scale (fraction 0-1, e.g. "Hz @ bar 0.62"), else "<x unit> (amplitude not printed)", operator null.
+  - Emit ONE "Amplitude axis maximum" row (header exactly "Amplitude axis maximum", value = printed top-of-scale number, unit_as_read = printed y unit) when the chart prints its amplitude scale maximum.
+  - Still NEVER emit axis ticks, the 0 origin, fmax, or evenly spaced round scale numbers as "Geometry peak" rows — interior spikes only.
+  - Emit running speed in its own rpm row exactly as §2/§4 (the code needs it to convert Hz to orders).
+  - Add warning "geometry estimate rows (no printed amplitude)" whenever any "Geometry peak" row is emitted.
+- §8 "Spectral peak" rules are unchanged: a chart WITH amplitude-labelled peaks emits NO "Geometry peak" rows.`;
 
 /* ------------------------------------------------------------------ */
 /* TypeScript types for the master prompt's per-technology schemas    */
