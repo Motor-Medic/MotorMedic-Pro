@@ -1625,6 +1625,40 @@ export const MCA_DEFAULT_SCORE_PROVENANCE = "default score - not a measured resu
 export const HEALTH_SCORE_DEFAULT_PROVENANCE = "default-derived - not measured";
 
 // ---------------------------------------------------------------------------
+// Telemetry provenance (run-level tag) - where a saved run's telemetry /
+// severity / health inputs came from. The tag rides on the analysis_results
+// row (telemetry_data.telemetry_provenance) so honesty survives reload: a
+// run saved with default or prefilled telemetry still says so when reopened,
+// and every surface that renders a saved run's severity/health badges it.
+// Values are exactly these three; consumers import from here, never re-literal.
+// ---------------------------------------------------------------------------
+
+/** Persisted JSONB key carrying the run-level tag on every analysis row. */
+export const TELEMETRY_PROVENANCE_KEY = "telemetry_provenance";
+
+/** Run-level telemetry provenance: engineer-entered, default-derived, or restored. */
+export type TelemetryProvenance = "manual" | "default" | "prefilled-run";
+
+/** Engineer typed the telemetry for this run this session. */
+export const TELEMETRY_PROVENANCE_MANUAL = "manual";
+/** Telemetry/health was default-derived (AR-20d default-table branch). */
+export const TELEMETRY_PROVENANCE_DEFAULT = "default";
+/** Telemetry was restored from a prior saved run and never re-confirmed. */
+export const TELEMETRY_PROVENANCE_PREFILLED_RUN = "prefilled-run";
+
+/** Badge text rendered wherever a 'default'-provenance run shows severity/health. */
+export const TELEMETRY_PROVENANCE_DEFAULT_BADGE = "DEFAULT";
+/** Badge text rendered wherever a 'prefilled-run'-provenance run shows severity/health. */
+export const TELEMETRY_PROVENANCE_PREFILLED_BADGE = "UNCONFIRMED";
+
+/** Point-of-use note paired with the DEFAULT badge. */
+export const TELEMETRY_PROVENANCE_DEFAULT_NOTE =
+  "default telemetry - not engineer-entered";
+/** Point-of-use note paired with the UNCONFIRMED badge. */
+export const TELEMETRY_PROVENANCE_PREFILLED_NOTE =
+  "restored from a prior saved run - not engineer-confirmed";
+
+// ---------------------------------------------------------------------------
 // MCA polarization-index display — one PI null vocabulary for every MCA tab:
 // a stored finite PI formats to 2 decimals; with no stored PI, both raw
 // resistances absent renders the repo's literal em-dash, a zero/missing R1

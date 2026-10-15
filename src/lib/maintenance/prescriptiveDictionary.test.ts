@@ -21,6 +21,14 @@ import {
   MCA_DEFAULT_SCORE_PROVENANCE,
   HEALTH_SCORE_DEFAULT_PROVENANCE,
   SAVED_ANALYSES_OIL_EMPTY_PROVENANCE,
+  TELEMETRY_PROVENANCE_KEY,
+  TELEMETRY_PROVENANCE_MANUAL,
+  TELEMETRY_PROVENANCE_DEFAULT,
+  TELEMETRY_PROVENANCE_PREFILLED_RUN,
+  TELEMETRY_PROVENANCE_DEFAULT_BADGE,
+  TELEMETRY_PROVENANCE_PREFILLED_BADGE,
+  TELEMETRY_PROVENANCE_DEFAULT_NOTE,
+  TELEMETRY_PROVENANCE_PREFILLED_NOTE,
   dedupeAnalysisResults,
 } from "./prescriptiveDictionary";
 
@@ -144,6 +152,21 @@ describe("P1 dictionary single-source / byte-identity", () => {
     );
     expect(SAVED_ANALYSES_OIL_EMPTY_PROVENANCE).toBe(
       "0 saved analyses - dossier builds from stored samples",
+    );
+  });
+
+  it("telemetry-provenance vocabulary byte-equals its contract", () => {
+    expect(TELEMETRY_PROVENANCE_KEY).toBe("telemetry_provenance");
+    expect(TELEMETRY_PROVENANCE_MANUAL).toBe("manual");
+    expect(TELEMETRY_PROVENANCE_DEFAULT).toBe("default");
+    expect(TELEMETRY_PROVENANCE_PREFILLED_RUN).toBe("prefilled-run");
+    expect(TELEMETRY_PROVENANCE_DEFAULT_BADGE).toBe("DEFAULT");
+    expect(TELEMETRY_PROVENANCE_PREFILLED_BADGE).toBe("UNCONFIRMED");
+    expect(TELEMETRY_PROVENANCE_DEFAULT_NOTE).toBe(
+      "default telemetry - not engineer-entered",
+    );
+    expect(TELEMETRY_PROVENANCE_PREFILLED_NOTE).toBe(
+      "restored from a prior saved run - not engineer-confirmed",
     );
   });
 

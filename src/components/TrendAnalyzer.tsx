@@ -56,8 +56,10 @@ import {
   fetchAnalysisResults,
   saveAnalysisResult,
   setAnalysisBaseline,
+  telemetryProvenanceOf,
   type SavedAnalysisResult
 } from "../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 import {
   buildThermoChartSeries,
   extractThermoChartFields,
@@ -3336,8 +3338,9 @@ export default function TrendAnalyzer({
             </p>
           </div>
           <div className={CARD}>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 flex items-center gap-1.5">
               Health Score
+              <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(latestDb ?? null)} />
             </p>
             <p className="text-2xl font-bold text-emerald-400 font-mono">
               {latestVibrationRecord.broadband.healthScore}
@@ -3360,10 +3363,11 @@ export default function TrendAnalyzer({
             KPI Summary
           </p>
           <ul className="space-y-2.5">
-            <li className="text-sm font-bold text-white">
+            <li className="text-sm font-bold text-white flex items-center gap-1.5">
               Health Score:{" "}
               {latestVibrationRecord?.broadband.healthScore ??
                 (latestDb?.health_score != null ? latestDb.health_score : "—")}
+              <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(latestDb ?? null)} />
             </li>
             <li className="text-sm font-semibold text-yellow-500">
               Primary Fault:{" "}
@@ -4746,7 +4750,10 @@ export default function TrendAnalyzer({
                                       : "—"}
                                 </td>
                                 <td className="py-2 pr-3 font-mono">
-                                  {r.health_score ?? "—"}
+                                  <span className="inline-flex items-center gap-1.5">
+                                    {r.health_score ?? "—"}
+                                    <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(r)} />
+                                  </span>
                                 </td>
                                 <td className="py-2 pr-3">{r.primary_fault || "—"}</td>
                                 <td className="py-2 pr-3 font-mono">
@@ -4755,7 +4762,12 @@ export default function TrendAnalyzer({
                                 <td className="py-2 pr-3 font-mono">
                                   {pt?.deltaT != null ? pt.deltaT : "—"}
                                 </td>
-                                <td className="py-2 pr-3">{pt?.severityLabel || "—"}</td>
+                                <td className="py-2 pr-3">
+                                  <span className="inline-flex items-center gap-1.5">
+                                    {pt?.severityLabel || "—"}
+                                    <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(r)} />
+                                  </span>
+                                </td>
                               </tr>
                             );
                           })}

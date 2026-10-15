@@ -29,8 +29,10 @@ import { useToast } from "./Toast";
 import OnboardingEmptyState from "./OnboardingEmptyState";
 import {
   fetchAnalysisResults,
+  telemetryProvenanceOf,
   type SavedAnalysisResult
 } from "../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
@@ -7079,11 +7081,14 @@ export default function AnalysisReport({
                               <p className="text-sm font-semibold text-white truncate">
                                 {row.primary_fault || "Analysis"}
                               </p>
-                              {sevRaw && (
-                                <span className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${sevBadge}`}>
-                                  {sevRaw.includes("high") || sevRaw.includes("crit") ? "HIGH" : sevRaw.includes("low") ? "LOW" : "MED"}
-                                </span>
-                              )}
+                              <span className="flex items-center gap-1.5 shrink-0">
+                                {sevRaw && (
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${sevBadge}`}>
+                                    {sevRaw.includes("high") || sevRaw.includes("crit") ? "HIGH" : sevRaw.includes("low") ? "LOW" : "MED"}
+                                  </span>
+                                )}
+                                <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(row)} />
+                              </span>
                             </div>
                             <p className="text-xs text-slate-500 mt-1 truncate">
                               {row.component || "—"} · {row.asset_id || "—"}
@@ -7171,6 +7176,7 @@ export default function AnalysisReport({
                             <ShieldCheck className="h-3.5 w-3.5" />
                             Zone {isoInfo.zone} — {isoInfo.label}
                           </span>
+                          <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(selectedAnalysis)} />
                           {isoInfo.rmsMmS != null && (
                             <span className="text-xs text-slate-400 font-mono">
                               {isoInfo.rmsMmS.toFixed(2)} mm/s RMS

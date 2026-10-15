@@ -5,7 +5,8 @@
  */
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Gauge, Zap } from "lucide-react";
-import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
+import { telemetryProvenanceOf, type SavedAnalysisResult } from "../../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "../diagnostics/TelemetryProvenanceBadge";
 import {
   faultSeverityBadgeInfo,
   MCA_HEADER_SEVERITY_LABEL,
@@ -215,12 +216,15 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
               {selectedAnalysis.asset_id || "—"}
             </p>
           </div>
-          <span
-            className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider shrink-0 ${
-              MCA_HEADER_SEVERITY_STYLE[governing]
-            }`}
-          >
-            {MCA_HEADER_SEVERITY_LABEL[governing]}
+          <span className="flex items-center gap-1.5 shrink-0">
+            <span
+              className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
+                MCA_HEADER_SEVERITY_STYLE[governing]
+              }`}
+            >
+              {MCA_HEADER_SEVERITY_LABEL[governing]}
+            </span>
+            <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(selectedAnalysis)} />
           </span>
         </div>
         <p className="text-[10px] text-slate-500 mt-1">

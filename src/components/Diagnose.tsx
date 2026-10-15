@@ -176,7 +176,11 @@ import {
   DIAGNOSE_SEVERITY_NOT_COMPUTED,
   DIAGNOSE_ROI_SOURCE,
   DIAGNOSE_FAILURE_ESTIMATE_SOURCE,
-  PROGNOSTICS_PF_DISCLOSURES
+  PROGNOSTICS_PF_DISCLOSURES,
+  TELEMETRY_PROVENANCE_MANUAL,
+  TELEMETRY_PROVENANCE_DEFAULT,
+  TELEMETRY_PROVENANCE_PREFILLED_RUN,
+  type TelemetryProvenance
 } from "../lib/maintenance/prescriptiveDictionary";
 
 /* ========================================================================== */
@@ -1613,6 +1617,30 @@ export default function Diagnose({
   const [realtimeStatus, setRealtimeStatus] = useState<"idle" | "connecting" | "live">("idle");
   const [latestReadingMeta, setLatestReadingMeta] = useState<string | null>(null);
 
+  // Run-level telemetry provenance origin since the last asset switch:
+  // null = measured this run (upload / realtime extraction — no tag);
+  // 'manual' = the engineer typed telemetry; 'prefilled-run' = values
+  // restored from a prior saved run and never re-confirmed. 'default'
+  // (AR-20d default-table branch) is computed at save and wins over both.
+  // Wiped to null on asset switch; restored values re-enter as
+  // 'prefilled-run' (badged), never as silent 'manual'.
+  const telemetryOriginRef = useRef<TelemetryProvenance | null>(null);
+  const applyDataSource = (v: DataSource) => {
+    setDataSource(v);
+    telemetryOriginRef.current =
+      v === "manual"
+        ? TELEMETRY_PROVENANCE_MANUAL
+        : v === "latest"
+          ? TELEMETRY_PROVENANCE_PREFILLED_RUN
+          : null;
+  };
+  // Operator-only severity override — vision fills setVibSeverity directly
+  // (programmatic), so only this handler stamps the run 'manual'.
+  const handleManualSeverityChange = (v: string) => {
+    setVibSeverity(v);
+    telemetryOriginRef.current = TELEMETRY_PROVENANCE_MANUAL;
+  };
+
   const [spectrumUpload, setSpectrumUpload] = useState<UploadedFileMeta | null>(null);
   const [thermalUpload, setThermalUpload] = useState<UploadedFileMeta | null>(null);
   const [thermographyPeaks, setThermographyPeaks] = useState<{
@@ -1883,7 +1911,7 @@ export default function Diagnose({
 
     /* Instantly populate vibration accordion sections */
     setOpenVibSection("kinematics");
-    setDataSource("upload");
+    applyDataSource("upload");
     setMeasurementLocation(component || "Motor DE");
     setMeasurementPoint("1H");
     setFmax("10,000 Hz");
@@ -2218,6 +2246,37 @@ export default function Diagnose({
         : selectedAsset.components[0] ?? "";
       return next;
     });
+    // Telemetry provenance — wipe-to-null on asset switch (approved). The
+    // prior asset's telemetry/severity/snapshots/results must never linger
+    // into the new asset's run; restored values re-enter as 'prefilled-run'
+    // via the load effects below, never as silent 'manual'. dataSource is an
+    // explicit operator choice, not a telemetry value — it is not wiped.
+    telemetryOriginRef.current = null;
+    setManualOverall("");
+    setManual1x("");
+    setManual2x("");
+    setManualPeakVue("");
+    setVibSeverity("");
+    setVibFlaggedFields([]);
+    setUltrasoundSnapshot(null);
+    setMcaSnapshot(null);
+    setThermoTelemetry(null);
+    setThermographyPeaks(null);
+    setUltrasoundPeaks(null);
+    thermographyPeaksRef.current = null;
+    thermographyPolyRef.current = null;
+    ultrasoundPeaksRef.current = null;
+    vibrationExtractedRef.current = null;
+    vibrationTrendRecordRef.current = null;
+    mcaPeaksRef.current = null;
+    mcaTelemetryRef.current = null;
+    setOperatingRpm(String(selectedAsset.rpm || EMPTY_DIAGNOSE_ASSET.rpm || ""));
+    setLoadPercentage("");
+    setProcessParameter("");
+    setAnalysisResult(null);
+    setShowResults(false);
+    setSavedAnalysisId(null);
+    setGaugeScore(0);
   }, [selectedAsset]);
 
   useEffect(() => {
@@ -2266,6 +2325,11 @@ const loadMcaData = async (cancelledRef: { current: boolean }) => {
       if (mcaPeak) {
         const mcaSnapshotData = buildMcaSnapshotFromPeak(mcaPeak);
         setMcaSnapshot(mcaSnapshotData);
+        // Restored-from-run values stamp the run 'prefilled-run' (badged) —
+        // but never downgrade an explicit engineer choice made this session.
+        if (telemetryOriginRef.current === null) {
+          telemetryOriginRef.current = TELEMETRY_PROVENANCE_PREFILLED_RUN;
+        }
       } else {
         setMcaSnapshot(null);
       }
@@ -2400,6 +2464,8 @@ useEffect(() => {
     peaks?: SpectrumChartPeak[],
     analysisType: string = "vibration",
     // AR-20d — in-memory provenance; only measured scores may be persisted.
+    // The run-level telemetry_provenance tag (manual/default/prefilled-run)
+    // is persisted separately in telemetry_data — the score column stays clean.
     healthScoreIsDefault: boolean = false
   ) => {
     setIsSavingAnalysis(true);
@@ -2644,12 +2710,23 @@ useEffect(() => {
           ...(roi != null ? { roiPercent: roi } : {})
         };
       })();
+      // Run-level telemetry provenance (persisted on the analysis row):
+      // default-derived wins (AR-20d), otherwise the engineer-entered vs
+      // restored origin tracked since the last asset-switch wipe. Pure
+      // upload/realtime extraction carries no tag — it is measured this run.
+      const telemetryProvenance: TelemetryProvenance | null = healthScoreIsDefault
+        ? TELEMETRY_PROVENANCE_DEFAULT
+        : telemetryOriginRef.current;
+
       const saved = await saveAnalysisResult({
         asset_id: assetKey,
         component: browseComponent || null,
         // AR-20d Option B — default-derived scores are never persisted, so the
-        // saved column can never be mistaken for a measured result.
+        // saved column can never be mistaken for a measured result. The
+        // telemetry_provenance tag rides alongside in telemetry_data so a
+        // reopened run still confesses its origin.
         health_score: healthScoreIsDefault ? null : finiteOrNull(reconciled.overallHealthScore),
+        ...(telemetryProvenance ? { telemetry_provenance: telemetryProvenance } : {}),
         primary_fault: reconciled.primaryFault?.title || null,
         fault_list: faultListForSave,
         peaks: peaksForSave,
@@ -4159,7 +4236,7 @@ useEffect(() => {
     } else {
       ingestUpload(file, setRawUpload, /\.(csv|wav|uff|txt)$/i);
     }
-    setDataSource("upload");
+    applyDataSource("upload");
   };
 
   const handleClearVibSpectrum = () => {
@@ -4176,7 +4253,7 @@ useEffect(() => {
   };
 
   const handleDataSourceSelect = (id: DataSource) => {
-    setDataSource(id);
+    applyDataSource(id);
     if (realtimeTimerRef.current) {
       window.clearTimeout(realtimeTimerRef.current);
       realtimeTimerRef.current = null;
@@ -4524,7 +4601,7 @@ useEffect(() => {
                   ? (dataSource as VibDataSource)
                   : "upload"
               }
-              setDataSource={(v) => setDataSource(v)}
+              setDataSource={(v) => applyDataSource(v)}
               realtimeStatus={realtimeStatus}
               onConnectIiot={() => handleDataSourceSelect("realtime")}
               uploadedFileName={spectrumUpload?.name ?? rawUpload?.name ?? null}
@@ -4555,7 +4632,7 @@ useEffect(() => {
               operatingTemp={operatingTemp}
               setOperatingTemp={setOperatingTemp}
               vibSeverity={vibSeverity}
-              setVibSeverity={setVibSeverity}
+              setVibSeverity={handleManualSeverityChange}
               flaggedFields={vibFlaggedFields}
             />
           ) : activeTech === "ir" ? (
@@ -4824,7 +4901,7 @@ useEffect(() => {
                 const f = e.target.files?.[0];
                 if (!f) return;
                 ingestUpload(f, setRawUpload, /\.(csv|wav|xlsx?)$/i);
-                setDataSource("upload");
+                applyDataSource("upload");
                 toast(`File ready: ${f.name}`, "success");
               }}
             />

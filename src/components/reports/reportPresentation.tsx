@@ -13,6 +13,7 @@ import type {
   ReportSeverity,
   TechnologyReport
 } from "../../lib/reports/technologySummary";
+import TelemetryProvenanceBadge from "../diagnostics/TelemetryProvenanceBadge";
 
 export const SEVERITY_STYLE: Record<ReportSeverity, string> = {
   CRITICAL: "bg-red-500/10 text-red-400 border-red-500/30",
@@ -114,10 +115,13 @@ export function renderTechnologyCard(tech: TechnologyReport) {
             {tech.hasData ? `Captured ${formatWhen(tech.recordedAt)}` : `No ${tech.label.toLowerCase()} data collected - not part of assessment scope`}
           </p>
         </div>
-        <span
-          className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[tech.severity]}`}
-        >
-          {SEVERITY_LABEL[tech.severity]}
+        <span className="flex items-center gap-1.5 shrink-0">
+          <span
+            className={`rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[tech.severity]}`}
+          >
+            {SEVERITY_LABEL[tech.severity]}
+          </span>
+          <TelemetryProvenanceBadge provenance={tech.telemetryProvenance ?? null} />
         </span>
       </div>
 

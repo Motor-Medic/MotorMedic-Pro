@@ -13,8 +13,10 @@ import { useToast } from "./Toast";
 import OnboardingEmptyState from "./OnboardingEmptyState";
 import {
   fetchDiagnosisLogs,
+  telemetryProvenanceOf,
   type SavedDiagnosisLog
 } from "../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 
 /* ========================================================================== */
 /* Props (kept for History.tsx wrapper)                                       */
@@ -1016,6 +1018,10 @@ export default function DiagnosisLogs({
                       <td className="py-2.5 text-slate-300 max-w-[280px] truncate">
                         {primary}
                         {health}
+                        <TelemetryProvenanceBadge
+                          provenance={telemetryProvenanceOf(summary)}
+                          className="ml-1.5 align-middle"
+                        />
                       </td>
                     </tr>
                   );

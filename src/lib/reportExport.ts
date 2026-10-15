@@ -8,7 +8,12 @@
 import { jsPDF } from "jspdf";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
+import { telemetryProvenanceOf } from "./analysisPersistence";
 import type { SavedAnalysisResult } from "./analysisPersistence";
+import {
+  TELEMETRY_PROVENANCE_DEFAULT_NOTE,
+  TELEMETRY_PROVENANCE_PREFILLED_NOTE
+} from "./maintenance/prescriptiveDictionary";
 
 export interface ReportExportContext {
   assetLabel: string;
@@ -140,6 +145,16 @@ export function buildReportPdf(ctx: ReportExportContext): jsPDF {
     "Health score",
     analysis.health_score == null ? "—" : `${analysis.health_score}`
   );
+  // Telemetry provenance (persisted on the record): a default or prefilled
+  // run states so in the exported finding — honesty survives the download.
+  {
+    const prov = telemetryProvenanceOf(analysis);
+    if (prov === "default") {
+      c.pair("Telemetry provenance", TELEMETRY_PROVENANCE_DEFAULT_NOTE);
+    } else if (prov === "prefilled-run") {
+      c.pair("Telemetry provenance", TELEMETRY_PROVENANCE_PREFILLED_NOTE);
+    }
+  }
   if (analysis.summary) {
     c.gap(1);
     c.write(analysis.summary, { size: 9 });
@@ -235,6 +250,12 @@ const CSV_COLUMNS: { key: keyof SavedAnalysisResult; label: string }[] = [
   { key: "envelope_energy", label: "Envelope Energy" }
 ];
 
+const PROVENANCE_COLUMN_LABEL = "Telemetry Provenance";
+const EXPORT_COLUMN_LABELS = [
+  ...CSV_COLUMNS.map((c) => c.label),
+  PROVENANCE_COLUMN_LABEL
+];
+
 function measurementRows(ctx: ReportExportContext) {
   const records = ctx.records?.length
     ? ctx.records
@@ -249,6 +270,15 @@ function measurementRows(ctx: ReportExportContext) {
       const value = record[col.key];
       row[col.label] = value == null ? "" : (value as string | number);
     }
+    // Computed provenance column — never a keyed field, always read from
+    // the persisted tag so default/prefilled runs stay badged in exports.
+    const prov = telemetryProvenanceOf(record);
+    row[PROVENANCE_COLUMN_LABEL] =
+      prov === "default"
+        ? TELEMETRY_PROVENANCE_DEFAULT_NOTE
+        : prov === "prefilled-run"
+          ? TELEMETRY_PROVENANCE_PREFILLED_NOTE
+          : "";
     return row;
   });
 }
@@ -269,7 +299,7 @@ function download(blob: Blob, filename: string): string {
 export function exportReportCsv(ctx: ReportExportContext): string {
   const generatedAt = ctx.generatedAt ?? new Date();
   const csv = Papa.unparse(measurementRows(ctx), {
-    columns: CSV_COLUMNS.map((c) => c.label)
+    columns: EXPORT_COLUMN_LABELS
   });
 
   // BOM keeps Excel from mangling non-ASCII asset names.
@@ -283,7 +313,7 @@ export function exportReportCsv(ctx: ReportExportContext): string {
 export function exportReportXlsx(ctx: ReportExportContext): string {
   const generatedAt = ctx.generatedAt ?? new Date();
   const sheet = XLSX.utils.json_to_sheet(measurementRows(ctx), {
-    header: CSV_COLUMNS.map((c) => c.label)
+    header: EXPORT_COLUMN_LABELS
   });
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, sheet, "Measurements");

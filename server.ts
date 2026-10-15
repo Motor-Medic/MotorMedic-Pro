@@ -1224,6 +1224,18 @@ app.post("/api/save-analysis-result", async (req, res) => {
       peaks
     );
 
+    // Telemetry provenance (run-level honesty tag): the client stamps
+    // body.telemetry_provenance as "manual" | "default" | "prefilled-run".
+    // Persist it inside the JSONB (no new column) so every reopened surface
+    // can badge a default or prefilled run - honesty must survive reload.
+    if (
+      body.telemetry_provenance === "manual" ||
+      body.telemetry_provenance === "default" ||
+      body.telemetry_provenance === "prefilled-run"
+    ) {
+      telemetryData.telemetry_provenance = body.telemetry_provenance;
+    }
+
     // Vision-extracted RPM: if the spectrum-region detection returned rpm,
     // ensure it is persisted into telemetry_data so Tab 2 can read it.
     const visionRpm = optionalNumeric(telemetryData.rpm);
@@ -1371,6 +1383,9 @@ app.post("/api/save-analysis-result", async (req, res) => {
             severity,
             fault_count: faultList.length,
             alerts_created: alertsCreated,
+            // Run-level telemetry provenance so the log row confesses the
+            // same origin as the analysis row it points at.
+            telemetry_provenance: telemetryData.telemetry_provenance ?? null,
             summary
           },
           {}

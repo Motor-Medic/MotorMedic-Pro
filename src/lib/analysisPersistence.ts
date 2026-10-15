@@ -3,6 +3,13 @@
  * (Trend Analyzer, Alerts, Analysis Reports, Diagnosis Logs).
  */
 
+import {
+  TELEMETRY_PROVENANCE_KEY,
+  type TelemetryProvenance
+} from "./maintenance/prescriptiveDictionary";
+
+export type { TelemetryProvenance } from "./maintenance/prescriptiveDictionary";
+
 export const SAVE_ANALYSIS_RESULT_PATH = "/api/save-analysis-result";
 export const ANALYSIS_RESULTS_PATH = "/api/analysis-results";
 export const ALERTS_PATH = "/api/alerts";
@@ -116,6 +123,11 @@ export interface SaveAnalysisPayload {
   i2r_normalized_delta_t?: number | null;
   /** Hybrid polymorphic JSONB (environmental + AI vision + extras). */
   telemetry_data?: Record<string, unknown> | null;
+  /**
+   * Run-level telemetry provenance the server nests into
+   * telemetry_data.telemetry_provenance: "manual" | "default" | "prefilled-run".
+   */
+  telemetry_provenance?: TelemetryProvenance | null;
   waveform_peak_to_peak?: number | null;
   waveform_crest_factor?: number | null;
   waveform_impact_count?: number | null;
@@ -124,6 +136,31 @@ export interface SaveAnalysisPayload {
   envelope_peak_amplitude?: number | null;
   envelope_dominant_frequency?: number | null;
   envelope_energy?: number | null;
+}
+
+/**
+ * Reads the persisted run-level telemetry provenance off a saved analysis
+ * row (telemetry_data.telemetry_provenance) or a diagnosis-log result_summary
+ * (top-level telemetry_provenance). Rows saved before the tag existed return
+ * null and render unbadged — the tag is never inferred after the fact, so a
+ * pre-tag default run cannot masquerade either way.
+ */
+export function telemetryProvenanceOf(
+  row: {
+    telemetry_data?: Record<string, unknown> | null;
+    telemetry_provenance?: unknown;
+  } | null | undefined
+): TelemetryProvenance | null {
+  const top = row?.telemetry_provenance;
+  if (top === "manual" || top === "default" || top === "prefilled-run") {
+    return top;
+  }
+  const data = row?.telemetry_data;
+  if (!data || typeof data !== "object") return null;
+  const raw = data[TELEMETRY_PROVENANCE_KEY];
+  return raw === "manual" || raw === "default" || raw === "prefilled-run"
+    ? raw
+    : null;
 }
 
 export async function saveAnalysisResult(

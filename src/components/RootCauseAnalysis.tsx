@@ -12,9 +12,11 @@ import {
 import { Loader2, Sparkles } from "lucide-react";
 import {
   fetchAnalysisResults,
+  telemetryProvenanceOf,
   type SavedAnalysisResult,
   type SavedFaultItem
 } from "../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 import { useQueryParam } from "../lib/useQueryParam";
 
 /* ========================================================================== */
@@ -348,8 +350,9 @@ export default function RootCauseAnalysis({ selectedCompanyId }: RootCauseAnalys
             DATE: {formatRecordDate(latestRecord?.timestamp || latestRecord?.created_at)}
           </div>
           {latestRecord?.severity && (
-            <div className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-500 font-semibold">
+            <div className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-500 font-semibold flex items-center gap-1.5">
               SEVERITY: {latestRecord.severity}
+              <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(latestRecord)} />
             </div>
           )}
         </div>

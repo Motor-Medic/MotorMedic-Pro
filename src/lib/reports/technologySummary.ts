@@ -11,7 +11,7 @@
  * recomputing anything from records that may have moved on since.
  */
 
-import type { SavedAnalysisResult } from "../analysisPersistence";
+import { telemetryProvenanceOf, type SavedAnalysisResult, type TelemetryProvenance } from "../analysisPersistence";
 import { latestOfType, peakOfType, resolveTempUnit } from "../diagnostics/sensorFusion";
 import { mpcBand } from "../oilAnalysisMetrics";
 import { oilWearMetalDef, WEAR_METAL_KEYS } from "../maintenance/prescriptiveDictionary";
@@ -73,6 +73,11 @@ export interface TechnologyReport {
   severity: ReportSeverity;
   primaryFault: string | null;
   healthScore: number | null;
+  /**
+   * Persisted run-level telemetry provenance of the source record.
+   * Optional: reports persisted before the tag existed simply lack it.
+   */
+  telemetryProvenance?: TelemetryProvenance | null;
   readings: ReportReading[];
 }
 
@@ -113,6 +118,7 @@ function emptyTechnology(technology: ReportTechnologyId): TechnologyReport {
     severity: "NO_DATA",
     primaryFault: null,
     healthScore: null,
+    telemetryProvenance: null,
     readings: []
   };
 }
@@ -175,6 +181,7 @@ function buildFromAnalysisRecord(
     severity: normalizeReportSeverity(record.severity),
     primaryFault: record.primary_fault || null,
     healthScore: num(record.health_score),
+    telemetryProvenance: telemetryProvenanceOf(record),
     readings: readingsFor(record)
   };
 }

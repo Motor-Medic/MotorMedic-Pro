@@ -7,7 +7,8 @@
  */
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Gauge, RadioTower, Waves, Zap } from "lucide-react";
-import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
+import { telemetryProvenanceOf, type SavedAnalysisResult } from "../../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "../diagnostics/TelemetryProvenanceBadge";
 import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
 import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
@@ -111,7 +112,10 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
     <div className={card}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0"><div className="flex items-center gap-2"><Waves className="h-4 w-4 text-cyan-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Ultrasound / Acoustic Severity Assessment</h4></div><p className="text-sm text-slate-500 mt-1">{selectedAnalysis.component || "—"} · {selectedAnalysis.asset_id || "—"},</p></div>
-        <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider shrink-0 ${SEVERITY_STYLE[sevClass(selectedAnalysis)]}`}>{SEVERITY_LABEL[sevClass(selectedAnalysis)]}</span>
+        <span className="flex items-center gap-1.5 shrink-0">
+          <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[sevClass(selectedAnalysis)]}`}>{SEVERITY_LABEL[sevClass(selectedAnalysis)]}</span>
+          <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(selectedAnalysis)} />
+        </span>
       </div>
       <p className="text-[10px] text-slate-500 mt-1">{US_DDB_SOURCE}</p>
     </div>

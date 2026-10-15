@@ -24,6 +24,7 @@ import {
 import { fetchOilSamples } from "../../lib/oilSampleRow";
 import type { OilSample } from "../../types/oilAnalysis";
 import { buildMultiTechReport } from "../../lib/reports/technologySummary";
+import TelemetryProvenanceBadge from "../diagnostics/TelemetryProvenanceBadge";
 import {
   deleteReport,
   fetchReports,
@@ -380,8 +381,11 @@ export default function MultiTechTab({
                 <div key={tech.technology} className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
                   <div className="flex items-start justify-between gap-3 mb-3">
                     <p className="text-sm font-bold text-white truncate">{tech.label}</p>
-                    <span className={`shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[tech.severity]}`}>
-                      {SEVERITY_LABEL[tech.severity]}
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      <span className={`rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[tech.severity]}`}>
+                        {SEVERITY_LABEL[tech.severity]}
+                      </span>
+                      <TelemetryProvenanceBadge provenance={tech.telemetryProvenance ?? null} />
                     </span>
                   </div>
                   {!tech.hasData ? (
@@ -406,8 +410,9 @@ export default function MultiTechTab({
                         </div>
                       ))}
                       {tech.healthScore != null && (
-                        <p className="text-[10px] text-slate-500 pt-1 border-t border-white/5">
+                        <p className="text-[10px] text-slate-500 pt-1 border-t border-white/5 flex items-center gap-1.5">
                           Health score: {tech.healthScore}/100
+                          <TelemetryProvenanceBadge provenance={tech.telemetryProvenance ?? null} />
                           <span className="text-slate-600 ml-1">
                             {tech.technology === "mca" ? "(MCA index — not comparable across technologies)" : "(0–100 consensus engine)"}
                           </span>

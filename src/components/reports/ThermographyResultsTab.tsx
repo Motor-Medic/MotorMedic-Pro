@@ -5,6 +5,8 @@
 import React, { useMemo } from "react";
 import { AlertTriangle, CheckCircle2, FileText, Flame, Gauge, Info, Shield, ShieldAlert, Thermometer, Zap } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
+import { telemetryProvenanceOf } from "../../lib/analysisPersistence";
+import TelemetryProvenanceBadge from "../diagnostics/TelemetryProvenanceBadge";
 import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./reportPresentation";
 import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
@@ -142,7 +144,10 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
             <p className="text-sm text-slate-500 mt-1">{selectedAnalysis.component || "—"} · {selectedAnalysis.asset_id || "—"},</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[sev]}`}>{SEVERITY_LABEL[sev]}</span>
+            <span className="flex items-center gap-1.5 shrink-0">
+          <span className={`rounded-md border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${SEVERITY_STYLE[sev]}`}>{SEVERITY_LABEL[sev]}</span>
+          <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(selectedAnalysis)} />
+        </span>
             <span className="rounded-md border border-slate-600 bg-slate-800/50 px-2.5 py-1 text-[11px] font-bold text-slate-400">NETA: {neta}</span>
           </div>
         </div>
