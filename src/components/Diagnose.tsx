@@ -5237,6 +5237,11 @@ useEffect(() => {
                   Data Source: {spectrumUpload?.name || "Spectrum + Kinematics"} | Point{" "}
                   {measurementPoint} | {fmax} / {lor} LoR
                   {analysisSource === "local" ? " | Local Preview" : analysisSource === "api" ? " | Consensus Engine" : ""}
+                  {analysisResult?.consensusDetails?.consensusMode === "single-model-degraded"
+                    ? " | Single-model - degraded consensus"
+                    : analysisResult?.consensusDetails?.consensusMode === "multi-model"
+                      ? " | Multi-model consensus"
+                      : ""}
                 </span>
               </div>
 

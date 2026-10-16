@@ -27,11 +27,10 @@ import {
 } from "./src/lib/openRouterModels";
 import {
   ANALYZE_VIBRATION_API_ALIAS,
-  ANALYZE_VIBRATION_API_PATH
-  // Temporary: multi-agent consensus disabled for UI development
-  // runConsensusVibrationAnalysis
+  ANALYZE_VIBRATION_API_PATH,
+  runConsensusVibrationAnalysis
 } from "./src/lib/consensusEngine";
-import { runSingleModelVibrationAnalysis } from "./src/lib/singleModelVibrationAnalysis";
+import { ConsensusCascadeExhaustedError } from "./src/lib/diagnostics/consensusCascade";
 import {
   logPayloadSize,
   logPipelineFail,
@@ -125,8 +124,10 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
  * Multi-model consensus vibration analysis — mounted early so it always registers
  * before the unmatched /api 404 interceptor (restart server after edits).
  *
- * Pipeline: Gemini vision → DeepSeek/OpenRouter + Groq/OpenAI analysts → referee.
- * Domain failures return HTTP 422/503 with structured error payloads (never mocks).
+ * Pipeline: AR-25 free-tier-first provider cascade (Gemini -> Groq -> Mistral
+ * -> OpenAI -> OpenRouter last) across vision extraction + analyst/referee
+ * stages. Domain failures return HTTP 422/503 with the exact per-provider
+ * status codes (never mocks, never a GATEWAY_TIMEOUT collapse).
  */
 /**
  * Express 4 does not catch async rejections — wrap handlers so errors always become JSON.
@@ -142,14 +143,21 @@ function asyncJsonHandler(
       }
       logPipelineFail("analyze-vibration:async", performance.now(), err);
       console.error("API Route Error:", err);
+      const cascadeFailure = err instanceof ConsensusCascadeExhaustedError;
       sendExpressJson(
         res,
-        buildAnalyzeVibrationErrorBody(err, {
-          errorType: "GATEWAY_TIMEOUT",
-          title: "Consensus Diagnostic Error",
-          httpStatus: 500
-        }),
-        500
+        buildAnalyzeVibrationErrorBody(err, cascadeFailure
+          ? {
+              errorType: "PROVIDER_FAILURE",
+              title: "Consensus Provider Error",
+              httpStatus: 503
+            }
+          : {
+              errorType: "GATEWAY_TIMEOUT",
+              title: "Consensus Diagnostic Error",
+              httpStatus: 500
+            }),
+        cascadeFailure ? 503 : 500
       );
     });
   };
@@ -176,17 +184,16 @@ async function handleAnalyzeVibrationExpress(
       mode: body.mode || "full",
       hasImage: Boolean(imageBase64)
     });
-    // OLD: const outcome = await runConsensusVibrationAnalysis(body);
-    const outcome = await runSingleModelVibrationAnalysis(body);
+    const outcome = await runConsensusVibrationAnalysis(body);
 
     if (!outcome || outcome.success !== true) {
       const errPayload = outcome?.success === false
         ? outcome
         : {
             success: false as const,
-            errorType: "GATEWAY_TIMEOUT" as const,
+            errorType: "PROVIDER_FAILURE" as const,
             title: "Consensus Diagnostic Error",
-            message: "An AI provider timed out during multi-agent synthesis. Please retry analysis.",
+            message: "Consensus engine returned an unexpected result.",
             httpStatus: 503 as const,
             detail: "Consensus engine returned an unexpected result."
           };
@@ -244,14 +251,21 @@ async function handleAnalyzeVibrationExpress(
   } catch (error: unknown) {
     logPipelineFail("analyze-vibration", startTime, error);
     console.error("API Route Error:", error);
+    const cascadeFailure = error instanceof ConsensusCascadeExhaustedError;
     sendExpressJson(
       res,
-      buildAnalyzeVibrationErrorBody(error, {
-        errorType: "GATEWAY_TIMEOUT",
-        title: "Consensus Diagnostic Error",
-        httpStatus: 500
-      }),
-      500
+      buildAnalyzeVibrationErrorBody(error, cascadeFailure
+        ? {
+            errorType: "PROVIDER_FAILURE",
+            title: "Consensus Provider Error",
+            httpStatus: 503
+          }
+        : {
+            errorType: "GATEWAY_TIMEOUT",
+            title: "Consensus Diagnostic Error",
+            httpStatus: 500
+          }),
+      cascadeFailure ? 503 : 500
     );
   }
 }
@@ -264,8 +278,8 @@ app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
     method: "POST",
     path: ANALYZE_VIBRATION_API_PATH,
     alias: ANALYZE_VIBRATION_API_ALIAS,
-    service: "3-Stage Multi-Model Consensus Engine (Gemini + DeepSeek/OpenRouter + Groq/OpenAI)",
-    errors: ["SIGNAL_UNREADABLE", "CONSENSUS_DIVERGENCE", "GATEWAY_TIMEOUT"]
+    service: "3-Stage Multi-Model Consensus Engine (AR-25 provider cascade: Gemini -> Groq -> Mistral -> OpenAI -> OpenRouter last)",
+    errors: ["SIGNAL_UNREADABLE", "CONSENSUS_DIVERGENCE", "GATEWAY_TIMEOUT", "PROVIDER_FAILURE"]
   });
 });
 

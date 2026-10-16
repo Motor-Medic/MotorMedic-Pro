@@ -1,16 +1,17 @@
 /**
  * 3-Stage Multi-Model Consensus Engine for Spectra CM vibration diagnostics.
  *
- * All stages use OpenRouter exclusively (OPENROUTER_API_KEY required):
- *   Stage 1  — openai/gpt-4o vision (OPENROUTER_VISION_MODEL)
- *   Stage 2a — qwen/qwen-2.5-vl-72b-instruct kinematic analyst
- *   Stage 2b — qwen/qwen-2.5-vl-72b-instruct ISO analyst
- *   Stage 3  — qwen/qwen-2.5-vl-72b-instruct consensus referee
+ * AR-25 — every stage dispatches through the sequential, key-gated,
+ * free-tier-first provider cascade (see diagnostics/consensusCascade.ts):
+ *   Stage 1  — vision cascade: Gemini -> Mistral -> OpenAI -> OpenRouter (last)
+ *   Stage 2a — kinematic analyst via the text cascade
+ *   Stage 2b — ISO analyst via the text cascade
+ *   Stage 3  — consensus referee via the text cascade
  *
- * Failures return structured domain errors (never mock diagnostic data).
+ * All-fail scenarios surface the exact per-provider HTTP status codes and
+ * model IDs (never fabricated diagnoses); a synthesis that only one model
+ * answered is tagged single-model / degraded consensus (rule 9).
  */
-
-import OpenAI from "openai";
 import {
   logPayloadSize,
   logPipelineFail,
@@ -20,12 +21,18 @@ import {
   pipelineElapsedSec
 } from "./pipelineTrace";
 import {
-  OPENROUTER_API_BASE,
-  OPENROUTER_CONSENSUS_MODEL,
-  OPENROUTER_VISION_MODELS,
-  hasOpenRouterKey,
-  openRouterRefererHeaders
-} from "./openRouterModels";
+  CONSENSUS_TEXT_CHAIN,
+  CONSENSUS_VISION_CHAIN,
+  ConsensusCascadeExhaustedError,
+  ConsensusProvenanceRecorder,
+  deriveConsensusMode,
+  describeCascadeFailure,
+  describeConsensusSkips,
+  consensusCascadeReadiness,
+  runConsensusCascade,
+  type ConsensusCascadeImage,
+  type ConsensusCascadeMode
+} from "./diagnostics/consensusCascade";
 import { EXPERT_VISION_PROMPT, VIBRATION_VISION_PROMPT_SIMPLE } from "./vibration/visionModelConfig";
 import { loadCostModel } from "../components/scorecard/CostDock";
 
@@ -100,13 +107,16 @@ export interface VibrationAnalysisResult {
     modelA_Hypothesis: string;
     modelB_Hypothesis: string;
     refereeDebateSummary: string;
+    consensusMode?: ConsensusCascadeMode;
+    answeringModels?: string[];
   };
 }
 
 export type ConsensusErrorType =
   | "SIGNAL_UNREADABLE"
   | "CONSENSUS_DIVERGENCE"
-  | "GATEWAY_TIMEOUT";
+  | "GATEWAY_TIMEOUT"
+  | "PROVIDER_FAILURE";
 
 export interface ConsensusDomainError {
   success: false;
@@ -122,6 +132,10 @@ export interface ConsensusDetails {
   modelA_Hypothesis: string;
   modelB_Hypothesis: string;
   refereeDebateSummary: string;
+  /** AR-25 rule 9 — multi-model vs degraded single-model provenance. */
+  consensusMode?: ConsensusCascadeMode;
+  /** Distinct `label/model` ids that actually answered this run. */
+  answeringModels?: string[];
 }
 
 export interface ConsensusVibrationResult extends VibrationAnalysisResult {
@@ -153,6 +167,12 @@ const DOMAIN_ERRORS: Record<
     title: "Consensus Diagnostic Error",
     message:
       "An AI provider timed out during multi-agent synthesis. Please retry analysis, or upload a clearer spectrum image."
+  },
+  PROVIDER_FAILURE: {
+    httpStatus: 503,
+    title: "Consensus Provider Error",
+    message:
+      "All AI providers in the consensus cascade failed. See per-provider status codes."
   }
 };
 
@@ -171,20 +191,22 @@ export function consensusDomainError(
   };
 }
 
-function isTimeoutLike(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return (
-    msg.includes("timeout") ||
-    msg.includes("timed out") ||
-    msg.includes("etimedout") ||
-    msg.includes("econnreset") ||
-    msg.includes("econnrefused") ||
-    msg.includes("fetch failed") ||
-    msg.includes("socket hang up") ||
-    msg.includes("503") ||
-    msg.includes("504") ||
-    msg.includes("429")
-  );
+/**
+ * AR-25 rule 3 — cascade exhaustion surfaces the real per-provider HTTP
+ * status codes and model IDs in the client-facing message, never a
+ * GATEWAY_TIMEOUT / generic 500 collapse.
+ */
+export function consensusProviderFailure(detail: string): ConsensusDomainError {
+  const base = DOMAIN_ERRORS.PROVIDER_FAILURE;
+  const message = `${base.message} ${detail}`.trim();
+  return {
+    success: false,
+    errorType: "PROVIDER_FAILURE",
+    title: base.title,
+    message,
+    httpStatus: base.httpStatus,
+    detail
+  };
 }
 
 const REACTIVE_MAINTENANCE_MULTIPLIER = 5;
@@ -984,68 +1006,8 @@ function isExtractionReadable(extraction: Stage1Extraction): boolean {
   return true;
 }
 
-async function callOpenRouter(
-  model: string,
-  systemPrompt: string,
-  userPrompt: string
-): Promise<string> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is not configured.");
-  }
-
-  const client = new OpenAI({
-    apiKey,
-    baseURL: OPENROUTER_API_BASE,
-    timeout: AI_PROVIDER_TIMEOUT_MS,
-    defaultHeaders: openRouterRefererHeaders()
-  });
-  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt }
-  ];
-
-  const startTime = logPipelineStart("provider:openrouter", { model });
-  logPipelineSend("provider:openrouter", { model, timeoutMs: AI_PROVIDER_TIMEOUT_MS });
-  try {
-    const response = await client.chat.completions.create({
-      model,
-      messages,
-      temperature: 0.15,
-      response_format: { type: "json_object" }
-    });
-    const content = response.choices[0]?.message?.content;
-    if (!content) throw new Error(`OpenRouter/${model} returned empty content.`);
-    logPipelineSuccess("provider:openrouter", startTime, { model, mode: "json" });
-    return content;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    logPipelineFail("provider:openrouter:json", startTime, err);
-    console.warn(
-      `[consensus] openrouter/${model} JSON mode failed, retrying plain:`,
-      message
-    );
-    try {
-      const response = await client.chat.completions.create({
-        model,
-        messages,
-        temperature: 0.15
-      });
-      const content = response.choices[0]?.message?.content;
-      if (!content) {
-        throw new Error(`OpenRouter/${model} returned empty content on retry.`);
-      }
-      logPipelineSuccess("provider:openrouter", startTime, { model, mode: "plain-retry" });
-      return content;
-    } catch (retryErr: unknown) {
-      logPipelineFail("provider:openrouter:plain", startTime, retryErr);
-      throw retryErr;
-    }
-  }
-}
-
 /* -------------------------------------------------------------------------- */
-/* Stage 1 — OpenAI GPT-4o Vision spectrum extractor                          */
+/* Stage 1 — vision cascade spectrum extractor                                */
 /* -------------------------------------------------------------------------- */
 
 const OPENAI_VISION_SYSTEM_PROMPT = EXPERT_VISION_PROMPT;
@@ -1061,8 +1023,96 @@ interface OpenAiSpectrumPeak {
   description?: string;
 }
 
+interface VisionExtractionMeta {
+  chartType?: string;
+  rpm?: number;
+  xAxisUnit?: string;
+  yAxisUnit?: string;
+  overallVelocity?: number;
+  fmax?: number;
+  amplitudeUnit?: string;
+  runningSpeed1xHz?: number;
+  runningSpeed1xRpm?: number;
+  overallRmsVelocity?: number;
+  axesReadable?: boolean;
+  extractionConfidence?: number;
+  notes?: string;
+  defectMultipliers?: Stage1Extraction["defectMultipliers"];
+}
+
+interface VisionResponseShape {
+  peakRows: OpenAiSpectrumPeak[];
+  meta: VisionExtractionMeta;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finiteNumberOrUndefined(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isSpectrumPeakRow(value: unknown): value is OpenAiSpectrumPeak {
+  return isObjectRecord(value);
+}
+
+function isDefectMultipliers(
+  value: unknown
+): value is NonNullable<Stage1Extraction["defectMultipliers"]> {
+  if (!isObjectRecord(value)) return false;
+  return Object.values(value).every(
+    (v) =>
+      typeof v === "number" ||
+      (Array.isArray(v) && v.every((entry) => typeof entry === "number"))
+  );
+}
+
+function parseVisionResponseShape(content: string): VisionResponseShape {
+  const raw: unknown = parseVisionJsonResponse(content);
+  if (Array.isArray(raw)) {
+    return { peakRows: raw.filter(isSpectrumPeakRow), meta: {} };
+  }
+  if (!isObjectRecord(raw)) {
+    throw new Error("vision response JSON is neither an array nor an object");
+  }
+  const peaksRaw = raw.peaks;
+  return {
+    peakRows: Array.isArray(peaksRaw)
+      ? peaksRaw.filter(isSpectrumPeakRow)
+      : [],
+    meta: {
+      chartType: stringOrUndefined(raw.chartType),
+      rpm: finiteNumberOrUndefined(raw.rpm),
+      xAxisUnit: stringOrUndefined(raw.xAxisUnit),
+      yAxisUnit: stringOrUndefined(raw.yAxisUnit),
+      overallVelocity: finiteNumberOrUndefined(raw.overallVelocity),
+      fmax: finiteNumberOrUndefined(raw.fmax),
+      amplitudeUnit: stringOrUndefined(raw.amplitudeUnit),
+      runningSpeed1xHz: finiteNumberOrUndefined(raw.runningSpeed1xHz),
+      runningSpeed1xRpm: finiteNumberOrUndefined(raw.runningSpeed1xRpm),
+      overallRmsVelocity: finiteNumberOrUndefined(raw.overallRmsVelocity),
+      axesReadable:
+        typeof raw.axesReadable === "boolean" ? raw.axesReadable : undefined,
+      extractionConfidence: finiteNumberOrUndefined(raw.extractionConfidence),
+      notes: stringOrUndefined(raw.notes),
+      defectMultipliers: isDefectMultipliers(raw.defectMultipliers)
+        ? raw.defectMultipliers
+        : undefined
+    }
+  };
+}
+
 /**
- * Analyze a spectrum chart image with GPT-4o Vision via OpenRouter only.
+ * Analyze a spectrum chart image through the AR-25 vision provider cascade
+ * (Gemini -> Mistral -> OpenAI -> OpenRouter last). Parse/schema failures on
+ * an answering provider are logged and fall back to the next provider.
  */
 export async function analyzeSpectrumWithOpenAI(
   imageBase64: string,
@@ -1070,17 +1120,12 @@ export async function analyzeSpectrumWithOpenAI(
     specs?: AnalyzeComponentSpecs;
     telemetry?: AnalyzeTelemetry;
     mode?: "full" | "simple";
+    provenance?: ConsensusProvenanceRecorder;
   }
 ): Promise<Stage1Extraction> {
-  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (!openRouterKey) {
-    throw new Error("OPENROUTER_API_KEY is required for Stage 1 vision extraction.");
-  }
-
   const { data, mimeType } = stripDataUrl(imageBase64);
-  const cleanBase64 = data.replace(/^data:image\/\w+;base64,/, "");
-  const dataUrl = `data:${mimeType};base64,${cleanBase64}`;
-  logPayloadSize("stage1-openai-vision", dataUrl);
+  const dataUrl = `data:${mimeType};base64,${data}`;
+  logPayloadSize("stage1-vision-cascade", dataUrl);
   const mode = context?.mode === "simple" ? "simple" : "full";
   const systemPrompt =
     mode === "simple"
@@ -1098,218 +1143,130 @@ export async function analyzeSpectrumWithOpenAI(
 IMPORTANT: Read RPM from the chart image only. Do NOT copy Rated RPM from specs unless the image shows no RPM.
 Database specs (reference only — image wins): ${specsBlock(specs, telemetry)}`;
 
-  const client = new OpenAI({
-    apiKey: openRouterKey,
-    baseURL: OPENROUTER_API_BASE,
-    timeout: AI_PROVIDER_TIMEOUT_MS,
-    defaultHeaders: openRouterRefererHeaders()
+  const stageStart = logPipelineStart("stage1-vision", {
+    chain: "consensus-vision-cascade"
   });
+  logPipelineSend("stage1-vision", { detail: "high" });
+  const image: ConsensusCascadeImage = { dataUrl, mimeType };
+  const outcome = await runConsensusCascade<VisionResponseShape>({
+    chain: CONSENSUS_VISION_CHAIN,
+    stage: "stage1",
+    systemPrompt,
+    userPrompt: userContext,
+    image,
+    validate: parseVisionResponseShape
+  });
+  if (outcome.ok === false) {
+    const failure = new ConsensusCascadeExhaustedError(
+      outcome.attempts,
+      outcome.skips
+    );
+    logPipelineFail("stage1-vision", stageStart, failure);
+    throw failure;
+  }
+  context?.provenance?.record("stage1", outcome.providerLabel, outcome.model);
+  console.log(
+    `[consensus] Stage 1 answered by ${outcome.providerLabel} ${outcome.model} (HTTP ${outcome.httpStatus})`
+  );
+  const { peakRows, meta } = outcome.value;
 
-  let lastError: unknown;
-
-  for (const model of OPENROUTER_VISION_MODELS) {
-    const stageStart = logPipelineStart("stage1-vision", {
-      model,
-      provider: "openrouter",
-      timeoutMs: AI_PROVIDER_TIMEOUT_MS
-    });
-    try {
-      console.log(`[consensus] Stage 1 vision via OpenRouter / ${model}…`);
-      logPipelineSend("stage1-vision", { model, detail: "high" });
-      let contentText = "";
-      try {
-        const response = await client.chat.completions.create({
-          model,
-          temperature: 0.1,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: userContext },
-                { type: "image_url", image_url: { url: dataUrl, detail: "high" } }
-              ]
-            }
-          ]
-        });
-        contentText = response.choices[0]?.message?.content || "";
-      } catch (jsonModeErr) {
-        logPipelineFail("stage1-vision:json", stageStart, jsonModeErr);
-        console.warn(
-          `[consensus] ${model} JSON mode failed, retrying plain:`,
-          jsonModeErr instanceof Error ? jsonModeErr.message : jsonModeErr
-        );
-        const response = await client.chat.completions.create({
-          model,
-          temperature: 0.1,
-          messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: userContext },
-                { type: "image_url", image_url: { url: dataUrl, detail: "high" } }
-              ]
-            }
-          ]
-        });
-        contentText = response.choices[0]?.message?.content || "";
+  const xAxisUnit = String(meta.xAxisUnit || "Hz").toUpperCase();
+  const unit = meta.yAxisUnit || meta.amplitudeUnit || "mm/s";
+  const peaks: SpectrumPeak[] = peakRows
+    .map((p) => {
+      let frequencyHz = Number(p.frequencyHz ?? p.frequency ?? 0);
+      if (xAxisUnit === "CPM" && frequencyHz > 0) {
+        frequencyHz = frequencyHz / 60;
       }
-
-      if (!contentText.trim()) {
-        throw new Error(`Empty response from OpenAI Vision model (${model}).`);
-      }
-
-      const raw = parseVisionJsonResponse(contentText) as
-        | OpenAiSpectrumPeak[]
-        | {
-            peaks?: OpenAiSpectrumPeak[];
-            chartType?: string;
-            rpm?: number;
-            xAxisUnit?: string;
-            yAxisUnit?: string;
-            overallVelocity?: number;
-            fmax?: number;
-            amplitudeUnit?: string;
-            runningSpeed1xHz?: number;
-            runningSpeed1xRpm?: number;
-            overallRmsVelocity?: number;
-            axesReadable?: boolean;
-            extractionConfidence?: number;
-            notes?: string;
-            defectMultipliers?: Stage1Extraction["defectMultipliers"];
-          };
-
-      let peakRows: OpenAiSpectrumPeak[] = [];
-      let meta: {
-        chartType?: string;
-        rpm?: number;
-        xAxisUnit?: string;
-        yAxisUnit?: string;
-        overallVelocity?: number;
-        fmax?: number;
-        amplitudeUnit?: string;
-        runningSpeed1xHz?: number;
-        runningSpeed1xRpm?: number;
-        overallRmsVelocity?: number;
-        axesReadable?: boolean;
-        extractionConfidence?: number;
-        notes?: string;
-        defectMultipliers?: Stage1Extraction["defectMultipliers"];
-      } = {};
-
-      if (Array.isArray(raw)) {
-        peakRows = raw;
-      } else if (raw && typeof raw === "object") {
-        peakRows = Array.isArray(raw.peaks) ? raw.peaks : [];
-        meta = raw;
-      }
-
-      const xAxisUnit = String(meta.xAxisUnit || "Hz").toUpperCase();
-      const unit = meta.yAxisUnit || meta.amplitudeUnit || "mm/s";
-      const peaks: SpectrumPeak[] = peakRows
-        .map((p) => {
-          let frequencyHz = Number(p.frequencyHz ?? p.frequency ?? 0);
-          if (xAxisUnit === "CPM" && frequencyHz > 0) {
-            frequencyHz = frequencyHz / 60;
-          }
-          const amplitude = Number(p.amplitude ?? 0);
-          const label =
-            p.label ||
-            p.description ||
-            (p.harmonicOrder != null ? String(p.harmonicOrder) : undefined);
-          return {
-            frequencyHz,
-            frequencyCpm: frequencyHz > 0 ? frequencyHz * 60 : undefined,
-            amplitude,
-            amplitudeUnit: unit,
-            label
-          };
-        })
-        .filter((p) => Number.isFinite(p.frequencyHz) && p.frequencyHz > 0);
-
-      const imageRpm = Number(meta.rpm);
-      let runningSpeed1xHz = Number(meta.runningSpeed1xHz);
-      let runningSpeed1xRpm = Number(meta.runningSpeed1xRpm);
-
-      if (Number.isFinite(imageRpm) && imageRpm > 0) {
-        runningSpeed1xRpm = imageRpm;
-        runningSpeed1xHz = imageRpm / 60;
-      } else if (
-        (!Number.isFinite(runningSpeed1xHz) || runningSpeed1xHz <= 0) &&
-        Number.isFinite(runningSpeed1xRpm) &&
-        runningSpeed1xRpm > 0
-      ) {
-        runningSpeed1xHz = runningSpeed1xRpm / 60;
-      }
-
-      const oneXPeak = peaks.find((p) =>
-        /1\s*x|running\s*speed|1x/i.test(String(p.label || ""))
-      );
-      if ((!Number.isFinite(runningSpeed1xHz) || runningSpeed1xHz <= 0) && oneXPeak) {
-        runningSpeed1xHz = oneXPeak.frequencyHz;
-        runningSpeed1xRpm = oneXPeak.frequencyHz * 60;
-      }
-
-      const chartNote = meta.chartType ? `chartType=${meta.chartType}` : undefined;
-      const rpmNote =
-        Number.isFinite(runningSpeed1xRpm) && runningSpeed1xRpm! > 0
-          ? `image RPM=${runningSpeed1xRpm}, 1X=${runningSpeed1xHz?.toFixed(2)} Hz`
-          : undefined;
-
-      logPipelineSuccess("stage1-vision", stageStart, {
-        model,
-        peakCount: peaks.length
-      });
+      const amplitude = Number(p.amplitude ?? 0);
+      const label =
+        p.label ||
+        p.description ||
+        (p.harmonicOrder != null ? String(p.harmonicOrder) : undefined);
       return {
-        peaks,
-        overallRmsVelocity: Number.isFinite(Number(meta.overallVelocity))
-          ? Number(meta.overallVelocity)
-          : Number.isFinite(Number(meta.overallRmsVelocity))
-            ? Number(meta.overallRmsVelocity)
-            : Number(telemetry.rmsVelocity) || undefined,
+        frequencyHz,
+        frequencyCpm: frequencyHz > 0 ? frequencyHz * 60 : undefined,
+        amplitude,
         amplitudeUnit: unit,
-        runningSpeed1xHz: Number.isFinite(runningSpeed1xHz)
-          ? runningSpeed1xHz
-          : undefined,
-        runningSpeed1xRpm: Number.isFinite(runningSpeed1xRpm)
-          ? runningSpeed1xRpm
-          : undefined,
-        defectMultipliers: meta.defectMultipliers,
-        notes: [chartNote, rpmNote, meta.notes, meta.fmax != null ? `Fmax≈${meta.fmax}` : undefined]
-          .filter(Boolean)
-          .join("; ") || undefined,
-        extractionConfidence: Number.isFinite(Number(meta.extractionConfidence))
-          ? Number(meta.extractionConfidence)
-          : peaks.length > 0
-            ? 80
-            : 30,
-        axesReadable: meta.axesReadable !== false && peaks.length > 0
+        label
       };
-    } catch (err) {
-      lastError = err;
-      logPipelineFail("stage1-vision", stageStart, err);
-      console.error("🚨 Vision extraction error:", err);
-      console.warn(
-        `[consensus] Vision model ${model} failed:`,
-        err instanceof Error ? err.message : err
-      );
-    }
+    })
+    .filter((p) => Number.isFinite(p.frequencyHz) && p.frequencyHz > 0);
+
+  const imageRpm = Number(meta.rpm);
+  let runningSpeed1xHz = Number(meta.runningSpeed1xHz);
+  let runningSpeed1xRpm = Number(meta.runningSpeed1xRpm);
+
+  if (Number.isFinite(imageRpm) && imageRpm > 0) {
+    runningSpeed1xRpm = imageRpm;
+    runningSpeed1xHz = imageRpm / 60;
+  } else if (
+    (!Number.isFinite(runningSpeed1xHz) || runningSpeed1xHz <= 0) &&
+    Number.isFinite(runningSpeed1xRpm) &&
+    runningSpeed1xRpm > 0
+  ) {
+    runningSpeed1xHz = runningSpeed1xRpm / 60;
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("OpenAI Vision Error: Unable to extract spectrum peaks");
+  const oneXPeak = peaks.find((p) =>
+    /1\s*x|running\s*speed|1x/i.test(String(p.label || ""))
+  );
+  if ((!Number.isFinite(runningSpeed1xHz) || runningSpeed1xHz <= 0) && oneXPeak) {
+    runningSpeed1xHz = oneXPeak.frequencyHz;
+    runningSpeed1xRpm = oneXPeak.frequencyHz * 60;
+  }
+
+  const chartNote = meta.chartType ? `chartType=${meta.chartType}` : undefined;
+  const rpmNote =
+    Number.isFinite(runningSpeed1xRpm) && runningSpeed1xRpm > 0
+      ? `image RPM=${runningSpeed1xRpm}, 1X=${runningSpeed1xHz.toFixed(2)} Hz`
+      : undefined;
+
+  logPipelineSuccess("stage1-vision", stageStart, {
+    provider: outcome.providerLabel,
+    model: outcome.model,
+    peakCount: peaks.length
+  });
+  return {
+    peaks,
+    overallRmsVelocity: Number.isFinite(Number(meta.overallVelocity))
+      ? Number(meta.overallVelocity)
+      : Number.isFinite(Number(meta.overallRmsVelocity))
+        ? Number(meta.overallRmsVelocity)
+        : Number(telemetry.rmsVelocity) || undefined,
+    amplitudeUnit: unit,
+    runningSpeed1xHz: Number.isFinite(runningSpeed1xHz)
+      ? runningSpeed1xHz
+      : undefined,
+    runningSpeed1xRpm: Number.isFinite(runningSpeed1xRpm)
+      ? runningSpeed1xRpm
+      : undefined,
+    defectMultipliers: meta.defectMultipliers,
+    notes: [chartNote, rpmNote, meta.notes, meta.fmax != null ? `Fmax≈${meta.fmax}` : undefined]
+      .filter(Boolean)
+      .join("; ") || undefined,
+    extractionConfidence: Number.isFinite(Number(meta.extractionConfidence))
+      ? Number(meta.extractionConfidence)
+      : peaks.length > 0
+        ? 80
+        : 30,
+    axesReadable: meta.axesReadable !== false && peaks.length > 0
+  };
 }
 
 async function stage1VisionExtract(
   imageBase64: string,
   specs: AnalyzeComponentSpecs,
   telemetry: AnalyzeTelemetry,
-  mode: "full" | "simple" = "full"
+  mode: "full" | "simple" = "full",
+  provenance?: ConsensusProvenanceRecorder
 ): Promise<Stage1Extraction> {
-  return analyzeSpectrumWithOpenAI(imageBase64, { specs, telemetry, mode });
+  return analyzeSpectrumWithOpenAI(imageBase64, {
+    specs,
+    telemetry,
+    mode,
+    provenance
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1319,7 +1276,8 @@ async function stage1VisionExtract(
 async function stage2aKinematicAnalyst(
   extraction: Stage1Extraction,
   specs: AnalyzeComponentSpecs,
-  telemetry: AnalyzeTelemetry
+  telemetry: AnalyzeTelemetry,
+  provenance: ConsensusProvenanceRecorder
 ): Promise<AnalystHypothesis> {
   const rpm = extractionRpm(extraction) || Number(specs.ratedRpm) || 0;
   const oneXHz = rpm > 0 ? rpm / 60 : Number(extraction.runningSpeed1xHz) || 0;
@@ -1355,9 +1313,22 @@ ${JSON.stringify(extraction, null, 2)}
 
 Correlate peaks to 1X=${oneXHz.toFixed(2)} Hz and harmonics. Never treat RPM as Hz.`;
 
-  const raw = await callOpenRouter(OPENROUTER_CONSENSUS_MODEL, system, user);
-
-  return normalizeStage2aResponse(extractJsonObject(raw), extraction);
+  const outcome = await runConsensusCascade<AnalystHypothesis>({
+    chain: CONSENSUS_TEXT_CHAIN,
+    stage: "stage2a",
+    systemPrompt: system,
+    userPrompt: user,
+    validate: (content) =>
+      normalizeStage2aResponse(extractJsonObject(content), extraction)
+  });
+  if (outcome.ok === false) {
+    throw new ConsensusCascadeExhaustedError(outcome.attempts, outcome.skips);
+  }
+  provenance.record("stage2a", outcome.providerLabel, outcome.model);
+  console.log(
+    `[consensus] Stage 2a answered by ${outcome.providerLabel} ${outcome.model} (HTTP ${outcome.httpStatus})`
+  );
+  return outcome.value;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1367,7 +1338,8 @@ Correlate peaks to 1X=${oneXHz.toFixed(2)} Hz and harmonics. Never treat RPM as 
 async function stage2bIsoAnalyst(
   extraction: Stage1Extraction,
   specs: AnalyzeComponentSpecs,
-  telemetry: AnalyzeTelemetry
+  telemetry: AnalyzeTelemetry,
+  provenance: ConsensusProvenanceRecorder
 ): Promise<AnalystHypothesis> {
   const rpm = extractionRpm(extraction) || Number(specs.ratedRpm) || 0;
   const velocity =
@@ -1403,9 +1375,22 @@ ${JSON.stringify(extraction, null, 2)}
 
 Map overall velocity to ISO 10816 zones for this ${machineType}.`;
 
-  const raw = await callOpenRouter(OPENROUTER_CONSENSUS_MODEL, system, user);
-
-  return normalizeStage2bResponse(extractJsonObject(raw), extraction, specs);
+  const outcome = await runConsensusCascade<AnalystHypothesis>({
+    chain: CONSENSUS_TEXT_CHAIN,
+    stage: "stage2b",
+    systemPrompt: system,
+    userPrompt: user,
+    validate: (content) =>
+      normalizeStage2bResponse(extractJsonObject(content), extraction, specs)
+  });
+  if (outcome.ok === false) {
+    throw new ConsensusCascadeExhaustedError(outcome.attempts, outcome.skips);
+  }
+  provenance.record("stage2b", outcome.providerLabel, outcome.model);
+  console.log(
+    `[consensus] Stage 2b answered by ${outcome.providerLabel} ${outcome.model} (HTTP ${outcome.httpStatus})`
+  );
+  return outcome.value;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1532,7 +1517,8 @@ async function stage3ConsensusReferee(
   agentA: AnalystHypothesis | null,
   agentB: AnalystHypothesis | null,
   specs: AnalyzeComponentSpecs,
-  telemetry: AnalyzeTelemetry
+  telemetry: AnalyzeTelemetry,
+  provenance: ConsensusProvenanceRecorder
 ): Promise<ConsensusVibrationResult> {
   const velocity =
     Number(extraction.overallRmsVelocity) ||
@@ -1571,14 +1557,28 @@ ${JSON.stringify(agentB)}
 
 Remember: 1X Hz = RPM/60. Never confuse RPM with Hz.`;
 
-  if (!hasOpenRouterKey()) {
-    throw new Error("OPENROUTER_API_KEY is not configured.");
+  const outcome = await runConsensusCascade<Record<string, unknown>>({
+    chain: CONSENSUS_TEXT_CHAIN,
+    stage: "stage3",
+    systemPrompt: system,
+    userPrompt: user,
+    validate: (content) => {
+      const parsed: unknown = extractJsonObject(content);
+      if (!isObjectRecord(parsed)) {
+        throw new Error("referee response JSON is not an object");
+      }
+      return parsed;
+    }
+  });
+  if (outcome.ok === false) {
+    throw new ConsensusCascadeExhaustedError(outcome.attempts, outcome.skips);
   }
-
-  const raw = await callOpenRouter(OPENROUTER_CONSENSUS_MODEL, system, user);
-  const parsed = extractJsonObject(raw) as Record<string, unknown>;
+  provenance.record("stage3", outcome.providerLabel, outcome.model);
+  console.log(
+    `[consensus] Stage 3 answered by ${outcome.providerLabel} ${outcome.model} (HTTP ${outcome.httpStatus})`
+  );
   const normalized = normalizeStage3ExpertResponse(
-    parsed,
+    outcome.value,
     extraction,
     agentA,
     agentB
@@ -1619,6 +1619,38 @@ function normalizeRefereeResult(
 /* Public entry                                                               */
 /* -------------------------------------------------------------------------- */
 
+function tagConsensusProvenance(
+  result: ConsensusVibrationResult,
+  provenance: ConsensusProvenanceRecorder,
+  agentA: AnalystHypothesis | null,
+  agentB: AnalystHypothesis | null
+): ConsensusVibrationResult {
+  const consensusMode = deriveConsensusMode(
+    provenance.synthesisModels(),
+    agentA != null,
+    agentB != null
+  );
+  const answeringModels = provenance.answeringModels();
+  const base: ConsensusDetails = result.consensusDetails || {
+    modelA_Hypothesis: agentA?.reasoning || "n/a",
+    modelB_Hypothesis: agentB?.reasoning || "n/a",
+    refereeDebateSummary: result.summary || "Consensus complete."
+  };
+  if (consensusMode === "single-model-degraded") {
+    console.warn(
+      `[consensus] Degraded consensus — single-model synthesis (${answeringModels.join(", ") || "no model answered"})`
+    );
+  } else {
+    console.log(
+      `[consensus] Multi-model consensus provenance: ${answeringModels.join(", ")}`
+    );
+  }
+  return {
+    ...result,
+    consensusDetails: { ...base, consensusMode, answeringModels }
+  };
+}
+
 /**
  * Run the full 3-stage consensus pipeline (live AI — no mock data).
  */
@@ -1639,25 +1671,26 @@ export async function runConsensusVibrationAnalysis(
   }
   logPayloadSize("consensus-engine", imageBase64);
 
-  if (!hasOpenRouterKey()) {
-    console.error("[consensus] OPENROUTER_API_KEY not configured.");
-    return consensusDomainError(
-      "GATEWAY_TIMEOUT",
-      "OPENROUTER_API_KEY is required for all consensus stages."
-    );
+  const readiness = consensusCascadeReadiness();
+  if (!readiness.ready) {
+    const skipDetail = describeConsensusSkips(readiness.skips);
+    console.error("[consensus] No consensus provider configured:", skipDetail);
+    return consensusProviderFailure(skipDetail);
   }
+  const provenance = new ConsensusProvenanceRecorder();
 
   let extraction: Stage1Extraction;
 
-  // Stage 1 — GPT-4o Vision via OpenRouter
+  // Stage 1 — vision cascade (Gemini -> Mistral -> OpenAI -> OpenRouter last)
   try {
-    console.log("[consensus] Stage 1 — OpenRouter GPT-4o vision extraction…");
+    console.log("[consensus] Stage 1 — vision provider cascade extraction…");
     logPipelineSend("consensus-stage1");
     extraction = await stage1VisionExtract(
       imageBase64,
       componentSpecs,
       telemetry,
-      mode === "simple" ? "simple" : "full"
+      mode === "simple" ? "simple" : "full",
+      provenance
     );
     console.log("[consensus] Stage 1 complete:", {
       peaks: extraction.peaks?.length ?? 0,
@@ -1668,9 +1701,13 @@ export async function runConsensusVibrationAnalysis(
     });
   } catch (err) {
     logPipelineFail("consensus-stage1", startTime, err);
-    console.error("🚨 OpenAI Vision Raw Error:", err);
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[consensus] Stage 1 OpenAI Vision failed:", msg);
+    console.error("[consensus] Stage 1 vision cascade failed:", msg);
+    if (err instanceof ConsensusCascadeExhaustedError) {
+      return consensusProviderFailure(
+        describeCascadeFailure(err.attempts, err.skips)
+      );
+    }
     return consensusDomainError(
       "SIGNAL_UNREADABLE",
       `OpenAI Vision Error: Unable to extract spectrum peaks (${msg})`
@@ -1693,12 +1730,10 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
 
   // Stage 2a & 2b in parallel
   const stage2Start = performance.now();
-  logPipelineSend("consensus-stage2", {
-    model: OPENROUTER_CONSENSUS_MODEL
-  });
+  logPipelineSend("consensus-stage2", { chain: "consensus-text-cascade" });
   const [aResult, bResult] = await Promise.allSettled([
-    stage2aKinematicAnalyst(extraction, componentSpecs, telemetry),
-    stage2bIsoAnalyst(extraction, componentSpecs, telemetry)
+    stage2aKinematicAnalyst(extraction, componentSpecs, telemetry, provenance),
+    stage2bIsoAnalyst(extraction, componentSpecs, telemetry, provenance)
   ]);
 
   if (aResult.status === "fulfilled") {
@@ -1711,9 +1746,6 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
         : String(aResult.reason);
     stageErrors.push(`Stage2a: ${msg}`);
     console.error("[consensus] Stage 2a failed:", msg);
-    if (isTimeoutLike(aResult.reason) || /api key|not configured/i.test(msg)) {
-      stageErrors.push("Stage2a: provider timeout or key issue");
-    }
   }
 
   if (bResult.status === "fulfilled") {
@@ -1726,17 +1758,13 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
         : String(bResult.reason);
     stageErrors.push(`Stage2b: ${msg}`);
     console.error("[consensus] Stage 2b failed:", msg);
-    if (isTimeoutLike(bResult.reason) || /api key|not configured/i.test(msg)) {
-      stageErrors.push("Stage2b: provider timeout or key issue");
-    }
   }
 
   console.log("[consensus] Stage 2 elapsed:", pipelineElapsedSec(stage2Start) + "s");
 
   if (!agentA && !agentB) {
     console.error("[consensus] Both Stage 2 analysts failed.", stageErrors);
-    return consensusDomainError(
-      "GATEWAY_TIMEOUT",
+    return consensusProviderFailure(
       stageErrors.join(" | ") || "Both Stage 2 analysts failed."
     );
   }
@@ -1778,7 +1806,8 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
       agentA,
       agentB,
       componentSpecs,
-      telemetry
+      telemetry,
+      provenance
     );
 
     if (agentDisagreementNote) {
@@ -1873,7 +1902,10 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
       primary: aligned.primaryFault?.title
     });
 
-    return buildConsensusSuccessPayload(aligned, extraction);
+    return buildConsensusSuccessPayload(
+      tagConsensusProvenance(aligned, provenance, agentA, agentB),
+      extraction
+    );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logPipelineFail("consensus-stage3", startTime, err);
@@ -1904,6 +1936,9 @@ console.log("[DEBUG] Is readable?", isExtractionReadable(extraction));
     aligned.repairRecommendations = costed.repairRecommendations;
 
     console.warn("[consensus] Returning review warning result after Stage 3 failure.");
-    return buildConsensusSuccessPayload(aligned, extraction);
+    return buildConsensusSuccessPayload(
+      tagConsensusProvenance(aligned, provenance, agentA, agentB),
+      extraction
+    );
   }
 }

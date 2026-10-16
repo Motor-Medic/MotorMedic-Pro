@@ -1,17 +1,15 @@
 /**
  * POST /api/analyze-vibration
- * Next.js App Router handler — temporary single-model GPT-4o analysis
- * (multi-agent consensus bypassed to unblock UI development).
- *
- * Production Spectra CM also serves this via Express in server.ts
- * (ANALYZE_VIBRATION_API_PATH). Both entry points call
- * runSingleModelVibrationAnalysis so behavior stays aligned.
+ * Next.js App Router handler — AR-25 multi-agent consensus dispatch via the
+ * free-tier-first provider cascade (mirrors Express in server.ts; both entry
+ * points call runConsensusVibrationAnalysis so behavior stays aligned).
  */
 
-import { ANALYZE_VIBRATION_API_PATH, type AnalyzeVibrationRequest } from "../../../lib/consensusEngine";
-// Temporary: multi-agent consensus disabled
-// import { runConsensusVibrationAnalysis } from "../../../lib/consensusEngine";
-import { runSingleModelVibrationAnalysis } from "../../../lib/singleModelVibrationAnalysis";
+import {
+  ANALYZE_VIBRATION_API_PATH,
+  runConsensusVibrationAnalysis,
+  type AnalyzeVibrationRequest
+} from "../../../lib/consensusEngine";
 import {
   logPayloadSize,
   logPipelineFail,
@@ -56,8 +54,7 @@ export async function POST(req: Request) {
   logPipelineSend("analyze-vibration-next");
 
   try {
-    // OLD: const result = await runConsensusVibrationAnalysis(body);
-    const result = await runSingleModelVibrationAnalysis(body);
+    const result = await runConsensusVibrationAnalysis(body);
 
     if (result.success === false) {
       logPipelineFail(
