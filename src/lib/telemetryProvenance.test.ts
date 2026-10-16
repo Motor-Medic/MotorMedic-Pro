@@ -6,6 +6,7 @@ import {
   TELEMETRY_PROVENANCE_DEFAULT,
   TELEMETRY_PROVENANCE_KEY,
   TELEMETRY_PROVENANCE_MANUAL,
+  TELEMETRY_PROVENANCE_PREFILLED_NOTE,
   TELEMETRY_PROVENANCE_PREFILLED_RUN
 } from "./maintenance/prescriptiveDictionary";
 
@@ -124,6 +125,8 @@ describe("badge at every saved-run severity/health display site", () => {
     ["../components/reports/McaResultsTab.tsx", ["TelemetryProvenanceBadge", "telemetryProvenanceOf(selectedAnalysis)"]],
     ["../components/reports/UltrasoundResultsTab.tsx", ["TelemetryProvenanceBadge", "telemetryProvenanceOf(selectedAnalysis)"]],
     ["../components/reports/ThermographyResultsTab.tsx", ["TelemetryProvenanceBadge", "telemetryProvenanceOf(selectedAnalysis)"]],
+    ["../components/Dashboard.tsx", ["TelemetryProvenanceBadge", "entry.telemetryProvenance", "actor.telemetryProvenance"]],
+    ["../components/planning/WorkOrderVerificationSection.tsx", ["TelemetryProvenanceBadge", "telemetryProvenanceOf(row)", "provenanceByRunId"]],
     ["../lib/reportExport.ts", ["TELEMETRY_PROVENANCE_DEFAULT_NOTE", "TELEMETRY_PROVENANCE_PREFILLED_NOTE", "Telemetry Provenance"]]
   ];
 
@@ -150,5 +153,66 @@ describe("badge at every saved-run severity/health display site", () => {
     expect(src).not.toContain('"DEFAULT"');
     expect(src).not.toContain('"UNCONFIRMED"');
     expect(src).not.toContain('"manual"');
+  });
+});
+
+describe("AR-24b — provenance gap close-out", () => {
+  it("the UNCONFIRMED tooltip states the approved auto-sourced semantics", () => {
+    expect(TELEMETRY_PROVENANCE_PREFILLED_NOTE).toBe(
+      "auto-sourced, not engineer-confirmed this session"
+    );
+    const badge = readRel("../components/diagnostics/TelemetryProvenanceBadge.tsx");
+    expect(badge).toContain("TELEMETRY_PROVENANCE_PREFILLED_NOTE");
+  });
+
+  it("the thermo snapshot carries autoSourced/manualTouched from fieldSources", () => {
+    const src = readRel("../components/ThermographyInputAccordions.tsx");
+    expect(src).toContain("autoSourced:");
+    expect(src).toContain("      manualTouched,");
+    expect(src).toContain(
+      'sourceValues.some((s) => s === "last_scan" || s === "live")'
+    );
+    expect(src).toContain('sourceValues.some((s) => s === "manual")');
+    // fieldSources must be a push-effect dependency or the flags go stale
+    const push = src.slice(
+      src.indexOf("if (!onTelemetryChange) return;"),
+      src.indexOf("if (!onTelemetryChange) return;") + 3000
+    );
+    expect(push).toContain("const sourceValues = Object.values(fieldSources);");
+    expect(push).toContain("fieldSources,");
+  });
+
+  it("Diagnose stamps prefilled-run for auto-sourced thermo, manual on override", () => {
+    const src = readRel("../components/Diagnose.tsx");
+    const block = src.slice(
+      src.indexOf("if (!thermoTelemetry) return;"),
+      src.indexOf("if (!thermoTelemetry) return;") + 600
+    );
+    expect(block).toContain("thermoTelemetry.autoSourced");
+    expect(block).toContain("telemetryOriginRef.current === null");
+    expect(block).toContain("TELEMETRY_PROVENANCE_PREFILLED_RUN");
+    expect(block).toContain("thermoTelemetry.manualTouched");
+    expect(block).toContain("TELEMETRY_PROVENANCE_MANUAL");
+  });
+
+  it("the dashboard payload builders carry the run-level tag", () => {
+    const src = readRel("../../server.ts");
+    expect(src).toContain(
+      "telemetryProvenance: readTelemetryProvenance(r.telemetry_data)"
+    );
+    expect(src).toContain("recommendations, timestamp, telemetry_data");
+    expect(src).toContain("severity, summary, timestamp, telemetry_data");
+    expect(src).toContain("telemetryProvenance: string | null");
+    expect(src).toContain("asTelemetryData");
+  });
+
+  it("the verification surface maps provenance per run id", () => {
+    const src = readRel(
+      "../components/planning/WorkOrderVerificationSection.tsx"
+    );
+    expect(src).toContain("byRunId[String(row.id)] = telemetryProvenanceOf(row)");
+    expect(src).toContain("provenance={preProvenance}");
+    expect(src).toContain("provenance={postProvenance}");
+    expect(src).toContain("provenanceByRunId={provByWo[wo.id] ?? {}}");
   });
 });

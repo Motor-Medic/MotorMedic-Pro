@@ -1643,7 +1643,7 @@ export type TelemetryProvenance = "manual" | "default" | "prefilled-run";
 export const TELEMETRY_PROVENANCE_MANUAL = "manual";
 /** Telemetry/health was default-derived (AR-20d default-table branch). */
 export const TELEMETRY_PROVENANCE_DEFAULT = "default";
-/** Telemetry was restored from a prior saved run and never re-confirmed. */
+/** Telemetry auto-sourced (prior-run restore or live feed), never re-confirmed. */
 export const TELEMETRY_PROVENANCE_PREFILLED_RUN = "prefilled-run";
 
 /** Badge text rendered wherever a 'default'-provenance run shows severity/health. */
@@ -1656,7 +1656,7 @@ export const TELEMETRY_PROVENANCE_DEFAULT_NOTE =
   "default telemetry - not engineer-entered";
 /** Point-of-use note paired with the UNCONFIRMED badge. */
 export const TELEMETRY_PROVENANCE_PREFILLED_NOTE =
-  "restored from a prior saved run - not engineer-confirmed";
+  "auto-sourced, not engineer-confirmed this session";
 
 // ---------------------------------------------------------------------------
 // MCA polarization-index display — one PI null vocabulary for every MCA tab:

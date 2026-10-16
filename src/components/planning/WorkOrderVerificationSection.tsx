@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   fetchAnalysisResults,
+  telemetryProvenanceOf,
   type SavedAnalysisResult,
   type SavedFaultItem
 } from "../../lib/analysisPersistence";
+import { type TelemetryProvenance } from "../../lib/maintenance/prescriptiveDictionary";
 import {
   getPrescription,
   type SeverityZones
@@ -32,6 +34,7 @@ import {
   type RunRecord,
   type Verdict
 } from "../../lib/maintenance/workOrderEvaluator";
+import TelemetryProvenanceBadge from "../diagnostics/TelemetryProvenanceBadge";
 
 const DAY_MS = 86400000;
 
@@ -164,11 +167,18 @@ interface VerdictCardProps {
   runs: RunRecord[];
   costModel: CostModel;
   fetchFailed: boolean;
+  provenanceByRunId: Record<string, TelemetryProvenance | null>;
 }
 
-function VerdictCard({ wo, runs, costModel, fetchFailed }: VerdictCardProps) {
+function VerdictCard({ wo, runs, costModel, fetchFailed, provenanceByRunId }: VerdictCardProps) {
   const closeMs = new Date(wo.closeDate).getTime();
   const { pre, post } = selectRuns(closeMs, runs);
+  const preProvenance = pre
+    ? provenanceByRunId[String(pre.id)] ?? null
+    : null;
+  const postProvenance = post
+    ? provenanceByRunId[String(post.id)] ?? null
+    : null;
   const preMetric = readPrimaryMetric(wo, pre);
   const postMetric = readPrimaryMetric(wo, post);
   const prescription = getPrescription(wo.targetFault);
@@ -254,6 +264,10 @@ function VerdictCard({ wo, runs, costModel, fetchFailed }: VerdictCardProps) {
               <p className="text-[11px] text-slate-400">
                 run severity: {pre.severity ?? "not on record"}
                 {pre.healthScore !== null ? ` - health ${pre.healthScore}` : ""}
+                <TelemetryProvenanceBadge
+                  provenance={preProvenance}
+                  className="ml-2 align-middle"
+                />
               </p>
               <p className="text-[11px] text-slate-400">
                 fault: {preFault.detail}
@@ -295,6 +309,10 @@ function VerdictCard({ wo, runs, costModel, fetchFailed }: VerdictCardProps) {
               <p className="text-[11px] text-slate-400">
                 run severity: {post.severity ?? "not on record"}
                 {post.healthScore !== null ? ` - health ${post.healthScore}` : ""}
+                <TelemetryProvenanceBadge
+                  provenance={postProvenance}
+                  className="ml-2 align-middle"
+                />
               </p>
               <p className="text-[11px] text-slate-400">fault: {postFault.detail}</p>
             </>
@@ -345,6 +363,9 @@ export default function WorkOrderVerificationSection() {
   const [store] = useState<ClosedWoStore>(() => loadClosedWoStore());
   const [costModel, setCostModel] = useState<CostModel>(loadCostModel);
   const [runsByWo, setRunsByWo] = useState<Record<string, RunRecord[]>>({});
+  const [provByWo, setProvByWo] = useState<
+    Record<string, Record<string, TelemetryProvenance | null>>
+  >({});
   const [loading, setLoading] = useState(store.workOrders.length > 0);
   const [fetchFailed, setFetchFailed] = useState(false);
 
@@ -365,6 +386,7 @@ export default function WorkOrderVerificationSection() {
     const orders = store.workOrders;
     if (orders.length === 0) {
       setRunsByWo({});
+      setProvByWo({});
       setLoading(false);
       setFetchFailed(false);
       return;
@@ -385,12 +407,19 @@ export default function WorkOrderVerificationSection() {
     ).then((batch) => {
       if (cancelled) return;
       const map: Record<string, RunRecord[]> = {};
+      const prov: Record<string, Record<string, TelemetryProvenance | null>> = {};
       let anyFailed = false;
       for (const item of batch) {
         if (!item.ok) anyFailed = true;
         map[item.wo.id] = mergeRuns(item.results, store.postRepairRuns, item.wo);
+        const byRunId: Record<string, TelemetryProvenance | null> = {};
+        for (const row of item.results) {
+          byRunId[String(row.id)] = telemetryProvenanceOf(row);
+        }
+        prov[item.wo.id] = byRunId;
       }
       setRunsByWo(map);
+      setProvByWo(prov);
       setFetchFailed(anyFailed);
       setLoading(false);
     });
@@ -452,6 +481,7 @@ export default function WorkOrderVerificationSection() {
               runs={runsByWo[wo.id] ?? []}
               costModel={costModel}
               fetchFailed={fetchFailed}
+              provenanceByRunId={provByWo[wo.id] ?? {}}
             />
           </div>
         ))}

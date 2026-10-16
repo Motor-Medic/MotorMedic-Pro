@@ -56,6 +56,11 @@ export interface ThermographyTelemetrySnapshot {
   distance?: number;
   distanceUnit?: "ft" | "m";
   tempUnit?: "°F" | "°C";
+  /** AR-24b: run-level origin inputs for Diagnose's provenance stamp —
+   * autoSourced = last_scan restore or live SCADA with no manual override;
+   * manualTouched = the engineer edited at least one Section 3 field. */
+  autoSourced: boolean;
+  manualTouched: boolean;
   /** Master-vision OCR of a thermography report image (unified vision pipeline). */
   visionReport?: {
     maxTempC: number | null;
@@ -729,6 +734,8 @@ export default function ThermographyInputAccordions({
   // Push telemetry (+ physics) to parent for analyze metadata + DB columns
   useEffect(() => {
     if (!onTelemetryChange) return;
+    const sourceValues = Object.values(fieldSources);
+    const manualTouched = sourceValues.some((s) => s === "manual");
     onTelemetryChange({
       asset_type: assetType || undefined,
       phase_a_temp: parseOptionalNumber(phaseATemp),
@@ -749,6 +756,10 @@ export default function ThermographyInputAccordions({
       distance,
       distanceUnit,
       tempUnit,
+      autoSourced:
+        !manualTouched &&
+        sourceValues.some((s) => s === "last_scan" || s === "live"),
+      manualTouched,
       visionReport: thermoOcrData
         ? {
             maxTempC: thermoOcrData.maxTempC,
@@ -784,6 +795,7 @@ export default function ThermographyInputAccordions({
     distance,
     distanceUnit,
     tempUnit,
+    fieldSources,
     thermoOcrData
   ]);
 

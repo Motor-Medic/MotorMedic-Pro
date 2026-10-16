@@ -9,6 +9,8 @@ import {
   Wrench
 } from "lucide-react";
 import { loadCostModel, COST_MODEL_EVENT, type CostModel } from "./scorecard/CostDock";
+import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
+import { type TelemetryProvenance } from "../lib/maintenance/prescriptiveDictionary";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx / sidebar)                           */
@@ -63,6 +65,7 @@ type DashboardPayload = {
     healthScore: number;
     severity: string;
     classTier: "A" | "BC";
+    telemetryProvenance: TelemetryProvenance | null;
   }>;
   liveAlarms: Array<{
     id: string;
@@ -82,6 +85,7 @@ type DashboardPayload = {
     severity: string | null;
     summary: string | null;
     timestamp: string | null;
+    telemetryProvenance: TelemetryProvenance | null;
   }>;
   correlationData: unknown[];
   error?: string;
@@ -120,6 +124,7 @@ interface BriefingEntry {
   summary: string | null;
   healthScore: number | null;
   timestamp: string | null;
+  telemetryProvenance: TelemetryProvenance | null;
   count: number;
 }
 
@@ -148,6 +153,7 @@ function deduplicateBriefingEntries(entries: DashboardPayload["recentAnalyses"])
         summary: entry.summary,
         healthScore: entry.healthScore,
         timestamp: entry.timestamp,
+        telemetryProvenance: entry.telemetryProvenance,
         count: 1
       };
     }
@@ -578,6 +584,10 @@ export default function Dashboard({
                             {entry.primaryFault || entry.summary || "No fault detail"}
                             {entry.healthScore != null && <span className="ml-2 font-mono text-yellow-400">· Health {entry.healthScore}</span>}
                             {entry.severity && <span className="ml-2 font-mono text-red-400">· {entry.severity}</span>}
+                            <TelemetryProvenanceBadge
+                              provenance={entry.telemetryProvenance}
+                              className="ml-2 align-middle"
+                            />
                           </p>
                         </span>
                       </li>
@@ -604,6 +614,10 @@ export default function Dashboard({
                         </p>
                         <p className="text-xs text-slate-400 mt-0.5">
                           Health {actor.healthScore} · {actor.detail}
+                          <TelemetryProvenanceBadge
+                            provenance={actor.telemetryProvenance}
+                            className="ml-2 align-middle"
+                          />
                         </p>
                       </span>
                     </li>

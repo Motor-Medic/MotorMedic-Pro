@@ -166,7 +166,7 @@ describe("P1 dictionary single-source / byte-identity", () => {
       "default telemetry - not engineer-entered",
     );
     expect(TELEMETRY_PROVENANCE_PREFILLED_NOTE).toBe(
-      "restored from a prior saved run - not engineer-confirmed",
+      "auto-sourced, not engineer-confirmed this session",
     );
   });
 

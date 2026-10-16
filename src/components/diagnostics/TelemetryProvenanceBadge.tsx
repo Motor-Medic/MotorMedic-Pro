@@ -13,7 +13,9 @@ import {
  * the intake page. Every surface that renders a SAVED run's severity/health
  * renders this next to the number:
  *   * 'default'        → DEFAULT      (amber — AR-20d default-derived)
- *   * 'prefilled-run'  → UNCONFIRMED  (orange — restored, never re-confirmed)
+ *   * 'prefilled-run'  → UNCONFIRMED  (orange — auto-sourced, not
+ *                        engineer-confirmed this session: last-scan restore
+ *                        or live SCADA; an explicit override clears it)
  *   * 'manual' / null  → nothing      (engineer-entered or measured this run)
  * Vocabulary is imported from the dictionary, never re-declared; styling
  * lives here once so every call site stays a single element.

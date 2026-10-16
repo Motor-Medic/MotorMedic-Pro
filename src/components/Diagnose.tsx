@@ -1619,8 +1619,8 @@ export default function Diagnose({
 
   // Run-level telemetry provenance origin since the last asset switch:
   // null = measured this run (upload / realtime extraction — no tag);
-  // 'manual' = the engineer typed telemetry; 'prefilled-run' = values
-  // restored from a prior saved run and never re-confirmed. 'default'
+  // 'manual' = the engineer typed telemetry; 'prefilled-run' = auto-sourced
+  // (prior-run restore / live feed) and never re-confirmed. 'default'
   // (AR-20d default-table branch) is computed at save and wins over both.
   // Wiped to null on asset switch; restored values re-enter as
   // 'prefilled-run' (badged), never as silent 'manual'.
@@ -1674,6 +1674,24 @@ export default function Diagnose({
   const mcaTelemetryRef = useRef<Record<string, unknown> | null>(null);
   const [thermoTelemetry, setThermoTelemetry] =
     useState<ThermographyTelemetrySnapshot | null>(null);
+  // AR-24b: thermo last-scan restores and live SCADA refreshes re-enter as
+  // 'prefilled-run' (auto-sourced, not engineer-confirmed this session);
+  // an explicit Section 3 override (markManual) stamps the run 'manual'.
+  // MCA restore above keeps the same rules: stamp only while untouched,
+  // never downgrade an explicit engineer choice.
+  useEffect(() => {
+    if (!thermoTelemetry) return;
+    if (thermoTelemetry.autoSourced) {
+      if (telemetryOriginRef.current === null) {
+        telemetryOriginRef.current = TELEMETRY_PROVENANCE_PREFILLED_RUN;
+      }
+    } else if (
+      thermoTelemetry.manualTouched &&
+      telemetryOriginRef.current !== TELEMETRY_PROVENANCE_MANUAL
+    ) {
+      telemetryOriginRef.current = TELEMETRY_PROVENANCE_MANUAL;
+    }
+  }, [thermoTelemetry]);
   const [rawUpload, setRawUpload] = useState<UploadedFileMeta | null>(null);
   const [chartRegionStatus, setChartRegionStatus] =
     useState<ChartRegionDetectStatus>("idle");
@@ -3015,7 +3033,10 @@ useEffect(() => {
         }
 
         const imageBase64 = await blobUrlToDataUrl(thermalUpload.preview);
-        const tel = thermoTelemetry || {};
+        const tel = thermoTelemetry || {
+          autoSourced: false,
+          manualTouched: false
+        };
         const metadata = {
           asset: selectedAsset?.label || browseAssetTag,
           assetTag: selectedAsset?.tag || browseAssetTag,

@@ -7444,6 +7444,7 @@ app.get("/api/dashboard", async (req, res) => {
       healthScore: number;
       severity: string;
       classTier: "A" | "BC";
+      telemetryProvenance: string | null;
     }>,
     liveAlarms: [] as Array<{
       id: string;
@@ -7544,7 +7545,7 @@ app.get("/api/dashboard", async (req, res) => {
       const latestAnalysesRes = await pool.query(
         `SELECT DISTINCT ON (LOWER(TRIM(asset_id)))
            id, asset_id, component, health_score, primary_fault, severity,
-           summary, financial_impact, recommendations, timestamp
+           summary, financial_impact, recommendations, timestamp, telemetry_data
          FROM analysis_results
          WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> ''
          ORDER BY LOWER(TRIM(asset_id)), timestamp DESC NULLS LAST, created_at DESC`
@@ -7743,6 +7744,22 @@ app.get("/api/dashboard", async (req, res) => {
       techCoverage.push({ name: def.name, pct, detail: def.detail });
     }
 
+    // AR-24b: run-level provenance reader for analysis_results rows —
+    // accepts the jsonb telemetry_data object, rejects anything else.
+    const asTelemetryData = (
+      value: unknown
+    ): value is { telemetry_provenance?: unknown } =>
+      typeof value === "object" && value !== null;
+    const readTelemetryProvenance = (
+      data: unknown
+    ): "manual" | "default" | "prefilled-run" | null => {
+      if (!asTelemetryData(data)) return null;
+      const value = data.telemetry_provenance;
+      return value === "manual" || value === "default" || value === "prefilled-run"
+        ? value
+        : null;
+    };
+
     // Bad actors = lowest latest health scores
     const badActors = [...latestAnalyses]
       .filter((r) => Number.isFinite(Number(r.health_score)))
@@ -7757,7 +7774,8 @@ app.get("/api/dashboard", async (req, res) => {
           `Health score ${r.health_score}`,
         healthScore: Number(r.health_score),
         severity: String(r.severity || ""),
-        classTier: Number(r.health_score) < 50 ? ("A" as const) : ("BC" as const)
+        classTier: Number(r.health_score) < 50 ? ("A" as const) : ("BC" as const),
+        telemetryProvenance: readTelemetryProvenance(r.telemetry_data)
       }));
 
     // 8) AI Shift Briefing from recent analyses
@@ -7765,7 +7783,7 @@ app.get("/api/dashboard", async (req, res) => {
     let aiBriefing: string | null = null;
     try {
       const recentRes = await pool.query(
-        `SELECT asset_id, component, health_score, primary_fault, severity, summary, timestamp
+        `SELECT asset_id, component, health_score, primary_fault, severity, summary, timestamp, telemetry_data
          FROM analysis_results
          ORDER BY timestamp DESC NULLS LAST
          LIMIT 8`
@@ -7777,7 +7795,8 @@ app.get("/api/dashboard", async (req, res) => {
         primaryFault: r.primary_fault != null ? String(r.primary_fault) : null,
         severity: r.severity != null ? String(r.severity) : null,
         summary: r.summary != null ? String(r.summary) : null,
-        timestamp: r.timestamp
+        timestamp: r.timestamp,
+        telemetryProvenance: readTelemetryProvenance(r.telemetry_data)
       }));
 
       if (recentAnalyses.length > 0) {
