@@ -73,8 +73,38 @@ import {
 import { finalizeVibrationFromParses } from "./src/lib/vibrationVisionExtractor";
 import { finalizeMcaFromParses } from "./src/lib/mcaVisionExtractor";
 import { finalizeThermographyFromParses } from "./src/lib/thermographyVisionExtractor";
+import {
+  assertProductionAuthEnv,
+  isDevAuthSeedEnabled,
+  isProductionEnv,
+  hashPassword as bcryptHashPassword,
+  hashPasswordSync,
+  verifyPassword,
+  normalizeRole,
+  createApiAuthGuard,
+  createMemorySession,
+  destroyMemorySession,
+  requireRole,
+  registerMemoryUserLoader,
+  authCookieName,
+  buildSessionCookie,
+  buildClearSessionCookie,
+  createSession,
+  deleteSession,
+  findSessionByToken,
+  generateSessionToken,
+  hashSessionToken,
+  readSessionTokenFromRequest,
+  sessionTtlHours,
+  type AppRole
+} from "./src/lib/auth";
 
 dotenv.config();
+
+// AR-29 rule 10 — production boot fails fast on missing/placeholder
+// SESSION_SECRET or DATABASE_URL (including CI-mock values). CI only
+// builds, never boots, so this is safe there.
+assertProductionAuthEnv(process.env);
 
 // Initialize Pool using DATABASE_URL
 const { Pool } = pg;
@@ -118,6 +148,32 @@ app.use(express.json({
     req.rawBody = buf;
   }
 }));
+
+// AR-29 rules 3/8/9 — global /api guard. Whitelist: auth login/register/
+// session/demo-login, Stripe webhooks, health. Everything else requires
+// a live server session; req.auth / req.tenantId come only from it.
+// AR-29 step 5 — memory-mode session revalidation resolves users from the
+// server's in-memory store (used only when DATABASE_URL-less).
+registerMemoryUserLoader((userId: number) => {
+  const u = memoryUsers.find((m) => m.id === userId);
+  if (!u) return null;
+  return {
+    id: u.id,
+    username: u.username,
+    company_id: u.company_id ?? null,
+    role: normalizeRole(u.role),
+    is_temp_password: !!u.is_temp_password,
+    plant_id: null,
+    plant_name: null,
+  };
+});
+
+app.use("/api", createApiAuthGuard(() => pool));
+
+// AR-29 — liveness probe (public; carries no tenant data).
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok", service: "spectra-cm", auth: "ar-29" });
+});
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 /**
@@ -1272,6 +1328,9 @@ app.post("/api/save-analysis-result", async (req, res) => {
       telemetryData.envelope_source = "synthesized-from-record";
     }
 
+    // AR-29 rule 9 — tenant_id comes only from the verified session.
+    const tenantId = req.tenantId ?? -1;
+
     const insert = await pool.query(
       `INSERT INTO analysis_results (
          asset_id, component, health_score, primary_fault, fault_list, peaks,
@@ -1283,13 +1342,14 @@ app.post("/api/save-analysis-result", async (req, res) => {
          telemetry_data,
          waveform_peak_to_peak, waveform_crest_factor, waveform_impact_count,
          waveform_symmetry, waveform_modulation,
-         envelope_peak_amplitude, envelope_dominant_frequency, envelope_energy
+         envelope_peak_amplitude, envelope_dominant_frequency, envelope_energy,
+         tenant_id
        ) VALUES (
          $1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9::jsonb,$10,$11,$12::jsonb,$13,
          $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,
          $25::jsonb,
          $26,$27,$28,$29,$30,
-         $31,$32,$33
+         $31,$32,$33,$34
        )
        RETURNING *`,
       [
@@ -1325,7 +1385,8 @@ app.post("/api/save-analysis-result", async (req, res) => {
         waveformModulation,
         envelopePeakAmplitude,
         envelopeDominantFrequency,
-        envelopeEnergy
+        envelopeEnergy,
+        tenantId
       ]
     );
 
@@ -1383,8 +1444,8 @@ app.post("/api/save-analysis-result", async (req, res) => {
     const logInsert = await pool.query(
       `INSERT INTO diagnosis_logs (
          asset_id, analysis_type, started_at, completed_at, status,
-         result_summary, analysis_result_id
-       ) VALUES ($1,$2,$3,NOW(),'success',$4::jsonb,$5)
+         result_summary, analysis_result_id, tenant_id
+       ) VALUES ($1,$2,$3,NOW(),'success',$4::jsonb,$5,$6)
        RETURNING id`,
       [
         assetId,
@@ -1404,7 +1465,8 @@ app.post("/api/save-analysis-result", async (req, res) => {
           },
           {}
         ),
-        analysis.id
+        analysis.id,
+        req.tenantId ?? -1
       ]
     );
 
@@ -1428,13 +1490,14 @@ app.post("/api/save-analysis-result", async (req, res) => {
       if (pool) {
         await pool.query(
           `INSERT INTO diagnosis_logs (
-             asset_id, analysis_type, started_at, completed_at, status, result_summary
-           ) VALUES ($1,$2,$3,NOW(),'failed',$4::jsonb)`,
+             asset_id, analysis_type, started_at, completed_at, status, result_summary, tenant_id
+           ) VALUES ($1,$2,$3,NOW(),'failed',$4::jsonb,$5)`,
           [
             req.body?.asset_id != null ? String(req.body.asset_id) : null,
             String(req.body?.analysis_type || "vibration"),
             req.body?.started_at ? new Date(req.body.started_at) : null,
-            asJsonb({ error: error?.message || "save failed" }, {})
+            asJsonb({ error: error?.message || "save failed" }, {}),
+            req.tenantId ?? -1
           ]
         );
       }
@@ -1750,23 +1813,28 @@ app.get("/api/analysis-results", async (req, res) => {
     );
 
     let result;
+    // AR-29 directive 1 — tenant-scoped read: only rows stamped with the
+    // session tenant; sentinel (-1) rows are excluded until assigned.
+    const tenantId = req.tenantId ?? -1;
     if (assetIds.length > 1) {
       if (component) {
         result = await pool.query(
           `SELECT * FROM analysis_results
            WHERE asset_id = ANY($1::text[])
              AND LOWER(TRIM(COALESCE(component, ''))) = LOWER(TRIM($2))
+             AND tenant_id = $3
            ORDER BY timestamp DESC
-           LIMIT $3`,
-          [assetIds, component, limit]
+           LIMIT $4`,
+          [assetIds, component, tenantId, limit]
         );
       } else {
         result = await pool.query(
           `SELECT * FROM analysis_results
            WHERE asset_id = ANY($1::text[])
+             AND tenant_id = $2
            ORDER BY timestamp DESC
-           LIMIT $2`,
-          [assetIds, limit]
+           LIMIT $3`,
+          [assetIds, tenantId, limit]
         );
       }
     } else if (assetIds.length === 1) {
@@ -1778,35 +1846,39 @@ app.get("/api/analysis-results", async (req, res) => {
               OR asset_id ILIKE '%' || $1 || '%'
               OR CAST(asset_id AS TEXT) = $1)
              AND LOWER(TRIM(COALESCE(component, ''))) = LOWER(TRIM($2))
+             AND tenant_id = $3
            ORDER BY timestamp DESC
-           LIMIT $3`,
-          [key, component, limit]
+           LIMIT $4`,
+          [key, component, tenantId, limit]
         );
       } else {
         result = await pool.query(
           `SELECT * FROM analysis_results
-           WHERE asset_id = $1
+           WHERE (asset_id = $1
               OR asset_id ILIKE '%' || $1 || '%'
-              OR CAST(asset_id AS TEXT) = $1
+              OR CAST(asset_id AS TEXT) = $1)
+             AND tenant_id = $2
            ORDER BY timestamp DESC
-           LIMIT $2`,
-          [key, limit]
+           LIMIT $3`,
+          [key, tenantId, limit]
         );
       }
     } else if (component) {
       result = await pool.query(
         `SELECT * FROM analysis_results
          WHERE LOWER(TRIM(COALESCE(component, ''))) = LOWER(TRIM($1))
+           AND tenant_id = $2
          ORDER BY timestamp DESC
-         LIMIT $2`,
-        [component, limit]
+         LIMIT $3`,
+        [component, tenantId, limit]
       );
     } else {
       result = await pool.query(
         `SELECT * FROM analysis_results
+         WHERE tenant_id = $1
          ORDER BY timestamp DESC
-         LIMIT $1`,
-        [limit]
+         LIMIT $2`,
+        [tenantId, limit]
       );
     }
     return res.json({ success: true, results: result.rows });
@@ -1953,8 +2025,8 @@ app.get("/api/analysis-results/:id", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `SELECT * FROM analysis_results WHERE id = $1`,
-      [req.params.id]
+      `SELECT * FROM analysis_results WHERE id = $1 AND tenant_id = $2`,
+      [req.params.id, req.tenantId ?? -1]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Analysis result not found." });
@@ -1971,8 +2043,8 @@ app.post("/api/analysis-results/:id/baseline", async (req, res) => {
   }
   try {
     const existing = await pool.query(
-      `SELECT * FROM analysis_results WHERE id = $1`,
-      [req.params.id]
+      `SELECT * FROM analysis_results WHERE id = $1 AND tenant_id = $2`,
+      [req.params.id, req.tenantId ?? -1]
     );
     if (!existing.rows.length) {
       return res.status(404).json({ error: "Analysis result not found." });
@@ -1980,15 +2052,18 @@ app.post("/api/analysis-results/:id/baseline", async (req, res) => {
     const row = existing.rows[0];
     if (row.asset_id) {
       await pool.query(
-        `UPDATE analysis_results SET is_baseline = FALSE WHERE asset_id = $1`,
-        [row.asset_id]
+        `UPDATE analysis_results SET is_baseline = FALSE WHERE asset_id = $1 AND tenant_id = $2`,
+        [row.asset_id, req.tenantId ?? -1]
       );
     } else {
-      await pool.query(`UPDATE analysis_results SET is_baseline = FALSE`);
+      await pool.query(
+        `UPDATE analysis_results SET is_baseline = FALSE WHERE tenant_id = $1`,
+        [req.tenantId ?? -1]
+      );
     }
     const updated = await pool.query(
-      `UPDATE analysis_results SET is_baseline = TRUE WHERE id = $1 RETURNING *`,
-      [req.params.id]
+      `UPDATE analysis_results SET is_baseline = TRUE WHERE id = $1 AND tenant_id = $2 RETURNING *`,
+      [req.params.id, req.tenantId ?? -1]
     );
     return res.json({ success: true, analysis: updated.rows[0] });
   } catch (error: any) {
@@ -2116,11 +2191,9 @@ app.get("/api/reports", async (req, res) => {
     const assetId = req.query.asset_id != null ? String(req.query.asset_id).trim() : "";
     if (assetId) push("asset_id =", assetId);
 
-    const companyId = req.query.company_id != null ? String(req.query.company_id).trim() : "";
-    if (companyId) {
-      const parsed = parseInt(companyId, 10);
-      if (Number.isFinite(parsed)) push("company_id =", parsed);
-    }
+    // AR-29 directive 1 — tenant from the verified session (the legacy
+    // client-supplied company_id filter is no longer trusted).
+    push("tenant_id =", req.tenantId ?? -1);
 
     const limit = Math.min(
       200,
@@ -2152,9 +2225,10 @@ app.get("/api/reports/:id", async (req, res) => {
     return res.status(404).json({ error: "Report not found." });
   }
   try {
-    const result = await pool.query(`SELECT * FROM reports WHERE id = $1`, [
-      req.params.id
-    ]);
+    const result = await pool.query(
+      `SELECT * FROM reports WHERE id = $1 AND tenant_id = $2`,
+      [req.params.id, req.tenantId ?? -1]
+    );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Report not found." });
     }
@@ -2207,15 +2281,19 @@ app.post("/api/reports", async (req, res) => {
   const asArray = (v: unknown) => (Array.isArray(v) ? v : []);
 
   try {
+    // AR-29 rule 9 — tenant stamped from the verified session; the legacy
+    // company_id body field is no longer trusted for tenancy.
+    const tenantId = req.tenantId ?? -1;
+
     const result = await pool.query(
       `INSERT INTO reports
          (asset_id, company_id, title, technology_summary, overall_severity,
-          fault_diagnoses, recommendations, technologies_with_data, generated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          fault_diagnoses, recommendations, technologies_with_data, generated_by, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         assetId,
-        companyId,
+        companyId != null ? companyId : tenantId !== -1 ? tenantId : null,
         body.title ? String(body.title) : null,
         JSON.stringify(summary),
         severity,
@@ -2224,7 +2302,8 @@ app.post("/api/reports", async (req, res) => {
         JSON.stringify(
           asArray(body.technologiesWithData ?? body.technologies_with_data)
         ),
-        body.generatedBy ? String(body.generatedBy) : null
+        body.generatedBy ? String(body.generatedBy) : null,
+        tenantId
       ]
     );
     return res.json({ success: true, report: result.rows[0] });
@@ -2245,8 +2324,8 @@ app.delete("/api/reports/:id", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `DELETE FROM reports WHERE id = $1 RETURNING id`,
-      [req.params.id]
+      `DELETE FROM reports WHERE id = $1 AND tenant_id = $2 RETURNING id`,
+      [req.params.id, req.tenantId ?? -1]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Report not found." });
@@ -2357,8 +2436,9 @@ app.get("/api/diagnosis-logs", async (req, res) => {
            JOIN assets a ON dh.asset_id = a.id 
            JOIN routes r ON a.route_id = r.id 
            WHERE r.plant_id = $1 
+             AND dh.tenant_id = $2
            ORDER BY dh.timestamp DESC`,
-          [pid]
+          [pid, req.tenantId ?? -1]
         );
         rows = result.rows;
       } catch (err: any) {
@@ -2371,8 +2451,9 @@ app.get("/api/diagnosis-logs", async (req, res) => {
            FROM diagnosis_history dh 
            JOIN assets a ON dh.asset_id = a.id 
            WHERE a.plant_id = $1 
+             AND dh.tenant_id = $2
            ORDER BY dh.timestamp DESC`,
-          [pid]
+          [pid, req.tenantId ?? -1]
         );
         rows = result.rows;
       }
@@ -2399,15 +2480,17 @@ app.get("/api/diagnosis-logs", async (req, res) => {
       ? await pool.query(
           `SELECT * FROM diagnosis_logs
            WHERE asset_id = $1
+             AND tenant_id = $2
            ORDER BY COALESCE(completed_at, created_at) DESC
-           LIMIT $2`,
-          [assetId, limit]
+           LIMIT $3`,
+          [assetId, req.tenantId ?? -1, limit]
         )
       : await pool.query(
           `SELECT * FROM diagnosis_logs
+           WHERE tenant_id = $1
            ORDER BY COALESCE(completed_at, created_at) DESC
-           LIMIT $1`,
-          [limit]
+           LIMIT $2`,
+          [req.tenantId ?? -1, limit]
         );
     return res.json({ success: true, logs: result.rows });
   } catch (error: any) {
@@ -5571,8 +5654,8 @@ app.post('/api/diagnose', async (req, res) => {
 
       try {
         const dbResult = await pool.query(
-          `INSERT INTO diagnosis_history (component_id, asset_id, equipment_type, input_data, vibration_data, ai_response, user_id, is_temporary, timestamp) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP) RETURNING id`,
+          `INSERT INTO diagnosis_history (component_id, asset_id, equipment_type, input_data, vibration_data, ai_response, user_id, is_temporary, timestamp, tenant_id) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, $9) RETURNING id`,
           [
             resolvedComponentId,
             resolvedAssetId,
@@ -5581,7 +5664,8 @@ app.post('/api/diagnose', async (req, res) => {
             JSON.stringify(inputDataObj),
             JSON.stringify(finalResponse),
             userId || null,
-            false // is_temporary
+            false, // is_temporary
+            req.tenantId ?? -1
           ]
         );
         diagnosis_id = dbResult.rows[0]?.id;
@@ -5826,8 +5910,8 @@ app.post('/api/analyze-component', async (req, res) => {
 
     try {
       const dbResult = await pool.query(
-        `INSERT INTO diagnosis_history (component_id, asset_id, equipment_type, input_data, vibration_data, ai_response, user_id, is_temporary, timestamp) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP) RETURNING id`,
+        `INSERT INTO diagnosis_history (component_id, asset_id, equipment_type, input_data, vibration_data, ai_response, user_id, is_temporary, timestamp, tenant_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP, $9) RETURNING id`,
         [
           compId,
           component.asset_id,
@@ -5836,7 +5920,8 @@ app.post('/api/analyze-component', async (req, res) => {
           JSON.stringify(inputDataObj),
           JSON.stringify(finalResponse),
           null, // userId
-          false // is_temporary
+          false, // is_temporary
+          req.tenantId ?? -1
         ]
       );
       diagnosis_id = dbResult.rows[0]?.id;
@@ -5885,8 +5970,8 @@ app.get("/api/diagnosis-history/:assetId", async (req, res) => {
 
     if (pool) {
       const result = await pool.query(
-        "SELECT id, timestamp, equipment_type, vibration_data, ai_response FROM diagnosis_history WHERE asset_id = $1 OR component_id = $1 ORDER BY timestamp DESC LIMIT 10",
-        [assetId]
+        "SELECT id, timestamp, equipment_type, vibration_data, ai_response FROM diagnosis_history WHERE (asset_id = $1 OR component_id = $1) AND tenant_id = $2 ORDER BY timestamp DESC LIMIT 10",
+        [assetId, req.tenantId ?? -1]
       );
       return res.json(result.rows);
     } else {
@@ -6155,13 +6240,14 @@ app.post("/api/analysis/feedback", async (req, res) => {
         const correctedDiagStr = correctedDiagObj ? JSON.stringify(correctedDiagObj) : null;
         
         await pool.query(
-          "INSERT INTO diagnosis_history (input_data, ai_response, was_correct, corrected_diagnosis, is_temporary) VALUES ($1, $2, $3, $4, $5)",
+          "INSERT INTO diagnosis_history (input_data, ai_response, was_correct, corrected_diagnosis, is_temporary, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)",
           [
             JSON.stringify({ note: "Feedback for Quick Mode analysis" }),
             JSON.stringify({ status: "feedback_only" }),
             is_correct,
             correctedDiagStr,
-            true
+            true,
+            req.tenantId ?? -1
           ]
         );
         console.log("✅ [Feedback Loop] Saved Quick Mode feedback in database.");
@@ -6893,14 +6979,20 @@ app.post("/api/get-component-specs", async (req, res) => {
 // ============================================
 
 // Local In-Memory Storage for Fallback Mode
+// AR-29 rule 2 — passwords are bcrypt-hashed (bcryptjs, pure JS). The
+// sync variant is used only for one-time in-memory/dev seeding.
 function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password).digest("hex");
+  return hashPasswordSync(password);
 }
 
-let memoryUsers: any[] = [
-  { id: 1, company_id: 1, username: "engineer", email: "engineer@allied.com", password_hash: hashPassword("engineer123"), role: "engineer", is_temp_password: false, created_at: new Date() },
-  { id: 2, company_id: 3, username: "demo", email: "shanedufrene1989@gmail.com", password_hash: hashPassword("demo123"), role: "engineer", is_temp_password: true, created_at: new Date() }
-];
+// AR-29 rule 5 — demo/dev credential seeding only when explicitly enabled
+// (ENABLE_DEV_AUTH_SEED=true AND not production); otherwise no seed users.
+let memoryUsers: any[] = isDevAuthSeedEnabled(process.env)
+  ? [
+      { id: 1, company_id: 1, username: "engineer", email: "engineer@allied.com", password_hash: hashPassword("engineer123"), role: "engineer", is_temp_password: false, created_at: new Date() },
+      { id: 2, company_id: 3, username: "demo", email: "shanedufrene1989@gmail.com", password_hash: hashPassword("demo123"), role: "engineer", is_temp_password: true, created_at: new Date() }
+    ]
+  : [];
 
 let memoryCompanies: any[] = [
   { id: 1, name: "Allied Reliability", subscription_plan: "vibration_only", created_at: new Date() },
@@ -8462,10 +8554,32 @@ app.get("/api/dashboard/roi-calculation", async (req, res) => {
 });
 
 // --------------------------------------------------------
-// USER AUTHENTICATION ENDPOINTS
+// USER AUTHENTICATION ENDPOINTS (AR-29 — real server sessions)
 // --------------------------------------------------------
 
-// POST /api/auth/login - Standard user sign in
+/** Public user shape returned to clients (never includes password_hash). */
+function publicUserPayload(user: {
+  id: number;
+  username: string;
+  company_id: number;
+  role: unknown;
+  is_temp_password: unknown;
+  plant_id?: number | null;
+  plant_name?: string | null;
+}) {
+  return {
+    id: user.id,
+    username: user.username,
+    company_id: user.company_id,
+    // Rule 8 — structured role from the server session, never the client.
+    role: normalizeRole(user.role),
+    is_temp_password: !!user.is_temp_password,
+    plant_id: user.plant_id ?? null,
+    plant_name: user.plant_name ?? null
+  };
+}
+
+// POST /api/auth/login - Standard user sign in (server-verified session)
 app.post("/api/auth/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -8477,243 +8591,398 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     const normUsername = username.trim().toLowerCase();
-    const hashedPassword = hashPassword(password);
-
-    // Guaranteed bypass for demo user
-    if (normUsername === "demo" && password.trim() === "demo123") {
-      if (pool) {
-        try {
-          const result = await pool.query(
-            "SELECT * FROM users WHERE LOWER(username) = 'demo' LIMIT 1"
-          );
-          if (result.rows.length > 0) {
-            const user = result.rows[0];
-            const plantRes = await pool.query(
-              "SELECT id FROM plants WHERE company_id = $1 LIMIT 1",
-              [user.company_id]
-            );
-            const plant_id = plantRes.rows.length > 0 ? plantRes.rows[0].id : 3;
-            return res.json({
-              id: user.id,
-              username: user.username,
-              company_id: user.company_id,
-              role: user.role,
-              is_temp_password: user.is_temp_password,
-              plant_id
-            });
-          }
-        } catch (dbErr) {
-          console.error("Failed to query demo user from DB, falling back to mock session:", dbErr);
-        }
-      }
-      return res.json({
-        id: 2,
-        username: "demo",
-        company_id: 3, // Demo Reliability Corp
-        role: "engineer",
-        is_temp_password: true,
-        plant_id: 3 // Demo Galveston Refinery
-      });
-    }
 
     if (pool) {
       const result = await pool.query(
         "SELECT * FROM users WHERE LOWER(username) = $1 LIMIT 1",
         [normUsername]
       );
+      // Uniform error — never reveal whether the username exists.
+      const invalid = () =>
+        res.status(401).json({ error: "Invalid username or password" });
+
       if (result.rows.length === 0) {
-        return res.status(401).json({ error: "Invalid username or password" });
+        return invalid();
       }
 
       const user = result.rows[0];
-      if (user.password_hash !== hashedPassword) {
-        return res.status(401).json({ error: "Invalid username or password" });
+      const { valid, legacyUpgradeNeeded } = await verifyPassword(
+        password,
+        user.password_hash
+      );
+      if (!valid) {
+        return invalid();
+      }
+      // Upgrade legacy sha256 rows to bcrypt in place on successful login.
+      if (legacyUpgradeNeeded) {
+        try {
+          const upgraded = await bcryptHashPassword(password);
+          await pool.query(
+            "UPDATE users SET password_hash = $1 WHERE id = $2",
+            [upgraded, user.id]
+          );
+        } catch (upgradeErr) {
+          console.warn("[auth] legacy hash upgrade failed:", upgradeErr);
+        }
       }
 
       const plantRes = await pool.query(
-        "SELECT id FROM plants WHERE user_id = $1 OR company_id = $2 ORDER BY user_id DESC NULLS LAST, id ASC LIMIT 1",
+        "SELECT id, name FROM plants WHERE user_id = $1 OR company_id = $2 ORDER BY user_id DESC NULLS LAST, id ASC LIMIT 1",
         [user.id, user.company_id]
       );
       const plant_id = plantRes.rows.length > 0 ? plantRes.rows[0].id : null;
+      const plant_name = plantRes.rows.length > 0 ? plantRes.rows[0].name : null;
 
-      return res.json({
-        id: user.id,
-        username: user.username,
-        company_id: user.company_id,
-        role: user.role,
-        is_temp_password: user.is_temp_password,
-        plant_id
+      const { token, sessionId } = await createSession(pool, user.id);
+      res.setHeader("Set-Cookie", buildSessionCookie(token));
+      console.log("[auth] session created:", {
+        sessionId,
+        userId: user.id,
+        username: user.username
       });
+      return res.json(
+        publicUserPayload({ ...user, plant_id, plant_name })
+      );
     } else {
       const user = memoryUsers.find(u => u.username.toLowerCase() === normUsername);
+      const invalid = () =>
+        res.status(401).json({ error: "Invalid username or password" });
       if (!user) {
-        return res.status(401).json({ error: "Invalid username or password" });
+        return invalid();
+      }
+      const { valid } = await verifyPassword(password, user.password_hash);
+      if (!valid) {
+        return invalid();
       }
 
-      if (user.password_hash !== hashedPassword && user.password_hash !== password) {
-        return res.status(401).json({ error: "Invalid username or password" });
-      }
-
-      const plant = memoryPlants.find(p => p.user_id === user.id || p.company_id === user.company_id);
-      const plant_id = plant ? plant.id : null;
-
-      return res.json({
-        id: user.id,
-        username: user.username,
-        company_id: user.company_id,
-        role: user.role,
-        is_temp_password: user.is_temp_password,
-        plant_id
-      });
+      const { token } = createMemorySession(user.id, sessionTtlHours());
+      res.setHeader("Set-Cookie", buildSessionCookie(token));
+      const plant = memoryPlants.find(
+        p => p.user_id === user.id || p.company_id === user.company_id
+      );
+      return res.json(
+        publicUserPayload({
+          ...user,
+          plant_id: plant ? plant.id : null,
+          plant_name: plant ? plant.name : null
+        })
+      );
     }
   } catch (error: any) {
     console.error("POST /api/auth/login failed:", error);
-    return res.status(500).json({ error: error.message || "Failed to authenticate user" });
+    return res.status(500).json({ error: "Failed to authenticate user" });
   }
 });
 
-// POST /api/auth/register - User registration / sign up
+// POST /api/auth/register - Invite-only in production; open in dev
+// (AR-29 directive 2: no open self-signup in production — registration
+// requires a valid invite token or an authenticated system-admin session).
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { username, password, plantCompanyName, email } = req.body;
+    const { username, password, plantCompanyName, email, inviteToken } = req.body;
     if (!username || typeof username !== "string" || !username.trim()) {
       return res.status(400).json({ error: "Missing required field: username" });
     }
     if (!password || typeof password !== "string" || !password.trim()) {
       return res.status(400).json({ error: "Missing required field: password" });
     }
-    if (!plantCompanyName || typeof plantCompanyName !== "string" || !plantCompanyName.trim()) {
-      return res.status(400).json({ error: "Missing required field: plantCompanyName" });
+    if (typeof password !== "string" || password.length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters." });
     }
 
     const normUsername = username.trim().toLowerCase();
-    const hashedPassword = hashPassword(password);
+    const hashed = await bcryptHashPassword(password);
 
     if (pool) {
-      // 1. Check if user already exists
+      // ---- Production: invite token or system-admin session only ----
+      if (isProductionEnv(process.env)) {
+        let allowedCompanyId: number | null = null;
+        let assignedRole: AppRole = "plant-engineer";
+
+        if (inviteToken && typeof inviteToken === "string") {
+          const invite = await pool.query(
+            `SELECT id, company_id, role FROM auth_invites
+              WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+              LIMIT 1`,
+            [hashSessionToken(inviteToken.trim())]
+          );
+          if (invite.rows.length === 0) {
+            return res
+              .status(403)
+              .json({ error: "A valid invite token is required to register." });
+          }
+          allowedCompanyId = invite.rows[0].company_id;
+          assignedRole = normalizeRole(invite.rows[0].role);
+        } else if (req.auth && req.auth.user.role === "system-admin") {
+          allowedCompanyId = req.auth.user.company_id;
+        } else {
+          return res.status(403).json({
+            error:
+              "Registration is invite-only. Ask a system administrator for an invite token."
+          });
+        }
+
+        const userExists = await pool.query(
+          "SELECT id FROM users WHERE LOWER(username) = $1 LIMIT 1",
+          [normUsername]
+        );
+        if (userExists.rows.length > 0) {
+          return res.status(400).json({ error: "Username is already taken" });
+        }
+
+        const companyId =
+          allowedCompanyId ??
+          (() => {
+            throw new Error("invite did not carry a company_id");
+          })();
+
+        const userRes = await pool.query(
+          "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password) VALUES ($1, $2, $3, $4, $5, TRUE) RETURNING *",
+          [companyId, normUsername, hashed, assignedRole, email ? String(email).trim() : null]
+        );
+        const user = userRes.rows[0];
+
+        if (inviteToken && typeof inviteToken === "string") {
+          await pool.query(
+            "UPDATE auth_invites SET used_at = NOW() WHERE token_hash = $1",
+            [hashSessionToken(inviteToken.trim())]
+          );
+        }
+
+        const plantRes = await pool.query(
+          "SELECT id, name FROM plants WHERE company_id = $1 LIMIT 1",
+          [companyId]
+        );
+        const plant =
+          plantRes.rows.length > 0
+            ? plantRes.rows[0]
+            : (
+                await pool.query(
+                  "INSERT INTO plants (name, company_id, user_id) VALUES ($1, $2, $3) RETURNING id, name",
+                  [
+                    plantCompanyName && typeof plantCompanyName === "string" && plantCompanyName.trim()
+                      ? `${plantCompanyName.trim()} - Main Location`
+                      : "Main Location",
+                    companyId,
+                    user.id
+                  ]
+                )
+              ).rows[0];
+
+        const { token } = await createSession(pool, user.id);
+        res.setHeader("Set-Cookie", buildSessionCookie(token));
+        return res.status(201).json(
+          publicUserPayload({
+            ...user,
+            plant_id: plant?.id ?? null,
+            plant_name: plant?.name ?? null
+          })
+        );
+      }
+
+      // ---- Development: open registration (creates a new tenant) ----
+      if (!plantCompanyName || typeof plantCompanyName !== "string" || !plantCompanyName.trim()) {
+        return res.status(400).json({ error: "Missing required field: plantCompanyName" });
+      }
       const userExists = await pool.query("SELECT id FROM users WHERE LOWER(username) = $1 LIMIT 1", [normUsername]);
       if (userExists.rows.length > 0) {
         return res.status(400).json({ error: "Username is already taken" });
       }
 
-      // 2. Create the company (Plant/Company Name)
       const companyRes = await pool.query(
         "INSERT INTO companies (name, subscription_plan) VALUES ($1, 'full_suite') ON CONFLICT (name) DO UPDATE SET subscription_plan = 'full_suite' RETURNING id",
         [plantCompanyName.trim()]
       );
       const companyId = companyRes.rows[0].id;
 
-      // 3. Create the user
       const userRes = await pool.query(
-        "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password) VALUES ($1, $2, $3, 'engineer', $4, FALSE) RETURNING *",
-        [companyId, normUsername, hashedPassword, email ? email.trim() : null]
+        "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password) VALUES ($1, $2, $3, 'plant-engineer', $4, FALSE) RETURNING *",
+        [companyId, normUsername, hashed, email ? email.trim() : null]
       );
       const user = userRes.rows[0];
 
-      // 4. Create the plant and link user_id
       const plantRes = await pool.query(
-        "INSERT INTO plants (name, company_id, user_id) VALUES ($1, $2, $3) RETURNING *",
+        "INSERT INTO plants (name, company_id, user_id) VALUES ($1, $2, $3) RETURNING id, name",
         [`${plantCompanyName.trim()} - Main Location`, companyId, user.id]
       );
       const plant = plantRes.rows[0];
 
-      return res.status(201).json({
-        id: user.id,
-        username: user.username,
-        company_id: user.company_id,
-        role: user.role,
-        is_temp_password: user.is_temp_password,
-        plant_id: plant.id,
-        plant_name: plant.name
-      });
+      const { token } = await createSession(pool, user.id);
+      res.setHeader("Set-Cookie", buildSessionCookie(token));
+      return res.status(201).json(
+        publicUserPayload({ ...user, plant_id: plant.id, plant_name: plant.name })
+      );
     } else {
-      // Memory Fallback
+      // Memory Fallback (dev without DATABASE_URL)
       const userExists = memoryUsers.some(u => u.username.toLowerCase() === normUsername);
       if (userExists) {
         return res.status(400).json({ error: "Username is already taken" });
       }
+      const plantName =
+        plantCompanyName && typeof plantCompanyName === "string" && plantCompanyName.trim()
+          ? plantCompanyName.trim()
+          : "Dev Plant";
 
-      // Create company
       const companyId = getNextId();
-      const newCompany = {
+      memoryCompanies.push({
         id: companyId,
-        name: plantCompanyName.trim(),
-        subscription_plan: 'full_suite',
+        name: plantName,
+        subscription_plan: "full_suite",
         created_at: new Date()
-      };
-      memoryCompanies.push(newCompany);
+      });
 
-      // Create user
       const userId = getNextId();
       const newUser = {
         id: userId,
         company_id: companyId,
         username: normUsername,
-        password_hash: hashedPassword,
-        role: "engineer",
+        password_hash: hashed,
+        role: "plant-engineer",
         email: email ? email.trim() : null,
         is_temp_password: false,
         created_at: new Date()
       };
       memoryUsers.push(newUser);
 
-      // Create plant
       const plantId = getNextId();
-      const newPlant = {
+      memoryPlants.push({
         id: plantId,
         company_id: companyId,
         user_id: userId,
-        name: `${plantCompanyName.trim()} - Main Location`,
+        name: `${plantName} - Main Location`,
         created_at: new Date()
-      };
-      memoryPlants.push(newPlant);
-
-      return res.status(201).json({
-        id: newUser.id,
-        username: newUser.username,
-        company_id: newUser.company_id,
-        role: newUser.role,
-        is_temp_password: newUser.is_temp_password,
-        plant_id: newPlant.id,
-        plant_name: newPlant.name
       });
+
+      const { token } = createMemorySession(userId, sessionTtlHours());
+      res.setHeader("Set-Cookie", buildSessionCookie(token));
+      return res.status(201).json(
+        publicUserPayload({
+          ...newUser,
+          plant_id: plantId,
+          plant_name: `${plantName} - Main Location`
+        })
+      );
     }
   } catch (error: any) {
     console.error("POST /api/auth/register failed:", error);
-    return res.status(500).json({ error: error.message || "Failed to register user" });
+    return res.status(500).json({ error: "Failed to register user" });
   }
 });
 
-// POST /api/auth/demo-login - Instant demo mode entry
+// GET /api/auth/session - Current session (client boot revalidation)
+app.get("/api/auth/session", async (req, res) => {
+  if (!req.auth) {
+    return res.status(401).json({ error: "Not authenticated", code: "NO_SESSION" });
+  }
+  return res.json(publicUserPayload(req.auth.user));
+});
+
+// POST /api/auth/logout - Server-side invalidation + cookie clear
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    const token = readSessionTokenFromRequest(req.headers.cookie);
+    if (token && pool) {
+      const session = await findSessionByToken(pool, token);
+      if (session) {
+        await deleteSession(pool, session.id);
+      }
+    } else if (token) {
+      destroyMemorySession(token);
+    }
+  } catch (err) {
+    console.warn("[auth] logout cleanup error:", err);
+  }
+  res.setHeader("Set-Cookie", buildClearSessionCookie());
+  return res.json({ success: true });
+});
+
+// POST /api/auth/invites - Mint an invite token (system-admin only)
+app.post(
+  "/api/auth/invites",
+  requireRole("system-admin"),
+  async (req, res) => {
+    try {
+      if (!pool) {
+        return res.status(503).json({ error: "Database is not configured" });
+      }
+      const { company_id, role, email, username } = req.body || {};
+      const companyId = Number.isFinite(Number(company_id))
+        ? Number(company_id)
+        : req.auth!.user.company_id;
+      const inviteRole = normalizeRole(role ?? "plant-engineer");
+      const token = generateSessionToken();
+      const ttlHours = Math.max(
+        1,
+        Math.min(24 * 14, Number(req.body?.ttl_hours) || 72)
+      );
+      await pool.query(
+        `INSERT INTO auth_invites (token_hash, company_id, role, email, username, created_by, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW() + ($7 || ' hours')::interval)`,
+        [
+          hashSessionToken(token),
+          companyId,
+          inviteRole,
+          email ? String(email).trim() : null,
+          username ? String(username).trim() : null,
+          req.auth!.user.id,
+          String(ttlHours)
+        ]
+      );
+      // Raw token returned exactly once to the inviting admin.
+      return res.status(201).json({ invite_token: token, expires_in_hours: ttlHours });
+    } catch (error: any) {
+      console.error("POST /api/auth/invites failed:", error);
+      return res.status(500).json({ error: "Failed to create invite" });
+    }
+  }
+);
+
+// POST /api/auth/demo-login - DEVELOPMENT ONLY. Hard-blocked in
+// production and whenever ENABLE_DEV_AUTH_SEED is not explicitly true.
 app.post("/api/auth/demo-login", async (req, res) => {
+  if (isProductionEnv(process.env) || !isDevAuthSeedEnabled(process.env)) {
+    return res
+      .status(404)
+      .json({ error: "Demo mode is not available in this environment." });
+  }
   try {
     if (pool) {
       const result = await pool.query("SELECT * FROM users WHERE LOWER(username) = 'demo' LIMIT 1");
       if (result.rows.length > 0) {
         const user = result.rows[0];
-        const plantRes = await pool.query("SELECT id FROM plants WHERE company_id = $1 LIMIT 1", [user.company_id]);
+        const plantRes = await pool.query(
+          "SELECT id, name FROM plants WHERE company_id = $1 LIMIT 1",
+          [user.company_id]
+        );
         const plant_id = plantRes.rows.length > 0 ? plantRes.rows[0].id : 3;
-        return res.json({
-          id: user.id,
-          username: user.username,
-          company_id: user.company_id,
-          role: user.role,
-          is_temp_password: user.is_temp_password,
-          plant_id
-        });
+        const plant_name = plantRes.rows.length > 0 ? plantRes.rows[0].name : null;
+        const { token } = await createSession(pool, user.id);
+        res.setHeader("Set-Cookie", buildSessionCookie(token));
+        return res.json(publicUserPayload({ ...user, plant_id, plant_name }));
       }
+      return res
+        .status(404)
+        .json({ error: "Demo user is not seeded in this environment." });
     }
-    return res.json({
-      id: 2,
-      username: "demo",
-      company_id: 3,
-      role: "engineer",
-      is_temp_password: true,
-      plant_id: 3
-    });
+    const demoUser = memoryUsers.find(u => u.username === "demo");
+    if (!demoUser) {
+      return res
+        .status(404)
+        .json({ error: "Demo user is not available in this environment." });
+    }
+    const { token } = createMemorySession(demoUser.id, sessionTtlHours());
+    res.setHeader("Set-Cookie", buildSessionCookie(token));
+    const plant = memoryPlants.find(p => p.company_id === demoUser.company_id);
+    return res.json(
+      publicUserPayload({
+        ...demoUser,
+        plant_id: plant ? plant.id : 3,
+        plant_name: plant ? plant.name : null
+      })
+    );
   } catch (error: any) {
     console.error("POST /api/auth/demo-login failed:", error);
-    return res.status(500).json({ error: error.message || "Failed to start demo mode" });
+    return res.status(500).json({ error: "Failed to start demo mode" });
   }
 });
 
@@ -11639,8 +11908,8 @@ app.post(["/api/analysis-history", "/api/analysis_history"], async (req, res) =>
     if (pool) {
       const result = await pool.query(
         `INSERT INTO analysis_history 
-         (measurement_point_id, data_point_name, state, op_speed, measurement_value, units, measurement_date, notes, waveform_data, alarm_status, diagnosis_result, was_correct, corrected_diagnosis) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+         (measurement_point_id, data_point_name, state, op_speed, measurement_value, units, measurement_date, notes, waveform_data, alarm_status, diagnosis_result, was_correct, corrected_diagnosis, tenant_id) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) 
          RETURNING *`,
         [
           mpId,
@@ -11655,7 +11924,8 @@ app.post(["/api/analysis-history", "/api/analysis_history"], async (req, res) =>
           isAlarm,
           parsedDiag,
           was_correct !== undefined ? !!was_correct : null,
-          corrected_diagnosis ? corrected_diagnosis.trim() : null
+          corrected_diagnosis ? corrected_diagnosis.trim() : null,
+          req.tenantId ?? -1
         ]
       );
       return res.status(201).json(result.rows[0]);
@@ -11864,6 +12134,133 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'engineer';");
     await pool.query("UPDATE users SET email = 'shanedufrene1989@gmail.com' WHERE username = 'demo' AND email IS NULL;");
 
+    // ------------------------------------------------------------------
+    // AR-29 — auth sessions, invites, structured roles, tenant rollout.
+    // Mirrors migrations/008_auth_sessions_rbac.sql (idempotent).
+    // ------------------------------------------------------------------
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`).catch(() => {
+      /* gen_random_uuid may already be available without the extension */
+    });
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions (user_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions (expires_at);"
+    );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS auth_invites (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        token_hash TEXT NOT NULL UNIQUE,
+        company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+        role VARCHAR(50) DEFAULT 'plant-engineer',
+        email VARCHAR(255),
+        username VARCHAR(255),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at TIMESTAMPTZ
+      );
+    `);
+    // Sentinel-default tenant_id columns on every write-target table.
+    // Sentinel = -1 (disclosed; excluded from tenant-scoped reads).
+    for (const table of [
+      "analysis_results",
+      "diagnosis_logs",
+      "analysis_history",
+      "diagnosis_history",
+      "work_orders",
+      "reports",
+      "oil_analysis"
+    ]) {
+      await pool.query(
+        `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id INTEGER NOT NULL DEFAULT -1;`
+      ).catch((err: any) => {
+        // oil_analysis may not exist yet on fresh DBs; created later in this fn.
+        console.warn(`[AR-29] tenant_id add skipped for ${table}:`, err?.message);
+      });
+    }
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_analysis_results_tenant ON analysis_results (tenant_id);"
+    ).catch(() => {});
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_diagnosis_logs_tenant ON diagnosis_logs (tenant_id);"
+    ).catch(() => {});
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_analysis_history_tenant ON analysis_history (tenant_id);"
+    ).catch(() => {});
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_diagnosis_history_tenant ON diagnosis_history (tenant_id);"
+    ).catch(() => {});
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_work_orders_tenant ON work_orders (tenant_id);"
+    ).catch(() => {});
+    // Backfill derivable tenants from the owning company chain; anything
+    // underivable stays on the disclosed -1 sentinel (no silent NULLs).
+    await pool.query(`
+      UPDATE analysis_history ah
+         SET tenant_id = pl.company_id
+        FROM measurement_points mp
+        JOIN collection_points cp ON cp.id = mp.collection_point_id
+        JOIN components c ON c.id = cp.component_id
+        JOIN assets a ON a.id = c.asset_id
+        JOIN routes r ON r.id = a.route_id
+        JOIN plants pl ON pl.id = r.plant_id
+       WHERE ah.measurement_point_id = mp.id
+         AND ah.tenant_id = -1
+         AND pl.company_id IS NOT NULL;
+    `).catch((err: any) =>
+      console.warn("[AR-29] analysis_history backfill skipped:", err?.message)
+    );
+    await pool.query(`
+      UPDATE diagnosis_history dh
+         SET tenant_id = pl.company_id
+        FROM assets a
+        JOIN routes r ON r.id = a.route_id
+        JOIN plants pl ON pl.id = r.plant_id
+       WHERE dh.asset_id = a.id
+         AND dh.tenant_id = -1
+         AND pl.company_id IS NOT NULL;
+    `).catch((err: any) =>
+      console.warn("[AR-29] diagnosis_history backfill skipped:", err?.message)
+    );
+    await pool.query(`
+      UPDATE diagnosis_history dh
+         SET tenant_id = u.company_id
+        FROM users u
+       WHERE dh.user_id = u.id
+         AND dh.tenant_id = -1
+         AND u.company_id IS NOT NULL;
+    `).catch(() => {});
+    for (const table of ["analysis_results", "diagnosis_logs", "work_orders"]) {
+      await pool.query(`
+        UPDATE ${table} t
+           SET tenant_id = pl.company_id
+          FROM assets a
+          JOIN routes r ON r.id = a.route_id
+          JOIN plants pl ON pl.id = r.plant_id
+         WHERE t.tenant_id = -1
+           AND (a.id::text = t.asset_id OR a.tag_number = t.asset_id OR a.name = t.asset_id)
+           AND pl.company_id IS NOT NULL;
+      `).catch((err: any) =>
+        console.warn(`[AR-29] ${table} backfill skipped:`, err?.message)
+      );
+    }
+    await pool.query(`
+      UPDATE reports rp
+         SET tenant_id = rp.company_id
+       WHERE rp.tenant_id = -1
+         AND rp.company_id IS NOT NULL;
+    `).catch(() => {});
+
     // Create plants table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS plants (
@@ -12062,6 +12459,8 @@ async function initializeDatabase() {
     `);
 
     // Ensure 'Demo Reliability Corp' and the 'demo' user exist and seed mock assets if missing
+    // AR-29 rule 5 — dev-only demo seeding, explicitly gated.
+    if (isDevAuthSeedEnabled(process.env)) {
     try {
       const demoCompRes = await pool.query("SELECT id FROM companies WHERE name = 'Demo Reliability Corp' LIMIT 1");
       if (demoCompRes.rows.length > 0) {
@@ -12190,6 +12589,9 @@ async function initializeDatabase() {
       }
     } catch (seedErr) {
       console.error("❌ Warning: Failed to seed demo user/data in database:", seedErr);
+    }
+    } else {
+      console.log("ℹ️ [AR-29] Demo user/data seeding skipped (ENABLE_DEV_AUTH_SEED not true or production).");
     }
 
     // Create Alert tables
@@ -12816,6 +13218,9 @@ app.get("/api/cmms/templates", async (req, res) => {
   try {
     const query = (req.query.query as string || "").trim();
     const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+    // AR-29 — tenant-scoped: only this session's templates; legacy
+    // 'default_tenant' rows are excluded until reassigned.
+    const tenantKey = String(req.auth?.tenantId ?? -1);
 
     let sql: string;
     let params: unknown[];
@@ -12827,18 +13232,20 @@ app.get("/api/cmms/templates", async (req, res) => {
                similarity(program_name, $1) AS sim
         FROM custom_cmms_templates
         WHERE program_name % $1
+          AND created_by_tenant = $3
         ORDER BY sim DESC, updated_at DESC
         LIMIT $2
       `;
-      params = [query, limit];
+      params = [query, limit, tenantKey];
     } else {
       sql = `
         SELECT id, program_name, field_schema, created_by_tenant, created_at, updated_at
         FROM custom_cmms_templates
+        WHERE created_by_tenant = $2
         ORDER BY updated_at DESC
         LIMIT $1
       `;
-      params = [limit];
+      params = [limit, tenantKey];
     }
 
     const result = await pool.query(sql, params);
@@ -13037,8 +13444,11 @@ app.post("/api/cmms/templates", async (req, res) => {
       return res.status(400).json({ error: "field_schema must contain at least one valid field" });
     }
 
-    // Use a tenant identifier (could be from auth, for now use a default)
-    const tenantId = "default_tenant"; // In production, extract from auth/session
+    // AR-29 rules 3/9 — tenant from the verified session, never the client.
+    const tenantId = req.auth?.tenantId;
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
 
     const insert = await pool.query(
       `INSERT INTO custom_cmms_templates (program_name, field_schema, created_by_tenant)
@@ -13047,7 +13457,7 @@ app.post("/api/cmms/templates", async (req, res) => {
          field_schema = EXCLUDED.field_schema,
          updated_at = NOW()
        RETURNING id, program_name, field_schema, created_by_tenant, created_at, updated_at`,
-      [program_name.trim(), JSON.stringify(sanitized), tenantId]
+      [program_name.trim(), JSON.stringify(sanitized), String(tenantId)]
     );
 
     return res.json(insert.rows[0]);
@@ -13069,8 +13479,8 @@ app.delete("/api/cmms/templates/:id", async (req, res) => {
   try {
     const { id } = req.params;
     await pool.query(
-      `DELETE FROM custom_cmms_templates WHERE id = $1`,
-      [id]
+      `DELETE FROM custom_cmms_templates WHERE id = $1 AND created_by_tenant = $2`,
+      [id, String(req.auth?.tenantId ?? -1)]
     );
     return res.json({ success: true });
   } catch (err: any) {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint, TargetContext } from "./types";
 import Diagnose from "./components/Diagnose";
 import Login, { UserSession } from "./components/Login";
+import RouteGuard from "./components/auth/RouteGuard";
 import LegalDocuments from "./components/LegalDocuments";
 import AIChatbot from "./components/AIChatbot";
 import ScrollToTop from "./components/ScrollToTop";
@@ -108,6 +109,32 @@ export default function App() {
     }
     return null;
   });
+  // AR-29 — localStorage is only an instant-paint cache; the server session
+  // (httpOnly cookie) is validated via GET /api/auth/session before the app
+  // is trusted to render as authenticated.
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+        if (cancelled) return;
+        if (res.ok) {
+          const payload = await res.json();
+          if (payload && payload.id) setUser(payload as UserSession);
+          else setUser(null);
+        } else {
+          setUser(null);
+        }
+      } catch {
+        // Network failure: keep cached session; API calls will 401 if dead.
+      } finally {
+        if (!cancelled) setAuthChecked(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const [selectedCompanyId, setSelectedCompanyId] = useState<number>(() => {
     const stored = localStorage.getItem("reliability_selected_company_id");
@@ -250,6 +277,9 @@ export default function App() {
   }, []);
 
   const handleSecureLogout = () => {
+    // AR-29 — invalidate the server session (row delete + cookie clear) first.
+    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
+
     // Completely clear user session tokens & preferences from storage
     localStorage.removeItem("motormedic_user_session");
     sessionStorage.clear();
@@ -603,6 +633,17 @@ const updated = [newReport, ...reports];
           )}
         </Suspense>
       </>
+    );
+  }
+
+  if (!authChecked) {
+    return (
+      <div
+        className="min-h-screen w-full flex items-center justify-center bg-slate-950"
+        id="auth-boot-splash"
+      >
+        <div className="h-9 w-9 rounded-full border-2 border-emerald-500/30 border-t-emerald-400 animate-spin" />
+      </div>
     );
   }
 
@@ -1133,11 +1174,13 @@ const updated = [newReport, ...reports];
               selectedAssetId={trendsAssetId}
             />
           ) : activeTab === "admin" ? (
-            <AdminPanel
-              companies={companies}
-              onSubscriptionChange={fetchCompanies}
-              selectedCompanyId={selectedCompanyId}
-            />
+            <RouteGuard user={user} permission="tenants:manage">
+              <AdminPanel
+                companies={companies}
+                onSubscriptionChange={fetchCompanies}
+                selectedCompanyId={selectedCompanyId}
+              />
+            </RouteGuard>
           ) : activeTab === "alerts" ? (
             <AlertsControl userId={user?.id || 3} />
           ) : activeTab === "sensors" ? (

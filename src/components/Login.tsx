@@ -23,9 +23,12 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
   const [password, setPassword] = useState("");
   const [plantCompanyName, setPlantCompanyName] = useState("");
   const [email, setEmail] = useState("");
+  const [inviteToken, setInviteToken] = useState("");
   const [loading, setLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // AR-29 — production builds never offer demo login or open self-signup.
+  const isProdBuild = import.meta.env.PROD;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -76,7 +79,8 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
           username: username.trim(),
           password: password.trim(),
           plantCompanyName: plantCompanyName.trim(),
-          email: email.trim() || null
+          email: email.trim() || null,
+          inviteToken: inviteToken.trim() || undefined
         }),
       });
 
@@ -263,6 +267,28 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                     />
                   </div>
                 </div>
+
+                {/* AR-29 — production registration is invite-only. */}
+                {isProdBuild && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block">Invite Token (Required in Production)</label>
+                    <div className="relative">
+                      <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-slate-500">
+                        <Key className="h-4 w-4" />
+                      </span>
+                      <input
+                        type="text"
+                        required
+                        disabled={loading || demoLoading}
+                        value={inviteToken}
+                        onChange={(e) => setInviteToken(e.target.value)}
+                        placeholder="e.g., 9f2c1a…"
+                        className="w-full bg-slate-950/60 border border-slate-800 focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/30 text-white rounded-lg pl-10 pr-4 py-2.5 text-sm transition-all placeholder:text-slate-600 outline-none font-mono"
+                        id="login-invite-token-input"
+                      />
+                    </div>
+                  </div>
+                )}
               </>
             )}
 
@@ -301,8 +327,9 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
             </button>
           </div>
 
-          {/* Demo Credentials Badge */}
-          {!isRegister && (
+          {/* Demo Credentials Badge — development only (AR-29: no demo
+              bypass surfaced in production builds). */}
+          {!isRegister && !isProdBuild && (
             <div className="mt-5 p-3 bg-emerald-950/20 border border-emerald-500/20 rounded-lg text-xs text-slate-300 flex flex-col gap-1.5" id="demo-credentials-badge">
               <div className="flex items-center justify-between font-medium text-emerald-400">
                 <span>Test Credentials Available:</span>
