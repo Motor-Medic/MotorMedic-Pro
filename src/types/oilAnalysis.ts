@@ -152,6 +152,17 @@ export interface OilSample {
   copperDeltaPercent?: number;
   chromiumDeltaPercent?: number;
 
+  // Lab / sampling metadata (optional — may be present on imported or
+  // vision-parsed samples but absent on older records).
+  labName?: string;
+  lubricantGrade?: string;
+  oilGrade?: string;
+  samplerId?: string;
+  samplePoint?: string;
+  samplingPort?: string;
+  samplingMethod?: string;
+  makeUpOilLiters?: number;
+
   createdAt?: string;
   updatedAt?: string;
 }

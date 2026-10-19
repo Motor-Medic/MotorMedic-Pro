@@ -124,8 +124,8 @@ export interface CustomCmmsTemplate {
  */
 export interface CustomCmmsFieldSchema {
   fields: CustomCmmsField[];
-  priorityMapping: Record<DiagnosisSeverity, string>;
-  workTypeMapping: Record<DiagnosisSeverity, string>;
+  priorityMapping: Partial<Record<DiagnosisSeverity, string>>;
+  workTypeMapping: Partial<Record<DiagnosisSeverity, string>>;
 }
 
 /**

@@ -80,6 +80,12 @@ export type McaSsotRecord = {
   meta: McaSsotMeta;
 };
 
+/**
+ * Deep-partial patch accepted by deepMergeMcaSsot — each domain may be
+ * supplied partially; unmentioned nested keys are preserved from prev.
+ */
+export type McaSsotPatch = { [K in keyof McaSsotRecord]?: Partial<McaSsotRecord[K]> };
+
 const ZERO: McaPhaseTriplet = [0, 0, 0];
 
 export const EMPTY_MCA_SSOT: McaSsotRecord = {
@@ -186,7 +192,7 @@ function groundwallSnapshotToDomain(
 /** Immutable deep-merge — never wipes sibling domains or unmentioned nested keys. */
 export function deepMergeMcaSsot(
   prev: McaSsotRecord,
-  patch: Partial<McaSsotRecord> | null | undefined
+  patch: McaSsotPatch | null | undefined
 ): McaSsotRecord {
   if (!patch) return prev;
 

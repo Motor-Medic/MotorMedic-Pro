@@ -905,6 +905,23 @@ export function formatMcaPdfLabel(format: McaPdfFormat): string {
   }
 }
 
+const MCA_PDF_FORMATS = new Set<string>([
+  "ALL_TEST_PRO",
+  "MEGGER_BAKER",
+  "GENERIC_TABULAR",
+  "VISION_SCREENSHOT",
+  "UNKNOWN"
+]);
+
+/**
+ * Type guard for format strings that came from untrusted origins
+ * (persisted storage / parsed records) before handing them to APIs
+ * requiring McaPdfFormat.
+ */
+export function isMcaPdfFormat(value: string): value is McaPdfFormat {
+  return MCA_PDF_FORMATS.has(value);
+}
+
 /** True when groundwall IR / PI / DAR were extracted. */
 export function mcaExtractHasGroundwall(data: McaExtractedData | null | undefined): boolean {
   if (!data) return false;

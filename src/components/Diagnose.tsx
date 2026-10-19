@@ -28,6 +28,7 @@ import {
 } from "recharts";
 import { useToast } from "./Toast";
 import type { SpectrumPoint } from "../types/vibration";
+import type { TargetContext } from "../types";
 import {
   DEEP_FFT_DATA,
   DEEP_FFT_DATA_HF,
@@ -197,15 +198,7 @@ interface DiagnoseProps {
     fileName?: string,
     fileType?: string
   ) => void;
-  targetContext?: {
-    plantId: number | null;
-    routeId: number | null;
-    assetId: number | null;
-    componentId: number | null;
-    technologyType: string | null;
-    quickAnalysisMode?: boolean;
-    collectionPointId?: number | string | null;
-  } | null;
+  targetContext?: TargetContext | null;
   onClearTargetContext?: () => void;
   selectedCompanyId?: number;
   subscriptionPlan?: string;
@@ -3811,7 +3804,8 @@ useEffect(() => {
         setAnalysisError({
           title: String(title),
           message: String(message) + restartHint,
-          errorType: payload?.errorType
+          errorType:
+            typeof payload?.errorType === "string" ? payload.errorType : undefined
         });
         setIsAnalyzing(false);
         clearAnalysisTimers();

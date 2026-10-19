@@ -88,41 +88,30 @@ export default function OilProgramDossierTab({
   const firstSampleDate = sorted.length > 0 ? sorted[0].sampleDate : null;
   const lastSampleDate = sorted.length > 0 ? sorted[sorted.length - 1].sampleDate : null;
 
-  /* Duck-typed fields that may or may not exist on samples at runtime */
-  const labName = latest && typeof (latest as Record<string, unknown>).labName === "string"
-    ? (latest as Record<string, unknown>).labName as string
-    : null;
+  /* Optional lab/sampling metadata — may be absent on older records */
+  const labName = typeof latest?.labName === "string" ? latest.labName : null;
 
-  const lubricantGrade = latest && typeof (latest as Record<string, unknown>).lubricantGrade === "string"
-    ? (latest as Record<string, unknown>).lubricantGrade as string
-    : null;
+  const lubricantGrade =
+    typeof latest?.lubricantGrade === "string" ? latest.lubricantGrade : null;
 
-  const oilGrade = latest && typeof (latest as Record<string, unknown>).oilGrade === "string"
-    ? (latest as Record<string, unknown>).oilGrade as string
-    : null;
+  const oilGrade = typeof latest?.oilGrade === "string" ? latest.oilGrade : null;
 
   const grade = lubricantGrade ?? oilGrade ?? null;
 
-  const samplerId = latest && typeof (latest as Record<string, unknown>).samplerId === "string"
-    ? (latest as Record<string, unknown>).samplerId as string
-    : null;
+  const samplerId = typeof latest?.samplerId === "string" ? latest.samplerId : null;
 
-  const samplePoint = latest && typeof (latest as Record<string, unknown>).samplePoint === "string"
-    ? (latest as Record<string, unknown>).samplePoint as string
-    : null;
+  const samplePoint =
+    typeof latest?.samplePoint === "string" ? latest.samplePoint : null;
 
-  const samplingPort = latest && typeof (latest as Record<string, unknown>).samplingPort === "string"
-    ? (latest as Record<string, unknown>).samplingPort as string
-    : null;
+  const samplingPort =
+    typeof latest?.samplingPort === "string" ? latest.samplingPort : null;
 
-  const samplingMethod = latest && typeof (latest as Record<string, unknown>).samplingMethod === "string"
-    ? (latest as Record<string, unknown>).samplingMethod as string
-    : null;
+  const samplingMethod =
+    typeof latest?.samplingMethod === "string" ? latest.samplingMethod : null;
 
   const hasMakeUpOil = latest != null && "makeUpOilLiters" in latest;
-  const topOffVal = latest && typeof (latest as Record<string, unknown>).makeUpOilLiters === "number"
-    ? ((latest as Record<string, unknown>).makeUpOilLiters as number)
-    : null;
+  const topOffVal =
+    typeof latest?.makeUpOilLiters === "number" ? latest.makeUpOilLiters : null;
 
   if (assetId == null || assetId === "") {
     return (

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint } from "./types";
+import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint, TargetContext } from "./types";
 import Dashboard from "./components/Dashboard";
 import Diagnose from "./components/Diagnose";
 import History from "./components/History";
@@ -128,14 +128,7 @@ export default function App() {
   const [isHamburgerOpen, setIsHamburgerOpen] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
-  const [targetContext, setTargetContext] = useState<{
-    plantId: number | null;
-    routeId: number | null;
-    assetId: number | null;
-    componentId: number | null;
-    technologyType: string | null;
-    collectionPointId?: number | string | null;
-  } | null>(null);
+  const [targetContext, setTargetContext] = useState<TargetContext | null>(null);
   const [trendsAssetId, setTrendsAssetId] = useState<string | undefined>(undefined);
 
   const handleStartDiagnosis = (

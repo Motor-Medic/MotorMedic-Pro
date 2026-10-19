@@ -97,8 +97,10 @@ import {
 import {
   extractMcaDataFromFile,
   formatMcaPdfLabel,
+  isMcaPdfFormat,
   mcaExtractHasGroundwall,
-  type McaExtractedData
+  type McaExtractedData,
+  type McaPdfFormat
 } from "../lib/mca/mcaPdfExtractor";
 import {
   extractMcaGroundwallFromSaved,
@@ -122,6 +124,7 @@ import {
   mcaSsotFromSaved,
   mcaSsotToOperatorSnapshot,
   mcaWindingFromSsot,
+  type McaSsotPatch,
   type McaSsotRecord
 } from "../lib/mca/mcaSsot";
 import {
@@ -1336,7 +1339,6 @@ function EventBadgeLabel(props: {
   return (
     <foreignObject x={x - 48} y={y - 22} width={96} height={24} style={{ overflow: "visible" }}>
       <div
-        xmlns="http://www.w3.org/1999/xhtml"
         className="bg-slate-900/90 px-1.5 py-0.5 rounded text-[10px] border border-slate-700 shadow-sm text-center font-semibold -translate-y-1 whitespace-nowrap"
         style={{ color: fill ?? "#e2e8f0" }}
       >
@@ -1369,11 +1371,13 @@ function EventMarkerLines({
             badgeLabels
               ? {
                   position: "top",
-                  content: (props: {
-                    viewBox?: { x?: number; y?: number; width?: number; height?: number };
-                  }) => (
+                  content: (props) => (
                     <EventBadgeLabel
-                      viewBox={props.viewBox}
+                      viewBox={
+                        props.viewBox && "x" in props.viewBox
+                          ? props.viewBox
+                          : undefined
+                      }
                       value={ev.label}
                       fill={ev.color}
                     />
@@ -1492,7 +1496,7 @@ export default function TrendAnalyzer({
   const [mcaMode, setMcaMode] = useState<McaMode>("winding");
   /** MCA Single Source of Truth — all four tabs read slices from this record. */
   const [mcaRecord, setMcaRecord] = useState<McaSsotRecord>(EMPTY_MCA_SSOT);
-  const mergeMcaRecord = useCallback((patch: Partial<McaSsotRecord>) => {
+  const mergeMcaRecord = useCallback((patch: McaSsotPatch) => {
     setMcaRecord((prev) => deepMergeMcaSsot(prev, patch));
   }, []);
   const [mcaPdfFileName, setMcaPdfFileName] = useState<string | null>(null);
@@ -2024,7 +2028,10 @@ export default function TrendAnalyzer({
   const mcaExtractLoaded =
     mcaRecord.meta.source === "pdf" || mcaRecord.meta.source === "vision";
   const mcaMetaSource = mcaRecord.meta.source;
-  const mcaExtractFormat = mcaRecord.meta.formatDetected ?? "UNKNOWN";
+  const rawExtractFormat = mcaRecord.meta.formatDetected ?? "UNKNOWN";
+  const mcaExtractFormat: McaPdfFormat = isMcaPdfFormat(rawExtractFormat)
+    ? rawExtractFormat
+    : "UNKNOWN";
   const mcaExtractConfidence = mcaRecord.meta.confidenceScore ?? 0;
   const manualEar = mcaRecord.surge.ear ?? null;
 
@@ -3377,11 +3384,7 @@ export default function TrendAnalyzer({
             </li>
             <li className="text-sm font-semibold text-slate-300">
               Analyses:{" "}
-              {trendTech === "thermography"
-                ? thermoAnalyses.length
-                : trendTech === "vibration"
-                  ? vibAnalyses.length
-                  : dbAnalyses.length}
+              {vibAnalyses.length}
             </li>
             <li className="text-sm font-semibold text-green-400">
               Source:{" "}

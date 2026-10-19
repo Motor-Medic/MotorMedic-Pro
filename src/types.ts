@@ -195,4 +195,18 @@ export interface ComponentAsset {
   created_at?: string;
 }
 
+/**
+ * Target context handed from dashboard/assets navigation to the Diagnose view.
+ * Single shared definition so every producer/consumer agrees on the shape.
+ */
+export interface TargetContext {
+  plantId: number | null;
+  routeId: number | null;
+  assetId: number | null;
+  componentId: number | null;
+  technologyType: string | null;
+  quickAnalysisMode?: boolean;
+  collectionPointId?: number | string | null;
+}
+
 
