@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from "react";
-import { jsPDF } from "jspdf";
 import {
   ArrowLeft, Camera, Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Download, Droplets, Eye,
   FileText, ImageOff, Info, Layers, Loader2, Maximize2, Minus, Plus, Printer, RefreshCw,
@@ -979,7 +978,10 @@ export default function MountingPlanner() {
 
   const closeSopModal = () => setIsSopModalOpen(false);
 
-  const handleDownloadSopPdf = () => {
+  // AR-28: jsPDF is an isolated vendor chunk — loaded on demand here, and
+  // warmed by data-prefetch="jspdf" on the SOP controls below.
+  const handleDownloadSopPdf = async () => {
+    const { jsPDF } = await import("jspdf");
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
     const margin = 16;
     let y = 18;
@@ -1917,6 +1919,7 @@ export default function MountingPlanner() {
           <button
             type="button"
             onClick={openSopModal}
+            data-prefetch="jspdf"
             disabled={!allStepsVerified}
             title={allStepsVerified ? "Open installation SOP" : "Complete all 3 mounting steps to unlock"}
             className={`sm:min-w-[220px] min-h-[48px] px-5 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
@@ -1932,6 +1935,7 @@ export default function MountingPlanner() {
           <button
             type="button"
             onClick={openSopModal}
+            data-prefetch="jspdf"
             disabled={!allStepsVerified}
             title={allStepsVerified ? "Export mounting SOP" : "Complete all 3 mounting steps to unlock"}
             className={`sm:min-w-[220px] min-h-[48px] px-5 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
@@ -2729,6 +2733,7 @@ export default function MountingPlanner() {
               <button
                 type="button"
                 onClick={handleDownloadSopPdf}
+                data-prefetch="jspdf"
                 className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm font-bold text-slate-200 hover:border-[#FFC700] hover:text-[#FFC700] cursor-pointer inline-flex items-center justify-center gap-2"
               >
                 <Download className="h-4 w-4" />

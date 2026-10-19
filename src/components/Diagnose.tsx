@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity, AlertCircle, AlertTriangle, AudioWaveform, Bell, Bot, Check,
@@ -112,14 +112,7 @@ import {
   type VibrationDiagnosticRecord
 } from "../lib/vibration/vibrationDiagnosticRecord";
 import { normalizeWaveformMetrics } from "../lib/waveformMetrics";
-import {
-  ANALYZE_THERMOGRAPHY_API_PATH,
-  extractRadiometricMetrics,
-  mapThermographyToUiResult,
-  normalizeThermographyResult,
-  thermographyPeaksForSave,
-  type ThermographyResult
-} from "../lib/thermographyAnalysis";
+import type { ThermographyResult } from "../lib/thermographyAnalysis";
 import {
   ANALYZE_ULTRASOUND_API_PATH,
   mapUltrasoundToUiResult,
@@ -132,15 +125,9 @@ import VibrationInputAccordions, {
   type VibAccordionSection,
   type VibDataSource
 } from "./VibrationInputAccordions";
-import ThermographyInputAccordions, {
-  type ThermographyTelemetrySnapshot
-} from "./ThermographyInputAccordions";
-import ThermographyResultsDashboard from "./ThermographyResultsDashboard";
-import UltrasoundInputAccordions, {
-  type UltrasoundInputSnapshot
-} from "./UltrasoundInputAccordions";
-import UltrasoundResultsDashboard from "./UltrasoundResultsDashboard";
-import McaInputAccordions from "./McaInputAccordions";
+import type { ThermographyTelemetrySnapshot } from "./ThermographyInputAccordions";
+import type { UltrasoundInputSnapshot } from "./UltrasoundInputAccordions";
+import SubviewSkeleton from "./suspense/SubviewSkeleton";
 import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
 import { calculateGroundwallInsulation } from "../lib/mca/groundwallCalculator";
 import {
@@ -149,19 +136,11 @@ import {
   normalizeMcaOperatorSnapshot
 } from "../lib/mca/mcaPersistence";
 import { mergeMcaOperatorSnapshots } from "../lib/mca/mcaSsot";
-import McaResultsDashboard from "./McaResultsDashboard";
-import OilInputAccordions from "./OilInputAccordions";
-import OilResultsDashboard from "./OilResultsDashboard";
-import { CmmsWorkOrderBridge as CmmsPayloadBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle, type PlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import type { SavedFaultItem } from "../lib/analysisPersistence";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
 import VibrationScoreCards from "./diagnostics/VibrationScoreCards";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
-import KinematicsSpecsSection from "./diagnostics/KinematicsSpecsSection";
-import TelemetryContextSection from "./diagnostics/TelemetryContextSection";
-import MeasurementMetadataSection from "./diagnostics/MeasurementMetadataSection";
-import VisionIntakePanel from "./diagnostics/VisionIntakePanel";
 import HardwareRoiBar from "./diagnostics/HardwareRoiBar";
 import {
   paramInput,
@@ -183,6 +162,73 @@ import {
   TELEMETRY_PROVENANCE_PREFILLED_RUN,
   type TelemetryProvenance
 } from "../lib/maintenance/prescriptiveDictionary";
+
+/* ========================================================================== */
+/* AR-28 — lazy technology sub-views (rule 2: CLS-safe fallbacks; rule 7:      */
+/* warmed on hover/idle of this view, never at app boot)                      */
+/* ========================================================================== */
+
+const loadThermographyInputAccordions = () => import("./ThermographyInputAccordions");
+const loadUltrasoundInputAccordions = () => import("./UltrasoundInputAccordions");
+const loadMcaInputAccordions = () => import("./McaInputAccordions");
+const loadOilInputAccordions = () => import("./OilInputAccordions");
+const loadThermographyResults = () => import("./ThermographyResultsDashboard");
+const loadUltrasoundResults = () => import("./UltrasoundResultsDashboard");
+const loadMcaResults = () => import("./McaResultsDashboard");
+const loadOilResults = () => import("./OilResultsDashboard");
+
+const ThermographyInputAccordions = lazy(loadThermographyInputAccordions);
+const UltrasoundInputAccordions = lazy(loadUltrasoundInputAccordions);
+const McaInputAccordions = lazy(loadMcaInputAccordions);
+const OilInputAccordions = lazy(loadOilInputAccordions);
+const ThermographyResultsDashboard = lazy(loadThermographyResults);
+const UltrasoundResultsDashboard = lazy(loadUltrasoundResults);
+const McaResultsDashboard = lazy(loadMcaResults);
+const OilResultsDashboard = lazy(loadOilResults);
+
+// Post-analysis CMMS bridge (vibration results) + the shared intake sections
+// behind the generic (non-technology) branch of the input ternary. All are
+// rendered behind <Suspense> with box-matched SubviewSkeleton fallbacks.
+const loadCmmsWorkOrderBridge = () => import("./diagnostics/CmmsPayloadBridge");
+const loadKinematicsSpecsSection = () => import("./diagnostics/KinematicsSpecsSection");
+const loadTelemetryContextSection = () => import("./diagnostics/TelemetryContextSection");
+const loadMeasurementMetadataSection = () => import("./diagnostics/MeasurementMetadataSection");
+const loadVisionIntakePanel = () => import("./diagnostics/VisionIntakePanel");
+
+const CmmsPayloadBridge = lazy(loadCmmsWorkOrderBridge);
+const KinematicsSpecsSection = lazy(loadKinematicsSpecsSection);
+const TelemetryContextSection = lazy(loadTelemetryContextSection);
+const MeasurementMetadataSection = lazy(loadMeasurementMetadataSection);
+const VisionIntakePanel = lazy(loadVisionIntakePanel);
+
+/**
+ * Rule-7 intents scoped to this view: tech-card hover/focus warms the input
+ * sub-view before the click, the first idle frame warms the open tech's input
+ * sub-view (covers direct loads of /run-diagnostics), and Run Analysis warms
+ * the results piece while its request is in flight. `null` marks the default
+ * vibration input, which stays static so the core flow paints instantly.
+ * Exhaustively keyed by Technology so a new technology fails typecheck here.
+ */
+const DIAGNOSE_INPUT_LOADERS: Record<Technology, (() => Promise<unknown>) | null> = {
+  vibration: null,
+  ir: loadThermographyInputAccordions,
+  ultrasound: loadUltrasoundInputAccordions,
+  mca: loadMcaInputAccordions,
+  oil: loadOilInputAccordions
+};
+
+const DIAGNOSE_RESULT_LOADERS: Record<Technology, (() => Promise<unknown>) | null> = {
+  // Vibration results render inline; their CMMS bridge is the lazy piece.
+  vibration: loadCmmsWorkOrderBridge,
+  ir: loadThermographyResults,
+  ultrasound: loadUltrasoundResults,
+  mca: loadMcaResults,
+  oil: loadOilResults
+};
+
+function warmDiagnoseSubView(loader: (() => Promise<unknown>) | null | undefined): void {
+  void loader?.().catch(() => {});
+}
 
 /* ========================================================================== */
 /* Props (keep App.tsx contract)                                              */
@@ -2395,6 +2441,18 @@ useEffect(() => {
     return () => { cancelled = true; };
   }, [browseAssetTag, selectedAsset]);
 
+  // AR-28 rule 7 — warm the open technology's input sub-view on the first
+  // idle frame *after* Diagnose is open, so a direct load of the route is
+  // instant once the browser breathes. Never runs at initial app boot; the
+  // tech-card hover/focus handlers cover deliberate switches before this.
+  useEffect(() => {
+    if (typeof requestIdleCallback !== "function") return;
+    const loader = DIAGNOSE_INPUT_LOADERS[activeTech];
+    if (!loader) return;
+    const idleId = requestIdleCallback(() => { void loader().catch(() => {}); });
+    return () => cancelIdleCallback(idleId);
+  }, [activeTech]);
+
   // Animate health gauge when results appear
   useEffect(() => {
     if (!showResults) {
@@ -2992,6 +3050,10 @@ useEffect(() => {
     }
     if (isAnalyzing) return;
 
+    // AR-28 rule 7 — while the analysis request runs, warm this technology's
+    // results dashboard chunk so it resolves before the results commit.
+    warmDiagnoseSubView(DIAGNOSE_RESULT_LOADERS[activeTech]);
+
     analysisStartedAtRef.current = new Date().toISOString();
     setSavedAnalysisId(null);
 
@@ -3062,6 +3124,13 @@ useEffect(() => {
           max_allowable_limit: tel.max_allowable_limit ?? null
         };
 
+        const {
+          ANALYZE_THERMOGRAPHY_API_PATH,
+          extractRadiometricMetrics,
+          mapThermographyToUiResult,
+          normalizeThermographyResult,
+          thermographyPeaksForSave
+        } = await import("../lib/thermographyAnalysis");
         const res = await fetch(ANALYZE_THERMOGRAPHY_API_PATH, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -4414,6 +4483,8 @@ useEffect(() => {
                   <button
                     key={id}
                     type="button"
+                    onPointerEnter={() => warmDiagnoseSubView(DIAGNOSE_INPUT_LOADERS[id])}
+                    onFocus={() => warmDiagnoseSubView(DIAGNOSE_INPUT_LOADERS[id])}
                     onClick={() => {
                       setActiveTech(id);
                       setShowResults(false);
@@ -4550,6 +4621,7 @@ useEffect(() => {
             )}
           </section>
 
+          <Suspense fallback={<SubviewSkeleton view={`diagnose-${activeTech}-input`} />}>
           {activeTech === "vibration" ? (
             <VibrationInputAccordions
               openSection={openVibSection}
@@ -4736,6 +4808,7 @@ useEffect(() => {
           ) : (
           <>
           {/* 3 — Machine Specifications */}
+          <Suspense fallback={<SubviewSkeleton view="diagnose-kinematics-specs" />}>
           <KinematicsSpecsSection
             specName={specName}
             setSpecName={setSpecName}
@@ -4763,8 +4836,10 @@ useEffect(() => {
             motorHp={motorHp}
             isoZone={isoZone}
           />
+          </Suspense>
 
           {/* 4a — Operating Parameters at Time of Measurement */}
+          <Suspense fallback={<SubviewSkeleton view="diagnose-telemetry-context" />}>
           <TelemetryContextSection
             operatingRpm={operatingRpm}
             setOperatingRpm={setOperatingRpm}
@@ -4775,8 +4850,10 @@ useEffect(() => {
             setProcessParameter={setProcessParameter}
             processParamLabel={processParamLabel}
           />
+          </Suspense>
 
           {/* 4 — Advanced Measurement Parameters (collapsible, tech-specific) */}
+          <Suspense fallback={<SubviewSkeleton view="diagnose-measurement-metadata" />}>
           <MeasurementMetadataSection
             activeTech={activeTech}
             showAdvancedParams={showAdvancedParams}
@@ -4846,6 +4923,7 @@ useEffect(() => {
             oilParticleCount={oilParticleCount}
             setOilParticleCount={setOilParticleCount}
           />
+          </Suspense>
 
           {/* 5 — Data Source Selection */}
           <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">
@@ -5012,6 +5090,7 @@ useEffect(() => {
               </div>
             </section>
 
+              <Suspense fallback={<SubviewSkeleton view="diagnose-vision-intake" />}>
               <VisionIntakePanel
                 spectrumUpload={spectrumUpload}
                 thermalUpload={thermalUpload}
@@ -5029,6 +5108,7 @@ useEffect(() => {
                 currentMessageIndex={currentMessageIndex}
                 AI_LOADING_MESSAGES={AI_LOADING_MESSAGES}
               />
+              </Suspense>
           </div>
 
           {/* 8 — Recent Maintenance */}
@@ -5065,6 +5145,7 @@ useEffect(() => {
           </section>
           </>
           )}
+          </Suspense>
 
           {/* Run Analysis */}
           <section className="space-y-3 pt-1">
@@ -5189,6 +5270,7 @@ useEffect(() => {
                 <button
                   type="button"
                   onClick={() => void handleExportPdf()}
+                  data-prefetch="jspdf"
                   className="border border-slate-700 text-slate-300 hover:bg-slate-800 px-3 py-2 rounded-lg text-sm flex items-center gap-2 cursor-pointer transition-colors"
                 >
                   <Download className="h-3.5 w-3.5" />
@@ -5958,6 +6040,7 @@ useEffect(() => {
                 onToast={(msg, type) => toast(msg, type ?? "info")}
                 onDispatchWorkOrder={() => saveAndCreateWorkOrder()}
               />
+              <Suspense fallback={<SubviewSkeleton view="diagnose-cmms-bridge" />}>
               <CmmsPayloadBridge
                 context={buildBridgeContext({
                   asset_id: browseAssetTag || reportAsset.tag || reportAsset.label,
@@ -5983,6 +6066,7 @@ useEffect(() => {
                 sectionId="cmms-data-bridge"
                 onToast={(msg, type) => toast(msg, type ?? "info")}
               />
+              </Suspense>
             </>
           )}
 
@@ -5998,6 +6082,7 @@ useEffect(() => {
               <button
                 type="button"
                 onClick={() => void handleExportPdf()}
+                data-prefetch="jspdf"
                 className="border border-slate-700 text-slate-300 hover:bg-slate-800 px-3 py-2 rounded-lg text-sm flex items-center gap-2 cursor-pointer transition-colors"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -6016,9 +6101,10 @@ useEffect(() => {
         </div>
       )}
 
+      <Suspense fallback={<SubviewSkeleton view={`diagnose-${selectedTech}-results`} />}>
       {/* RESULTS — Thermography (IR). Tech id is "ir" (not "thermography"). */}
       {selectedTech === "ir" && showResults && analysisResult && (
-        <div ref={resultsRef}>
+        <div ref={resultsRef} data-prefetch="jspdf">
           <ThermographyResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
@@ -6049,7 +6135,7 @@ useEffect(() => {
 
       {/* RESULTS — Ultrasound (UE) */}
       {selectedTech === "ultrasound" && showResults && analysisResult && (
-        <div ref={resultsRef}>
+        <div ref={resultsRef} data-prefetch="jspdf">
           <UltrasoundResultsDashboard
             assetLabel={reportAsset.label}
             componentLabel={browseComponent || undefined}
@@ -6125,6 +6211,7 @@ useEffect(() => {
           />
         </div>
       )}
+      </Suspense>
 
       {/* CROPPED CHART EXPAND MODAL */}
       {expandedCrop && (
@@ -6242,6 +6329,7 @@ useEffect(() => {
                 <button
                   type="button"
                   onClick={() => void handleExportPdf()}
+                  data-prefetch="jspdf"
                   className="px-3 py-2 rounded-lg border border-slate-700 text-slate-200 text-sm hover:bg-slate-800 cursor-pointer"
                 >
                   Export PDF

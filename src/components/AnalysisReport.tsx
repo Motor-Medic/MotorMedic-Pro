@@ -6708,25 +6708,38 @@ export default function AnalysisReport({
     records: loadedAnalyses
   };
 
-  const runExport = (
-    exporter: (ctx: typeof exportContext) => string,
+  // AR-28 rule 7 — this view's export engines (PDF/Excel) are isolated vendor
+  // chunks; warm them on the first idle frame *after* the report view is open,
+  // so the deliberate export click is instant. Never runs at initial app load.
+  useEffect(() => {
+    if (typeof requestIdleCallback !== "function") return;
+    const idleId = requestIdleCallback(() => {
+      void import("jspdf").catch(() => {});
+      void import("xlsx").catch(() => {});
+    });
+    return () => cancelIdleCallback(idleId);
+  }, []);
+
+  const runExport = async (
+    exporter: (ctx: typeof exportContext) => string | Promise<string>,
     kind: string
   ) => {
     try {
-      toast(`${kind} saved as ${exporter(exportContext)}.`, "success");
+      const saved = await exporter(exportContext);
+      toast(`${kind} saved as ${saved}.`, "success");
     } catch (err) {
       toast(err instanceof Error ? err.message : `${kind} export failed.`, "error");
     }
   };
 
-  const handleExportPdf = () => runExport(exportReportPdf, "Report");
-  const handleExportCsv = () => runExport(exportReportCsv, "Measurements");
+  const handleExportPdf = () => void runExport(exportReportPdf, "Report");
+  const handleExportCsv = () => void runExport(exportReportCsv, "Measurements");
 
   const handleExport = (formatId: string) => {
     setExportOpen(false);
-    if (formatId === "csv") handleExportCsv();
-    else if (formatId === "excel") runExport(exportReportXlsx, "Workbook");
-    else handleExportPdf();
+    if (formatId === "csv") void handleExportCsv();
+    else if (formatId === "excel") void runExport(exportReportXlsx, "Workbook");
+    else void handleExportPdf();
   };
 
   if (flatEquipment.length === 0) {
@@ -6943,6 +6956,7 @@ export default function AnalysisReport({
             <div role="menu" className="absolute right-0 top-full mt-1.5 w-52 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl p-1.5 z-30">
               {EXPORT_FORMATS.map((format) => (
                 <button key={format.id} type="button" role="menuitem" onClick={() => handleExport(format.id)}
+                  data-prefetch={format.id === "pdf" ? "jspdf" : format.id === "excel" ? "xlsx" : undefined}
                   className="w-full text-left px-2.5 py-2 rounded-md hover:bg-slate-950 cursor-pointer transition-colors group">
                   <span className="text-sm font-semibold text-slate-200 group-hover:text-yellow-400 block">{format.label}</span>
                   <span className="text-xs text-slate-500 block">{format.hint}</span>

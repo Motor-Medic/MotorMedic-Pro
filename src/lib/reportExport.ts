@@ -5,9 +5,10 @@
  * so they produce a real file without needing a reporting backend. Every value
  * written comes from the record; nothing is templated in.
  */
-import { jsPDF } from "jspdf";
+// AR-28: PDF/Excel engines are isolated vendor chunks — type-only here, the
+// runtime classes load on demand inside the exporters below.
+import type { jsPDF } from "jspdf";
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
 import { telemetryProvenanceOf } from "./analysisPersistence";
 import type { SavedAnalysisResult } from "./analysisPersistence";
 import {
@@ -117,10 +118,11 @@ export function reportPdfFilename(ctx: ReportExportContext): string {
 }
 
 /** Builds the document without saving it, so the layout can be tested. */
-export function buildReportPdf(ctx: ReportExportContext): jsPDF {
+export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   const { analysis } = ctx;
   if (!analysis) throw new Error("No saved analysis to export");
 
+  const { jsPDF } = await import("jspdf");
   const generatedAt = ctx.generatedAt ?? new Date();
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const c = makeCursor(doc);
@@ -219,9 +221,10 @@ export function buildReportPdf(ctx: ReportExportContext): jsPDF {
 /**
  * Writes a PDF of the saved analysis and hands it to the browser's download.
  * Returns the filename so the caller can report exactly what was saved.
+ * Async: the jsPDF vendor chunk loads on demand (never at page load).
  */
-export function exportReportPdf(ctx: ReportExportContext): string {
-  const doc = buildReportPdf(ctx);
+export async function exportReportPdf(ctx: ReportExportContext): Promise<string> {
+  const doc = await buildReportPdf(ctx);
   const filename = reportPdfFilename(ctx);
   doc.save(filename);
   return filename;
@@ -309,8 +312,12 @@ export function exportReportCsv(ctx: ReportExportContext): string {
   );
 }
 
-/** Same measurement columns as the CSV, written as a real .xlsx workbook. */
-export function exportReportXlsx(ctx: ReportExportContext): string {
+/**
+ * Same measurement columns as the CSV, written as a real .xlsx workbook.
+ * Async: the xlsx vendor chunk loads on demand (never at page load).
+ */
+export async function exportReportXlsx(ctx: ReportExportContext): Promise<string> {
+  const XLSX = await import("xlsx");
   const generatedAt = ctx.generatedAt ?? new Date();
   const sheet = XLSX.utils.json_to_sheet(measurementRows(ctx), {
     header: EXPORT_COLUMN_LABELS

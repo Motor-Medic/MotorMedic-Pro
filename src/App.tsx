@@ -1,34 +1,92 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint, TargetContext } from "./types";
-import Dashboard from "./components/Dashboard";
 import Diagnose from "./components/Diagnose";
-import History from "./components/History";
-import ReportDetails from "./components/ReportDetails";
-import Trends from "./components/Trends";
-import MountingPlanner from "./components/MountingPlanner";
-import Assets from "./components/Assets";
-import OnboardingWizard from "./components/OnboardingWizard";
 import Login, { UserSession } from "./components/Login";
-import AdminPanel from "./components/AdminPanel";
 import LegalDocuments from "./components/LegalDocuments";
-import Terms from "./components/Terms";
-import Privacy from "./components/Privacy";
-import AlertsControl from "./components/AlertsControl";
 import AIChatbot from "./components/AIChatbot";
-import AIDataMigration from "./components/AIDataMigration";
-import AnalysisReport from "./components/AnalysisReport";
-import MultiTechPage from "./components/reports/MultiTechPage";
-import RootCauseAnalysis from "./components/RootCauseAnalysis";
-import MaintenanceCalendar from "./components/MaintenanceCalendar";
-import FMEA from "./components/FMEA";
-import ReliabilityScorecard from "./components/scorecard/ReliabilityScorecard";
 import ScrollToTop from "./components/ScrollToTop";
 import AppLink from "./components/AppLink";
+import RouteSkeleton from "./components/suspense/RouteSkeleton";
 import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigation";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
   Sun, Moon, Sparkles, FileText, Target, Calendar, Layers, BarChart3
 } from "lucide-react";
+
+/*
+ * AR-28 route-level code splitting.
+ *
+ * Every route except the core diagnostic flow (Diagnose — /run-diagnostics
+ * must render instantly) resolves through React.lazy, so the entry chunk only
+ * carries the shell plus that core flow. Each loader const is shared by its
+ * lazy component and ROUTE_LOADERS, so a route still maps to exactly one
+ * chunk. ROUTE_LOADERS feeds the targeted hover/focus prefetch listener
+ * below — rule 7: prefetch on deliberate intent, never at initial load.
+ */
+const loadDashboard = () => import("./components/Dashboard");
+const Dashboard = lazy(loadDashboard);
+const loadHistory = () => import("./components/History");
+const History = lazy(loadHistory);
+const loadReportDetails = () => import("./components/ReportDetails");
+const ReportDetails = lazy(loadReportDetails);
+const loadTrends = () => import("./components/Trends");
+const Trends = lazy(loadTrends);
+const loadMountingPlanner = () => import("./components/MountingPlanner");
+const MountingPlanner = lazy(loadMountingPlanner);
+const loadAssets = () => import("./components/Assets");
+const Assets = lazy(loadAssets);
+const loadOnboardingWizard = () => import("./components/OnboardingWizard");
+const OnboardingWizard = lazy(loadOnboardingWizard);
+const loadAdminPanel = () => import("./components/AdminPanel");
+const AdminPanel = lazy(loadAdminPanel);
+const loadTerms = () => import("./components/Terms");
+const Terms = lazy(loadTerms);
+const loadPrivacy = () => import("./components/Privacy");
+const Privacy = lazy(loadPrivacy);
+const loadAlertsControl = () => import("./components/AlertsControl");
+const AlertsControl = lazy(loadAlertsControl);
+const loadAIDataMigration = () => import("./components/AIDataMigration");
+const AIDataMigration = lazy(loadAIDataMigration);
+const loadAnalysisReport = () => import("./components/AnalysisReport");
+const AnalysisReport = lazy(loadAnalysisReport);
+const loadMultiTechPage = () => import("./components/reports/MultiTechPage");
+const MultiTechPage = lazy(loadMultiTechPage);
+const loadRootCauseAnalysis = () => import("./components/RootCauseAnalysis");
+const RootCauseAnalysis = lazy(loadRootCauseAnalysis);
+const loadMaintenanceCalendar = () => import("./components/MaintenanceCalendar");
+const MaintenanceCalendar = lazy(loadMaintenanceCalendar);
+const loadFMEA = () => import("./components/FMEA");
+const FMEA = lazy(loadFMEA);
+const loadReliabilityScorecard = () => import("./components/scorecard/ReliabilityScorecard");
+const ReliabilityScorecard = lazy(loadReliabilityScorecard);
+
+/** Route chunks eligible for targeted prefetch — every route but the eager core flow. */
+const ROUTE_LOADERS: Partial<Record<AppTab, () => Promise<unknown>>> = {
+  dashboard: loadDashboard,
+  assets: loadAssets,
+  trends: loadTrends,
+  sensors: loadMountingPlanner,
+  migration: loadAIDataMigration,
+  analysis: loadAnalysisReport,
+  rca: loadRootCauseAnalysis,
+  fmea: loadFMEA,
+  calendar: loadMaintenanceCalendar,
+  alerts: loadAlertsControl,
+  history: loadHistory,
+  admin: loadAdminPanel,
+  "multi-tech": loadMultiTechPage,
+  "reliability-scorecard": loadReliabilityScorecard
+};
+
+/**
+ * Export libraries (PDF/Excel) are isolated chunks outside the entry bundle.
+ * Controls opt in with data-prefetch="<key>"; the intent listener below fetches
+ * the chunk on hover/focus so the deliberate export click feels instant.
+ */
+const CHUNK_PREFETCHERS: Record<string, () => Promise<unknown>> = {
+  jspdf: () => import("jspdf"),
+  xlsx: () => import("xlsx")
+};
 
 const TREND_STORAGE_KEY = "reliability_trends_v6";
 
@@ -106,6 +164,46 @@ export default function App() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
+
+  // AR-28 rule 7 — targeted prefetch only. A dynamic chunk is fetched when the
+  // engineer hovers or keyboard-focuses the control that would load it: nav
+  // links resolve to their route chunk from the link href, export controls opt
+  // in via data-prefetch. Nothing is prefetched at initial load, never blanket.
+  const prefetchedIntentsRef = useRef<Set<string>>(new Set());
+
+  const prefetchIntent = React.useCallback((key: string, load?: () => Promise<unknown>) => {
+    if (!load || prefetchedIntentsRef.current.has(key)) return;
+    prefetchedIntentsRef.current.add(key);
+    void load().catch(() => {
+      prefetchedIntentsRef.current.delete(key);
+    });
+  }, []);
+
+  useEffect(() => {
+    const resolveIntent = (
+      target: EventTarget | null
+    ): [string, (() => Promise<unknown>) | undefined] | null => {
+      if (!(target instanceof Element)) return null;
+      const chunkEl = target.closest("[data-prefetch]");
+      const chunkKey = chunkEl ? chunkEl.getAttribute("data-prefetch") : null;
+      if (chunkKey) return [chunkKey, CHUNK_PREFETCHERS[chunkKey]];
+      const anchor = target.closest("a[href]");
+      const href = anchor ? anchor.getAttribute("href") : null;
+      if (!href) return null;
+      const tab = tabFromPath(href);
+      return tab ? [`route:${tab}`, ROUTE_LOADERS[tab]] : null;
+    };
+    const handleIntent = (event: Event) => {
+      const intent = resolveIntent(event.target);
+      if (intent) prefetchIntent(intent[0], intent[1]);
+    };
+    document.addEventListener("pointerover", handleIntent, { passive: true });
+    document.addEventListener("focusin", handleIntent);
+    return () => {
+      document.removeEventListener("pointerover", handleIntent);
+      document.removeEventListener("focusin", handleIntent);
+    };
+  }, [prefetchIntent]);
   const [companies, setCompanies] = useState<any[]>([]);
 
   const fetchCompanies = () => {
@@ -463,12 +561,14 @@ const updated = [newReport, ...reports];
     return (
       <>
         <ScrollToTop routeKey={scrollRouteKey} />
-        <Terms
-          onBack={() => {
-            window.history.pushState(null, "", "/");
-            setCurrentPath("/");
-          }}
-        />
+        <Suspense fallback={<RouteSkeleton route="terms" />}>
+          <Terms
+            onBack={() => {
+              window.history.pushState(null, "", "/");
+              setCurrentPath("/");
+            }}
+          />
+        </Suspense>
       </>
     );
   }
@@ -477,12 +577,14 @@ const updated = [newReport, ...reports];
     return (
       <>
         <ScrollToTop routeKey={scrollRouteKey} />
-        <Privacy
-          onBack={() => {
-            window.history.pushState(null, "", "/");
-            setCurrentPath("/");
-          }}
-        />
+        <Suspense fallback={<RouteSkeleton route="privacy" />}>
+          <Privacy
+            onBack={() => {
+              window.history.pushState(null, "", "/");
+              setCurrentPath("/");
+            }}
+          />
+        </Suspense>
       </>
     );
   }
@@ -491,11 +593,15 @@ const updated = [newReport, ...reports];
     return (
       <>
         <ScrollToTop routeKey={scrollRouteKey} />
-        {showLegalDoc === "terms" ? (
-          <Terms onBack={() => setShowLegalDoc(null)} />
-        ) : (
-          <Privacy onBack={() => setShowLegalDoc(null)} />
-        )}
+        <Suspense
+          fallback={<RouteSkeleton route={showLegalDoc === "terms" ? "terms" : "privacy"} />}
+        >
+          {showLegalDoc === "terms" ? (
+            <Terms onBack={() => setShowLegalDoc(null)} />
+          ) : (
+            <Privacy onBack={() => setShowLegalDoc(null)} />
+          )}
+        </Suspense>
       </>
     );
   }
@@ -933,6 +1039,9 @@ const updated = [newReport, ...reports];
           className="flex-1 min-w-0 w-full p-4 sm:p-6 lg:p-8 pb-24 lg:pb-8 relative"
         >
           <div className="w-full max-w-full min-w-0 bg-[#0c1220]/55 border border-slate-900/80 rounded-2xl p-4 sm:p-6 shadow-xl relative backdrop-blur-sm">
+          {/* AR-28 CLS guard: one boundary for the whole panel; the fallback is
+              keyed to the incoming view so it reserves that route's exact box. */}
+          <Suspense fallback={<RouteSkeleton route={selectedReport ? "report-details" : activeTab} />}>
           {selectedReport ? (
             <ReportDetails
               report={selectedReport}
@@ -1045,6 +1154,7 @@ const updated = [newReport, ...reports];
               onClearHistory={handleClearHistory}
             />
           )}
+          </Suspense>
           </div>
 
           {/* Legal Footer — scrolls with main content */}
@@ -1436,11 +1546,13 @@ const updated = [newReport, ...reports];
       )}
 
       {showOnboarding && (
-        <OnboardingWizard 
-          onClose={() => setShowOnboarding(false)} 
-          companyId={selectedCompanyId} 
-          onSetupComplete={handleOnboardingComplete} 
-        />
+        <Suspense fallback={<RouteSkeleton route="onboarding" />}>
+          <OnboardingWizard 
+            onClose={() => setShowOnboarding(false)} 
+            companyId={selectedCompanyId} 
+            onSetupComplete={handleOnboardingComplete} 
+          />
+        </Suspense>
       )}
 
       {/* Support Chatbot */}

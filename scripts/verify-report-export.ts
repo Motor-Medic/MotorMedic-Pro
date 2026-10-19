@@ -67,7 +67,7 @@ const ctx = {
 const results: string[] = [];
 
 // --- PDF ---
-const doc = buildReportPdf(ctx);
+const doc = await buildReportPdf(ctx);
 const pdfName = reportPdfFilename(ctx);
 assert.match(pdfName, /^boiler-feed-pump-pmp-030-vibration-.+\.pdf$/, "pdf filename");
 const pdfRaw = doc.output();
@@ -104,7 +104,7 @@ for (const needle of [
 results.push(`${csvName} (${csvText.length} bytes)`);
 
 // --- XLSX ---
-const xlsxName = exportReportXlsx(ctx);
+const xlsxName = await exportReportXlsx(ctx);
 const xlsxEntry = blobs.find((b) => b.name === xlsxName);
 assert.ok(xlsxEntry, "xlsx blob was not produced");
 const xlsxBytes = new Uint8Array(await xlsxEntry.blob.arrayBuffer());
@@ -114,13 +114,23 @@ assert.equal(xlsxBytes[1], 0x4b, "xlsx is not a zip container");
 results.push(`${xlsxName} (${xlsxBytes.length} bytes)`);
 
 // Exporting with nothing loaded must fail loudly rather than emit an empty file.
-for (const [label, fn] of [
-  ["pdf", () => buildReportPdf({ ...ctx, analysis: null, records: [] })],
-  ["csv", () => exportReportCsv({ ...ctx, analysis: null, records: [] })],
-  ["xlsx", () => exportReportXlsx({ ...ctx, analysis: null, records: [] })]
-] as const) {
-  assert.throws(fn, /No saved analysis/, `${label} should refuse an empty export`);
-}
+// PDF/XLSX load their vendor chunks on demand (AR-28), so they reject instead
+// of throwing synchronously; CSV stays synchronous.
+await assert.rejects(
+  async () => buildReportPdf({ ...ctx, analysis: null, records: [] }),
+  /No saved analysis/,
+  "pdf should refuse an empty export"
+);
+assert.throws(
+  () => exportReportCsv({ ...ctx, analysis: null, records: [] }),
+  /No saved analysis/,
+  "csv should refuse an empty export"
+);
+await assert.rejects(
+  async () => exportReportXlsx({ ...ctx, analysis: null, records: [] }),
+  /No saved analysis/,
+  "xlsx should refuse an empty export"
+);
 
 console.log("Report exporters verified:");
 for (const line of results) console.log(`  ${line}`);
