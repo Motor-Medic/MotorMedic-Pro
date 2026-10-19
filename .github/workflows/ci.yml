@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: Machine-enforced gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24 (npm cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies (reproducible)
+        run: npm ci
+
+      - name: Gate 1 - TypeScript strict baseline (0 errors)
+        run: npx tsc --noEmit
+
+      - name: Gate 2 - Suppression guard (baseline 14/62/3/1)
+        run: npm run check:suppressions
+
+      - name: Gate 3 - Vitest single-run (explicit non-watch)
+        run: npx vitest run
+
+      - name: Gate 4 - Production build (Vite + Express)
+        run: npm run build
+        env:
+          NODE_ENV: production
+          OPENAI_API_KEY: ci-mock-openai-key
+          OPENROUTER_API_KEY: ci-mock-openrouter-key
+          ANTHROPIC_API_KEY: ci-mock-anthropic-key
+          GEMINI_API_KEY: ci-mock-gemini-key
+          GROQ_API_KEY: ci-mock-groq-key
+          MISTRAL_API_KEY: ci-mock-mistral-key
+          DASHSCOPE_API_KEY: ci-mock-dashscope-key
+          DATABASE_URL: postgres://ci-mock:ci-mock@localhost:5432/ci_mock
+          LM_STUDIO_ENDPOINT: http://localhost:1234
+          LM_STUDIO_MODEL: ci-mock-model
+          SCADA_PI_BASE_URL: http://localhost:0
+          SCADA_PI_TOKEN: ci-mock-scada-token
+          STRIPE_SECRET_KEY: sk_test_ci_mock
