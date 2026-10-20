@@ -489,24 +489,143 @@ function normalizeStage2bResponse(
   };
 }
 
-function normalizeStage3ExpertResponse(
+/* -------------------------------------------------------------------------- */
+/* AR-30b — Stage-3 referee payload runtime shape guard                       */
+/* -------------------------------------------------------------------------- */
+
+/** Strict numeric gate: typeof number + finite (string/NaN/Infinity rejected). */
+function isFiniteGuardNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** ApiSeverity union members — literal set read from ApiSeverity (this file, :45). */
+function isApiSeverity(value: unknown): value is ApiSeverity {
+  return value === "NORMAL" || value === "ANOMALY" || value === "CRITICAL";
+}
+
+/**
+ * ConsensusCascadeMode union members — literal set read from
+ * diagnostics/consensusCascade.ts:72 ("multi-model" | "single-model-degraded").
+ */
+function isConsensusCascadeMode(value: unknown): value is ConsensusCascadeMode {
+  return value === "multi-model" || value === "single-model-degraded";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((entry: unknown) => typeof entry === "string")
+  );
+}
+
+function isPrimaryFaultShape(
+  value: unknown
+): value is VibrationAnalysisResult["primaryFault"] {
+  if (!isObjectRecord(value)) return false;
+  return (
+    typeof value.title === "string" &&
+    isFiniteGuardNumber(value.frequencyHz) &&
+    isFiniteGuardNumber(value.confidencePercent) &&
+    isApiSeverity(value.severity) &&
+    typeof value.actionWindow === "string"
+  );
+}
+
+function isIdentifiedFaultShape(
+  value: unknown
+): value is VibrationAnalysisResult["identifiedFaults"][number] {
+  if (!isObjectRecord(value)) return false;
+  return (
+    typeof value.title === "string" &&
+    isFiniteGuardNumber(value.frequencyHz) &&
+    isFiniteGuardNumber(value.confidencePercent) &&
+    isApiSeverity(value.severity) &&
+    typeof value.description === "string"
+  );
+}
+
+function isFinancialImpactShape(
+  value: unknown
+): value is VibrationAnalysisResult["financialImpact"] {
+  if (!isObjectRecord(value)) return false;
+  return (
+    isFiniteGuardNumber(value.preventiveRepairCost) &&
+    isFiniteGuardNumber(value.failureCostIfDelayed) &&
+    isFiniteGuardNumber(value.downtimeLossPerHour)
+  );
+}
+
+function isConsensusDetailsShape(value: unknown): value is ConsensusDetails {
+  if (!isObjectRecord(value)) return false;
+  if (typeof value.modelA_Hypothesis !== "string") return false;
+  if (typeof value.modelB_Hypothesis !== "string") return false;
+  if (typeof value.refereeDebateSummary !== "string") return false;
+  if (value.consensusMode !== undefined && !isConsensusCascadeMode(value.consensusMode)) {
+    return false;
+  }
+  if (value.answeringModels !== undefined && !isStringArray(value.answeringModels)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * AR-30b — runtime shape guard for the Stage-3 referee LLM payload, which
+ * crosses a trust boundary (unvalidated model JSON). Every field of
+ * ConsensusVibrationResult is checked structurally before the early-exit in
+ * normalizeStage3ExpertResponse may return it typed:
+ *
+ * - string fields must be strings (typeof), numeric fields must be finite
+ *   numbers — string/NaN/Infinity values are rejected onto the normalize path
+ *   below where Number() coercion handles them honestly;
+ * - severity must be a member of the ApiSeverity union (ApiSeverity, :45);
+ *   consensusMode must be a member of the ConsensusCascadeMode union
+ *   (diagnostics/consensusCascade.ts:72) — any other string is rejected;
+ * - identifiedFaults / repairRecommendations must be arrays with every
+ *   element shaped correctly (an empty array is type-valid and passes);
+ *   optional consensusMode / answeringModels / success are validated only
+ *   when present, and success must be the literal true;
+ * - consensusDetails is REQUIRED in ConsensusVibrationResult with its full
+ *   nested shape (three strings plus the optional enum/array members).
+ *
+ * Returns a plain boolean and never throws: false routes the payload onto
+ * the existing normalize/fallback path below — the "Inconclusive - Manual
+ * Review Required" confession, never a fabricated diagnosis.
+ */
+export function isConsensusVibrationResult(
+  val: unknown
+): val is ConsensusVibrationResult {
+  if (!isObjectRecord(val)) return false;
+  if (val.success !== undefined && val.success !== true) return false;
+  if (!isFiniteGuardNumber(val.overallHealthScore)) return false;
+  if (!isApiSeverity(val.severity)) return false;
+  if (typeof val.summary !== "string") return false;
+  if (!isPrimaryFaultShape(val.primaryFault)) return false;
+  const faults: unknown = val.identifiedFaults;
+  if (!Array.isArray(faults) || !faults.every(isIdentifiedFaultShape)) return false;
+  if (!isFinancialImpactShape(val.financialImpact)) return false;
+  if (!isStringArray(val.repairRecommendations)) return false;
+  return isConsensusDetailsShape(val.consensusDetails);
+}
+
+export function normalizeStage3ExpertResponse(
   parsed: Record<string, unknown>,
   extraction: Stage1Extraction,
   agentA: AnalystHypothesis | null,
   agentB: AnalystHypothesis | null
 ): ConsensusVibrationResult {
   if (parsed.primaryFault && parsed.overallHealthScore != null) {
-    // AR-30b residual R1 - the single surviving assertion in src/ (baseline
-    // as-unknown frozen at 1). This is the early-exit branch where the Stage 3
-    // referee answer already carries a primary fault, so the LLM JSON object is
-    // returned as the result without a second pass through the normalizer.
-    // Scope decision: AR-30b is a SECURITY-ADJACENT VALIDATION SLICE, not a
-    // cast-deletion chore. It will add runtime shape-validation of the
-    // consensus LLM response payload (Zod or an equivalent schema guard) at
-    // this boundary and keep the existing normalize/fallback path below for
-    // anything that fails validation. Until that guard lands, this residual is
-    // disclosed and pinned by scripts/check-suppressions.mjs.
-    return parsed as unknown as ConsensusVibrationResult;
+    // AR-30b — the Stage-3 referee early-exit (former R1 residual) now runs
+    // the LLM payload through isConsensusVibrationResult before anything is
+    // returned typed. A valid payload returns here unchanged (same reference,
+    // no second pass through the normalizer); an invalid one — including
+    // field-level defects such as a missing consensusDetails, a severity or
+    // consensusMode outside its union, or a numeric field delivered as a
+    // string — falls through to the normalize/fallback path below, which
+    // coerces every field honestly and confesses "Inconclusive" when the
+    // response carries no diagnosable text. Never throws.
+    if (isConsensusVibrationResult(parsed)) {
+      return parsed;
+    }
   }
 
   const finalDiagnosis = String(

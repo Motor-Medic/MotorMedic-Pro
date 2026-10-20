@@ -4,18 +4,15 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * AR-30 final baseline (re-frozen after the cast burn-down):
- *   as any 0 / as-unknown 1 / ts-ignore 0 / ts-expect-error 0.
- * The one surviving as-unknown is R1 in src/lib/consensusEngine.ts - the
- * disclosed AR-30b residual (runtime shape-validation of the consensus LLM
- * response payload, security-adjacent validation slice rather than a
- * cast-deletion chore).
- * Guard semantics: FAIL ON INCREASE, so a second cast anywhere under src/
- * trips it even though the single R1 residual is tolerated.
+ * AR-30b final baseline (R1 residual closed by the consensus payload guard):
+ *   as any 0 / as-unknown 0 / ts-ignore 0 / ts-expect-error 0.
+ * The former single as-unknown (R1, src/lib/consensusEngine.ts Stage-3
+ * referee early-exit) was replaced by a runtime shape guard, so the scan is
+ * now TRUE FAIL-ON-ANY: any occurrence of any pattern under src/ fails.
  */
 const BASELINE = {
   "as any": 0,
-  "as unknown": 1,
+  "as unknown": 0,
   "@ts-ignore": 0,
   "@ts-expect-error": 0,
 };
@@ -92,7 +89,7 @@ function main() {
   }
 
   const { files, totals, perFile } = result;
-  console.log("check:suppressions - type-suppression guard (AR-27, re-frozen AR-30)");
+  console.log("check:suppressions - type-suppression guard (AR-30b strict fail-on-any)");
   console.log(`scanned ${files.length} files under src/`);
   console.log("");
   console.log("pattern            baseline   actual   delta   status");
@@ -104,8 +101,9 @@ function main() {
     const baseline = BASELINE[name];
     const actual = totals[name];
     const delta = actual - baseline;
-    const status = delta > 0 ? "FAIL (increase)" : "ok";
-    if (delta > 0) violations.push(name);
+    const found = actual > 0;
+    const status = found ? "FAIL (present)" : "ok";
+    if (found) violations.push(name);
     const paddedName = name.padEnd(18, " ");
     const deltaLabel = `${delta > 0 ? "+" : ""}${delta}`;
     console.log(
@@ -116,10 +114,9 @@ function main() {
   if (violations.length > 0) {
     console.log("");
     for (const name of violations) {
-      const baseline = BASELINE[name];
       const actual = totals[name];
       console.log(
-        `"${name}" rose from baseline ${baseline} to ${actual} (+${actual - baseline}). Offenders:`
+        `"${name}" found ${actual} time(s) in src/ (strict fail-on-any, baseline 0). Offenders:`
       );
       for (const entry of perFile[name]) {
         console.log(`  ${entry.file}: ${entry.count}`);
@@ -127,14 +124,14 @@ function main() {
     }
     console.log("");
     console.error(
-      `check:suppressions FAILED: suppression count increased above the frozen AR-30 baseline (0/1/0/0).`
+      `check:suppressions FAILED: forbidden token present - strict fail-on-any baseline 0/0/0/0.`
     );
     return EXIT_BASELINE_EXCEEDED;
   }
 
   console.log("");
   console.log(
-    `check:suppressions PASSED: no pattern rose above the frozen AR-30 baseline (0/1/0/0); the single as-unknown residual is AR-30b R1.`
+    `check:suppressions PASSED: strict fail-on-any baseline 0/0/0/0 - no forbidden tokens anywhere under src/.`
   );
   return EXIT_OK;
 }
