@@ -180,7 +180,7 @@ export function OilFluidChemistryTab({
   const crossover = projectTanTbnCrossover(samples);
 
   const currentIso = getIsoTriplet(latest);
-  const target = ISO_CLEANLINESS_TARGET as unknown as [number, number, number];
+  const target = ISO_CLEANLINESS_TARGET;
   const lifeExtension = currentIso
     ? noriaLifeExtensionFactor(currentIso, target)
     : null;

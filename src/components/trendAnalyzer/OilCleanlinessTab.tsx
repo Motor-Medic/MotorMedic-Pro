@@ -41,7 +41,7 @@ export interface OilCleanlinessTabProps {
   refreshKey?: number;
 }
 
-const TARGET = ISO_CLEANLINESS_TARGET as unknown as IsoCodeTriplet;
+const TARGET: IsoCodeTriplet = ISO_CLEANLINESS_TARGET;
 
 /** A notch jump this large between samples suggests an ingress/bypass event. */
 const NOTCH_ALERT_THRESHOLD = 2;

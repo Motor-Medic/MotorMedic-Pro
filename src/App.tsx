@@ -507,7 +507,7 @@ const updated = [newReport, ...reports];
         timestamp: new Date().toLocaleString(),
         title: `⚠️ CRITICAL FAULT: ${equipmentName}`,
         message: `${data.probable_faults?.[0]?.fault_name || "Mechanical Anomaly"} identified in ${data.failure_stage || "Advanced"} stage.`,
-        severity: (data.manager_summary?.severity as any) || "High",
+        severity: data.manager_summary?.severity || "High",
         read: false,
         equipmentName
       };

@@ -80,7 +80,7 @@ function buildRows(routes: EquipRoute[], analyses: SavedAnalysisResult[]): Route
     const mine = analyses.filter((a) => a.asset_id != null && assetIds.has(a.asset_id));
     const freq = route.collectionFrequency ?? null;
     const freqDays = freq != null && Object.prototype.hasOwnProperty.call(FREQ_DAYS, freq) ? FREQ_DAYS[freq] : null;
-    const freqAny = (route as unknown as Record<string, unknown>).analyst;
+    const freqAny = route.analyst;
     const analyst = typeof freqAny === "string" && freqAny.trim() !== "" ? freqAny : null;
 
     const buckets: Bucket[] = Object.keys(MODALITY_LABEL).map((modality) => {

@@ -195,13 +195,13 @@ export function mapThermographyTranscription(rows: unknown): ThermographyTranscr
 
   // Global scan: is an explicit °C/°F present anywhere in the transcribed text?
   let hasExplicitTempUnit = false;
-  const fullScan = (rows as unknown[])
+  const fullScan = rows
     .filter((r): r is ThermographyTranscriptionRow => !!r && typeof r === "object")
     .map((r) => [r.header, r.value, r.unit_as_read].filter(Boolean).map(String).join(" "))
     .join(" ");
   if (/°c|°f/i.test(fullScan)) hasExplicitTempUnit = true;
 
-  for (const raw of rows as unknown[]) {
+  for (const raw of rows) {
     if (!raw || typeof raw !== "object") continue;
     const row = raw as ThermographyTranscriptionRow;
     const h = normalizeHeader(row.header ?? null);
@@ -592,11 +592,11 @@ export function finalizeThermographyFromParses(
   }
 
   const data = mapVisionJsonToThermographyReportData(primary.parsed, input.fileName, mergedTx);
-  (data as unknown as Record<string, unknown>).model = usedModel;
-  (data as unknown as Record<string, unknown>).detectedTechnology = "THERMOGRAPHY";
-  (data as unknown as Record<string, unknown>).flaggedFields = flaggedFields;
-  (data as unknown as Record<string, unknown>).extractionMode = extractionMode;
-  (data as unknown as Record<string, unknown>).consensusModels = modelIds;
+  data.model = usedModel;
+  data.detectedTechnology = "THERMOGRAPHY";
+  data.flaggedFields = flaggedFields;
+  data.extractionMode = extractionMode;
+  data.consensusModels = modelIds;
   logPipelineSuccessThermo({ model: usedModel, extractionMode });
 
   return {

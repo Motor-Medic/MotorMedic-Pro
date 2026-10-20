@@ -99,7 +99,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
     return { value: null as number | null, audit: "delta-dB unavailable - baseline not recorded" };
   })();
   const bracket = useMemo(() => delta.value != null ? evaluateUsDeltaClass(delta.value) : null, [delta.value]);
-  const faults = useMemo(() => (Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : []).map(f => { const o = f as unknown as Record<string, unknown>; const t = String(o.fault ?? f.title ?? "Unknown"); return { title: t, sev: String(o.severity ?? f.severity ?? "MEDIUM"), conf: Number(o.confidence ?? f.confidence ?? 0), family: classifyFaultFamily(t) }; }), [selectedAnalysis.fault_list]);
+  const faults = useMemo(() => (Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : []).map(f => { const t = String(f.fault ?? f.title ?? "Unknown"); return { title: t, sev: String(f.severity ?? "MEDIUM"), conf: Number(f.confidence ?? 0), family: classifyFaultFamily(t) }; }), [selectedAnalysis.fault_list]);
   const recs = useMemo(() => (selectedAnalysis.recommendations ?? []).map(r => { const family = classifyFaultFamily(r); return { text: r, label: family === "unknown" ? "Unattributed (stored consensus)" : "Ultrasound" }; }), [selectedAnalysis.recommendations]);
   if (!selectedAnalysis || (selectedAnalysis.analysis_type ?? "vibration") !== "ultrasound") return (
     <div className="flex flex-col items-center justify-center text-center py-16 px-4">
@@ -127,7 +127,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
         <Field label="Gain" value={mt.gainDb} unit="dB" />
         <Field label="Ambient Acoustic Noise Floor" value={mt.noiseFloor} unit="dB" />
       </div>
-      <p className="text-[11px] text-slate-500 mt-3">{(() => { const td = (selectedAnalysis.telemetry_data ?? {}) as Record<string, unknown>; const collectorId = td.collector_id ?? (selectedAnalysis as unknown as Record<string, unknown>).collector_id; return typeof collectorId === "string" && collectorId ? `Collector: ${collectorId}` : <span className="italic text-slate-500">collector ID not recorded at capture</span>; })()}</p>
+      <p className="text-[11px] text-slate-500 mt-3">{(() => { const td = selectedAnalysis.telemetry_data ?? {}; const collectorId = td.collector_id ?? selectedAnalysis.collector_id; return typeof collectorId === "string" && collectorId ? `Collector: ${collectorId}` : <span className="italic text-slate-500">collector ID not recorded at capture</span>; })()}</p>
     </div>
     <div className={card}>
       <div className="flex items-center gap-2 mb-3"><Gauge className="h-4 w-4 text-amber-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Readings</h4></div>

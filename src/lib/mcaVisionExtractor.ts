@@ -529,11 +529,11 @@ export function finalizeMcaFromParses(
   }
 
   const data = mapVisionJsonToMcaReportData(primary.parsed, input.fileName, mergedTx);
-  (data as unknown as Record<string, unknown>).model = usedModel;
-  (data as unknown as Record<string, unknown>).detectedTechnology = "MCA";
-  (data as unknown as Record<string, unknown>).flaggedFields = flaggedFields;
-  (data as unknown as Record<string, unknown>).extractionMode = extractionMode;
-  (data as unknown as Record<string, unknown>).consensusModels = modelIds;
+  data.model = usedModel;
+  data.detectedTechnology = "MCA";
+  data.flaggedFields = flaggedFields;
+  data.extractionMode = extractionMode;
+  data.consensusModels = modelIds;
   logPipelineSuccessMca({ model: usedModel, extractionMode });
 
   return {

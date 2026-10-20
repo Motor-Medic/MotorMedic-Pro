@@ -28,9 +28,7 @@ import type {
 } from "../types/oilVision";
 import {
   MASTER_VISION_PROMPT,
-  type MasterField,
-  type MasterOilSchema,
-  type MasterVisionResponse
+  type MasterField
 } from "./vision/masterVisionPrompt";
 
 export const OIL_VISION_API_PATH = "/api/oil-analysis/vision-extract";
@@ -408,6 +406,17 @@ function masterFieldOperator(field: unknown): string | null {
   return f.operator != null ? String(f.operator) : null;
 }
 
+/**
+ * Structural guard for the sump-capacity MasterField read (AR-30): verifies exactly the
+ * properties the gallon conversion consumes (status/confidence/value), preserving the
+ * original condition's short-circuit order without asserting the whole MasterField shape.
+ */
+function isSumpMasterField(v: unknown): v is MasterField {
+  if (typeof v !== "object" || v === null) return false;
+  const f = v as Record<string, unknown>;
+  return f.status === "extracted" && typeof f.confidence === "number" && f.value != null;
+}
+
 /* ========================================================================== */
 /* Transcription-first oil mapping                                             */
 /* The vision model returns a raw_table of { header, value, unit_as_read,      */
@@ -735,11 +744,11 @@ export function mergeConsensus(
   b: OilTranscriptionResult
 ): { result: OilTranscriptionResult; flaggedFields: string[] } {
   const flaggedFields: string[] = [];
-  const pick = (
-    va: number | string | null,
-    vb: number | string | null,
+  const pick = <T extends number | string>(
+    va: T | null,
+    vb: T | null,
     key: string
-  ): number | string | null => {
+  ): T | null => {
     // Both present and equal → agree, fill.
     if (va != null && vb != null) {
       if (va === vb) return va;
@@ -758,13 +767,27 @@ export function mergeConsensus(
   const metalKeys = Array.from(
     new Set([...Object.keys(a.metals), ...Object.keys(b.metals)])
   );
-  const metals: Record<string, number | null> = {};
+  const metals: OilTranscriptionResult["metals"] = {
+    iron: null,
+    copper: null,
+    aluminum: null,
+    silicon: null,
+    sodium: null,
+    potassium: null,
+    zinc: null,
+    phosphorus: null,
+    calcium: null,
+    magnesium: null,
+    boron: null,
+    molybdenum: null,
+    chromium: null,
+    lead: null,
+    nickel: null,
+    tin: null
+  };
   for (const k of metalKeys) {
-    metals[k] = pick(
-      (a.metals as Record<string, number | null>)[k],
-      (b.metals as Record<string, number | null>)[k],
-      k
-    ) as number | null;
+    const canon = METAL_CANON[k];
+    if (canon) metals[canon] = pick(a.metals[canon], b.metals[canon], k);
   }
 
   const fluid = {} as Record<TxFluidKey, number | string | null>;
@@ -776,7 +799,7 @@ export function mergeConsensus(
   const sumpCapacityGallons = pick(a.sumpCapacityGallons, b.sumpCapacityGallons, "sumpCapacityGallons");
 
   const result: OilTranscriptionResult = {
-    metals: metals as unknown as OilTranscriptionResult["metals"],
+    metals,
     fluid: fluid as OilTranscriptionResult["fluid"],
     operatingHours: operatingHours as number | null,
     lubeTimeHours: lubeTimeHours as number | null,
@@ -795,7 +818,7 @@ export function flagAllFilled(tx: OilTranscriptionResult): string[] {
   }
   for (const k of TX_FLUID_KEYS) if (tx.fluid[k] != null) flagged.push(k);
   for (const k of TX_SCALAR_KEYS) {
-    if ((tx as unknown as Record<string, unknown>)[k] != null) flagged.push(k);
+    if (tx[k] != null) flagged.push(k);
   }
   return flagged;
 }
@@ -1085,19 +1108,19 @@ export function mapVisionJsonToOilReportData(
   // --- Master Vision strict path: {detected_technology, data:{oil:{...}}, extra, warnings}
   const isMaster = typeof parsed.detected_technology === "string" && typeof parsed.data === "object" && parsed.data !== null;
   if (isMaster) {
-    const master = parsed as unknown as MasterVisionResponse;
-    const oil = (master.data?.oil || {}) as MasterOilSchema;
-    const extra = master.extra || {};
-    const warnings = master.warnings || [];
+    const masterData = parsed.data as Record<string, unknown>;
+    const oil = (masterData.oil || {}) as Record<string, unknown>;
+    const extra = parsed.extra || {};
+    const warnings = parsed.warnings || [];
 
     // Helper to get numeric value with honesty rules (illegible/absent or confidence <0.8 -> null)
-    const num = (key: string): number | null => masterFieldValue((oil as Record<string, unknown>)[key]);
-    const str = (key: string): string | null => masterFieldString((oil as Record<string, unknown>)[key]);
+    const num = (key: string): number | null => masterFieldValue(oil[key]);
+    const str = (key: string): string | null => masterFieldString(oil[key]);
 
     // Sump capacity conversion with named constants
     let sumpGallons: number | null = null;
-    const sumpField = oil.sump_capacity as unknown as MasterField | undefined;
-    if (sumpField && sumpField.status === "extracted" && typeof sumpField.confidence === "number" && sumpField.confidence >= 0.8 && sumpField.value != null) {
+    const sumpField: unknown = oil.sump_capacity;
+    if (isSumpMasterField(sumpField) && sumpField.confidence >= 0.8) {
       const rawVal = typeof sumpField.value === "number" ? sumpField.value : Number(String(sumpField.value).replace(/,/g, ""));
       const unit = String(sumpField.unit_as_read || "").toLowerCase();
       if (Number.isFinite(rawVal)) {
@@ -1173,25 +1196,25 @@ export function mapVisionJsonToOilReportData(
       confidenceScore: 95,
       rawNotes: JSON.stringify({ sumpCapacityGallons: sumpGallons, sumpRaw: sumpField || null, extra, warnings }),
       sourceFileName: fileName ?? null
-    } as OilReportData & { sumpCapacityGallons?: number | null };
+    };
 
     // Handle water 0.1 with operator "<" — value already 0.1, operator preserved in sumpRaw but sanitizers handle < as 0.1
     // Fuel dilution maps to operating context but we store in extra for form to pick up
     const fuelVal = num("fuel_dilution_percent");
     if (fuelVal != null) {
-      (data as unknown as Record<string, unknown>).fuelDilutionPercent = fuelVal;
+      data.fuelDilutionPercent = fuelVal;
     }
     // Attach sump gallons for form conversion
-    (data as unknown as Record<string, unknown>).sumpCapacityGallons = sumpGallons;
+    data.sumpCapacityGallons = sumpGallons;
     // Attach phosphorus and barium which are not in OilReportMetals but are in form's ppm keys
     const pVal = num("additives_P");
-    if (pVal != null) (data as unknown as Record<string, unknown>).phosphorus = pVal;
+    if (pVal != null) data.phosphorus = pVal;
     const baVal = num("additives_Ba");
-    if (baVal != null) (data as unknown as Record<string, unknown>).barium = baVal;
+    if (baVal != null) data.barium = baVal;
 
     // --- Transcription-first override: raw_table is the single source of truth for oil ---
     // The model's own data.oil key mapping is bypassed whenever raw_table is present.
-    const rawTableRows = (master as unknown as { raw_table?: unknown }).raw_table;
+    const rawTableRows = parsed.raw_table;
     if (mergedTx || (Array.isArray(rawTableRows) && rawTableRows.length > 0)) {
       const tx = mergedTx ?? mapOilTranscription(rawTableRows);
       data.metals.iron = tx.metals.iron;
@@ -1219,9 +1242,9 @@ export function mapVisionJsonToOilReportData(
       data.operatingParams.oilHours = tx.lubeTimeHours;
       data.operatingParams.operatingHours =
         tx.unitTimeHours != null ? tx.unitTimeHours : tx.operatingHours;
-      (data as unknown as Record<string, unknown>).sumpCapacityGallons = tx.sumpCapacityGallons;
+      data.sumpCapacityGallons = tx.sumpCapacityGallons;
       // Phosphorus is not on OilReportMetals; attach via the same consensus result.
-      (data as unknown as Record<string, unknown>).phosphorus = tx.metals.phosphorus;
+      data.phosphorus = tx.metals.phosphorus;
       data.rawNotes = JSON.stringify({
         sumpCapacityGallons: tx.sumpCapacityGallons,
         extra: tx.extra,
@@ -2147,11 +2170,11 @@ export function finalizeOilFromParses(
   }
 
   const data = mapVisionJsonToOilReportData(primary.parsed, input.fileName, mergedTx);
-  (data as unknown as Record<string, unknown>).model = usedModel;
-  (data as unknown as Record<string, unknown>).detectedTechnology = "OIL";
-  (data as unknown as Record<string, unknown>).flaggedFields = flaggedFields;
-  (data as unknown as Record<string, unknown>).extractionMode = extractionMode;
-  (data as unknown as Record<string, unknown>).consensusModels = modelIds;
+  data.model = usedModel;
+  data.detectedTechnology = "OIL";
+  data.flaggedFields = flaggedFields;
+  data.extractionMode = extractionMode;
+  data.consensusModels = modelIds;
   logPipelineSuccess("oilVisionExtractor", startTime, {
     confidence: data.confidenceScore,
     model: usedModel,

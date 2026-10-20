@@ -14,9 +14,9 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
   const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null);
 
   // Fallback price IDs in case env variables aren't injected to the window
-  const priceStarter = (window as any)._env_?.STRIPE_PRICE_STARTER || "price_1TrGj0Qfze97pRyvtrEBSEgU";
-  const priceProfessional = (window as any)._env_?.STRIPE_PRICE_PROFESSIONAL || "price_1TrGQ1Qfze97pRyvZGU4JOEh";
-  const priceEnterprise = (window as any)._env_?.STRIPE_PRICE_ENTERPRISE || "price_1TrGQmQfze97pRyvkG6xGE29";
+  const priceStarter = window._env_?.STRIPE_PRICE_STARTER || "price_1TrGj0Qfze97pRyvtrEBSEgU";
+  const priceProfessional = window._env_?.STRIPE_PRICE_PROFESSIONAL || "price_1TrGQ1Qfze97pRyvZGU4JOEh";
+  const priceEnterprise = window._env_?.STRIPE_PRICE_ENTERPRISE || "price_1TrGQmQfze97pRyvkG6xGE29";
 
   const tiers = [
     {

@@ -195,6 +195,8 @@ export interface EquipRoute {
     | "Quarterly"
     | "Semi-Annually"
     | "Annually";
+  /** Assigned analyst for the route, when recorded. */
+  analyst?: string;
 }
 
 export interface EquipPlant {
@@ -979,7 +981,7 @@ function readStoreFromStorage(): EquipmentStore {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw == null || raw === "") return emptyStore();
-    return normalizeStore(JSON.parse(raw) as unknown);
+    return normalizeStore(JSON.parse(raw));
   } catch {
     return emptyStore();
   }

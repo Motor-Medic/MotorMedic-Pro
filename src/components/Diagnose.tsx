@@ -658,6 +658,22 @@ interface DiagnoseAnalysisResult extends VibrationAnalysisResult {
 }
 
 /**
+ * Wire shape of POST /api/analyze-vibration: the same JSON body carries either
+ * the consensus result (success path) or a failure envelope whose optional
+ * title/message/error/detail/errorType fields are read by the error branch.
+ * Typed source for the response parse — replaces the old payload suppression casts.
+ */
+type AnalyzeVibrationPayload = VibrationAnalysisResult & {
+  success?: boolean;
+  title?: string;
+  message?: string;
+  error?: string;
+  detail?: string;
+  errorType?: string;
+  spectrumPeaks?: SpectrumChartPeak[];
+};
+
+/**
  * Keep banner, primary fault, health score, and identified-fault list consistent.
  * Prefer API faults; if missing, seed from primaryFault and/or Vision peaks.
  */
@@ -3810,7 +3826,7 @@ useEffect(() => {
         throw error;
       }
 
-      let payload: Record<string, unknown> = {};
+      let payload: AnalyzeVibrationPayload;
       const responseText = await res.text();
       if (!responseText.trim()) {
         const emptyErr = new Error(
@@ -3820,7 +3836,7 @@ useEffect(() => {
         throw emptyErr;
       }
       try {
-        payload = JSON.parse(responseText) as Record<string, unknown>;
+        payload = JSON.parse(responseText);
       } catch (parseErr) {
         logPipelineFail("frontend-analyze-vibration:json", startTime, parseErr, res);
         console.error("❌ [PIPELINE FAIL] Non-JSON response body:", {
@@ -3887,10 +3903,10 @@ useEffect(() => {
       logPipelineSuccess("frontend-analyze-vibration", startTime, {
         status: res.status
       });
-      const payloadPeaks = Array.isArray((payload as any)?.spectrumPeaks)
-        ? ((payload as any).spectrumPeaks as SpectrumChartPeak[])
+      const payloadPeaks = Array.isArray(payload.spectrumPeaks)
+        ? payload.spectrumPeaks
         : chartRegionDetection?.peaks;
-      applyAnalysisResult(payload as unknown as VibrationAnalysisResult, "api", payloadPeaks);
+      applyAnalysisResult(payload, "api", payloadPeaks);
       toast("Consensus diagnostic complete.", "success");
     } catch (err) {
       clearAnalysisTimers();

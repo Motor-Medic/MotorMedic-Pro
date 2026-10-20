@@ -205,7 +205,7 @@ function fWindowText(tab: string, fWindow: FWindowState, thr: Threshold): string
     "dayLabel",
     "MAX_WINDOW_DAYS",
     `return (${rhs});`,
-  ) as unknown as (w: FWindowState, t: Threshold, d: typeof dayLabel, m: number) => string | null;
+  ) as (w: FWindowState, t: Threshold, d: typeof dayLabel, m: number) => string | null;
   const out = fn(fWindow, thr, dayLabel, MAX_WINDOW_DAYS);
   expect(out).not.toBeNull();
   return out as string;

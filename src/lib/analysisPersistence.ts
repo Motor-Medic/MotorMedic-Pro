@@ -20,6 +20,8 @@ export type AlertSeverity = "HIGH" | "MEDIUM" | "LOW";
 
 export interface SavedFaultItem {
   title: string;
+  /** Ultrasound rows store the label under `fault`; vibration rows use `title`. */
+  fault?: string;
   frequency?: string | number;
   frequencyHz?: number;
   confidence?: number;
@@ -68,6 +70,8 @@ export interface SavedAnalysisResult {
   envelope_peak_amplitude?: number | null;
   envelope_dominant_frequency?: number | null;
   envelope_energy?: number | null;
+  /** Collector hardware id captured with the run, when recorded. */
+  collector_id?: string | null;
 }
 
 export interface SavedAlert {

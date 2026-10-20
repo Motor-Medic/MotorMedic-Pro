@@ -144,12 +144,11 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
         ? selectedAnalysis.fault_list
         : []
       ).map((f) => {
-        const o = f as unknown as Record<string, unknown>;
-        const t = String(o.fault ?? f.title ?? "Unknown");
+        const t = String(f.fault ?? f.title ?? "Unknown");
         return {
           title: t,
-          sev: String(o.severity ?? f.severity ?? "MEDIUM"),
-          conf: Number(o.confidence ?? f.confidence ?? 0),
+          sev: String(f.severity ?? "MEDIUM"),
+          conf: Number(f.confidence ?? 0),
           family: classifyFaultFamily(t),
         };
       }),

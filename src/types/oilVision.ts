@@ -89,4 +89,19 @@ export interface OilReportData {
   confidenceScore: number; // 0–100
   rawNotes: string | null;
   sourceFileName: string | null;
+  /** Attached at runtime by the vision extractors (not part of the strict schema). */
+  model?: string;
+  detectedTechnology?: string | null;
+  flaggedFields?: string[];
+  /** Extraction provenance: "consensus" | "single" | "geometry-estimate". */
+  extractionMode?: string;
+  consensusModels?: string[];
+  /** Sump capacity converted to gallons — form prefill. */
+  sumpCapacityGallons?: number | null;
+  /** Phosphorus ppm — reported outside OilReportMetals. */
+  phosphorus?: number | null;
+  /** Barium ppm — reported outside OilReportMetals. */
+  barium?: number | null;
+  /** Fuel dilution percent — form prefill. */
+  fuelDilutionPercent?: number | null;
 }

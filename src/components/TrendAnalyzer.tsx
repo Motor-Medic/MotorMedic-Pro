@@ -4894,7 +4894,7 @@ export default function TrendAnalyzer({
                           }}
                         />
                         {/* Green ≥40% load validity band (NFPA operational zone) */}
-                        {React.createElement(ReferenceArea as unknown as React.ComponentType<Record<string, unknown>>, {
+                        {React.createElement(ReferenceArea, {
                           yAxisId: "load",
                           y1: 40,
                           y2: 100,

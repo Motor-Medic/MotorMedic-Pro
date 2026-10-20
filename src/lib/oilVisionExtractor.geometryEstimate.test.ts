@@ -488,14 +488,22 @@ describe("AR-23e gate 6 — every peak render site badges estimates and only est
 
 describe("AR-23e gate 7 — no new type casts / non-null assertions / ts-ignore", () => {
   const count = (src: string, re: RegExp): number => (src.match(re) ?? []).length;
+  // AR-30: the forbidden tokens are assembled from concatenated string
+  // literals so this guard file does not itself contain the patterns it
+  // forbids elsewhere; the compiled RegExp sources are byte-identical to
+  // the original literals.
+  const RE_AS_UNKNOWN_AS = new RegExp("as " + "unknown " + "as", "g");
+  const RE_AS_ANY = new RegExp("as " + "any", "g");
+  const RE_TS_DIRECTIVE = new RegExp("@" + "ts-ignore|" + "@" + "ts-expect-error");
+  const RE_SECTION_LAUNDER = new RegExp("as " + "unknown " + "as|as " + "any|@" + "ts-ignore");
 
   it("cast counts never grow past the pinned baselines", () => {
     const oil = readRel("./oilVisionExtractor.ts");
     const vib = readRel("./vibrationVisionExtractor.ts");
     const diag = readRel("../components/Diagnose.tsx");
-    expect(count(oil, /as unknown as/g)).toBeLessThanOrEqual(16);
-    expect(count(vib, /as unknown as/g)).toBeLessThanOrEqual(0);
-    expect(count(diag, /as any/g)).toBeLessThanOrEqual(2);
+    expect(count(oil, RE_AS_UNKNOWN_AS)).toBeLessThanOrEqual(0);
+    expect(count(vib, RE_AS_UNKNOWN_AS)).toBeLessThanOrEqual(0);
+    expect(count(diag, RE_AS_ANY)).toBeLessThanOrEqual(0);
   });
 
   it("no ts-ignore / ts-expect-error anywhere in the touched lib files", () => {
@@ -506,7 +514,7 @@ describe("AR-23e gate 7 — no new type casts / non-null assertions / ts-ignore"
       "./diagnostics/cmmsPayload.ts",
       "../components/Diagnose.tsx"
     ]) {
-      expect(readRel(rel)).not.toMatch(/@ts-ignore|@ts-expect-error/);
+      expect(readRel(rel)).not.toMatch(RE_TS_DIRECTIVE);
     }
   });
 
@@ -517,7 +525,7 @@ describe("AR-23e gate 7 — no new type casts / non-null assertions / ts-ignore"
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const section = oil.slice(start, end);
-    expect(section).not.toMatch(/as unknown as|as any|@ts-ignore/);
+    expect(section).not.toMatch(RE_SECTION_LAUNDER);
     expect(section).not.toMatch(/\w!\./);
 
     const vib = readRel("./vibrationVisionExtractor.ts");
@@ -526,7 +534,7 @@ describe("AR-23e gate 7 — no new type casts / non-null assertions / ts-ignore"
     expect(vStart).toBeGreaterThan(-1);
     expect(vEnd).toBeGreaterThan(vStart);
     const vSection = vib.slice(vStart, vEnd);
-    expect(vSection).not.toMatch(/as unknown as|as any|@ts-ignore/);
+    expect(vSection).not.toMatch(RE_SECTION_LAUNDER);
     expect(vSection).not.toMatch(/\w!\./);
   });
 });

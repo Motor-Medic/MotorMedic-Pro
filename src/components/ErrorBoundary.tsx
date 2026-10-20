@@ -26,12 +26,12 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   private handleReset = () => {
-    (this as any).setState({ hasError: false, error: null });
+    this.setState({ hasError: false, error: null });
     window.location.reload();
   };
 
   public render() {
-    if ((this as any).state.hasError) {
+    if (this.state.hasError) {
       return (
         <div className="min-h-screen bg-[#0b0f19] flex items-center justify-center p-6 text-slate-200">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-md w-full shadow-2xl text-center space-y-6">
@@ -46,9 +46,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
               </p>
             </div>
 
-            {(this as any).state.error && (
+            {this.state.error && (
               <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-850 text-[10px] font-mono text-rose-400 text-left overflow-auto max-h-32 select-all">
-                {(this as any).state.error.toString()}
+                {this.state.error.toString()}
               </div>
             )}
 
@@ -68,6 +68,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
       );
     }
 
-    return (this as any).props.children;
+    return this.props.children;
   }
 }

@@ -63,10 +63,7 @@ export async function analyzeUltrasoundWav(
   }
 
   const arrayBuffer = await file.arrayBuffer();
-  const AudioCtx =
-    window.AudioContext ||
-    (window as unknown as { webkitAudioContext: typeof AudioContext })
-      .webkitAudioContext;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) {
     throw new Error("Web Audio API is not available in this browser.");
   }

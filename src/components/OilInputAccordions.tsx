@@ -388,9 +388,9 @@ export default function OilInputAccordions({
       collectPpm("ca", m.calcium);
       collectPpm("mg", m.magnesium);
       // Multi-source B/Mo and additives P/Ba strictly by key
-      collectPpm("b", (m as unknown as Record<string, number | null>).boron);
-      collectPpm("mo", (m as unknown as Record<string, number | null>).molybdenum);
-      const pValMaster = (data as unknown as Record<string, unknown>).phosphorus as number | null | undefined;
+      collectPpm("b", m.boron);
+      collectPpm("mo", m.molybdenum);
+      const pValMaster = data.phosphorus;
       if (pValMaster != null) collectPpm("p", pValMaster);
       // Honest handling for water 0.1 with operator "<" — value 0.1 already sanitized, blank if illegible/absent
       if (Object.keys(ppmUpdates).length) {
@@ -422,7 +422,7 @@ export default function OilInputAccordions({
       }
 
       // --- MASTER VISION sump_capacity handling with named constants ---
-      const sumpGallons = (data as unknown as Record<string, unknown>).sumpCapacityGallons as number | null | undefined;
+      const sumpGallons = data.sumpCapacityGallons;
       if (sumpGallons != null && Number.isFinite(sumpGallons)) {
         setSystemCapacity(String(sumpGallons));
         setCapacityUnit("Gallons");
@@ -436,12 +436,12 @@ export default function OilInputAccordions({
       }
 
       // Fuel dilution and additional master fields strictly by key — honest empty if absent/illegible
-      const fuelDilVal = (data as unknown as Record<string, unknown>).fuelDilutionPercent as number | null | undefined;
+      const fuelDilVal = data.fuelDilutionPercent;
       if (fuelDilVal != null && Number.isFinite(fuelDilVal)) {
         setFuelDilution(String(fuelDilVal));
       }
       // Water percent 0.1 with operator "<" — value already 0.1, handled by sanitizer
-      const waterPctVal = f.waterPercent as unknown as number | null | undefined;
+      const waterPctVal = f.waterPercent;
       if (waterPctVal != null && Number.isFinite(waterPctVal)) {
         const saneW = sanitizePpmOil(waterPctVal);
         if (saneW != null) setWaterPpm(String(saneW));
@@ -473,19 +473,10 @@ export default function OilInputAccordions({
         setOpenSections((prev) => Array.from(new Set([...prev, ...nextOpen])));
       }
 
-      const visionModel = (data as unknown as Record<string, unknown>).model as string | undefined;
-      const detectedTech = (data as unknown as Record<string, unknown>).detectedTechnology as
-        | string
-        | null
-        | undefined;
-      const extractionMode = (data as unknown as Record<string, unknown>).extractionMode as
-        | "consensus"
-        | "single"
-        | "geometry-estimate"
-        | undefined;
-      const extractedFlagged = ((data as unknown as Record<string, unknown>).flaggedFields as
-        | string[]
-        | undefined) ?? [];
+      const visionModel = data.model;
+      const detectedTech = data.detectedTechnology;
+      const extractionMode = data.extractionMode;
+      const extractedFlagged = data.flaggedFields ?? [];
       setFlaggedFields(extractedFlagged);
 
       const filledCount = Object.keys(ppmUpdates).length;

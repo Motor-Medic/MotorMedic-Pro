@@ -8,7 +8,7 @@ import type {
 } from "../types/oilAnalysis";
 import { DEFAULT_ALARM_LIMITS, MORPH_CATEGORIES } from "../types/oilAnalysis";
 
-export type IsoCodeTriplet = [number, number, number];
+export type IsoCodeTriplet = readonly [number, number, number];
 
 export { MORPH_CATEGORIES };
 export type { MorphCategoryKey, MorphSeverity, MorphologyMap };

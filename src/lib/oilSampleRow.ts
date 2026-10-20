@@ -98,9 +98,7 @@ function optSeverity(raw: unknown): MorphSeverity | undefined {
 }
 
 /** Collapse the eight morph_* columns into a map, or undefined if all null. */
-function readMorphology(
-  row: Record<string, unknown>
-): MorphologyMap | undefined {
+function readMorphology(row: OilSampleDbRow): MorphologyMap | undefined {
   const map: MorphologyMap = {};
   for (const cat of MORPH_CATEGORIES) {
     const severity = optSeverity(row[MORPH_COLUMN[cat.key]]);
@@ -148,7 +146,7 @@ export function mapOilSampleRow(
     mpcDeltaE: optNum(row.mpc_delta_e),
     rulerPercent: optNum(row.ruler_percent),
     ucRating: optNum(row.uc_rating),
-    morphology: readMorphology(row as unknown as Record<string, unknown>),
+    morphology: readMorphology(row),
     ferrographImageUrl: optStr(row.ferrograph_image_url),
 
     baselineIron: optNum(row.baseline_iron),

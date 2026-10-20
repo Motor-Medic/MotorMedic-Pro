@@ -522,7 +522,7 @@ export function extractVibrationRecordFromAnalysis(
         assetId: rec.assetId || String(r.asset_id || "")
       };
       if (!merged.spectral.length && Array.isArray(td.spectral)) {
-        merged.spectral = (td.spectral as unknown[])
+        merged.spectral = td.spectral
           .filter((p) => p && typeof p === "object")
           .map((p) => {
             const row = p as Record<string, unknown>;

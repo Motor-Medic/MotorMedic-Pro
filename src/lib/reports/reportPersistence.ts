@@ -30,8 +30,10 @@ export interface SavedReportRow {
   title: string | null;
   technology_summary: TechnologySummaryMap;
   overall_severity: ReportSeverity;
-  fault_diagnoses: ReportFault[];
-  recommendations: string[];
+  /** Stored JSON — rehydrated defensively; shape not guaranteed across legacy rows. */
+  fault_diagnoses: unknown;
+  /** Stored JSON strings — rehydrated defensively; shape not guaranteed across legacy rows. */
+  recommendations: unknown;
   technologies_with_data: ReportTechnologyId[];
   generated_by: string | null;
   created_at: string;
@@ -123,7 +125,7 @@ export function rehydrateReport(row: SavedReportRow): MultiTechReport {
       : technologies.filter((t) => t.hasData).map((t) => t.technology),
     overallSeverity: row.overall_severity,
     faultDiagnoses: Array.isArray(row.fault_diagnoses)
-      ? (row.fault_diagnoses as unknown[]).map((f): ReportFault => {
+      ? row.fault_diagnoses.map((f): ReportFault => {
           const obj = f as Record<string, unknown>;
           const techId = (obj.technology ?? "vibration") as ReportTechnologyId;
           const label = technologies.find((t) => t.technology === techId)?.label ?? String(techId);
@@ -136,7 +138,7 @@ export function rehydrateReport(row: SavedReportRow): MultiTechReport {
         })
       : [],
     recommendations: Array.isArray(row.recommendations)
-      ? (row.recommendations as unknown[]).map((r): TechRecommendation =>
+      ? row.recommendations.map((r): TechRecommendation =>
           typeof r === "string"
             ? { technology: "vibration", techLabel: "Unknown", text: r }
             : (r as TechRecommendation)

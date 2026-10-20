@@ -302,7 +302,7 @@ function mapVisionJsonToVibrationReportData(
   if (data.peakFrequencies == null) {
     const pf = vibration.peak_frequencies_array;
     if (Array.isArray(pf)) {
-      const arr = (pf as unknown[])
+      const arr = pf
         .map((x) => (typeof x === "object" && x != null ? (x as { value?: unknown }).value : x))
         .filter((x) => x != null)
         .map((x) => (typeof x === "number" ? x : finiteNum(x)))
