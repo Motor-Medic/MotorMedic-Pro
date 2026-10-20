@@ -87,9 +87,7 @@ export async function POST(req: Request) {
 
     logPipelineSuccess("analyze-vibration-next", startTime);
     return jsonResponseBody(
-      buildAnalyzeVibrationSuccessBody(
-        (result.data || {}) as unknown as Record<string, unknown>
-      ),
+      buildAnalyzeVibrationSuccessBody({ ...(result.data || {}) }),
       200
     );
   } catch (error: unknown) {

@@ -299,9 +299,7 @@ async function handleAnalyzeVibrationExpress(
 
     sendExpressJson(
       res,
-      buildAnalyzeVibrationSuccessBody(
-        (outcome.data || {}) as unknown as Record<string, unknown>
-      ),
+      buildAnalyzeVibrationSuccessBody({ ...(outcome.data || {}) }),
       200
     );
   } catch (error: unknown) {

@@ -496,6 +496,16 @@ function normalizeStage3ExpertResponse(
   agentB: AnalystHypothesis | null
 ): ConsensusVibrationResult {
   if (parsed.primaryFault && parsed.overallHealthScore != null) {
+    // AR-30b residual R1 - the single surviving assertion in src/ (baseline
+    // as-unknown frozen at 1). This is the early-exit branch where the Stage 3
+    // referee answer already carries a primary fault, so the LLM JSON object is
+    // returned as the result without a second pass through the normalizer.
+    // Scope decision: AR-30b is a SECURITY-ADJACENT VALIDATION SLICE, not a
+    // cast-deletion chore. It will add runtime shape-validation of the
+    // consensus LLM response payload (Zod or an equivalent schema guard) at
+    // this boundary and keep the existing normalize/fallback path below for
+    // anything that fails validation. Until that guard lands, this residual is
+    // disclosed and pinned by scripts/check-suppressions.mjs.
     return parsed as unknown as ConsensusVibrationResult;
   }
 

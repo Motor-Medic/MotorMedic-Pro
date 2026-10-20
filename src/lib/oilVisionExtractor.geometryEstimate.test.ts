@@ -503,6 +503,10 @@ describe("AR-23e gate 7 — no new type casts / non-null assertions / ts-ignore"
     const diag = readRel("../components/Diagnose.tsx");
     expect(count(oil, RE_AS_UNKNOWN_AS)).toBeLessThanOrEqual(0);
     expect(count(vib, RE_AS_UNKNOWN_AS)).toBeLessThanOrEqual(0);
+    // AR-30: whole-file checks, not section-scoped - a single forbidden token
+    // dropped anywhere in these extractors must fail this self-test.
+    expect(count(oil, RE_AS_ANY)).toBeLessThanOrEqual(0);
+    expect(count(vib, RE_AS_ANY)).toBeLessThanOrEqual(0);
     expect(count(diag, RE_AS_ANY)).toBeLessThanOrEqual(0);
   });
 

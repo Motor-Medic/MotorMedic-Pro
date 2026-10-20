@@ -3,11 +3,21 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/**
+ * AR-30 final baseline (re-frozen after the cast burn-down):
+ *   as any 0 / as-unknown 1 / ts-ignore 0 / ts-expect-error 0.
+ * The one surviving as-unknown is R1 in src/lib/consensusEngine.ts - the
+ * disclosed AR-30b residual (runtime shape-validation of the consensus LLM
+ * response payload, security-adjacent validation slice rather than a
+ * cast-deletion chore).
+ * Guard semantics: FAIL ON INCREASE, so a second cast anywhere under src/
+ * trips it even though the single R1 residual is tolerated.
+ */
 const BASELINE = {
-  "as any": 14,
-  "as unknown": 62,
-  "@ts-ignore": 3,
-  "@ts-expect-error": 1,
+  "as any": 0,
+  "as unknown": 1,
+  "@ts-ignore": 0,
+  "@ts-expect-error": 0,
 };
 
 const PATTERNS = [
@@ -82,7 +92,7 @@ function main() {
   }
 
   const { files, totals, perFile } = result;
-  console.log("check:suppressions - type-suppression guard (AR-27)");
+  console.log("check:suppressions - type-suppression guard (AR-27, re-frozen AR-30)");
   console.log(`scanned ${files.length} files under src/`);
   console.log("");
   console.log("pattern            baseline   actual   delta   status");
@@ -117,14 +127,14 @@ function main() {
     }
     console.log("");
     console.error(
-      "check:suppressions FAILED: suppression count increased above the frozen AR-27 baseline (14/62/3/1)."
+      `check:suppressions FAILED: suppression count increased above the frozen AR-30 baseline (0/1/0/0).`
     );
     return EXIT_BASELINE_EXCEEDED;
   }
 
   console.log("");
   console.log(
-    "check:suppressions PASSED: no pattern rose above the frozen AR-27 baseline (14/62/3/1)."
+    `check:suppressions PASSED: no pattern rose above the frozen AR-30 baseline (0/1/0/0); the single as-unknown residual is AR-30b R1.`
   );
   return EXIT_OK;
 }

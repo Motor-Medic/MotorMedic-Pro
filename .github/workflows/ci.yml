@@ -29,7 +29,7 @@ jobs:
       - name: Gate 1 - TypeScript strict baseline (0 errors)
         run: npx tsc --noEmit
 
-      - name: Gate 2 - Suppression guard (baseline 14/62/3/1)
+      - name: Gate 2 - Suppression guard (baseline 0/1/0/0, fail on increase)
         run: npm run check:suppressions
 
       - name: Gate 3 - Vitest single-run (explicit non-watch)
