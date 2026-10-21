@@ -96,8 +96,10 @@ import {
   hashSessionToken,
   readSessionTokenFromRequest,
   sessionTtlHours,
+  bootstrapFirstAdmin,
   type AppRole
 } from "./src/lib/auth";
+import { connectWithRetry } from "./src/lib/db";
 
 dotenv.config();
 
@@ -171,6 +173,11 @@ registerMemoryUserLoader((userId: number) => {
 app.use("/api", createApiAuthGuard(() => pool));
 
 // AR-29 — liveness probe (public; carries no tenant data).
+// DEP-2 — stays a fast, instant-200 liveness probe with NO deep DB query.
+// A DB-blind 200 must never be the only readiness signal: when DATABASE_URL
+// is set, boot AWAITS connectWithRetry BEFORE app.listen (see setupServer),
+// so Render never routes traffic — or passes this health check — before the
+// DB is reachable. We do not ship lying green.
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "spectra-cm", auth: "ar-29" });
 });
@@ -12129,6 +12136,20 @@ async function initializeDatabase() {
     await pool.query("UPDATE users SET email = 'shanedufrene1989@gmail.com' WHERE username = 'demo' AND email IS NULL;");
 
     // ------------------------------------------------------------------
+    // DEP-2 — one-time first-admin bootstrap. Runs ONLY when the users
+    // table is completely empty; reads BOOTSTRAP_ADMIN_EMAIL /
+    // BOOTSTRAP_ADMIN_PASSWORD; bcrypt-hashes; creates exactly one
+    // system-admin. Permanently inert once any user exists — after the
+    // Render logs confirm the first admin, delete both vars from the
+    // Render env dashboard.
+    // ------------------------------------------------------------------
+    try {
+      await bootstrapFirstAdmin(pool, process.env);
+    } catch (bootstrapErr) {
+      console.error("❌ [bootstrap] First-admin bootstrap failed:", bootstrapErr);
+    }
+
+    // ------------------------------------------------------------------
     // AR-29 — auth sessions, invites, structured roles, tenant rollout.
     // Mirrors migrations/008_auth_sessions_rbac.sql (idempotent).
     // ------------------------------------------------------------------
@@ -13581,7 +13602,18 @@ app.use("/api", (req, res) => {
 });
 
 async function setupServer() {
-  // Run database initialization in background on startup so server starts listening immediately
+  // DEP-2 boot order (the real restart-loop fix): when DATABASE_URL is set
+  // (production), AWAIT the DB connect-with-retry BEFORE app.listen so
+  // Render never routes traffic — or passes /api/health — before the DB is
+  // reachable. /api/health itself stays a fast liveness probe (no deep DB
+  // query); the cold-start safety lives here, in boot order.
+  if (pool) {
+    await connectWithRetry(pool);
+  }
+
+  // Schema init + one-time admin bootstrap stay non-blocking (unchanged
+  // behavior): the server listens immediately; init failures are logged,
+  // never fatal to the HTTP server.
   initializeDatabase().catch(err => {
     console.error("❌ Non-blocking database initialization error:", err);
   });
@@ -13639,4 +13671,10 @@ async function setupServer() {
   httpServer.headersTimeout = 61_000;
 }
 
-setupServer();
+// DEP-2 — a boot-order failure (DB unreachable after retries) must exit
+// non-zero so Render restarts the service instead of leaving a half-alive
+// process that would serve 500s behind a passing liveness probe.
+setupServer().catch((err) => {
+  console.error("❌ FATAL: server failed to start (boot order):", err);
+  process.exit(1);
+});

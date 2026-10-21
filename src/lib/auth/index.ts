@@ -7,3 +7,4 @@ export * from "./session";
 export * from "./rbac";
 export * from "./envGuard";
 export * from "./middleware";
+export * from "./bootstrapAdmin";
