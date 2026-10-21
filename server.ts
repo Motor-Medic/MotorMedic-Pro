@@ -12074,10 +12074,6 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS vibration_data JSONB;");
     await pool.query("ALTER TABLE diagnosis_history ADD COLUMN IF NOT EXISTS user_id INTEGER;");
 
-    // Ensure analysis_history also has feedback columns
-    await pool.query("ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS was_correct BOOLEAN DEFAULT NULL;");
-    await pool.query("ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS corrected_diagnosis TEXT;");
-
     // Create companies table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS companies (
@@ -12136,9 +12132,10 @@ async function initializeDatabase() {
     // AR-29 — auth sessions, invites, structured roles, tenant rollout.
     // Mirrors migrations/008_auth_sessions_rbac.sql (idempotent).
     // ------------------------------------------------------------------
-    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`).catch(() => {
-      /* gen_random_uuid may already be available without the extension */
-    });
+    // gen_random_uuid() is built into PostgreSQL 13+, and pgcrypto is a
+    // trusted extension there, so this idempotent statement is expected to
+    // succeed; a failure here is a real schema problem and must raise loud.
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS auth_sessions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -12168,96 +12165,6 @@ async function initializeDatabase() {
         used_at TIMESTAMPTZ
       );
     `);
-    // Sentinel-default tenant_id columns on every write-target table.
-    // Sentinel = -1 (disclosed; excluded from tenant-scoped reads).
-    for (const table of [
-      "analysis_results",
-      "diagnosis_logs",
-      "analysis_history",
-      "diagnosis_history",
-      "work_orders",
-      "reports",
-      "oil_analysis"
-    ]) {
-      await pool.query(
-        `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id INTEGER NOT NULL DEFAULT -1;`
-      ).catch((err: any) => {
-        // oil_analysis may not exist yet on fresh DBs; created later in this fn.
-        console.warn(`[AR-29] tenant_id add skipped for ${table}:`, err?.message);
-      });
-    }
-    await pool.query(
-      "CREATE INDEX IF NOT EXISTS idx_analysis_results_tenant ON analysis_results (tenant_id);"
-    ).catch(() => {});
-    await pool.query(
-      "CREATE INDEX IF NOT EXISTS idx_diagnosis_logs_tenant ON diagnosis_logs (tenant_id);"
-    ).catch(() => {});
-    await pool.query(
-      "CREATE INDEX IF NOT EXISTS idx_analysis_history_tenant ON analysis_history (tenant_id);"
-    ).catch(() => {});
-    await pool.query(
-      "CREATE INDEX IF NOT EXISTS idx_diagnosis_history_tenant ON diagnosis_history (tenant_id);"
-    ).catch(() => {});
-    await pool.query(
-      "CREATE INDEX IF NOT EXISTS idx_work_orders_tenant ON work_orders (tenant_id);"
-    ).catch(() => {});
-    // Backfill derivable tenants from the owning company chain; anything
-    // underivable stays on the disclosed -1 sentinel (no silent NULLs).
-    await pool.query(`
-      UPDATE analysis_history ah
-         SET tenant_id = pl.company_id
-        FROM measurement_points mp
-        JOIN collection_points cp ON cp.id = mp.collection_point_id
-        JOIN components c ON c.id = cp.component_id
-        JOIN assets a ON a.id = c.asset_id
-        JOIN routes r ON r.id = a.route_id
-        JOIN plants pl ON pl.id = r.plant_id
-       WHERE ah.measurement_point_id = mp.id
-         AND ah.tenant_id = -1
-         AND pl.company_id IS NOT NULL;
-    `).catch((err: any) =>
-      console.warn("[AR-29] analysis_history backfill skipped:", err?.message)
-    );
-    await pool.query(`
-      UPDATE diagnosis_history dh
-         SET tenant_id = pl.company_id
-        FROM assets a
-        JOIN routes r ON r.id = a.route_id
-        JOIN plants pl ON pl.id = r.plant_id
-       WHERE dh.asset_id = a.id
-         AND dh.tenant_id = -1
-         AND pl.company_id IS NOT NULL;
-    `).catch((err: any) =>
-      console.warn("[AR-29] diagnosis_history backfill skipped:", err?.message)
-    );
-    await pool.query(`
-      UPDATE diagnosis_history dh
-         SET tenant_id = u.company_id
-        FROM users u
-       WHERE dh.user_id = u.id
-         AND dh.tenant_id = -1
-         AND u.company_id IS NOT NULL;
-    `).catch(() => {});
-    for (const table of ["analysis_results", "diagnosis_logs", "work_orders"]) {
-      await pool.query(`
-        UPDATE ${table} t
-           SET tenant_id = pl.company_id
-          FROM assets a
-          JOIN routes r ON r.id = a.route_id
-          JOIN plants pl ON pl.id = r.plant_id
-         WHERE t.tenant_id = -1
-           AND (a.id::text = t.asset_id OR a.tag_number = t.asset_id OR a.name = t.asset_id)
-           AND pl.company_id IS NOT NULL;
-      `).catch((err: any) =>
-        console.warn(`[AR-29] ${table} backfill skipped:`, err?.message)
-      );
-    }
-    await pool.query(`
-      UPDATE reports rp
-         SET tenant_id = rp.company_id
-       WHERE rp.tenant_id = -1
-         AND rp.company_id IS NOT NULL;
-    `).catch(() => {});
 
     // Create plants table
     await pool.query(`
@@ -12455,6 +12362,12 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+
+    // Feedback columns for analysis_history tables that predate them. The
+    // CREATE above must run first — an ALTER on a not-yet-created table is
+    // what used to abort init on a fresh database (DEFECT 1).
+    await pool.query("ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS was_correct BOOLEAN DEFAULT NULL;");
+    await pool.query("ALTER TABLE analysis_history ADD COLUMN IF NOT EXISTS corrected_diagnosis TEXT;");
 
     // Ensure 'Demo Reliability Corp' and the 'demo' user exist and seed mock assets if missing
     // AR-29 rule 5 — dev-only demo seeding, explicitly gated.
@@ -12678,9 +12591,7 @@ async function initializeDatabase() {
     // -------------------------------------------------------------------------
     // Run Diagnostics → app-wide persistence (Trend / Alerts / Reports / Logs)
     // -------------------------------------------------------------------------
-    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`).catch(() => {
-      /* gen_random_uuid may already be available without the extension */
-    });
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto;`);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS analysis_results (
@@ -12828,9 +12739,11 @@ async function initializeDatabase() {
             )
           )
       );
-    `).catch(() => {
-      /* ignore if peaks shape unexpected */
-    });
+    `).catch((err: any) =>
+      // DATA backfill, not schema: tolerate legacy rows whose peaks blob is
+      // not the expected JSON shape — but never swallow the failure silently.
+      console.warn("[schema] PMP030 ultrasound peak backfill skipped:", err?.message)
+    );
     // Backfill thermography rows previously saved without analysis_type
     await pool.query(`
       UPDATE analysis_results
@@ -12841,20 +12754,12 @@ async function initializeDatabase() {
           FROM jsonb_array_elements(COALESCE(peaks, '[]'::jsonb)) AS e
           WHERE e->>'type' = 'thermography'
         );
-    `).catch(() => {
-      /* ignore if peaks shape unexpected */
-    });
-    // Backfill via diagnosis_logs link (older IR saves with empty peaks)
-    await pool.query(`
-      UPDATE analysis_results ar
-      SET analysis_type = 'thermography'
-      FROM diagnosis_logs dl
-      WHERE dl.analysis_result_id = ar.id
-        AND LOWER(TRIM(COALESCE(dl.analysis_type, ''))) = 'thermography'
-        AND COALESCE(ar.analysis_type, 'vibration') = 'vibration';
-    `).catch(() => {
-      /* ignore if diagnosis_logs not ready yet */
-    });
+    `).catch((err: any) =>
+      console.warn("[schema] thermography analysis_type backfill skipped:", err?.message)
+    );
+    // The diagnosis_logs-linked thermography backfill runs further down, right
+    // after the diagnosis_logs CREATE — it used to run against a table that
+    // did not exist yet on a fresh database and was silently swallowed.
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_analysis_results_asset_id
         ON analysis_results (asset_id);
@@ -12942,6 +12847,19 @@ async function initializeDatabase() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_diagnosis_logs_completed_at
         ON diagnosis_logs (completed_at DESC);
+    `);
+
+    // Backfill via diagnosis_logs link (older IR saves with empty peaks). Runs
+    // here because the diagnosis_logs CREATE above has already executed — on a
+    // fresh database this statement used to hit a missing table and was
+    // silently swallowed.
+    await pool.query(`
+      UPDATE analysis_results ar
+      SET analysis_type = 'thermography'
+      FROM diagnosis_logs dl
+      WHERE dl.analysis_result_id = ar.id
+        AND LOWER(TRIM(COALESCE(dl.analysis_type, ''))) = 'thermography'
+        AND COALESCE(ar.analysis_type, 'vibration') = 'vibration';
     `);
 
     await pool.query(`
@@ -13104,6 +13022,133 @@ async function initializeDatabase() {
         ADD COLUMN IF NOT EXISTS ferrograph_image_url TEXT;
     `);
 
+    // -------------------------------------------------------------------------
+    // migrations/013 — custom CMMS templates. The BARE table is created
+    // unconditionally (no extension dependency) so that
+    // GET /api/cmms/templates can answer 200/empty on any database.
+    // -------------------------------------------------------------------------
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS custom_cmms_templates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        program_name TEXT NOT NULL,
+        field_schema JSONB NOT NULL,
+        created_by_tenant TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    // Optional 1/2 — pg_trgm powers the fuzzy `%` / similarity() search path.
+    // A managed database whose role may not install extensions degrades to
+    // non-fuzzy search: warn and continue, never abort init and never 500.
+    try {
+      await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+    } catch (err: any) {
+      console.warn(
+        "⚠️ [cmms] pg_trgm extension unavailable — fuzzy template search degraded:",
+        err?.message
+      );
+    }
+    // Optional 2/2 — trigram GIN index (needs the extension above). Kept in
+    // its own non-fatal block for the same graceful-degradation reason.
+    try {
+      await pool.query(`
+        CREATE INDEX IF NOT EXISTS idx_custom_cmms_templates_name_trgm
+          ON custom_cmms_templates USING GIN (program_name gin_trgm_ops);
+      `);
+    } catch (err: any) {
+      console.warn(
+        "⚠️ [cmms] trigram GIN index not created — fuzzy template search degraded:",
+        err?.message
+      );
+    }
+
+    // ------------------------------------------------------------------
+    // AR-29 — tenant rollout. Runs AFTER every CREATE TABLE above so that
+    // each ALTER/INDEX/UPDATE lands on a table that exists (DEFECT 1). On a
+    // fresh database these statements used to be skipped by a blanket
+    // .catch, which left the tenant-scoped API reads without tenant_id.
+    // Sentinel = -1 (disclosed; excluded from tenant-scoped reads).
+    // ------------------------------------------------------------------
+    for (const table of [
+      "analysis_results",
+      "diagnosis_logs",
+      "analysis_history",
+      "diagnosis_history",
+      "work_orders",
+      "reports",
+      "oil_analysis"
+    ]) {
+      await pool.query(
+        `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id INTEGER NOT NULL DEFAULT -1;`
+      );
+    }
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_analysis_results_tenant ON analysis_results (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_diagnosis_logs_tenant ON diagnosis_logs (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_analysis_history_tenant ON analysis_history (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_diagnosis_history_tenant ON diagnosis_history (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_work_orders_tenant ON work_orders (tenant_id);"
+    );
+    // Backfill derivable tenants from the owning company chain; anything
+    // underivable stays on the disclosed -1 sentinel (no silent NULLs).
+    await pool.query(`
+      UPDATE analysis_history ah
+         SET tenant_id = pl.company_id
+        FROM measurement_points mp
+        JOIN collection_points cp ON cp.id = mp.collection_point_id
+        JOIN components c ON c.id = cp.component_id
+        JOIN assets a ON a.id = c.asset_id
+        JOIN routes r ON r.id = a.route_id
+        JOIN plants pl ON pl.id = r.plant_id
+       WHERE ah.measurement_point_id = mp.id
+         AND ah.tenant_id = -1
+         AND pl.company_id IS NOT NULL;
+    `);
+    await pool.query(`
+      UPDATE diagnosis_history dh
+         SET tenant_id = pl.company_id
+        FROM assets a
+        JOIN routes r ON r.id = a.route_id
+        JOIN plants pl ON pl.id = r.plant_id
+       WHERE dh.asset_id = a.id
+         AND dh.tenant_id = -1
+         AND pl.company_id IS NOT NULL;
+    `);
+    await pool.query(`
+      UPDATE diagnosis_history dh
+         SET tenant_id = u.company_id
+        FROM users u
+       WHERE dh.user_id = u.id
+         AND dh.tenant_id = -1
+         AND u.company_id IS NOT NULL;
+    `);
+    for (const table of ["analysis_results", "diagnosis_logs", "work_orders"]) {
+      await pool.query(`
+        UPDATE ${table} t
+           SET tenant_id = pl.company_id
+          FROM assets a
+          JOIN routes r ON r.id = a.route_id
+          JOIN plants pl ON pl.id = r.plant_id
+         WHERE t.tenant_id = -1
+           AND (a.id::text = t.asset_id OR a.tag_number = t.asset_id OR a.name = t.asset_id)
+           AND pl.company_id IS NOT NULL;
+      `);
+    }
+    await pool.query(`
+      UPDATE reports rp
+         SET tenant_id = rp.company_id
+       WHERE rp.tenant_id = -1
+         AND rp.company_id IS NOT NULL;
+    `);
+
     console.log(
       "✅ Run-Diagnostics persistence tables verified: analysis_results, alerts, diagnosis_logs, work_orders, oil_analysis."
     );
@@ -13140,7 +13185,11 @@ async function initializeDatabase() {
 
     console.log("✅ Database initialized: All plants, routes, assets, components, collection points, measurement points, maintenance logs, analysis history, analysis_results, alerts, and diagnosis_logs tables verified/created.");
   } catch (error) {
+    // DEFECT 3 — no more swallowing: log and rethrow so the caller's
+    // non-blocking handler surfaces a real schema failure loudly instead of
+    // pretending init succeeded.
     console.error("❌ Failed to initialize database tables:", error);
+    throw error;
   }
 }
 
