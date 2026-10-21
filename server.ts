@@ -13061,6 +13061,27 @@ async function initializeDatabase() {
         err?.message
       );
     }
+    // DEP-1b — unique key backing the ON CONFLICT target used by
+    // POST /api/cmms/templates (ON CONFLICT (program_name, created_by_tenant)).
+    // ALTER TABLE ... ADD CONSTRAINT has no IF NOT EXISTS, so the re-run on
+    // every subsequent boot is guarded: measured on PostgreSQL 18.6 the re-ADD
+    // raises 42P07 (duplicate_table, "relation ... already exists" — the
+    // backing index shares the constraint's name and its relation-namespace
+    // check fires first), with 42710 (duplicate_object) and 42P06 kept as the
+    // rest of the same already-exists family. The catch is deliberately limited
+    // to that family — anything else rethrows so real schema errors still
+    // raise loud.
+    try {
+      await pool.query(`
+        ALTER TABLE custom_cmms_templates
+          ADD CONSTRAINT custom_cmms_templates_program_name_tenant_key
+          UNIQUE (program_name, created_by_tenant);
+      `);
+    } catch (err: any) {
+      if (err?.code !== "42710" && err?.code !== "42P06" && err?.code !== "42P07") {
+        throw err;
+      }
+    }
 
     // ------------------------------------------------------------------
     // AR-29 — tenant rollout. Runs AFTER every CREATE TABLE above so that
