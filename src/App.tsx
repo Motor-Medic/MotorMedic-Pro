@@ -3,7 +3,7 @@ import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint, TargetCo
 import Diagnose from "./components/Diagnose";
 import Login, { UserSession } from "./components/Login";
 import RouteGuard from "./components/auth/RouteGuard";
-import LegalDocuments from "./components/LegalDocuments";
+import ArtifactDisclaimer from "./components/ArtifactDisclaimer";
 import AIChatbot from "./components/AIChatbot";
 import ScrollToTop from "./components/ScrollToTop";
 import AppLink from "./components/AppLink";
@@ -42,6 +42,8 @@ const loadAdminPanel = () => import("./components/AdminPanel");
 const AdminPanel = lazy(loadAdminPanel);
 const loadTerms = () => import("./components/Terms");
 const Terms = lazy(loadTerms);
+const loadLegalDocuments = () => import("./components/LegalDocuments");
+const LegalDocuments = lazy(loadLegalDocuments);
 const loadPrivacy = () => import("./components/Privacy");
 const Privacy = lazy(loadPrivacy);
 const loadAlertsControl = () => import("./components/AlertsControl");
@@ -174,6 +176,31 @@ export default function App() {
   }, [theme]);
 
   const [showLegalDoc, setShowLegalDoc] = useState<"terms" | "privacy" | null>(null);
+
+  // LEGAL-WRAPPER-A (E6) — first-login assent interstitial state.
+  const [assentSubmitting, setAssentSubmitting] = useState(false);
+  const [assentError, setAssentError] = useState<string | null>(null);
+
+  const acceptLegalDocuments = async () => {
+    setAssentSubmitting(true);
+    setAssentError(null);
+    try {
+      const res = await fetch("/api/auth/terms-accepted", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin"
+      });
+      if (!res.ok) throw new Error("Could not record your acceptance.");
+      const payload = await res.json();
+      setUser(prev => (prev ? { ...prev, ...payload } : prev));
+    } catch (err) {
+      setAssentError(
+        err instanceof Error && err.message ? err.message : "Could not record your acceptance."
+      );
+    } finally {
+      setAssentSubmitting(false);
+    }
+  };
 
   // Custom router state for /terms and /privacy URLs
   const [currentPath, setCurrentPath] = useState(() => window.location.pathname);
@@ -620,17 +647,17 @@ const updated = [newReport, ...reports];
   }
 
   if (showLegalDoc) {
+    // LEGAL-WRAPPER-A (E10) — the strongest disclaimer block in the repo
+    // (LegalDocuments) was imported but never rendered. It is now the surface
+    // behind the login/register Terms & Privacy links.
     return (
       <>
         <ScrollToTop routeKey={scrollRouteKey} />
-        <Suspense
-          fallback={<RouteSkeleton route={showLegalDoc === "terms" ? "terms" : "privacy"} />}
-        >
-          {showLegalDoc === "terms" ? (
-            <Terms onBack={() => setShowLegalDoc(null)} />
-          ) : (
-            <Privacy onBack={() => setShowLegalDoc(null)} />
-          )}
+        <Suspense fallback={<RouteSkeleton route="terms" />}>
+          <LegalDocuments
+            initialTab={showLegalDoc}
+            onClose={() => setShowLegalDoc(null)}
+          />
         </Suspense>
       </>
     );
@@ -656,6 +683,55 @@ const updated = [newReport, ...reports];
     );
   }
 
+  // LEGAL-WRAPPER-A (E6) — first-login assent interstitial. Registered users
+  // already consented at sign-up (E5); this covers everyone else whose
+  // terms_accepted_at is still NULL (bootstrap admin, invited technicians,
+  // pre-migration rows). It renders the existing LegalDocuments content and
+  // clears only once the server has stamped the acceptance.
+  if (user.terms_accepted_at === null) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex flex-col bg-[#080c14]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Terms of Service and Privacy Policy"
+        id="first-login-assent"
+      >
+        <div className="shrink-0 flex items-center justify-between gap-4 px-4 sm:px-6 py-3 border-b border-slate-800 bg-[#0d1527]">
+          <p className="text-sm font-semibold text-slate-100">
+            Terms of Service and Privacy Policy
+          </p>
+          <span className="text-[11px] font-mono uppercase tracking-wider text-slate-500">
+            Required to continue
+          </span>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <Suspense fallback={<div className="min-h-[60vh]" />}>
+            <LegalDocuments />
+          </Suspense>
+        </div>
+
+        <div className="shrink-0 flex flex-wrap items-center justify-end gap-3 px-4 sm:px-6 py-3 border-t border-slate-800 bg-[#0d1527]">
+          {assentError && (
+            <p className="text-xs text-red-400" id="first-login-assent-error">
+              {assentError}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void acceptLegalDocuments()}
+            disabled={assentSubmitting}
+            id="first-login-assent-agree"
+            className="px-5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed text-slate-950 text-sm font-semibold cursor-pointer transition-colors"
+          >
+            {assentSubmitting ? "Recording..." : "Agree"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`min-h-screen w-full flex flex-col transition-colors duration-200 ${
@@ -663,6 +739,9 @@ const updated = [newReport, ...reports];
     }`}
     >
       <ScrollToTop routeKey={scrollRouteKey} />
+      {/* LEGAL-WRAPPER-A (E9) — print-only footer: every printed page carries
+          the same reused disclaimer text as the file exports. */}
+      <ArtifactDisclaimer variant="print" />
       {/* Dynamic Background Noise/Glow effect */}
       <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-yellow-500/5 rounded-full filter blur-[120px] pointer-events-none"></div>
       <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-cyan-500/5 rounded-full filter blur-[120px] pointer-events-none"></div>

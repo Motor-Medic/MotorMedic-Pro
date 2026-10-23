@@ -50,6 +50,7 @@ import {
 } from "../data/equipmentDb";
 import { navigateToTab } from "../navigation";
 import { useToast } from "./Toast";
+import { confirmArtifactExport } from "./ArtifactDisclaimer";
 import ComponentKinematicsSpecsForm, {
   type CbmKinematics
 } from "./ComponentKinematicsSpecsForm";
@@ -4820,6 +4821,8 @@ export default function EquipmentExplorer({
                   <button
                     type="button"
                     onClick={() => {
+                      // LEGAL-WRAPPER-A (E7) — confirm before printing.
+                      if (!confirmArtifactExport("Print report")) return;
                       window.print();
                       toast("Sending report to printer…", "info");
                     }}

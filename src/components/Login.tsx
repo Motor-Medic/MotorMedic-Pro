@@ -10,6 +10,12 @@ export interface UserSession {
   is_temp_password: boolean;
   plant_id?: number;
   plant_name?: string;
+  /**
+   * LEGAL-WRAPPER-A (E5/E6) — when this account accepted the existing legal
+   * documents. null/undefined means the first-login assent gate still applies.
+   * Older cached sessions simply lack the key.
+   */
+  terms_accepted_at?: string | null;
 }
 
 interface LoginProps {
@@ -24,6 +30,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
   const [plantCompanyName, setPlantCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [inviteToken, setInviteToken] = useState("");
+  const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,6 +74,12 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
       setError("Please fill in all required fields.");
       return;
     }
+    // E5 clickwrap — registration cannot be submitted without consent to the
+    // existing Terms of Service / Privacy Policy (the server re-checks this).
+    if (!termsAccepted) {
+      setError("Please agree to the Terms of Service and Privacy Policy to continue.");
+      return;
+    }
 
     setError(null);
     setLoading(true);
@@ -80,7 +93,8 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
           password: password.trim(),
           plantCompanyName: plantCompanyName.trim(),
           email: email.trim() || null,
-          inviteToken: inviteToken.trim() || undefined
+          inviteToken: inviteToken.trim() || undefined,
+          termsAccepted: true
         }),
       });
 
@@ -290,6 +304,43 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                   </div>
                 )}
               </>
+            )}
+
+            {/* E5 — registration clickwrap. Label points only at the docs the
+                repo already publishes; no new legal wording lives here. */}
+            {isRegister && (
+              <div className="flex items-start gap-2.5 pt-1" id="login-terms-consent">
+                <input
+                  type="checkbox"
+                  required
+                  checked={termsAccepted}
+                  disabled={loading || demoLoading}
+                  onChange={(e) => setTermsAccepted(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-700 bg-slate-950/60 text-emerald-500 focus:ring-emerald-500/40 cursor-pointer"
+                  id="login-terms-checkbox"
+                />
+                <label
+                  htmlFor="login-terms-checkbox"
+                  className="text-xs text-slate-400 leading-relaxed cursor-pointer"
+                >
+                  I agree to the{" "}
+                  <button
+                    type="button"
+                    onClick={() => onShowLegal?.("terms")}
+                    className="text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer bg-transparent border-none p-0"
+                  >
+                    Terms of Service
+                  </button>{" "}
+                  and{" "}
+                  <button
+                    type="button"
+                    onClick={() => onShowLegal?.("privacy")}
+                    className="text-emerald-400 hover:text-emerald-300 hover:underline cursor-pointer bg-transparent border-none p-0"
+                  >
+                    Privacy Policy
+                  </button>
+                </label>
+              </div>
             )}
 
             {/* Submit Button */}

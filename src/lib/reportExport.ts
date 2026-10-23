@@ -15,6 +15,8 @@ import {
   TELEMETRY_PROVENANCE_DEFAULT_NOTE,
   TELEMETRY_PROVENANCE_PREFILLED_NOTE
 } from "./maintenance/prescriptiveDictionary";
+// LEGAL-WRAPPER-A (E1/E4) — reused disclaimer prose, never authored here.
+import { ARTIFACT_DISCLAIMER } from "../components/ArtifactDisclaimer";
 
 export interface ReportExportContext {
   assetLabel: string;
@@ -28,6 +30,14 @@ export interface ReportExportContext {
 
 const MARGIN = 14;
 const LINE = 5.2;
+/**
+ * LEGAL-WRAPPER-A (E1) — millimetres reserved at the foot of every page so the
+ * reused disclaimer block + page line fit under the content band instead of
+ * printing on top of it.
+ */
+const FOOTER_BAND = 20;
+const FOOTER_DISCLAIMER_SIZE = 6;
+const FOOTER_DISCLAIMER_LEADING = 2.5;
 
 function slug(value: string): string {
   return (
@@ -49,14 +59,15 @@ function text(value: unknown): string {
 }
 
 /** Cursor that wraps text and breaks pages as content grows. */
-function makeCursor(doc: jsPDF) {
+function makeCursor(doc: jsPDF, bottomReserve = 0) {
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
   const width = pageWidth - MARGIN * 2;
+  const limit = pageHeight - MARGIN - bottomReserve;
   let y = MARGIN;
 
   const ensure = (needed: number) => {
-    if (y + needed > pageHeight - MARGIN) {
+    if (y + needed > limit) {
       doc.addPage();
       y = MARGIN;
     }
@@ -125,7 +136,7 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   const { jsPDF } = await import("jspdf");
   const generatedAt = ctx.generatedAt ?? new Date();
   const doc = new jsPDF({ unit: "mm", format: "a4" });
-  const c = makeCursor(doc);
+  const c = makeCursor(doc, FOOTER_BAND);
 
   c.write("Condition Monitoring Analysis Report", { size: 16, bold: true });
   c.write(
@@ -203,15 +214,31 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   }
 
   const pages = doc.getNumberOfPages();
+  // LEGAL-WRAPPER-A (E1) — the reused disclaimer prose rides in the page-footer
+  // loop, so no generated page can leave the application without it.
+  doc.setFontSize(FOOTER_DISCLAIMER_SIZE);
+  doc.setFont("helvetica", "normal");
+  const disclaimerLines = doc.splitTextToSize(
+    ARTIFACT_DISCLAIMER,
+    doc.internal.pageSize.getWidth() - MARGIN * 2
+  ) as string[];
   for (let p = 1; p <= pages; p += 1) {
     doc.setPage(p);
-    doc.setFontSize(8);
+    const pageHeight = doc.internal.pageSize.getHeight();
+    let disclaimerY =
+      pageHeight - 11.5 - (disclaimerLines.length - 1) * FOOTER_DISCLAIMER_LEADING;
+    doc.setFontSize(FOOTER_DISCLAIMER_SIZE);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(120);
+    for (const line of disclaimerLines) {
+      doc.text(line, MARGIN, disclaimerY);
+      disclaimerY += FOOTER_DISCLAIMER_LEADING;
+    }
+    doc.setFontSize(8);
     doc.text(
       `${ctx.assetLabel} · page ${p} of ${pages}`,
       MARGIN,
-      doc.internal.pageSize.getHeight() - 8
+      pageHeight - 8
     );
   }
 
@@ -298,12 +325,27 @@ function download(blob: Blob, filename: string): string {
   return filename;
 }
 
+/**
+ * The CSV body as a string, ending in a labelled DISCLAIMER row that carries
+ * the reused prose. Split out from the download so tests (and any future
+ * server-side export) can assert the file content without a DOM.
+ */
+export function reportCsvText(ctx: ReportExportContext): string {
+  const rows = Papa.unparse(measurementRows(ctx), {
+    columns: EXPORT_COLUMN_LABELS
+  });
+  const disclaimerRows = Papa.unparse(
+    ARTIFACT_DISCLAIMER.split("\n\n").map((paragraph) => ({
+      Disclaimer: paragraph
+    }))
+  );
+  return [rows, disclaimerRows].join("\n");
+}
+
 /** Writes the measurement columns of each saved record to a downloaded CSV. */
 export function exportReportCsv(ctx: ReportExportContext): string {
   const generatedAt = ctx.generatedAt ?? new Date();
-  const csv = Papa.unparse(measurementRows(ctx), {
-    columns: EXPORT_COLUMN_LABELS
-  });
+  const csv = reportCsvText(ctx);
 
   // BOM keeps Excel from mangling non-ASCII asset names.
   return download(
@@ -313,7 +355,8 @@ export function exportReportCsv(ctx: ReportExportContext): string {
 }
 
 /**
- * Same measurement columns as the CSV, written as a real .xlsx workbook.
+ * Same measurement columns as the CSV, written as a real .xlsx workbook with
+ * a Notes sheet carrying the reused disclaimer prose (E4).
  * Async: the xlsx vendor chunk loads on demand (never at page load).
  */
 export async function exportReportXlsx(ctx: ReportExportContext): Promise<string> {
@@ -324,6 +367,11 @@ export async function exportReportXlsx(ctx: ReportExportContext): Promise<string
   });
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, sheet, "Measurements");
+  const notes = XLSX.utils.aoa_to_sheet([
+    ["Disclaimer"],
+    ...ARTIFACT_DISCLAIMER.split("\n\n").map((paragraph) => [paragraph])
+  ]);
+  XLSX.utils.book_append_sheet(book, notes, "Notes");
 
   const buffer = XLSX.write(book, { bookType: "xlsx", type: "array" });
   return download(

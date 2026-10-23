@@ -17,6 +17,7 @@ import {
   type SavedDiagnosisLog
 } from "../lib/analysisPersistence";
 import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
+import { confirmArtifactExport } from "./ArtifactDisclaimer";
 
 /* ========================================================================== */
 /* Props (kept for History.tsx wrapper)                                       */
@@ -661,7 +662,10 @@ function DetailPanel({
           {!event.workOrder && (
             <button
               type="button"
-              onClick={onCreateWo}
+              onClick={() => {
+                // LEGAL-WRAPPER-A (E7) — confirm before the work order action.
+                if (confirmArtifactExport("Create work order")) onCreateWo();
+              }}
               className="min-h-[40px] px-3 rounded-xl border border-amber-400/40 text-amber-200 text-xs font-bold cursor-pointer"
             >
               Create Work Order
@@ -913,6 +917,8 @@ export default function DiagnosisLogs({
   };
 
   const exportCsv = () => {
+    // LEGAL-WRAPPER-A (E7) — confirm before the file leaves the app.
+    if (!confirmArtifactExport("Export diagnosis logs")) return;
     const header = "id,timestamp,asset,tag,source,severity,status,summary\n";
     const rows = filteredEvents
       .map(
@@ -1403,6 +1409,9 @@ export default function DiagnosisLogs({
                               <button
                                 type="button"
                                 onClick={() => {
+                                  // LEGAL-WRAPPER-A (E7) — confirm before the
+                                  // work order action.
+                                  if (!confirmArtifactExport("Create work order")) return;
                                   const wo = `WO-${8800 + Math.floor(Math.random() * 90)}`;
                                   patchEvent(ev.id, {
                                     workOrder: wo,

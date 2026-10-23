@@ -167,6 +167,7 @@ registerMemoryUserLoader((userId: number) => {
     is_temp_password: !!u.is_temp_password,
     plant_id: null,
     plant_name: null,
+    terms_accepted_at: u.terms_accepted_at ?? null
   };
 });
 
@@ -8571,6 +8572,8 @@ function publicUserPayload(user: {
   is_temp_password: unknown;
   plant_id?: number | null;
   plant_name?: string | null;
+  /** LEGAL-WRAPPER-A (E5/E6) — ISO timestamp of legal-document acceptance. */
+  terms_accepted_at?: string | Date | null;
 }) {
   return {
     id: user.id,
@@ -8580,7 +8583,10 @@ function publicUserPayload(user: {
     role: normalizeRole(user.role),
     is_temp_password: !!user.is_temp_password,
     plant_id: user.plant_id ?? null,
-    plant_name: user.plant_name ?? null
+    plant_name: user.plant_name ?? null,
+    terms_accepted_at: user.terms_accepted_at
+      ? new Date(user.terms_accepted_at).toISOString()
+      : null
   };
 }
 
@@ -8684,7 +8690,17 @@ app.post("/api/auth/login", async (req, res) => {
 // requires a valid invite token or an authenticated system-admin session).
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { username, password, plantCompanyName, email, inviteToken } = req.body;
+    const { username, password, plantCompanyName, email, inviteToken, termsAccepted } = req.body;
+    // E5 — server-side clickwrap gate. Enforced before any other work so the
+    // check cannot be skipped by the invite/production branch below; records
+    // acceptance for whoever passes it. The bootstrap admin is created by
+    // direct insert (not this route), so it stays NULL and meets the E6
+    // first-login interstitial once — by design.
+    if (termsAccepted !== true) {
+      return res.status(400).json({
+        error: "Acceptance of the Terms of Service and Privacy Policy is required to register."
+      });
+    }
     if (!username || typeof username !== "string" || !username.trim()) {
       return res.status(400).json({ error: "Missing required field: username" });
     }
@@ -8742,7 +8758,7 @@ app.post("/api/auth/register", async (req, res) => {
           })();
 
         const userRes = await pool.query(
-          "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password) VALUES ($1, $2, $3, $4, $5, TRUE) RETURNING *",
+          "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password, terms_accepted_at) VALUES ($1, $2, $3, $4, $5, TRUE, NOW()) RETURNING *",
           [companyId, normUsername, hashed, assignedRole, email ? String(email).trim() : null]
         );
         const user = userRes.rows[0];
@@ -8801,7 +8817,7 @@ app.post("/api/auth/register", async (req, res) => {
       const companyId = companyRes.rows[0].id;
 
       const userRes = await pool.query(
-        "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password) VALUES ($1, $2, $3, 'plant-engineer', $4, FALSE) RETURNING *",
+        "INSERT INTO users (company_id, username, password_hash, role, email, is_temp_password, terms_accepted_at) VALUES ($1, $2, $3, 'plant-engineer', $4, FALSE, NOW()) RETURNING *",
         [companyId, normUsername, hashed, email ? email.trim() : null]
       );
       const user = userRes.rows[0];
@@ -8845,6 +8861,7 @@ app.post("/api/auth/register", async (req, res) => {
         role: "plant-engineer",
         email: email ? email.trim() : null,
         is_temp_password: false,
+        terms_accepted_at: new Date(),
         created_at: new Date()
       };
       memoryUsers.push(newUser);
@@ -8880,6 +8897,42 @@ app.get("/api/auth/session", async (req, res) => {
     return res.status(401).json({ error: "Not authenticated", code: "NO_SESSION" });
   }
   return res.json(publicUserPayload(req.auth.user));
+});
+
+// POST /api/auth/terms-accepted - E6 first-login assent. Session-guarded by
+// the global /api guard (not whitelisted): only an authenticated user can
+// stamp their own acceptance, and the timestamp is written server-side.
+app.post("/api/auth/terms-accepted", async (req, res) => {
+  if (!req.auth) {
+    return res.status(401).json({ error: "Not authenticated", code: "NO_SESSION" });
+  }
+  const userId = req.auth.user.id;
+  try {
+    if (pool) {
+      const updated = await pool.query(
+        "UPDATE users SET terms_accepted_at = NOW() WHERE id = $1 RETURNING terms_accepted_at",
+        [userId]
+      );
+      return res.json(
+        publicUserPayload({
+          ...req.auth.user,
+          terms_accepted_at: updated.rows[0]?.terms_accepted_at ?? new Date()
+        })
+      );
+    }
+    // Memory fallback (dev without DATABASE_URL) — same stamp, in memory.
+    const memUser = memoryUsers.find(u => u.id === userId);
+    const acceptedAt = new Date();
+    if (memUser) {
+      memUser.terms_accepted_at = acceptedAt;
+    }
+    return res.json(
+      publicUserPayload({ ...req.auth.user, terms_accepted_at: acceptedAt })
+    );
+  } catch (error) {
+    console.error("POST /api/auth/terms-accepted failed:", error);
+    return res.status(500).json({ error: "Failed to record acceptance" });
+  }
 });
 
 // POST /api/auth/logout - Server-side invalidation + cookie clear
@@ -12134,6 +12187,21 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);");
     await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'engineer';");
     await pool.query("UPDATE users SET email = 'shanedufrene1989@gmail.com' WHERE username = 'demo' AND email IS NULL;");
+
+    // LEGAL-WRAPPER-A (E5/E6) — mirror of migrations/016_terms_accepted.sql.
+    // ADD COLUMN IF NOT EXISTS is already idempotent; the catch is limited to
+    // the same already-exists family DEP-1b swallows (42701 duplicate_column,
+    // 42P06 duplicate_object, 42P07 duplicate_table) so a re-run on a
+    // populated DB is a no-op while real schema errors still raise loud.
+    try {
+      await pool.query(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ;"
+      );
+    } catch (err: any) {
+      if (err?.code !== "42701" && err?.code !== "42P06" && err?.code !== "42P07") {
+        throw err;
+      }
+    }
 
     // ------------------------------------------------------------------
     // DEP-2 — one-time first-admin bootstrap. Runs ONLY when the users

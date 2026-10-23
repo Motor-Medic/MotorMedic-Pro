@@ -149,6 +149,10 @@ import {
   getFlatEquipment,
   type FlatEquipAsset
 } from "../data/equipmentDb";
+import {
+  ARTIFACT_DISCLAIMER,
+  confirmArtifactExport
+} from "./ArtifactDisclaimer";
 
 /* ========================================================================== */
 /* Props (unchanged contract for Trends.tsx / App.tsx)                        */
@@ -5947,13 +5951,20 @@ export default function TrendAnalyzer({
 <button
                               type="button"
                               onClick={() => {
+                                // LEGAL-WRAPPER-A (E3/E7) — the cost-bearing
+                                // work order is the highest-risk artifact: it
+                                // is confirmed before it downloads and it
+                                // carries the reused disclaimer as a
+                                // top-level field.
+                                if (!confirmArtifactExport("Generate work order")) return;
                                 const workOrderData = {
                                   trapId: row.trapId,
                                   trapType: row.trapType,
                                   status: row.status,
                                   action: row.action,
                                   annualCost: row.annualCostUsd,
-                                  paybackDays: row.roiPaybackDays
+                                  paybackDays: row.roiPaybackDays,
+                                  disclaimer: ARTIFACT_DISCLAIMER
                                 };
                                 const blob = new Blob([JSON.stringify(workOrderData, null, 2)], { type: 'application/json' });
                                 const url = URL.createObjectURL(blob);
@@ -7801,7 +7812,13 @@ export default function TrendAnalyzer({
         <button
           type="button"
           onClick={() => {
-            const reportData = { exported: new Date().toISOString() };
+            // LEGAL-WRAPPER-A (E7/E9) — confirm, then carry the reused
+            // disclaimer in the exported JSON's _meta.
+            if (!confirmArtifactExport("Export trend report")) return;
+            const reportData = {
+              exported: new Date().toISOString(),
+              _meta: { disclaimer: ARTIFACT_DISCLAIMER }
+            };
             const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -7818,6 +7835,8 @@ export default function TrendAnalyzer({
         <button
           type="button"
           onClick={() => {
+            // LEGAL-WRAPPER-A (E7) — confirm before the file leaves the app.
+            if (!confirmArtifactExport("Export CSV")) return;
             const csvData = "Sample CSV export data";
             const blob = new Blob([csvData], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -7835,6 +7854,8 @@ export default function TrendAnalyzer({
         <button
           type="button"
           onClick={() => {
+            // LEGAL-WRAPPER-A (E7) — confirm before the report is shared.
+            if (!confirmArtifactExport("Email trend report")) return;
             const mailtoLink = `mailto:?subject=Trend%20Report&body=Trend%20analysis%20report%20attached`;
             window.open(mailtoLink);
           }}
@@ -7845,7 +7866,11 @@ export default function TrendAnalyzer({
         </button>
         <button
           type="button"
-          onClick={() => window.print()}
+          onClick={() => {
+            // LEGAL-WRAPPER-A (E7) — confirm before printing leaves the app.
+            if (!confirmArtifactExport("Print trend report")) return;
+            window.print();
+          }}
           className="inline-flex items-center gap-2 border border-slate-700 text-white hover:bg-slate-800 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors"
         >
           <Printer className="h-4 w-4" />

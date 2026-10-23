@@ -46,6 +46,10 @@ import { navigateToTab } from "../navigation";
 import { getStockStatus, usePartsInventory } from "./PartsInventory";
 import { printPickingTicket } from "../lib/printPickingTicket";
 import {
+  ARTIFACT_DISCLAIMER,
+  confirmArtifactExport
+} from "./ArtifactDisclaimer";
+import {
   getActiveDbSelection,
   getFlatEquipment,
   loadDemoData,
@@ -2913,6 +2917,8 @@ useEffect(() => {
   };
 
   const handleExportPdf = async () => {
+    // LEGAL-WRAPPER-A (E7) — confirm before the artifact leaves the app.
+    if (!confirmArtifactExport("Export PDF report")) return;
     try {
       const { jsPDF } = await import("jspdf");
       const doc = new jsPDF();
@@ -3032,6 +3038,23 @@ useEffect(() => {
         doc.setFontSize(10);
         const summaryLines = doc.splitTextToSize(analysisResult.summary, 180);
         doc.text(summaryLines, 14, y);
+        y += summaryLines.length * 5;
+      }
+
+      // LEGAL-WRAPPER-A (E2) — the reused LegalDocuments disclaimer prose, in
+      // the document body immediately before the file is written. Copied
+      // verbatim through the shared constant; nothing new is authored here.
+      y += 6;
+      doc.setFontSize(7.5);
+      doc.setFont("helvetica", "normal");
+      const pdfDisclaimerLines = doc.splitTextToSize(ARTIFACT_DISCLAIMER, 180);
+      for (const line of pdfDisclaimerLines) {
+        if (y > 274) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.text(line, 14, y);
+        y += 3.6;
       }
 
       const fileSafe = asset.replace(/[^\w.-]+/g, "_").slice(0, 40);
@@ -4043,6 +4066,8 @@ useEffect(() => {
   );
 
   const handlePrintPickingTicket = () => {
+    // LEGAL-WRAPPER-A (E7) — confirm before the artifact leaves the app.
+    if (!confirmArtifactExport("Print picking ticket")) return;
     printPickingTicket({
       assetTag: browseAssetTag || reportAsset.tag || reportAsset.label,
       component: browseComponent || "",

@@ -5,6 +5,7 @@ import {
   RotateCcw, Ruler, Search, ShieldCheck, Target, Wrench, X, Zap
 } from "lucide-react";
 import { useToast } from "./Toast";
+import { confirmArtifactExport } from "./ArtifactDisclaimer";
 
 // Types for Reference Guides and Scanner
 export interface ReferencePoint {
@@ -981,6 +982,8 @@ export default function MountingPlanner() {
   // AR-28: jsPDF is an isolated vendor chunk — loaded on demand here, and
   // warmed by data-prefetch="jspdf" on the SOP controls below.
   const handleDownloadSopPdf = async () => {
+    // LEGAL-WRAPPER-A (E7) — confirm before the artifact leaves the app.
+    if (!confirmArtifactExport("Download installation SOP PDF")) return;
     const { jsPDF } = await import("jspdf");
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
     const margin = 16;
@@ -2724,7 +2727,10 @@ export default function MountingPlanner() {
             <div className="p-4 sm:p-5 border-t border-slate-800 flex flex-col sm:flex-row sm:justify-end gap-2 bg-slate-950/40">
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => {
+                  // LEGAL-WRAPPER-A (E7) — confirm before printing.
+                  if (confirmArtifactExport("Print document")) window.print();
+                }}
                 className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm font-bold text-slate-200 hover:border-[#FFC700] hover:text-[#FFC700] cursor-pointer inline-flex items-center justify-center gap-2"
               >
                 <Printer className="h-4 w-4" />

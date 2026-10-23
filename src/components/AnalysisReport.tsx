@@ -45,6 +45,10 @@ import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import { RunHistoryTrigger, RunHistoryPopover, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
+import {
+  ARTIFACT_DISCLAIMER,
+  confirmArtifactExport
+} from "./ArtifactDisclaimer";
 
 import SavedReportViewer from "./reports/SavedReportViewer";
 import ThermographyResultsTab from "./reports/ThermographyResultsTab";
@@ -85,6 +89,17 @@ interface AnalysisReportProps {
 }
 
 const DEFAULT_ASSET_LABEL = "Boiler Feed Pump A - P-101A";
+
+/**
+ * LEGAL-WRAPPER-A (E7) — work-order actions confirm before they fire. The
+ * label is the button's own neutral UI text; the dialog body is the shared
+ * procedural copy from ArtifactDisclaimer.
+ */
+function guardedWorkOrder(label: string, action: () => void): () => void {
+  return () => {
+    if (confirmArtifactExport(label)) action();
+  };
+}
 
 const REPORT_TECH_CARDS: {
   id: ReportTechnology;
@@ -1410,7 +1425,7 @@ function RepairActionsPanel({
               hint: "Pre-populated with findings",
               icon: Wrench,
               primary: false,
-              onClick: onCreateWorkOrder,
+              onClick: guardedWorkOrder("Create Work Order", onCreateWorkOrder),
               disabledReason: null
             }
           ].map(action => {
@@ -1718,10 +1733,14 @@ function ThermographyAnalysisResults({
 <button
         type="button"
         onClick={() => {
+          // LEGAL-WRAPPER-A (E7/E9) — confirm before the file leaves the app;
+          // the exported JSON carries the reused disclaimer in _meta.
+          if (!confirmArtifactExport("Export NFPA 70B compliance certificate")) return;
           const reportData = {
             title: "NFPA 70B Compliance Certificate",
             content: "Inspected in full compliance with NFPA 70B Chapter 9 & ISO 18434-1 standards by Level II Thermographer. Asset assessed under live operating load.",
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            _meta: { disclaimer: ARTIFACT_DISCLAIMER }
           };
           const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
@@ -2280,10 +2299,14 @@ function ThermographyRepairActions({
       <button
         type="button"
         onClick={() => {
+          // LEGAL-WRAPPER-A (E7/E9) — confirm before the file leaves the app;
+          // the exported JSON carries the reused disclaimer in _meta.
+          if (!confirmArtifactExport("Export NFPA 70B compliance certificate")) return;
           const reportData = {
             title: "NFPA 70B Compliance Certificate",
             content: "Inspected in full compliance with NFPA 70B Chapter 9 & ISO 18434-1 standards by Level II Thermographer. Asset assessed under live operating load.",
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            _meta: { disclaimer: ARTIFACT_DISCLAIMER }
           };
           const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
@@ -2301,7 +2324,7 @@ function ThermographyRepairActions({
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={onCreateWorkOrder}
+          onClick={guardedWorkOrder("Create Work Order", onCreateWorkOrder)}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
         >
           <Wrench className="h-3.5 w-3.5" />
@@ -3652,7 +3675,7 @@ function UltrasoundRepairActions({
         {ueAssetCategory === "rotating" && (
           <button
             type="button"
-            onClick={onCreateLubeWo}
+            onClick={guardedWorkOrder("Create Lubrication Work Order", onCreateLubeWo)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
           >
             <Wrench className="h-3.5 w-3.5" />
@@ -3662,7 +3685,7 @@ function UltrasoundRepairActions({
         {ueAssetCategory === "compressed_air" && (
           <button
             type="button"
-            onClick={onCreateLeakWo}
+            onClick={guardedWorkOrder("Create Leak Repair Work Order", onCreateLeakWo)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
           >
             <AlertTriangle className="h-3.5 w-3.5" />
@@ -3672,7 +3695,7 @@ function UltrasoundRepairActions({
         {ueAssetCategory === "electrical" && (
           <button
             type="button"
-            onClick={onCreateLeakWo}
+            onClick={guardedWorkOrder("Create Leak Repair Work Order", onCreateLeakWo)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
           >
             <Zap className="h-3.5 w-3.5" />
@@ -4904,7 +4927,7 @@ function McaRepairActions({
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={onCreateRepairWo}
+          onClick={guardedWorkOrder("Create Motor Repair Work Order", onCreateRepairWo)}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors shadow-[0_0_15px_rgba(234,179,8,0.25)]"
         >
           <Wrench className="h-3.5 w-3.5" />
@@ -5956,7 +5979,7 @@ function OilRepairActions({
       <div className="flex flex-wrap items-center gap-3">
         <button
           type="button"
-          onClick={onCreateFiltrationWo}
+          onClick={guardedWorkOrder("Create Filtration Work Order", onCreateFiltrationWo)}
           className="bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors inline-flex items-center gap-2"
         >
           <Wrench className="h-3.5 w-3.5" />
@@ -6724,6 +6747,8 @@ export default function AnalysisReport({
     exporter: (ctx: typeof exportContext) => string | Promise<string>,
     kind: string
   ) => {
+    // LEGAL-WRAPPER-A (E7) — one confirm for every format in the export menu.
+    if (!confirmArtifactExport(`Export ${kind}`)) return;
     try {
       const saved = await exporter(exportContext);
       toast(`${kind} saved as ${saved}.`, "success");
@@ -6939,7 +6964,7 @@ export default function AnalysisReport({
 
         <span className="h-6 border-l border-slate-700 shrink-0" />
 
-        <button type="button" onClick={() => selectedAnalysis && setShowWorkOrder(true)}
+        <button type="button" onClick={() => { if (selectedAnalysis && confirmArtifactExport("Create work order draft")) setShowWorkOrder(true); }}
           disabled={!selectedAnalysis}
           title={selectedAnalysis ? "Draft a work order from the selected saved analysis" : "Select a saved analysis to draft a work order from it"}
           className="flex items-center gap-1.5 h-9 px-3 bg-yellow-400 hover:bg-yellow-500 text-slate-950 text-sm font-semibold rounded-lg cursor-pointer transition-colors shrink-0 disabled:opacity-60 disabled:cursor-not-allowed">

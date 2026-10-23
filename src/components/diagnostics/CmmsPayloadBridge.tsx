@@ -25,6 +25,8 @@ import {
   type CustomCmmsTemplate
 } from "../../lib/diagnostics/cmmsPayload";
 import { HEALTH_SCORE_DEFAULT_PROVENANCE } from "../../lib/maintenance/prescriptiveDictionary";
+// LEGAL-WRAPPER-A (E7/E8) — shared confirm copy + the reused sign-off line.
+import { confirmArtifactExport } from "../ArtifactDisclaimer";
 
 export interface CmmsPayloadBridgeProps {
   context: CmmsPayloadContext;
@@ -45,6 +47,14 @@ interface TemplateSearchResult {
   loading: boolean;
   error: string | null;
 }
+
+/**
+ * LEGAL-WRAPPER-A (E8) — the exact line cmmsPayload already stamps into every
+ * payload's sign-off field while the diagnosis is pending. Reused verbatim as
+ * the refusal message; nothing here is new legal copy.
+ */
+const PENDING_COPY_BLOCK =
+  "Copy blocked: PENDING ENGINEER SIGN-OFF - AI recommendation not yet certified";
 
 export default function CmmsPayloadBridge({
   context,
@@ -89,7 +99,17 @@ export default function CmmsPayloadBridge({
     .map((f) => `${f.key}: ${f.value}`)
     .join("\n");
 
+  // LEGAL-WRAPPER-A (E8) — while the diagnosis is still PENDING ENGINEER
+  // SIGN-OFF nothing may be copied out of the bridge, so a payload cannot
+  // reach a CMMS unlabeled. The line below is the exact string cmmsPayload
+  // already stamps into every payload's sign-off field (reused, not written).
+  const signOffPending = context.signOffStatus === "pending";
+
   const copy = useCallback((value: string, id: string, label: string) => {
+    if (signOffPending) {
+      onToast?.(PENDING_COPY_BLOCK, "warning");
+      return;
+    }
     void navigator.clipboard.writeText(value).then(
       () => {
         setCopiedKey(id);
@@ -101,7 +121,7 @@ export default function CmmsPayloadBridge({
       },
       () => onToast?.("Clipboard unavailable in this browser", "error")
     );
-  }, [onToast]);
+  }, [onToast, signOffPending]);
 
   // Debounced template search
   const searchTemplates = useCallback(async (query: string) => {
@@ -725,12 +745,24 @@ export default function CmmsPayloadBridge({
         {cmmsFields.length > 0 && (
           <button
             type="button"
-            onClick={() => copy(fullPayloadText, "__all__", "Full payload")}
+            onClick={() => {
+              // E7 confirm runs here; E8 refusal (pending sign-off) runs
+              // inside copy() so no payload leaves the bridge unlabeled.
+              if (!signOffPending && !confirmArtifactExport("Copy full work-order payload")) {
+                return;
+              }
+              copy(fullPayloadText, "__all__", "Full payload");
+            }}
             className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-bold py-3 rounded-lg text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors"
           >
             <Clipboard className="h-4 w-4" />
             Copy Full Multi-Field Payload to Clipboard
           </button>
+        )}
+        {signOffPending && (
+          <p className="text-xs font-semibold text-amber-300" id="cmms-copy-blocked-notice">
+            {PENDING_COPY_BLOCK}
+          </p>
         )}
 
         <p className="text-xs leading-relaxed text-slate-500">
