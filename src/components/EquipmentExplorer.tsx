@@ -1604,6 +1604,22 @@ export default function EquipmentExplorer({
   const empty = isFacilityEmpty(store);
   const siteRoot = tree[0] ?? null;
   const serverPlantId = store.plants.find((p) => p.id === SITE_PLANT_ID)?.serverId;
+  /**
+   * The root plant id is required for every write. If hydration produced no
+   * server id, re-fetch the hierarchy once so a pending create can retry
+   * automatically instead of dead-ending on the first paint.
+   */
+  const resolveServerPlantId = useCallback(async (): Promise<number | null> => {
+    if (serverPlantId != null) return serverPlantId;
+    try {
+      const refreshed = await fetchHierarchy();
+      setTick((n) => n + 1);
+      return refreshed.plants.find((p) => p.id === SITE_PLANT_ID)?.serverId ?? null;
+    } catch (err) {
+      console.error("Equipment hierarchy re-sync failed:", err);
+      return null;
+    }
+  }, [serverPlantId]);
   const systemRoute = store.routes.find((r) => r.isSystem === true);
   const componentAssetOptions = useMemo(
     () =>
@@ -1804,12 +1820,15 @@ export default function EquipmentExplorer({
       setError("Plant name is required.");
       return;
     }
-    if (!serverPlantId) {
-      setError("Plant is not saved on the server yet. Refresh and try again.");
-      return;
-    }
     try {
-      await renamePlant(serverPlantId, name);
+      const plantId = await resolveServerPlantId();
+      if (plantId == null) {
+        setError(
+          "We couldn't reach the server to load your facility. Check your connection and try again."
+        );
+        return;
+      }
+      await renamePlant(plantId, name);
       setPlantRenameOpen(false);
       await refreshFromServer();
       toast("Plant renamed.", "success");
@@ -2022,19 +2041,22 @@ export default function EquipmentExplorer({
   const persistQuickAddNode = async (displayName: string) => {
     setError("");
     try {
-      if (!serverPlantId) {
-        setError("Plant is not saved on the server yet. Refresh and try again.");
+      const plantId = await resolveServerPlantId();
+      if (plantId == null) {
+        setError(
+          "We couldn't reach the server to load your facility. Check your connection and try again."
+        );
         return;
       }
       const parentId = parentNodeId || SITE_PLANT_ID;
       let newId = "";
       if (createKind === "unit") {
-        const created = await createUnit(serverPlantId, displayName);
+        const created = await createUnit(plantId, displayName);
         newId = String(created.id);
       } else if (createKind === "route") {
         const parentUnit = store.units.find((u) => u.id === parentId);
         const created = await createRoute(
-          serverPlantId,
+          plantId,
           displayName,
           parentUnit?.serverId
         );
@@ -2284,8 +2306,11 @@ export default function EquipmentExplorer({
   const handleSave = async () => {
     setError("");
     try {
-      if (!serverPlantId) {
-        setError("Plant is not saved on the server yet. Refresh and try again.");
+      const plantId = await resolveServerPlantId();
+      if (plantId == null) {
+        setError(
+          "We couldn't reach the server to load your facility. Check your connection and try again."
+        );
         return;
       }
       const parentId = parentNodeId || SITE_PLANT_ID;
@@ -2295,7 +2320,7 @@ export default function EquipmentExplorer({
           setError("Unit / Area name is required.");
           return;
         }
-        const created = await createUnit(serverPlantId, unitName.trim());
+        const created = await createUnit(plantId, unitName.trim());
         await refreshFromServer();
         setSelectedNodeId(String(created.id));
         cancelForm();
@@ -2309,7 +2334,7 @@ export default function EquipmentExplorer({
         }
         const parentUnit = store.units.find((u) => u.id === parentId);
         const created = await createRoute(
-          serverPlantId,
+          plantId,
           routeName.trim(),
           parentUnit?.serverId
         );

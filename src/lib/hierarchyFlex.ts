@@ -82,13 +82,15 @@ export async function findOrCreateSimpleModeRoute(
 }
 
 /**
- * Resolve the tenant's plant (auto-creating "Main Site" when the tenant has
- * no plant yet) and its invisible system route.
+ * Find the tenant's plant or create "Main Site" when the tenant has none.
+ * Shared by GET /api/hierarchy (so the Explorer root always has a real id)
+ * and POST /api/assets simple mode; repeated calls are no-ops once a plant
+ * exists.
  */
-export async function resolveSimpleModeHierarchy(
+export async function findOrCreateTenantPlant(
   db: Queryable,
   companyId: number | null
-): Promise<{ plant: SimpleModePlant; route: SimpleModeRoute }> {
+): Promise<SimpleModePlant> {
   let plant: SimpleModePlant | undefined;
   if (companyId != null) {
     const plantRes = await db.query(
@@ -102,15 +104,25 @@ export async function resolveSimpleModeHierarchy(
     );
     plant = fallback.rows[0] ? toPlant(fallback.rows[0]) : undefined;
   }
-  if (!plant) {
-    const created = await db.query(
-      `INSERT INTO plants (name, location, company_id)
-       VALUES ($1, $1, $2)
-       RETURNING *`,
-      [SIMPLE_MODE_PLANT_NAME, companyId]
-    );
-    plant = toPlant(created.rows[0]);
-  }
+  if (plant) return plant;
+  const created = await db.query(
+    `INSERT INTO plants (name, location, company_id)
+     VALUES ($1, $1, $2)
+     RETURNING *`,
+    [SIMPLE_MODE_PLANT_NAME, companyId]
+  );
+  return toPlant(created.rows[0]);
+}
+
+/**
+ * Resolve the tenant's plant (auto-creating "Main Site" when the tenant has
+ * no plant yet) and its invisible system route.
+ */
+export async function resolveSimpleModeHierarchy(
+  db: Queryable,
+  companyId: number | null
+): Promise<{ plant: SimpleModePlant; route: SimpleModeRoute }> {
+  const plant = await findOrCreateTenantPlant(db, companyId);
   const route = await findOrCreateSimpleModeRoute(db, Number(plant.id));
   return { plant, route };
 }

@@ -103,6 +103,7 @@ import { connectWithRetry } from "./src/lib/db";
 import {
   SYSTEM_ROUTE_NAME,
   findOrCreateSimpleModeRoute,
+  findOrCreateTenantPlant,
   parentExists,
   resolveSimpleModeHierarchy
 } from "./src/lib/hierarchyFlex";
@@ -9945,7 +9946,15 @@ app.get("/api/hierarchy", async (req, res) => {
     const plantsRes = tenantId == null
       ? await pool.query("SELECT * FROM plants ORDER BY id ASC")
       : await pool.query("SELECT * FROM plants WHERE company_id = $1 ORDER BY id ASC", [tenantId]);
-    const plants = plantsRes.rows;
+    let plants = plantsRes.rows;
+    if (plants.length === 0) {
+      // First-run fix: the Explorer root must always carry a real server id.
+      // Find-or-create the tenant's plant before building the payload so the
+      // client can immediately create units/assets without a manual refresh.
+      const plant = await findOrCreateTenantPlant(pool, tenantId);
+      const created = await pool.query("SELECT * FROM plants WHERE id = $1", [plant.id]);
+      plants = created.rows;
+    }
     const plantIds = plants.map((p: any) => p.id);
     const unitsRes = plantIds.length
       ? await pool.query("SELECT * FROM units WHERE plant_id = ANY($1::int[]) ORDER BY name ASC", [plantIds])
@@ -10613,15 +10622,19 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       route_id !== undefined &&
       route_id !== null &&
       String(route_id).trim() !== "";
+    // Route-less mode is selected by an explicit simpleMode flag with or
+    // without a route_id; a missing route alone also implies it.
     const simpleMode = req.body.simpleMode === true || !hasRoute;
     let rId: number;
-    if (hasRoute) {
+    if (hasRoute && !simpleMode) {
       rId = parseInt(route_id, 10);
       if (isNaN(rId)) {
         return res.status(400).json({ error: "Invalid route_id field (integer required)" });
       }
     } else {
-      // H1 - no route supplied: never 400 solely for the missing route.
+      // H1 - route-less mode: never 400 solely for the missing route. The
+      // server find-or-creates the plant and its is_system route so an asset
+      // under the plant root succeeds end-to-end from the Explorer.
       const companyIdRaw =
         req.tenantId ??
         req.auth?.tenantId ??
@@ -10669,7 +10682,7 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
     const equipStatus = status || 'Active';
 
     if (pool) {
-      if (hasRoute && !(await parentExists(pool, "routes", rId))) {
+      if (!simpleMode && !(await parentExists(pool, "routes", rId))) {
         return res.status(400).json({ error: `Parent route not found: ${rId}` });
       }
       const result = await pool.query(

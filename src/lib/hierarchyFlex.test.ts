@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  SIMPLE_MODE_PLANT_NAME,
   SYSTEM_ROUTE_NAME,
   findOrCreateSimpleModeRoute,
+  findOrCreateTenantPlant,
   resolveSimpleModeHierarchy,
   type Queryable
 } from "./hierarchyFlex";
@@ -21,6 +23,10 @@ const serverSource = readFileSync(
 );
 const migrationSource = readFileSync(
   fileURLToPath(new URL("../../migrations/017_hierarchy_flex.sql", import.meta.url)),
+  "utf8"
+);
+const explorerSource = readFileSync(
+  fileURLToPath(new URL("../components/EquipmentExplorer.tsx", import.meta.url)),
   "utf8"
 );
 
@@ -95,6 +101,158 @@ describe("H1 simple mode - server auto plant + system route", () => {
     );
     expect(body).toContain("resolveSimpleModeHierarchy(pool, companyId)");
     expect(body).toContain("simpleMode");
+  });
+});
+
+describe("MICRO-FIX empty-tenant first run never dead-ends", () => {
+  function fakeTenantDb() {
+    const state = {
+      plants: [] as Record<string, unknown>[],
+      routes: [] as Record<string, unknown>[],
+      units: [] as Record<string, unknown>[],
+      assets: [] as Record<string, unknown>[],
+      plantInserts: 0,
+      routeInserts: 0,
+      nextId: 100
+    };
+    const db = {
+      state,
+      query: async (
+        text: string,
+        params?: unknown[]
+      ): Promise<{ rows: Record<string, unknown>[] }> => {
+        const sql = text.replace(/\s+/g, " ").trim();
+        if (sql.startsWith("SELECT * FROM plants WHERE company_id = $1")) {
+          return { rows: state.plants.filter((p) => p.company_id === params?.[0]) };
+        }
+        if (sql.startsWith("SELECT * FROM plants WHERE id = $1")) {
+          return { rows: state.plants.filter((p) => p.id === params?.[0]) };
+        }
+        if (sql.startsWith("SELECT * FROM plants ORDER BY id ASC LIMIT 1")) {
+          return { rows: state.plants.slice(0, 1) };
+        }
+        if (sql.startsWith("INSERT INTO plants")) {
+          state.plantInserts += 1;
+          const row = {
+            id: ++state.nextId,
+            name: params?.[0],
+            location: params?.[0],
+            company_id: params?.[1] ?? null
+          };
+          state.plants.push(row);
+          return { rows: [row] };
+        }
+        if (sql.startsWith("SELECT * FROM routes WHERE plant_id = $1 AND is_system = TRUE")) {
+          return {
+            rows: state.routes.filter(
+              (r) => r.plant_id === params?.[0] && r.is_system === true
+            )
+          };
+        }
+        if (sql.startsWith("INSERT INTO routes")) {
+          state.routeInserts += 1;
+          const row = {
+            id: ++state.nextId,
+            plant_id: params?.[0],
+            name: params?.[1],
+            description: params?.[2],
+            is_system: true
+          };
+          state.routes.push(row);
+          return { rows: [row] };
+        }
+        if (sql.startsWith("INSERT INTO units")) {
+          const row = { id: ++state.nextId, plant_id: params?.[0], name: params?.[1] };
+          state.units.push(row);
+          return { rows: [row] };
+        }
+        if (sql.startsWith("INSERT INTO assets")) {
+          const row = { id: ++state.nextId, route_id: params?.[0], name: params?.[1] };
+          state.assets.push(row);
+          return { rows: [row] };
+        }
+        if (sql.startsWith("SELECT * FROM units")) return { rows: state.units };
+        if (sql.startsWith("SELECT * FROM routes")) return { rows: state.routes };
+        if (sql.startsWith("SELECT * FROM assets")) return { rows: state.assets };
+        return { rows: [] };
+      }
+    };
+    return db;
+  }
+
+  it("GET /api/hierarchy on an empty tenant yields exactly one 'Main Site' plant", async () => {
+    const db = fakeTenantDb();
+    const plant = await findOrCreateTenantPlant(db, 5);
+    expect(plant.name).toBe(SIMPLE_MODE_PLANT_NAME);
+    expect(plant.name).toBe("Main Site");
+    const reloaded = await db.query("SELECT * FROM plants WHERE id = $1", [plant.id]);
+    expect(reloaded.rows).toHaveLength(1);
+    expect(db.state.plants).toHaveLength(1);
+  });
+
+  it("a unit created immediately after first load succeeds with the returned plant id", async () => {
+    const db = fakeTenantDb();
+    const plant = await findOrCreateTenantPlant(db, 7);
+    const created = await db.query(
+      "INSERT INTO units (plant_id, name) VALUES ($1, $2) RETURNING *",
+      [plant.id, "Compressor House"]
+    );
+    expect(created.rows[0].plant_id).toBe(plant.id);
+    expect(db.state.units).toHaveLength(1);
+  });
+
+  it("a route-less asset under the root lands under the is_system route", async () => {
+    const db = fakeTenantDb();
+    const plant = await findOrCreateTenantPlant(db, 8);
+    const { route } = await resolveSimpleModeHierarchy(db, 8);
+    expect(route.plant_id).toBe(plant.id);
+    expect(route.is_system).toBe(true);
+    const asset = await db.query(
+      "INSERT INTO assets (route_id, name) VALUES ($1, $2) RETURNING *",
+      [route.id, "P-101"]
+    );
+    expect(asset.rows[0].route_id).toBe(route.id);
+    expect(
+      db.state.routes.filter((r) => r.plant_id === plant.id && r.is_system === true)
+    ).toHaveLength(1);
+  });
+
+  it("repeated hierarchy calls create no duplicate plants or system routes", async () => {
+    const db = fakeTenantDb();
+    for (let i = 0; i < 3; i += 1) {
+      await resolveSimpleModeHierarchy(db, 9);
+    }
+    expect(db.state.plants).toHaveLength(1);
+    expect(db.state.plantInserts).toBe(1);
+    expect(db.state.routes.filter((r) => r.is_system === true)).toHaveLength(1);
+  });
+
+  it("the hierarchy read resolves the plant before building its payload", () => {
+    const start = serverSource.indexOf('app.get("/api/hierarchy"');
+    const body = serverSource.slice(start, start + 4000);
+    expect(body).toContain("findOrCreateTenantPlant(pool, tenantId)");
+    expect(body).toContain("SELECT * FROM plants WHERE id = $1");
+    expect(body.indexOf("findOrCreateTenantPlant")).toBeLessThan(
+      body.indexOf("const plantIds")
+    );
+  });
+
+  it("POST /api/assets treats simpleMode as route-less with or without route_id", () => {
+    const start = serverSource.indexOf('app.post(["/api/assets", "/api/equipment"]');
+    const body = serverSource.slice(start, start + 6000);
+    expect(body).toContain("if (hasRoute && !simpleMode)");
+    expect(body).toContain("if (!simpleMode && !(await parentExists(pool, \"routes\", rId)))");
+    expect(body).toContain("resolveSimpleModeHierarchy(pool, companyId)");
+  });
+
+  it("Explorer re-fetches once when hydration leaves the root without a server id", () => {
+    expect(explorerSource).toContain("const resolveServerPlantId");
+    expect(explorerSource).toContain(
+      "return refreshed.plants.find((p) => p.id === SITE_PLANT_ID)?.serverId ?? null;"
+    );
+    expect(explorerSource).not.toContain(
+      "Plant is not saved on the server yet. Refresh and try again."
+    );
   });
 });
 
