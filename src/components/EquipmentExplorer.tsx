@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -54,6 +54,24 @@ import { confirmArtifactExport } from "./ArtifactDisclaimer";
 import ComponentKinematicsSpecsForm, {
   type CbmKinematics
 } from "./ComponentKinematicsSpecsForm";
+import CreateComponentModal, {
+  type CreateComponentResult
+} from "./CreateComponentModal";
+import {
+  createAsset,
+  createCollectionPoint,
+  createComponent,
+  createRoute,
+  createUnit,
+  deleteHierarchyNode,
+  fetchHierarchy,
+  renamePlant,
+  updateAsset,
+  updateCollectionPoint,
+  updateComponent,
+  updateRoute,
+  updateUnit
+} from "../lib/hierarchyApi";
 
 /* ========================================================================== */
 /* Types                                                                      */
@@ -1265,7 +1283,7 @@ function aiExtractSchema(customType: string): CbmKinematics {
 /* Tree builder                                                               */
 /* ========================================================================== */
 
-function buildExplorerTree(
+export function buildExplorerTree(
   store: EquipmentStore,
   facilityName: string
 ): ExplorerNode[] {
@@ -1306,14 +1324,18 @@ function buildExplorerTree(
         };
       });
 
-  const plantPath = facilityName;
+  // H10 - the root always displays plants.name (never the admin email prop).
+  const plantPath =
+    store.plants.find((p) => p.id === SITE_PLANT_ID)?.name?.trim() || facilityName;
+  const isSystemRoute = (r: EquipRoute) =>
+    r.isSystem === true || r.id === SITE_FACILITY_ROUTE_ID;
   const plantUnits = store.units.filter(
     (u) => u.plantId === SITE_PLANT_ID || !u.plantId
   );
   const unitNodes: ExplorerNode[] = plantUnits.map((unit) => {
     const unitPath = `${plantPath} ➔ ${unit.name}`;
     const unitRoutes = store.routes.filter(
-      (r) => r.unitId === unit.id && r.id !== SITE_FACILITY_ROUTE_ID
+      (r) => r.unitId === unit.id && !isSystemRoute(r)
     );
     return {
       id: unit.id,
@@ -1338,7 +1360,7 @@ function buildExplorerTree(
   const unitIds = new Set(plantUnits.map((u) => u.id));
   const directRoutes = store.routes.filter(
     (r) =>
-      r.id !== SITE_FACILITY_ROUTE_ID &&
+      !isSystemRoute(r) &&
       (!r.unitId || !unitIds.has(r.unitId))
   );
   const routeNodes = directRoutes.map((route) => {
@@ -1353,48 +1375,50 @@ function buildExplorerTree(
     };
   });
 
-  /* Facility-direct assets / orphan components & points (hidden bucket route). */
-  const facilityRoute = store.routes.find((r) => r.id === SITE_FACILITY_ROUTE_ID);
+  /* D4 - system routes are invisible; their flat assets hang directly under
+     the plant root. Real routes are rendered exactly as before. */
+  const systemRoutes = store.routes.filter(isSystemRoute);
   const facilityDirectNodes: ExplorerNode[] = [];
-  if (facilityRoute) {
+  for (const systemRoute of systemRoutes) {
+    const isLegacyFacility = systemRoute.id === SITE_FACILITY_ROUTE_ID;
     facilityDirectNodes.push(
-      ...attachAssetBranch(facilityRoute, plantPath, SITE_PLANT_ID, true)
+      ...attachAssetBranch(systemRoute, plantPath, SITE_PLANT_ID, isLegacyFacility)
     );
-    const holding = facilityRoute.assets.find(
+    if (!isLegacyFacility) continue;
+    const holding = systemRoute.assets.find(
       (a) => a.id === SITE_FACILITY_HOLDING_ASSET_ID
     );
-    if (holding) {
-      for (const comp of holding.components) {
-        if (comp.id === SITE_FACILITY_POINTS_COMP_ID) {
-          for (const pt of comp.collectionPoints ?? []) {
-            facilityDirectNodes.push({
-              id: pt.id,
-              kind: "point",
-              label: pt.name,
-              path: `${plantPath} ➔ ${pt.name}`,
-              parentId: SITE_PLANT_ID,
-              children: []
-            });
-          }
-          continue;
-        }
-        const compPath = `${plantPath} ➔ ${comp.name}`;
-        facilityDirectNodes.push({
-          id: comp.id,
-          kind: "component",
-          label: comp.name,
-          path: compPath,
-          parentId: SITE_PLANT_ID,
-          children: (comp.collectionPoints ?? []).map((pt) => ({
+    if (!holding) continue;
+    for (const comp of holding.components) {
+      if (comp.id === SITE_FACILITY_POINTS_COMP_ID) {
+        for (const pt of comp.collectionPoints ?? []) {
+          facilityDirectNodes.push({
             id: pt.id,
-            kind: "point" as const,
+            kind: "point",
             label: pt.name,
-            path: `${compPath} ➔ ${pt.name}`,
-            parentId: comp.id,
+            path: `${plantPath} / ${pt.name}`,
+            parentId: SITE_PLANT_ID,
             children: []
-          }))
-        });
+          });
+        }
+        continue;
       }
+      const compPath = `${plantPath} / ${comp.name}`;
+      facilityDirectNodes.push({
+        id: comp.id,
+        kind: "component",
+        label: comp.name,
+        path: compPath,
+        parentId: SITE_PLANT_ID,
+        children: (comp.collectionPoints ?? []).map((pt) => ({
+          id: pt.id,
+          kind: "point" as const,
+          label: pt.name,
+          path: `${compPath} / ${pt.name}`,
+          parentId: comp.id,
+          children: []
+        }))
+      });
     }
   }
 
@@ -1402,7 +1426,7 @@ function buildExplorerTree(
     {
       id: SITE_PLANT_ID,
       kind: "plant",
-      label: facilityName,
+      label: plantPath,
       path: plantPath,
       parentId: null,
       children: [...unitNodes, ...routeNodes, ...facilityDirectNodes]
@@ -1508,9 +1532,13 @@ function lookupEditableEntity(
 /** Facility has no units/routes/assets yet (root plant always exists). */
 function isFacilityEmpty(store: EquipmentStore): boolean {
   if (store.units.length > 0) return false;
-  const visibleRoutes = store.routes.filter((r) => r.id !== SITE_FACILITY_ROUTE_ID);
+  const visibleRoutes = store.routes.filter(
+    (r) => r.id !== SITE_FACILITY_ROUTE_ID && !r.isSystem
+  );
   if (visibleRoutes.length > 0) return false;
-  const facilityRoute = store.routes.find((r) => r.id === SITE_FACILITY_ROUTE_ID);
+  const facilityRoute = store.routes.find(
+    (r) => r.id === SITE_FACILITY_ROUTE_ID || r.isSystem === true
+  );
   if (!facilityRoute) return true;
   if (facilityRoute.assets.some((a) => a.id !== SITE_FACILITY_HOLDING_ASSET_ID)) {
     return false;
@@ -1528,63 +1556,6 @@ function isFacilityEmpty(store: EquipmentStore): boolean {
   );
   if ((pointsHost?.collectionPoints?.length ?? 0) > 0) return false;
   return true;
-}
-
-function ensureFacilityRoute(
-  store: EquipmentStore,
-  facilityName: string
-): EquipRoute {
-  let route = store.routes.find((r) => r.id === SITE_FACILITY_ROUTE_ID);
-  if (!route) {
-    route = {
-      id: SITE_FACILITY_ROUTE_ID,
-      name: "Facility Direct",
-      location: facilityName,
-      assets: [],
-      plantId: SITE_PLANT_ID,
-      collectionFrequency: "Monthly"
-    };
-    store.routes.push(route);
-  }
-  return route;
-}
-
-function ensureFacilityHoldingAsset(
-  store: EquipmentStore,
-  facilityName: string
-): EquipAsset {
-  const route = ensureFacilityRoute(store, facilityName);
-  let asset = route.assets.find((a) => a.id === SITE_FACILITY_HOLDING_ASSET_ID);
-  if (!asset) {
-    asset = {
-      id: SITE_FACILITY_HOLDING_ASSET_ID,
-      tag: "FAC",
-      name: "Facility Equipment",
-      location: facilityName,
-      status: "Normal",
-      overallVibration: 1.0,
-      components: []
-    };
-    route.assets.push(asset);
-  }
-  return asset;
-}
-
-function ensureFacilityPointsHost(
-  store: EquipmentStore,
-  facilityName: string
-): EquipComponent {
-  const holding = ensureFacilityHoldingAsset(store, facilityName);
-  let host = holding.components.find((c) => c.id === SITE_FACILITY_POINTS_COMP_ID);
-  if (!host) {
-    host = {
-      id: SITE_FACILITY_POINTS_COMP_ID,
-      name: "Collection Points",
-      collectionPoints: []
-    };
-    holding.components.push(host);
-  }
-  return host;
 }
 
 /* ========================================================================== */
@@ -1606,6 +1577,21 @@ export default function EquipmentExplorer({
   const [tick, setTick] = useState(0);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ExplorerNode | null>(null);
+  const [plantRenameOpen, setPlantRenameOpen] = useState(false);
+  const [plantNameDraft, setPlantNameDraft] = useState("");
+  const [componentModalOpen, setComponentModalOpen] = useState(false);
+  const [componentParentAssetId, setComponentParentAssetId] = useState("");
+  const refreshFromServer = useCallback(async () => {
+    try {
+      await fetchHierarchy();
+      setTick((n) => n + 1);
+    } catch (err) {
+      console.error("Equipment hierarchy sync failed:", err);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshFromServer();
+  }, [refreshFromServer]);
   const store = useMemo(() => {
     void tick;
     return ensureSitePlantRoot(facilityName);
@@ -1617,6 +1603,17 @@ export default function EquipmentExplorer({
   );
   const empty = isFacilityEmpty(store);
   const siteRoot = tree[0] ?? null;
+  const serverPlantId = store.plants.find((p) => p.id === SITE_PLANT_ID)?.serverId;
+  const systemRoute = store.routes.find((r) => r.isSystem === true);
+  const componentAssetOptions = useMemo(
+    () =>
+      tree.flatMap(function collect(node): { id: string; label: string }[] {
+        const self =
+          node.kind === "asset" ? [{ id: node.id, label: node.label }] : [];
+        return [...self, ...node.children.flatMap(collect)];
+      }),
+    [tree]
+  );
 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     [SITE_PLANT_ID]: true
@@ -1768,12 +1765,65 @@ export default function EquipmentExplorer({
     toast("Database reset to clean state.", "success");
   };
 
+  const handleComponentModalSave = async (result: CreateComponentResult) => {
+    if (!componentParentAssetId) {
+      setError("Select the parent asset for this component.");
+      return;
+    }
+    const parentAsset = store.routes
+      .flatMap((r) => r.assets)
+      .find((a) => a.id === componentParentAssetId);
+    if (!parentAsset?.serverId) {
+      setError("Parent asset is not saved on the server yet. Refresh and try again.");
+      return;
+    }
+    try {
+      await createComponent({
+        assetId: parentAsset.serverId,
+        name: result.name,
+        type: result.componentType,
+        manufacturer: result.manufacturer,
+        specifications: { ...result.specs, kinematics: result.specs }
+      });
+      setComponentModalOpen(false);
+      await refreshFromServer();
+      toast(`Component "${result.name}" created.`, "success");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create component.");
+    }
+  };
+
+  const openPlantRename = () => {
+    setPlantNameDraft(store.plants.find((p) => p.id === SITE_PLANT_ID)?.name || "");
+    setPlantRenameOpen(true);
+  };
+
+  const handlePlantRename = async () => {
+    const name = plantNameDraft.trim();
+    if (!name) {
+      setError("Plant name is required.");
+      return;
+    }
+    if (!serverPlantId) {
+      setError("Plant is not saved on the server yet. Refresh and try again.");
+      return;
+    }
+    try {
+      await renamePlant(serverPlantId, name);
+      setPlantRenameOpen(false);
+      await refreshFromServer();
+      toast("Plant renamed.", "success");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to rename plant.");
+    }
+  };
+
   const requestDeleteNode = (node: ExplorerNode) => {
     if (node.id === SITE_PLANT_ID || node.kind === "plant") return;
     setDeleteTarget(node);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     if (deleteTarget.id === SITE_PLANT_ID || deleteTarget.kind === "plant") {
       setDeleteTarget(null);
@@ -1781,40 +1831,47 @@ export default function EquipmentExplorer({
     }
     const label = deleteTarget.label;
     const parentId = deleteTarget.parentId || SITE_PLANT_ID;
-    const next = deleteNodeFromStore(
-      cloneStore(getEquipmentStore()),
-      deleteTarget.id,
-      deleteTarget.kind
-    );
-    // Drop empty facility-direct bucket route if nothing left in it
-    const fac = next.routes.find((r) => r.id === SITE_FACILITY_ROUTE_ID);
-    if (fac) {
-      const holding = fac.assets.find(
-        (a) => a.id === SITE_FACILITY_HOLDING_ASSET_ID
-      );
-      const hasRealAssets = fac.assets.some(
-        (a) => a.id !== SITE_FACILITY_HOLDING_ASSET_ID
-      );
-      const holdingEmpty =
-        !holding ||
-        (holding.components.filter((c) => c.id !== SITE_FACILITY_POINTS_COMP_ID)
-          .length === 0 &&
-          (holding.components.find((c) => c.id === SITE_FACILITY_POINTS_COMP_ID)
-            ?.collectionPoints?.length ?? 0) === 0);
-      if (!hasRealAssets && holdingEmpty) {
-        next.routes = next.routes.filter((r) => r.id !== SITE_FACILITY_ROUTE_ID);
+    try {
+      if (deleteTarget.kind === "unit") {
+        const unit = store.units.find((u) => u.id === deleteTarget.id);
+        if (!unit?.serverId) throw new Error("Unit is not saved on the server yet.");
+        await deleteHierarchyNode("unit", unit.serverId);
+      } else if (deleteTarget.kind === "route") {
+        const route = store.routes.find((r) => r.id === deleteTarget.id);
+        if (!route?.serverId) throw new Error("Route is not saved on the server yet.");
+        await deleteHierarchyNode("route", route.serverId);
+      } else if (deleteTarget.kind === "asset") {
+        const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === deleteTarget.id);
+        if (!asset?.serverId) throw new Error("Asset is not saved on the server yet.");
+        await deleteHierarchyNode("asset", asset.serverId);
+      } else if (deleteTarget.kind === "component") {
+        const component = store.routes
+          .flatMap((r) => r.assets)
+          .flatMap((a) => a.components)
+          .find((c) => c.id === deleteTarget.id);
+        if (!component?.serverId) throw new Error("Component is not saved on the server yet.");
+        await deleteHierarchyNode("component", component.serverId);
+      } else if (deleteTarget.kind === "point") {
+        const point = store.routes
+          .flatMap((r) => r.assets)
+          .flatMap((a) => a.components)
+          .flatMap((c) => c.collectionPoints ?? [])
+          .find((p) => p.id === deleteTarget.id);
+        if (!point?.serverId) throw new Error("Collection point is not saved on the server yet.");
+        await deleteHierarchyNode("point", point.serverId);
       }
+      await refreshFromServer();
+      setMode("idle");
+      setError("");
+      setSelectedNodeId(parentId);
+      setParentNodeId(SITE_PLANT_ID);
+      setDeleteTarget(null);
+      toast(`"${label}" successfully deleted.`, "success");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete hierarchy node.");
+      setDeleteTarget(null);
     }
-    saveEquipmentStore(next);
-    refresh();
-    setMode("idle");
-    setError("");
-    setSelectedNodeId(parentId);
-    setParentNodeId(SITE_PLANT_ID);
-    setDeleteTarget(null);
-    toast(`"${label}" successfully deleted.`, "success");
   };
-
   /* ---- Form fields (create) ---- */
   const [unitName, setUnitName] = useState("");
   const [routeName, setRouteName] = useState("");
@@ -1906,6 +1963,19 @@ export default function EquipmentExplorer({
   };
 
   const beginQuickAdd = (kind: Exclude<ExplorerKind, "plant">) => {
+    // H9 - components are created against a real asset via the parent selector.
+    if (kind === "component") {
+      const parent = resolveQuickAddParent("component");
+      const firstAsset =
+        parent?.kind === "asset"
+          ? parent.id
+          : componentAssetOptions[0]?.id || "";
+      setComponentParentAssetId(firstAsset);
+      setComponentModalOpen(true);
+      setError("");
+      setMode("idle");
+      return;
+    }
     resetFormFields();
     setQuickNodeName("");
     setQuickDriveType("Direct");
@@ -1949,218 +2019,80 @@ export default function EquipmentExplorer({
     persistQuickAddNode(name);
   };
 
-  const persistQuickAddNode = (displayName: string) => {
+  const persistQuickAddNode = async (displayName: string) => {
     setError("");
-    const next = cloneStore(getEquipmentStore());
-    next.plants = [
-      {
-        id: SITE_PLANT_ID,
-        name: facilityName,
-        location:
-          next.plants.find((p) => p.id === SITE_PLANT_ID)?.location ||
-          facilityName,
-        facilityType:
-          next.plants.find((p) => p.id === SITE_PLANT_ID)?.facilityType ||
-          "Power Plant"
-      }
-    ];
-    const parentId = parentNodeId || SITE_PLANT_ID;
-    let newId = "";
-
-    if (createKind === "unit") {
-      const unit: EquipUnit = {
-        id: uid("unit"),
-        name: displayName,
-        plantId: SITE_PLANT_ID
-      };
-      next.units.push(unit);
-      newId = unit.id;
-    } else if (createKind === "route") {
-      const parent = findNode(tree, parentId);
-      const isPlant = !parent || parent.kind === "plant";
-      const unit = next.units.find((u) => u.id === parentId);
-      const route: EquipRoute = {
-        id: uid("route"),
-        name: displayName,
-        location: unit?.name || facilityName,
-        assets: [],
-        plantId: SITE_PLANT_ID,
-        unitId: isPlant ? undefined : parentId,
-        collectionFrequency: routeFreq
-      };
-      next.routes.push(route);
-      newId = route.id;
-    } else if (createKind === "asset") {
-      const parent = findNode(tree, parentId);
-      let routeIdx = next.routes.findIndex((r) => r.id === parentId);
-      if (routeIdx < 0 && parent?.kind === "plant") {
-        ensureFacilityRoute(next, facilityName);
-        routeIdx = next.routes.findIndex((r) => r.id === SITE_FACILITY_ROUTE_ID);
-      }
-      if (routeIdx < 0) {
-        setError("Parent route not found. Choose a valid parent location.");
+    try {
+      if (!serverPlantId) {
+        setError("Plant is not saved on the server yet. Refresh and try again.");
         return;
       }
-      const route = next.routes[routeIdx];
-      const tagGuess =
-        assetTag.trim() ||
-        displayName
-          .split(/[\s—–-]+/)
-          .find((t) => /[A-Za-z0-9]/.test(t))
-          ?.toUpperCase() ||
-        displayName.slice(0, 12).toUpperCase().replace(/\s+/g, "-");
-      const asset: EquipAsset = {
-        id: uid("asset"),
-        tag: tagGuess.toUpperCase(),
-        name: displayName,
-        location: route.location || facilityName,
-        machineType: machineType || undefined,
-        speedRpm: assetRpm ? Number(assetRpm) || undefined : undefined,
-        status: "Normal",
-        overallVibration: 1.0,
-        components: []
-      };
-      next.routes[routeIdx] = {
-        ...route,
-        assets: [...route.assets, asset]
-      };
-      newId = asset.id;
-    } else if (createKind === "component") {
-      const driveMap =
-        quickDriveType === "Belt"
-          ? ("Belt Drive" as const)
-          : ("Direct Drive" as const);
-      const kinematics: CbmKinematics = {
-        ...DEFAULT_KIN,
-        ratedRpm: assetRpm.trim() || DEFAULT_KIN.ratedRpm,
-        driveArrangement: driveMap,
-        bearingDe: quickBearingDe.trim() || undefined,
-        bearingNde: quickBearingNde.trim() || undefined,
-        gearboxRatio:
-          quickDriveType === "Gearbox"
-            ? quickGearRatio.trim() || undefined
-            : undefined,
-        gearTeethZ1:
-          quickDriveType === "Gearbox"
-            ? quickToothCount.trim() || undefined
-            : undefined
-      };
-      const rpmNum = Number(kinematics.ratedRpm || "");
-      const comp: EquipComponent = {
-        id: uid("comp"),
-        name: displayName,
-        componentType: compType,
-        bearingType: kinematics.bearingDe || kinematics.bearingNde,
-        speedRpm: Number.isFinite(rpmNum) && rpmNum > 0 ? rpmNum : undefined,
-        isoClass: kinematics.isoClass,
-        kinematics,
-        collectionPoints: []
-      };
-      const parent = findNode(tree, parentId);
-      let found = false;
-      if (parent?.kind === "plant" || parentId === SITE_PLANT_ID) {
-        ensureFacilityHoldingAsset(next, facilityName);
-        const routeIdx = next.routes.findIndex(
-          (r) => r.id === SITE_FACILITY_ROUTE_ID
+      const parentId = parentNodeId || SITE_PLANT_ID;
+      let newId = "";
+      if (createKind === "unit") {
+        const created = await createUnit(serverPlantId, displayName);
+        newId = String(created.id);
+      } else if (createKind === "route") {
+        const parentUnit = store.units.find((u) => u.id === parentId);
+        const created = await createRoute(
+          serverPlantId,
+          displayName,
+          parentUnit?.serverId
         );
-        next.routes[routeIdx] = {
-          ...next.routes[routeIdx],
-          assets: next.routes[routeIdx].assets.map((a) =>
-            a.id === SITE_FACILITY_HOLDING_ASSET_ID
-              ? { ...a, components: [...a.components, comp] }
-              : a
-          )
-        };
-        found = true;
+        newId = String(created.id);
+      } else if (createKind === "asset") {
+        const parentRoute = store.routes.find((r) => r.id === parentId);
+        const created = await createAsset({
+          routeId: parentRoute?.serverId,
+          simpleMode: !parentRoute?.serverId,
+          name: displayName,
+          tagNumber:
+            assetTag.trim() ||
+            displayName.slice(0, 12).toUpperCase().replace(/\s+/g, "-"),
+          type: machineType || undefined,
+          criticality: "Medium",
+          status: "Active"
+        });
+        newId = String(created.id);
+      } else if (createKind === "component") {
+        setComponentParentAssetId(parentId);
+        setComponentModalOpen(true);
+        return;
+      } else if (createKind === "point") {
+        const parentComponent = store.routes
+          .flatMap((r) => r.assets)
+          .flatMap((a) => a.components)
+          .find((c) => c.id === parentId);
+        if (!parentComponent?.serverId) {
+          setError("Choose a component parent to add a collection point.");
+          return;
+        }
+        const created = await createCollectionPoint(
+          parentComponent.serverId,
+          displayName,
+          pointOrient
+        );
+        newId = String(created.id);
       } else {
-        next.routes = next.routes.map((r) => ({
-          ...r,
-          assets: r.assets.map((a) => {
-            if (a.id !== parentId) return a;
-            found = true;
-            return { ...a, components: [...a.components, comp] };
-          })
-        }));
-      }
-      if (!found) {
-        setError("Parent asset not found. Choose a valid parent location.");
         return;
       }
-      newId = comp.id;
-    } else if (createKind === "point") {
-      const point: EquipCollectionPoint = {
-        id: uid("pt"),
-        name: displayName,
-        orientation: pointOrient,
-        measurementType: pointMeas
-      };
-      const parent = findNode(tree, parentId);
-      let found = false;
-      if (parent?.kind === "plant" || parentId === SITE_PLANT_ID) {
-        ensureFacilityPointsHost(next, facilityName);
-        const routeIdx = next.routes.findIndex(
-          (r) => r.id === SITE_FACILITY_ROUTE_ID
-        );
-        next.routes[routeIdx] = {
-          ...next.routes[routeIdx],
-          assets: next.routes[routeIdx].assets.map((a) => {
-            if (a.id !== SITE_FACILITY_HOLDING_ASSET_ID) return a;
-            return {
-              ...a,
-              components: a.components.map((c) => {
-                if (c.id !== SITE_FACILITY_POINTS_COMP_ID) return c;
-                return {
-                  ...c,
-                  collectionPoints: [...(c.collectionPoints ?? []), point]
-                };
-              })
-            };
-          })
-        };
-        found = true;
-      } else {
-        next.routes = next.routes.map((r) => ({
-          ...r,
-          assets: r.assets.map((a) => ({
-            ...a,
-            components: a.components.map((c) => {
-              if (c.id !== parentId) return c;
-              found = true;
-              return {
-                ...c,
-                collectionPoints: [...(c.collectionPoints ?? []), point]
-              };
-            })
-          }))
-        }));
-      }
-      if (!found) {
-        setError(
-          "Parent component not found. Choose a valid parent location."
-        );
-        return;
-      }
-      newId = point.id;
-    } else {
-      return;
+      await refreshFromServer();
+      expandToRevealNode(newId, parentId);
+      setSelectedNodeId(newId);
+      setQuickAddOpen(false);
+      setQuickNodeName("");
+      setQuickDriveType("Direct");
+      setQuickBearingDe("");
+      setQuickBearingNde("");
+      setQuickGearRatio("");
+      setQuickToothCount("");
+      setError("");
+      toast(
+        `${KIND_LABEL[createKind]} "${displayName}" saved to the server hierarchy.`,
+        "success"
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save hierarchy node.");
     }
-
-    saveEquipmentStore(next);
-    refresh();
-    expandToRevealNode(newId, parentId);
-    setSelectedNodeId(newId);
-    setQuickAddOpen(false);
-    setQuickNodeName("");
-    setQuickDriveType("Direct");
-    setQuickBearingDe("");
-    setQuickBearingNde("");
-    setQuickGearRatio("");
-    setQuickToothCount("");
-    setError("");
-    toast(
-      `${KIND_LABEL[createKind]} "${displayName}" added to plant hierarchy.`,
-      "success"
-    );
   };
 
   const EDITABLE_KINDS: ExplorerKind[] = [
@@ -2231,191 +2163,106 @@ export default function EquipmentExplorer({
     });
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     if (!selectedNodeId || !EDITABLE_KINDS.includes(createKind)) return;
     setError("");
-    const next = cloneStore(getEquipmentStore());
-    next.plants = [
-      {
-        id: SITE_PLANT_ID,
-        name: facilityName,
-        location:
-          next.plants.find((p) => p.id === SITE_PLANT_ID)?.location ||
-          facilityName,
-        facilityType:
-          next.plants.find((p) => p.id === SITE_PLANT_ID)?.facilityType ||
-          "Power Plant"
-      }
-    ];
-
-    if (createKind === "unit") {
-      if (!unitName.trim()) {
-        setError("Unit / Area name is required.");
+    try {
+      if (createKind === "unit") {
+        if (!unitName.trim()) {
+          setError("Unit / Area name is required.");
+          return;
+        }
+        const unit = store.units.find((u) => u.id === selectedNodeId);
+        if (!unit?.serverId) {
+          setError("Unit is not saved on the server yet. Refresh and try again.");
+          return;
+        }
+        await updateUnit(unit.serverId, unitName.trim());
+      } else if (createKind === "route") {
+        if (!routeName.trim()) {
+          setError("Route name is required.");
+          return;
+        }
+        const route = store.routes.find((r) => r.id === selectedNodeId);
+        if (!route?.serverId) {
+          setError("Route is not saved on the server yet. Refresh and try again.");
+          return;
+        }
+        await updateRoute(route.serverId, routeName.trim());
+      } else if (createKind === "asset") {
+        if (!assetName.trim()) {
+          setError("Asset name is required.");
+          return;
+        }
+        const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === selectedNodeId);
+        if (!asset?.serverId) {
+          setError("Asset is not saved on the server yet. Refresh and try again.");
+          return;
+        }
+        await updateAsset({
+          serverId: asset.serverId,
+          name: assetName.trim(),
+          tagNumber: assetTag.trim().toUpperCase(),
+          type: machineType || undefined,
+          criticality: asset.criticality,
+          status: "Active"
+        });
+      } else if (createKind === "component") {
+        if (!compName.trim()) {
+          setError("Component name is required.");
+          return;
+        }
+        const component = store.routes
+          .flatMap((r) => r.assets)
+          .flatMap((a) => a.components)
+          .find((c) => c.id === selectedNodeId);
+        if (!component?.serverId) {
+          setError("Component is not saved on the server yet. Refresh and try again.");
+          return;
+        }
+        const kinematics: CbmKinematics | undefined = showSpecs
+          ? {
+              ...kin,
+              customEquipmentType:
+                compType === "Other (Custom / AI Spec Search)"
+                  ? customEquipType.trim()
+                  : kin.customEquipmentType
+            }
+          : undefined;
+        await updateComponent(component.serverId, {
+          name: compName.trim(),
+          type: compType,
+          specifications: kinematics ? { kinematics } : undefined
+        });
+      } else if (createKind === "point") {
+        if (!pointName.trim()) {
+          setError("Point name is required.");
+          return;
+        }
+        const point = store.routes
+          .flatMap((r) => r.assets)
+          .flatMap((a) => a.components)
+          .flatMap((c) => c.collectionPoints ?? [])
+          .find((p) => p.id === selectedNodeId);
+        if (!point?.serverId) {
+          setError("Collection point is not saved on the server yet. Refresh and try again.");
+          return;
+        }
+        await updateCollectionPoint(point.serverId, {
+          name: pointName.trim(),
+          orientation: pointOrient
+        });
+      } else {
         return;
       }
-      const idx = next.units.findIndex((u) => u.id === selectedNodeId);
-      if (idx < 0) {
-        setError("Unit not found.");
-        return;
-      }
-      next.units[idx] = { ...next.units[idx], name: unitName.trim() };
-      saveEquipmentStore(next);
-      refresh();
+      await refreshFromServer();
       cancelForm();
       setSelectedNodeId(selectedNodeId);
-      toast("Unit updated.", "success");
-      return;
-    }
-
-    if (createKind === "route") {
-      if (!routeName.trim()) {
-        setError("Route name is required.");
-        return;
-      }
-      const idx = next.routes.findIndex((r) => r.id === selectedNodeId);
-      if (idx < 0) {
-        setError("Route not found.");
-        return;
-      }
-      next.routes[idx] = {
-        ...next.routes[idx],
-        name: routeName.trim(),
-        collectionFrequency: routeFreq
-      };
-      saveEquipmentStore(next);
-      refresh();
-      cancelForm();
-      setSelectedNodeId(selectedNodeId);
-      toast("Route updated.", "success");
-      return;
-    }
-
-    if (createKind === "asset") {
-      if (!assetName.trim()) {
-        setError("Asset name is required.");
-        return;
-      }
-      let found = false;
-      next.routes = next.routes.map((r) => ({
-        ...r,
-        assets: r.assets.map((a) => {
-          if (a.id !== selectedNodeId) return a;
-          found = true;
-          return {
-            ...a,
-            name: assetName.trim(),
-            tag: assetTag.trim().toUpperCase(),
-            machineType: machineType.trim() || undefined,
-            speedRpm: assetRpm ? Number(assetRpm) || undefined : undefined,
-            photoUrl: formPhotoUrl || undefined
-          };
-        })
-      }));
-      if (!found) {
-        setError("Asset not found.");
-        return;
-      }
-      saveEquipmentStore(next);
-      refresh();
-      cancelForm();
-      setSelectedNodeId(selectedNodeId);
-      toast("Asset updated.", "success");
-      return;
-    }
-
-    if (createKind === "component") {
-      if (!compName.trim()) {
-        setError("Component name is required.");
-        return;
-      }
-      if (
-        compType === "Other (Custom / AI Spec Search)" &&
-        !customEquipType.trim()
-      ) {
-        setError("Enter a custom equipment type.");
-        return;
-      }
-      const kinematics: CbmKinematics | undefined = showSpecs
-        ? {
-            ...kin,
-            customEquipmentType:
-              compType === "Other (Custom / AI Spec Search)"
-                ? customEquipType.trim()
-                : kin.customEquipmentType
-          }
-        : undefined;
-      const rpmNum = Number(kinematics?.ratedRpm || "");
-      let found = false;
-      next.routes = next.routes.map((r) => ({
-        ...r,
-        assets: r.assets.map((a) => ({
-          ...a,
-          components: a.components.map((c) => {
-            if (c.id !== selectedNodeId) return c;
-            found = true;
-            return {
-              ...c,
-              name: compName.trim(),
-              componentType: compType,
-              bearingType: kinematics?.bearingDe || kinematics?.bearingNde,
-              speedRpm:
-                Number.isFinite(rpmNum) && rpmNum > 0 ? rpmNum : c.speedRpm,
-              isoClass: kinematics?.isoClass ?? c.isoClass,
-              kinematics,
-              photoUrl: formPhotoUrl || undefined
-            };
-          })
-        }))
-      }));
-      if (!found) {
-        setError("Component not found.");
-        return;
-      }
-      saveEquipmentStore(next);
-      refresh();
-      cancelForm();
-      setSelectedNodeId(selectedNodeId);
-      toast("Component updated.", "success");
-      return;
-    }
-
-    if (createKind === "point") {
-      if (!pointName.trim()) {
-        setError("Point name is required.");
-        return;
-      }
-      let found = false;
-      next.routes = next.routes.map((r) => ({
-        ...r,
-        assets: r.assets.map((a) => ({
-          ...a,
-          components: a.components.map((c) => ({
-            ...c,
-            collectionPoints: (c.collectionPoints ?? []).map((p) => {
-              if (p.id !== selectedNodeId) return p;
-              found = true;
-              return {
-                ...p,
-                name: pointName.trim(),
-                orientation: pointOrient,
-                measurementType: pointMeas
-              };
-            })
-          }))
-        }))
-      }));
-      if (!found) {
-        setError("Collection point not found.");
-        return;
-      }
-      saveEquipmentStore(next);
-      refresh();
-      cancelForm();
-      setSelectedNodeId(selectedNodeId);
-      toast("Collection point updated.", "success");
+      toast(`${KIND_LABEL[createKind]} updated.`, "success");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update hierarchy node.");
     }
   };
-
   const runAiSpecSearch = () => {
     if (!customEquipType.trim()) {
       setError("Enter a custom equipment type before running AI search.");
@@ -2434,250 +2281,136 @@ export default function EquipmentExplorer({
     }, 1500);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError("");
-    const next = cloneStore(getEquipmentStore());
-    // Always keep the licensed single plant root
-    next.plants = [
-      {
-        id: SITE_PLANT_ID,
-        name: facilityName,
-        location:
-          next.plants.find((p) => p.id === SITE_PLANT_ID)?.location ||
-          facilityName,
-        facilityType:
-          next.plants.find((p) => p.id === SITE_PLANT_ID)?.facilityType ||
-          "Power Plant"
+    try {
+      if (!serverPlantId) {
+        setError("Plant is not saved on the server yet. Refresh and try again.");
+        return;
       }
-    ];
-    const parentId = parentNodeId || SITE_PLANT_ID;
+      const parentId = parentNodeId || SITE_PLANT_ID;
 
-    if (createKind === "unit") {
-      if (!unitName.trim()) {
-        setError("Unit / Area name is required.");
+      if (createKind === "unit") {
+        if (!unitName.trim()) {
+          setError("Unit / Area name is required.");
+          return;
+        }
+        const created = await createUnit(serverPlantId, unitName.trim());
+        await refreshFromServer();
+        setSelectedNodeId(String(created.id));
+        cancelForm();
         return;
       }
-      const unit: EquipUnit = {
-        id: uid("unit"),
-        name: unitName.trim(),
-        plantId: SITE_PLANT_ID
-      };
-      next.units.push(unit);
-      saveEquipmentStore(next);
-      refresh();
-      setSelectedNodeId(unit.id);
-      cancelForm();
-      return;
-    }
 
-    if (createKind === "route") {
-      if (!routeName.trim()) {
-        setError("Route name is required.");
-        return;
-      }
-      const parent = findNode(tree, parentId);
-      const isPlant = !parent || parent.kind === "plant";
-      const unit = next.units.find((u) => u.id === parentId);
-      const route: EquipRoute = {
-        id: uid("route"),
-        name: routeName.trim(),
-        location: unit?.name || facilityName,
-        assets: [],
-        plantId: SITE_PLANT_ID,
-        unitId: isPlant ? undefined : parentId,
-        collectionFrequency: routeFreq
-      };
-      next.routes.push(route);
-      saveEquipmentStore(next);
-      refresh();
-      setSelectedNodeId(route.id);
-      cancelForm();
-      return;
-    }
-
-    if (createKind === "asset") {
-      if (!assetName.trim()) {
-        setError("Asset name is required.");
-        return;
-      }
-      if (!assetTag.trim()) {
-        setError("Tag ID is required.");
-        return;
-      }
-      const parent = findNode(tree, parentId);
-      let routeIdx = next.routes.findIndex((r) => r.id === parentId);
-      if (routeIdx < 0 && parent?.kind === "plant") {
-        ensureFacilityRoute(next, facilityName);
-        routeIdx = next.routes.findIndex((r) => r.id === SITE_FACILITY_ROUTE_ID);
-      }
-      if (routeIdx < 0) {
-        setError("Parent route not found. Select a route node and try again.");
-        return;
-      }
-      const route = next.routes[routeIdx];
-      const asset: EquipAsset = {
-        id: uid("asset"),
-        tag: assetTag.trim().toUpperCase(),
-        name: assetName.trim(),
-        location: route.location || facilityName,
-        machineType,
-        speedRpm: assetRpm ? Number(assetRpm) || undefined : undefined,
-        status: "Normal",
-        overallVibration: 1.0,
-        photoUrl: formPhotoUrl || undefined,
-        components: []
-      };
-      next.routes[routeIdx] = {
-        ...route,
-        assets: [...route.assets, asset]
-      };
-      saveEquipmentStore(next);
-      refresh();
-      setSelectedNodeId(asset.id);
-      cancelForm();
-      return;
-    }
-
-    if (createKind === "component") {
-      if (!compName.trim()) {
-        setError("Component name is required.");
-        return;
-      }
-      if (
-        compType === "Other (Custom / AI Spec Search)" &&
-        !customEquipType.trim()
-      ) {
-        setError("Enter a custom equipment type.");
-        return;
-      }
-      const kinematics: CbmKinematics | undefined = showSpecs
-        ? {
-            ...kin,
-            customEquipmentType:
-              compType === "Other (Custom / AI Spec Search)"
-                ? customEquipType.trim()
-                : kin.customEquipmentType
-          }
-        : undefined;
-      const rpmNum = Number(kinematics?.ratedRpm || "");
-      const comp: EquipComponent = {
-        id: uid("comp"),
-        name: compName.trim(),
-        componentType: compType,
-        bearingType: kinematics?.bearingDe || kinematics?.bearingNde,
-        speedRpm: Number.isFinite(rpmNum) && rpmNum > 0 ? rpmNum : undefined,
-        isoClass: kinematics?.isoClass,
-        kinematics,
-        photoUrl: formPhotoUrl || undefined,
-        collectionPoints: []
-      };
-
-      const parent = findNode(tree, parentId);
-      let found = false;
-
-      if (parent?.kind === "plant" || parentId === SITE_PLANT_ID) {
-        ensureFacilityHoldingAsset(next, facilityName);
-        const routeIdx = next.routes.findIndex(
-          (r) => r.id === SITE_FACILITY_ROUTE_ID
+      if (createKind === "route") {
+        if (!routeName.trim()) {
+          setError("Route name is required.");
+          return;
+        }
+        const parentUnit = store.units.find((u) => u.id === parentId);
+        const created = await createRoute(
+          serverPlantId,
+          routeName.trim(),
+          parentUnit?.serverId
         );
-        next.routes[routeIdx] = {
-          ...next.routes[routeIdx],
-          assets: next.routes[routeIdx].assets.map((a) =>
-            a.id === SITE_FACILITY_HOLDING_ASSET_ID
-              ? { ...a, components: [...a.components, comp] }
-              : a
-          )
-        };
-        found = true;
-      } else {
-        next.routes = next.routes.map((r) => ({
-          ...r,
-          assets: r.assets.map((a) => {
-            if (a.id !== parentId) return a;
-            found = true;
-            return { ...a, components: [...a.components, comp] };
-          })
-        }));
-      }
-
-      if (!found) {
-        setError("Parent asset not found. Select an asset node and try again.");
+        await refreshFromServer();
+        setSelectedNodeId(String(created.id));
+        cancelForm();
         return;
       }
-      saveEquipmentStore(next);
-      refresh();
-      setSelectedNodeId(comp.id);
-      cancelForm();
-      return;
-    }
 
-    if (createKind === "point") {
-      if (!pointName.trim()) {
-        setError("Point name is required.");
+      if (createKind === "asset") {
+        if (!assetName.trim()) {
+          setError("Asset name is required.");
+          return;
+        }
+        if (!assetTag.trim()) {
+          setError("Tag ID is required.");
+          return;
+        }
+        const parentRoute = store.routes.find((r) => r.id === parentId);
+        const created = await createAsset({
+          routeId: parentRoute?.serverId,
+          simpleMode: !parentRoute?.serverId,
+          name: assetName.trim(),
+          tagNumber: assetTag.trim().toUpperCase(),
+          type: machineType || undefined,
+          criticality: "Medium",
+          status: "Active"
+        });
+        await refreshFromServer();
+        setSelectedNodeId(String(created.id));
+        cancelForm();
         return;
       }
-      const point: EquipCollectionPoint = {
-        id: uid("pt"),
-        name: pointName.trim(),
-        orientation: pointOrient,
-        measurementType: pointMeas
-      };
-      const parent = findNode(tree, parentId);
-      let found = false;
 
-      if (parent?.kind === "plant" || parentId === SITE_PLANT_ID) {
-        ensureFacilityPointsHost(next, facilityName);
-        const routeIdx = next.routes.findIndex(
-          (r) => r.id === SITE_FACILITY_ROUTE_ID
+      if (createKind === "component") {
+        if (!compName.trim()) {
+          setError("Component name is required.");
+          return;
+        }
+        if (
+          compType === "Other (Custom / AI Spec Search)" &&
+          !customEquipType.trim()
+        ) {
+          setError("Enter a custom equipment type.");
+          return;
+        }
+        const parentAsset = store.routes
+          .flatMap((r) => r.assets)
+          .find((a) => a.id === parentId);
+        if (!parentAsset?.serverId) {
+          setError("Select a real asset parent before adding a component.");
+          return;
+        }
+        const kinematics: CbmKinematics | undefined = showSpecs
+          ? {
+              ...kin,
+              customEquipmentType:
+                compType === "Other (Custom / AI Spec Search)"
+                  ? customEquipType.trim()
+                  : kin.customEquipmentType
+            }
+          : undefined;
+        const created = await createComponent({
+          assetId: parentAsset.serverId,
+          name: compName.trim(),
+          type: compType,
+          specifications: kinematics ? { kinematics } : undefined
+        });
+        await refreshFromServer();
+        setSelectedNodeId(String(created.id));
+        cancelForm();
+        return;
+      }
+
+      if (createKind === "point") {
+        if (!pointName.trim()) {
+          setError("Point name is required.");
+          return;
+        }
+        const parentComponent = store.routes
+          .flatMap((r) => r.assets)
+          .flatMap((a) => a.components)
+          .find((c) => c.id === parentId);
+        if (!parentComponent?.serverId) {
+          setError("Select a real component parent before adding a collection point.");
+          return;
+        }
+        const created = await createCollectionPoint(
+          parentComponent.serverId,
+          pointName.trim(),
+          pointOrient
         );
-        next.routes[routeIdx] = {
-          ...next.routes[routeIdx],
-          assets: next.routes[routeIdx].assets.map((a) => {
-            if (a.id !== SITE_FACILITY_HOLDING_ASSET_ID) return a;
-            return {
-              ...a,
-              components: a.components.map((c) => {
-                if (c.id !== SITE_FACILITY_POINTS_COMP_ID) return c;
-                return {
-                  ...c,
-                  collectionPoints: [...(c.collectionPoints ?? []), point]
-                };
-              })
-            };
-          })
-        };
-        found = true;
-      } else {
-        next.routes = next.routes.map((r) => ({
-          ...r,
-          assets: r.assets.map((a) => ({
-            ...a,
-            components: a.components.map((c) => {
-              if (c.id !== parentId) return c;
-              found = true;
-              return {
-                ...c,
-                collectionPoints: [...(c.collectionPoints ?? []), point]
-              };
-            })
-          }))
-        }));
-      }
-
-      if (!found) {
-        setError(
-          "Parent component not found. Select a component node and try again."
-        );
+        await refreshFromServer();
+        setSelectedNodeId(String(created.id));
+        cancelForm();
         return;
       }
-      saveEquipmentStore(next);
-      refresh();
-      setSelectedNodeId(point.id);
-      cancelForm();
-      return;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save hierarchy node.");
     }
   };
-
   const renderTreeNode = (node: ExplorerNode, depth: number) => {
     const hasKids = node.children.length > 0;
     const isOpen = expanded[node.id] ?? depth < 2;
@@ -3542,6 +3275,16 @@ export default function EquipmentExplorer({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {kind === "plant" ? (
+            <button
+              type="button"
+              onClick={openPlantRename}
+              className="min-h-[40px] px-3.5 rounded-xl border border-[#FFC700]/45 bg-[#FFC700]/10 hover:bg-[#FFC700]/20 text-[#FFC700] text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+            >
+              <Pencil className="h-4 w-4" />
+              Rename Plant
+            </button>
+          ) : null}
           {isAsset && summaryEntity.asset ? (
             <button
               type="button"
@@ -5044,6 +4787,44 @@ export default function EquipmentExplorer({
             </div>
           </div>
         </div>
+      ) : null}
+
+      {plantRenameOpen ? (
+        <div
+          className="fixed inset-0 z-[120] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="rename-plant-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-[#0A0E1A] shadow-2xl p-5 space-y-4">
+            <h3 id="rename-plant-title" className="text-base font-bold text-white tracking-tight">
+              Rename Plant
+            </h3>
+            <input
+              className={INPUT}
+              value={plantNameDraft}
+              onChange={(e) => setPlantNameDraft(e.target.value)}
+              placeholder="Plant name"
+            />
+            <div className="flex flex-wrap justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setPlantRenameOpen(false)} className={BTN_GHOST}>
+                Cancel
+              </button>
+              <button type="button" onClick={handlePlantRename} className={BTN_PRIMARY}>
+                Save Name
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {componentModalOpen ? (
+        <CreateComponentModal
+          onClose={() => setComponentModalOpen(false)}
+          onSave={handleComponentModalSave}
+          assetOptions={componentAssetOptions}
+          initialAssetId={componentParentAssetId}
+        />
       ) : null}
     </div>
   );

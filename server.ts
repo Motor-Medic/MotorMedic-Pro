@@ -100,6 +100,12 @@ import {
   type AppRole
 } from "./src/lib/auth";
 import { connectWithRetry } from "./src/lib/db";
+import {
+  SYSTEM_ROUTE_NAME,
+  findOrCreateSimpleModeRoute,
+  parentExists,
+  resolveSimpleModeHierarchy
+} from "./src/lib/hierarchyFlex";
 
 dotenv.config();
 
@@ -2440,7 +2446,7 @@ app.get("/api/diagnosis-logs", async (req, res) => {
           `SELECT dh.*, a.name as asset_name 
            FROM diagnosis_history dh 
            JOIN assets a ON dh.asset_id = a.id 
-           JOIN routes r ON a.route_id = r.id 
+           LEFT JOIN routes r ON a.route_id = r.id 
            WHERE r.plant_id = $1 
              AND dh.tenant_id = $2
            ORDER BY dh.timestamp DESC`,
@@ -7015,6 +7021,8 @@ let memoryPlants: any[] = [
   { id: 3, company_id: 3, name: "Demo Galveston Refinery", location: "102 Marina Blvd, Galveston, TX", created_at: new Date() }
 ];
 
+let memoryUnits: any[] = [];
+
 let memoryRoutes: any[] = [
   { id: 1, plant_id: 1, name: "North Line Compressors", description: "Primary air compressors for North assembly line.", created_at: new Date() },
   { id: 2, plant_id: 1, name: "Wastewater Treatment Area", description: "Pumps and blowers in primary filtration plant.", created_at: new Date() },
@@ -7381,8 +7389,8 @@ async function getAssetsWithStatus(companyId?: number) {
     let assetsQuery = `
       SELECT ast.*, pl.company_id
       FROM assets ast
-      JOIN routes rt ON ast.route_id = rt.id
-      JOIN plants pl ON rt.plant_id = pl.id
+      LEFT JOIN routes rt ON ast.route_id = rt.id
+      LEFT JOIN plants pl ON rt.plant_id = pl.id
     `;
     const params: any[] = [];
     if (companyId) {
@@ -7408,8 +7416,8 @@ async function getAssetsWithStatus(companyId?: number) {
       JOIN collection_points cp ON mp.collection_point_id = cp.id
       JOIN components comp ON cp.component_id = comp.id
       JOIN assets ast ON comp.asset_id = ast.id
-      JOIN routes rt ON ast.route_id = rt.id
-      JOIN plants pl ON rt.plant_id = pl.id
+      LEFT JOIN routes rt ON ast.route_id = rt.id
+      LEFT JOIN plants pl ON rt.plant_id = pl.id
     `;
     const analysisParams: any[] = [];
     if (companyId) {
@@ -7607,8 +7615,8 @@ app.get("/api/dashboard", async (req, res) => {
       let assetsQuery = `
         SELECT ast.id, ast.name, ast.tag, ast.tag_number, ast.type, ast.route_id
         FROM assets ast
-        JOIN routes rt ON ast.route_id = rt.id
-        JOIN plants pl ON rt.plant_id = pl.id
+        LEFT JOIN routes rt ON ast.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
       `;
       const params: any[] = [];
       if (companyId) {
@@ -8133,8 +8141,8 @@ app.get("/api/dashboard/fault-distribution", async (req, res) => {
         JOIN collection_points cp ON mp.collection_point_id = cp.id
         JOIN components comp ON cp.component_id = comp.id
         JOIN assets ast ON comp.asset_id = ast.id
-        JOIN routes rt ON ast.route_id = rt.id
-        JOIN plants pl ON rt.plant_id = pl.id
+        LEFT JOIN routes rt ON ast.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
       `;
       const params: any[] = [];
       if (companyId) {
@@ -8251,8 +8259,8 @@ app.get("/api/dashboard/health-trend", async (req, res) => {
       let assetsQuery = `
         SELECT ast.id, ast.created_at
         FROM assets ast
-        JOIN routes rt ON ast.route_id = rt.id
-        JOIN plants pl ON rt.plant_id = pl.id
+        LEFT JOIN routes rt ON ast.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
       `;
       const params: any[] = [];
       if (companyId) {
@@ -8273,8 +8281,8 @@ app.get("/api/dashboard/health-trend", async (req, res) => {
         JOIN collection_points cp ON mp.collection_point_id = cp.id
         JOIN components comp ON cp.component_id = comp.id
         JOIN assets ast ON comp.asset_id = ast.id
-        JOIN routes rt ON ast.route_id = rt.id
-        JOIN plants pl ON rt.plant_id = pl.id
+        LEFT JOIN routes rt ON ast.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
       `;
       const analysisParams: any[] = [];
       if (companyId) {
@@ -8390,8 +8398,8 @@ app.get("/api/dashboard/recent-activity", async (req, res) => {
         JOIN collection_points cp ON mp.collection_point_id = cp.id
         JOIN components comp ON cp.component_id = comp.id
         JOIN assets ast ON comp.asset_id = ast.id
-        JOIN routes rt ON ast.route_id = rt.id
-        JOIN plants pl ON rt.plant_id = pl.id
+        LEFT JOIN routes rt ON ast.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
       `;
       const params: any[] = [];
       if (companyId) {
@@ -8493,8 +8501,8 @@ app.get("/api/dashboard/roi-calculation", async (req, res) => {
         JOIN collection_points cp ON mp.collection_point_id = cp.id
         JOIN components comp ON cp.component_id = comp.id
         JOIN assets ast ON comp.asset_id = ast.id
-        JOIN routes rt ON ast.route_id = rt.id
-        JOIN plants pl ON rt.plant_id = pl.id
+        LEFT JOIN routes rt ON ast.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
       `;
       const params: any[] = [];
       if (companyId) {
@@ -9105,8 +9113,8 @@ async function getCompanyIdForComponent(componentId: number): Promise<number | n
         SELECT p.company_id 
         FROM components c
         JOIN assets a ON c.asset_id = a.id
-        JOIN routes r ON a.route_id = r.id
-        JOIN plants p ON r.plant_id = p.id
+        LEFT JOIN routes r ON a.route_id = r.id
+        LEFT JOIN plants p ON r.plant_id = p.id
         WHERE c.id = $1 LIMIT 1
       `, [componentId]);
       return res.rows.length > 0 ? res.rows[0].company_id : null;
@@ -9688,12 +9696,22 @@ app.post("/api/plants", async (req, res) => {
     }
 
     if (pool) {
+      const companyCheck = await pool.query(
+        "SELECT 1 FROM companies WHERE id = $1 LIMIT 1",
+        [companyIdNum]
+      );
+      if (companyCheck.rows.length === 0) {
+        return res.status(400).json({ error: `Parent company not found: ${companyIdNum}` });
+      }
       const result = await pool.query(
         "INSERT INTO plants (name, location, company_id) VALUES ($1, $2, $3) RETURNING *",
         [name.trim(), location ? location.trim() : null, companyIdNum]
       );
       return res.status(201).json(result.rows[0]);
     } else {
+      if (!memoryCompanies.some((c) => c.id === companyIdNum)) {
+        return res.status(400).json({ error: `Parent company not found: ${companyIdNum}` });
+      }
       const newPlant = {
         id: getNextId(),
         company_id: companyIdNum,
@@ -9765,6 +9783,113 @@ app.delete("/api/plants/:id", async (req, res) => {
 });
 
 // --------------------------------------------------------
+// UNITS ENDPOINTS (optional grouping above routes)
+// --------------------------------------------------------
+
+// GET /api/units?plant_id= - List units for a plant
+app.get("/api/units", async (req, res) => {
+  try {
+    const plantId = req.query.plant_id
+      ? parseInt(req.query.plant_id as string, 10)
+      : undefined;
+    if (plantId === undefined || isNaN(plantId)) {
+      return res.status(400).json({ error: "Missing or invalid query parameter: plant_id" });
+    }
+    if (pool) {
+      const result = await pool.query(
+        "SELECT * FROM units WHERE plant_id = $1 ORDER BY name ASC",
+        [plantId]
+      );
+      return res.json(result.rows);
+    }
+    return res.json(memoryUnits.filter((u) => u.plant_id === plantId));
+  } catch (error: any) {
+    console.error("GET /api/units failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch units" });
+  }
+});
+
+// POST /api/units - Create a unit under a plant (parent validated, H3)
+app.post("/api/units", async (req, res) => {
+  try {
+    const { plant_id, name } = req.body;
+    const pId = parseInt(plant_id, 10);
+    if (isNaN(pId)) {
+      return res.status(400).json({ error: "Missing or invalid required field: plant_id (integer)" });
+    }
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+    if (pool) {
+      if (!(await parentExists(pool, "plants", pId))) {
+        return res.status(400).json({ error: `Parent plant not found: ${pId}` });
+      }
+      const result = await pool.query(
+        "INSERT INTO units (plant_id, name) VALUES ($1, $2) RETURNING *",
+        [pId, name.trim()]
+      );
+      return res.status(201).json(result.rows[0]);
+    }
+    if (!memoryPlants.some((p) => p.id === pId)) {
+      return res.status(400).json({ error: `Parent plant not found: ${pId}` });
+    }
+    const unit = { id: getNextId(), plant_id: pId, name: name.trim(), created_at: new Date() };
+    memoryUnits.push(unit);
+    return res.status(201).json(unit);
+  } catch (error: any) {
+    console.error("POST /api/units failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to create unit" });
+  }
+});
+
+// PUT /api/units/:id - Rename a unit
+app.put("/api/units/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const { name } = req.body;
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Missing required field: name (string)" });
+    }
+    if (pool) {
+      const result = await pool.query(
+        "UPDATE units SET name = $1 WHERE id = $2 RETURNING *",
+        [name.trim(), id]
+      );
+      if (result.rows.length === 0) return res.status(404).json({ error: "Unit not found" });
+      return res.json(result.rows[0]);
+    }
+    const unit = memoryUnits.find((u) => u.id === id);
+    if (!unit) return res.status(404).json({ error: "Unit not found" });
+    unit.name = name.trim();
+    return res.json(unit);
+  } catch (error: any) {
+    console.error("PUT /api/units failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to update unit" });
+  }
+});
+
+// DELETE /api/units/:id - Delete a unit (routes keep their plant link)
+app.delete("/api/units/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    if (pool) {
+      const result = await pool.query("DELETE FROM units WHERE id = $1 RETURNING *", [id]);
+      if (result.rows.length === 0) return res.status(404).json({ error: "Unit not found" });
+      return res.json({ message: "Unit deleted successfully", deleted: result.rows[0] });
+    }
+    const index = memoryUnits.findIndex((u) => u.id === id);
+    if (index === -1) return res.status(404).json({ error: "Unit not found" });
+    const deleted = memoryUnits.splice(index, 1)[0];
+    return res.json({ message: "Unit deleted successfully", deleted });
+  } catch (error: any) {
+    console.error("DELETE /api/units failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to delete unit" });
+  }
+});
+
+// --------------------------------------------------------
 // ROUTES ENDPOINTS
 // --------------------------------------------------------
 
@@ -9800,6 +9925,60 @@ app.get(["/api/routes", "/api/routes/:plantId"], async (req, res) => {
   } catch (error: any) {
     console.error("GET /api/routes failed:", error);
     return res.status(500).json({ error: error.message || "Failed to fetch routes" });
+  }
+});
+
+// GET /api/hierarchy - Tenant-scoped full equipment tree (H5 read cache seed)
+app.get("/api/hierarchy", async (req, res) => {
+  try {
+    if (!pool) {
+      return res.json({
+        plants: memoryPlants,
+        units: memoryUnits,
+        routes: memoryRoutes,
+        assets: memoryAssets,
+        components: memoryComponents,
+        collection_points: memoryCollectionPoints
+      });
+    }
+    const tenantId = req.tenantId ?? req.auth?.tenantId ?? null;
+    const plantsRes = tenantId == null
+      ? await pool.query("SELECT * FROM plants ORDER BY id ASC")
+      : await pool.query("SELECT * FROM plants WHERE company_id = $1 ORDER BY id ASC", [tenantId]);
+    const plants = plantsRes.rows;
+    const plantIds = plants.map((p: any) => p.id);
+    const unitsRes = plantIds.length
+      ? await pool.query("SELECT * FROM units WHERE plant_id = ANY($1::int[]) ORDER BY name ASC", [plantIds])
+      : { rows: [] as any[] };
+    const routesRes = plantIds.length
+      ? await pool.query("SELECT * FROM routes WHERE plant_id = ANY($1::int[]) ORDER BY name ASC", [plantIds])
+      : { rows: [] as any[] };
+    const routeIds = routesRes.rows.map((r: any) => r.id);
+    const assetsRes = routeIds.length
+      ? await pool.query("SELECT * FROM assets WHERE route_id = ANY($1::int[]) ORDER BY name ASC", [routeIds])
+      : { rows: [] as any[] };
+    const assetIds = assetsRes.rows.map((a: any) => a.id);
+    const componentsRes = assetIds.length
+      ? await pool.query("SELECT * FROM components WHERE asset_id = ANY($1::int[]) ORDER BY name ASC", [assetIds])
+      : { rows: [] as any[] };
+    const componentIds = componentsRes.rows.map((c: any) => c.id);
+    const pointsRes = componentIds.length
+      ? await pool.query(
+          "SELECT * FROM collection_points WHERE component_id = ANY($1::int[]) ORDER BY location_order ASC, id ASC",
+          [componentIds]
+        )
+      : { rows: [] as any[] };
+    return res.json({
+      plants,
+      units: unitsRes.rows,
+      routes: routesRes.rows,
+      assets: assetsRes.rows,
+      components: componentsRes.rows,
+      collection_points: pointsRes.rows
+    });
+  } catch (error: any) {
+    console.error("GET /api/hierarchy failed:", error);
+    return res.status(500).json({ error: error.message || "Failed to fetch hierarchy" });
   }
 });
 
@@ -9858,7 +10037,7 @@ app.get("/api/routes/single/:id", async (req, res) => {
 // POST /api/routes - Create new route
 app.post("/api/routes", async (req, res) => {
   try {
-    const { plant_id, name, description } = req.body;
+    const { plant_id, name, description, unit_id, area } = req.body;
     if (plant_id === undefined || isNaN(parseInt(plant_id, 10))) {
       return res.status(400).json({ error: "Missing or invalid required field: plant_id (integer)" });
     }
@@ -9867,19 +10046,47 @@ app.post("/api/routes", async (req, res) => {
     }
 
     const pId = parseInt(plant_id, 10);
+    let uId: number | null = null;
+    if (unit_id !== undefined && unit_id !== null && String(unit_id).trim() !== "") {
+      uId = parseInt(unit_id, 10);
+      if (isNaN(uId)) {
+        return res.status(400).json({ error: "Invalid unit_id field" });
+      }
+    }
 
     if (pool) {
+      if (!(await parentExists(pool, "plants", pId))) {
+        return res.status(400).json({ error: `Parent plant not found: ${pId}` });
+      }
+      if (uId != null) {
+        const unitCheck = await pool.query(
+          "SELECT 1 FROM units WHERE id = $1 AND plant_id = $2 LIMIT 1",
+          [uId, pId]
+        );
+        if (unitCheck.rows.length === 0) {
+          return res.status(400).json({ error: `Parent unit not found in plant ${pId}: ${uId}` });
+        }
+      }
       const result = await pool.query(
-        "INSERT INTO routes (plant_id, name, description) VALUES ($1, $2, $3) RETURNING *",
-        [pId, name.trim(), description ? description.trim() : null]
+        `INSERT INTO routes (plant_id, unit_id, name, description, area)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [pId, uId, name.trim(), description ? description.trim() : null, area ? String(area).trim() : null]
       );
       return res.status(201).json(result.rows[0]);
     } else {
+      if (!memoryPlants.some((p) => p.id === pId)) {
+        return res.status(400).json({ error: `Parent plant not found: ${pId}` });
+      }
+      if (uId != null && !memoryUnits.some((u) => u.id === uId && u.plant_id === pId)) {
+        return res.status(400).json({ error: `Parent unit not found in plant ${pId}: ${uId}` });
+      }
       const newRoute = {
         id: getNextId(),
         plant_id: pId,
+        unit_id: uId,
         name: name.trim(),
         description: description ? description.trim() : null,
+        area: area ? String(area).trim() : null,
         created_at: new Date()
       };
       memoryRoutes.push(newRoute);
@@ -10398,17 +10605,73 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       description
     } = req.body;
 
-    if (route_id === undefined || isNaN(parseInt(route_id, 10))) {
-      return res.status(400).json({ error: "Missing or invalid required field: route_id (integer)" });
-    }
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "Missing required field: name (string)" });
     }
 
-    const rId = parseInt(route_id, 10);
+    const hasRoute =
+      route_id !== undefined &&
+      route_id !== null &&
+      String(route_id).trim() !== "";
+    const simpleMode = req.body.simpleMode === true || !hasRoute;
+    let rId: number;
+    if (hasRoute) {
+      rId = parseInt(route_id, 10);
+      if (isNaN(rId)) {
+        return res.status(400).json({ error: "Invalid route_id field (integer required)" });
+      }
+    } else {
+      // H1 - no route supplied: never 400 solely for the missing route.
+      const companyIdRaw =
+        req.tenantId ??
+        req.auth?.tenantId ??
+        req.body.company_id ??
+        req.body.companyId;
+      const companyIdNum =
+        companyIdRaw !== undefined && companyIdRaw !== null && String(companyIdRaw).trim() !== ""
+          ? parseInt(companyIdRaw, 10)
+          : null;
+      const companyId = companyIdNum != null && !isNaN(companyIdNum) ? companyIdNum : null;
+      if (pool) {
+        const resolved = await resolveSimpleModeHierarchy(pool, companyId);
+        rId = Number(resolved.route.id);
+      } else {
+        let plant = companyId != null
+          ? memoryPlants.find((p) => p.company_id === companyId)
+          : memoryPlants[0];
+        if (!plant) {
+          plant = {
+            id: getNextId(),
+            name: "Main Site",
+            location: "Main Site",
+            company_id: companyId,
+            created_at: new Date()
+          };
+          memoryPlants.push(plant);
+        }
+        let route = memoryRoutes.find(
+          (r) => r.plant_id === plant.id && r.is_system === true
+        );
+        if (!route) {
+          route = {
+            id: getNextId(),
+            plant_id: plant.id,
+            name: SYSTEM_ROUTE_NAME,
+            description: "Auto-created route for assets added without a route.",
+            is_system: true,
+            created_at: new Date()
+          };
+          memoryRoutes.push(route);
+        }
+        rId = route.id;
+      }
+    }
     const equipStatus = status || 'Active';
 
     if (pool) {
+      if (hasRoute && !(await parentExists(pool, "routes", rId))) {
+        return res.status(400).json({ error: `Parent route not found: ${rId}` });
+      }
       const result = await pool.query(
         `INSERT INTO assets 
          (route_id, name, tag_number, type, manufacturer, model, serial_number, install_date, criticality, status, description) 
@@ -10428,7 +10691,7 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
           description ? description.trim() : null
         ]
       );
-      return res.status(201).json(result.rows[0]);
+      return res.status(201).json({ ...result.rows[0], simpleMode });
     } else {
       const newAsset = {
         id: getNextId(),
@@ -10768,6 +11031,13 @@ app.post(["/api/components", "/api/component"], async (req, res) => {
     }
 
     const astId = parseInt(incomingId, 10);
+    if (pool) {
+      if (!(await parentExists(pool, "assets", astId))) {
+        return res.status(400).json({ error: `Parent asset not found: ${astId}` });
+      }
+    } else if (!memoryAssets.some((a) => a.id === astId)) {
+      return res.status(400).json({ error: `Parent asset not found: ${astId}` });
+    }
     let parsedSpecs: any = null;
     if (specifications) {
       if (typeof specifications === "object") {
@@ -11089,6 +11359,13 @@ app.post(["/api/collection-points", "/api/collection_points"], async (req, res) 
       return res.status(400).json({ error: "Missing or invalid required field: component_id (integer)" });
     }
     const compId = parseInt(component_id, 10);
+    if (pool) {
+      if (!(await parentExists(pool, "components", compId))) {
+        return res.status(400).json({ error: `Parent component not found: ${compId}` });
+      }
+    } else if (!memoryComponents.some((c) => c.id === compId)) {
+      return res.status(400).json({ error: `Parent component not found: ${compId}` });
+    }
 
     // Support batch format requested by user: { component_id, points: [{name}] }
     if (points && Array.isArray(points)) {
@@ -11364,6 +11641,13 @@ app.post(["/api/measurement-points", "/api/measurement_points"], async (req, res
     }
 
     const cpId = parseInt(collection_point_id, 10);
+    if (pool) {
+      if (!(await parentExists(pool, "collection_points", cpId))) {
+        return res.status(400).json({ error: `Parent collection point not found: ${cpId}` });
+      }
+    } else if (!memoryCollectionPoints.some((cp) => cp.id === cpId)) {
+      return res.status(400).json({ error: `Parent collection point not found: ${cpId}` });
+    }
     const tech = technology_type || "Vibration";
     const unitVal = units || "in/Sec";
 
@@ -11966,19 +12250,43 @@ async function initializeDatabase() {
       await pool.query("UPDATE plants SET company_id = $1 WHERE company_id IS NULL", [defaultCompanyId]);
     }
 
+    // Create units table (optional grouping above routes, H5 persistence)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS units (
+        id SERIAL PRIMARY KEY,
+        plant_id INTEGER REFERENCES plants(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
     // Create routes table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS routes (
         id SERIAL PRIMARY KEY,
         plant_id INTEGER REFERENCES plants(id) ON DELETE CASCADE,
+        unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL,
         name VARCHAR(255) NOT NULL,
         area VARCHAR(255),
         description TEXT,
+        is_system BOOLEAN NOT NULL DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
     await pool.query("ALTER TABLE routes ADD COLUMN IF NOT EXISTS area VARCHAR(255);");
+    await pool.query("ALTER TABLE routes ADD COLUMN IF NOT EXISTS unit_id INTEGER REFERENCES units(id) ON DELETE SET NULL;");
+    // H4 / D4 / D5 - the invisible system route marker. DEP-1 style: only the
+    // duplicate family is swallowed so re-runs stay clean and real errors raise.
+    try {
+      await pool.query(
+        "ALTER TABLE routes ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT FALSE;"
+      );
+    } catch (err: any) {
+      if (err?.code !== "42701" && err?.code !== "42P06" && err?.code !== "42P07") {
+        throw err;
+      }
+    }
 
     // Check for equipment table migration to assets
     const equipTableCheck = await pool.query(`
@@ -12038,6 +12346,33 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS voltage_rating DOUBLE PRECISION NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS horsepower DOUBLE PRECISION NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS planning_config JSONB NULL;");
+
+    // H4 backfill - mirror of migrations/017_hierarchy_flex.sql. Assets with a
+    // NULL route_id have no plant linkage, so the deterministic fallback is the
+    // lowest-id system route once each plant that has such assets owns one.
+    await pool.query(`
+      DO $$
+      DECLARE
+        p RECORD;
+        system_route_id INTEGER;
+      BEGIN
+        IF EXISTS (SELECT 1 FROM assets WHERE route_id IS NULL) THEN
+          FOR p IN SELECT id FROM plants LOOP
+            INSERT INTO routes (plant_id, name, description, is_system)
+            SELECT p.id, 'System (Simple Mode)',
+                   'Auto-created route for assets added without a route.', TRUE
+            WHERE NOT EXISTS (
+              SELECT 1 FROM routes
+               WHERE plant_id = p.id AND is_system = TRUE
+            );
+          END LOOP;
+          SELECT MIN(id) INTO system_route_id FROM routes WHERE is_system = TRUE;
+          IF system_route_id IS NOT NULL THEN
+            UPDATE assets SET route_id = system_route_id WHERE route_id IS NULL;
+          END IF;
+        END IF;
+      END $$;
+    `);
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS planning_configs (
@@ -12904,8 +13239,8 @@ async function initializeDatabase() {
         JOIN collection_points cp ON cp.id = mp.collection_point_id
         JOIN components c ON c.id = cp.component_id
         JOIN assets a ON a.id = c.asset_id
-        JOIN routes r ON r.id = a.route_id
-        JOIN plants pl ON pl.id = r.plant_id
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
        WHERE ah.measurement_point_id = mp.id
          AND ah.tenant_id = -1
          AND pl.company_id IS NOT NULL;
@@ -12914,8 +13249,8 @@ async function initializeDatabase() {
       UPDATE diagnosis_history dh
          SET tenant_id = pl.company_id
         FROM assets a
-        JOIN routes r ON r.id = a.route_id
-        JOIN plants pl ON pl.id = r.plant_id
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
        WHERE dh.asset_id = a.id
          AND dh.tenant_id = -1
          AND pl.company_id IS NOT NULL;
@@ -12933,8 +13268,8 @@ async function initializeDatabase() {
         UPDATE ${table} t
            SET tenant_id = pl.company_id
           FROM assets a
-          JOIN routes r ON r.id = a.route_id
-          JOIN plants pl ON pl.id = r.plant_id
+          LEFT JOIN routes r ON r.id = a.route_id
+          LEFT JOIN plants pl ON pl.id = r.plant_id
          WHERE t.tenant_id = -1
            AND (a.id::text = t.asset_id OR a.tag_number = t.asset_id OR a.name = t.asset_id)
            AND pl.company_id IS NOT NULL;

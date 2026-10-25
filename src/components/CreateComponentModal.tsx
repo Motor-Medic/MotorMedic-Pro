@@ -33,6 +33,13 @@ export interface CreateComponentResult {
   componentType: string;
   manufacturer: string;
   specs: Record<string, string>;
+  /** H9 - parent asset selection when the modal is opened from the Explorer. */
+  assetId?: string;
+}
+
+export interface ComponentAssetOption {
+  id: string;
+  label: string;
 }
 
 export interface ComponentTypeTemplate {
@@ -636,15 +643,22 @@ export default function CreateComponentModal({
   onClose,
   onSave,
   isEdit = false,
-  initialData
+  initialData,
+  assetOptions,
+  initialAssetId
 }: {
   onClose: () => void;
   onSave: (result: CreateComponentResult) => void;
   isEdit?: boolean;
   initialData?: Partial<CreateComponentResult>;
+  assetOptions?: ComponentAssetOption[];
+  initialAssetId?: string;
 }) {
   const [customTypes, setCustomTypes] = useState<ComponentTypeTemplate[]>(() => loadCustomTypes());
   const initialType = initialData?.componentType || "Electric Motor";
+  const [parentAssetId, setParentAssetId] = useState(
+    initialAssetId || initialData?.assetId || ""
+  );
   const [name, setName] = useState(initialData?.name || "");
   const [componentType, setComponentType] = useState<string>(initialType);
   const [manufacturer, setManufacturer] = useState(initialData?.manufacturer || "");
@@ -797,6 +811,10 @@ export default function CreateComponentModal({
   };
 
   const handleSave = () => {
+    if (assetOptions && assetOptions.length > 0 && !parentAssetId) {
+      setError("Select the parent asset for this component.");
+      return;
+    }
     if (!name.trim()) {
       setError("Name / Label is required.");
       return;
@@ -852,7 +870,8 @@ export default function CreateComponentModal({
       name: name.trim(),
       componentType: resolvedType,
       manufacturer: manufacturer.trim(),
-      specs
+      specs,
+      assetId: parentAssetId || undefined
     });
   };
 
@@ -915,6 +934,35 @@ export default function CreateComponentModal({
               />
             </div>
           </div>
+
+          {assetOptions ? (
+            <div>
+              <FieldLabel label="Parent Asset" required />
+              <div className="relative">
+                <Factory className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500 pointer-events-none" />
+                <select
+                  className={`${INPUT_BASE} pl-10 pr-3 appearance-none cursor-pointer`}
+                  value={parentAssetId}
+                  onChange={(e) => {
+                    setParentAssetId(e.target.value);
+                    setError("");
+                  }}
+                >
+                  <option value="">Select asset</option>
+                  {assetOptions.map((asset) => (
+                    <option key={asset.id} value={asset.id}>
+                      {asset.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {assetOptions.length === 0 ? (
+                <p className="mt-1.5 text-[10px] text-amber-400">
+                  Add a real asset first - components must hang from an asset.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>

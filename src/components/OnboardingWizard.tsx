@@ -29,6 +29,15 @@ export default function OnboardingWizard({ onClose, companyId, onSetupComplete }
   // Created IDs saved across steps
   const [createdPlantId, setCreatedPlantId] = useState<number | null>(null);
   const [createdRouteId, setCreatedRouteId] = useState<number | null>(null);
+  const [simpleMode, setSimpleMode] = useState<boolean>(false);
+
+  const handleSimpleMode = () => {
+    setSimpleMode(true);
+    setCreatedRouteId(null);
+    setErrorMsg(null);
+    showToast("Simple Mode: equipment will be added directly under your facility.", "info");
+    setStep(4);
+  };
 
   const handleSkip = () => {
     localStorage.setItem("motor_medic_onboarding_skipped", "true");
@@ -125,18 +134,21 @@ export default function OnboardingWizard({ onClose, companyId, onSetupComplete }
         setErrorMsg("Asset Name is required.");
         return;
       }
-      if (!createdRouteId) {
+      if (!simpleMode && !createdRouteId) {
         setErrorMsg("No active route context. Please go back.");
         return;
       }
       setIsLoading(true);
       try {
-        // 1. Create Asset
+        // 1. Create Asset. Simple Mode omits route_id; the server auto-creates
+        // the plant + invisible system route (H1/H8).
         const assetRes = await fetch("/api/assets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            route_id: createdRouteId,
+            ...(simpleMode
+              ? { simpleMode: true, company_id: companyId }
+              : { route_id: createdRouteId }),
             name: assetName.trim(),
             type: assetType,
             criticality: "Medium",
@@ -345,6 +357,19 @@ export default function OnboardingWizard({ onClose, companyId, onSetupComplete }
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-xs text-slate-200 focus:outline-none focus:border-yellow-400/50 transition-colors resize-none"
                     />
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={handleSimpleMode}
+                    className="w-full text-left rounded-xl border border-dashed border-yellow-400/40 bg-yellow-400/5 hover:bg-yellow-400/10 px-4 py-3 transition-colors cursor-pointer"
+                  >
+                    <span className="block text-xs font-bold text-yellow-300">
+                      My site doesn&apos;t use routes - add equipment directly
+                    </span>
+                    <span className="block mt-0.5 text-[10px] text-slate-400">
+                      Simple Mode creates one invisible facility route automatically.
+                    </span>
+                  </button>
                 </div>
               </motion.div>
             )}

@@ -144,11 +144,12 @@ import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
 import OilCleanlinessTab from "./trendAnalyzer/OilCleanlinessTab";
 import OilFerrographyVarnishTab from "./trendAnalyzer/OilFerrographyVarnishTab";
 import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
-import {
-  getEquipmentData,
-  getFlatEquipment,
-  type FlatEquipAsset
-} from "../data/equipmentDb";
+  import {
+    getEquipmentData,
+    getFlatEquipment,
+    routeDisplayName,
+    type FlatEquipAsset
+  } from "../data/equipmentDb";
 import {
   ARTIFACT_DISCLAIMER,
   confirmArtifactExport
@@ -1484,6 +1485,11 @@ export default function TrendAnalyzer({
     void equipTick;
     return getFlatEquipment();
   }, [equipTick]);
+  // H7 - the invisible system route is surfaced here as "Facility (direct)".
+  const routeOptions = useMemo(
+    () => equipmentRoutes.map((r) => ({ id: r.id, name: routeDisplayName(r) })),
+    [equipmentRoutes]
+  );
 
   const [selectedRouteName, setSelectedRouteName] = useState("");
   const [selectedAssetKey, setSelectedAssetKey] = useState("");
@@ -1557,8 +1563,8 @@ export default function TrendAnalyzer({
         return;
       }
     }
-    setSelectedRouteName((prev) => prev || equipmentRoutes[0]?.name || "");
-  }, [equipmentRoutes, flatEquipment, selectedAssetId]);
+    setSelectedRouteName((prev) => prev || routeOptions[0]?.name || "");
+  }, [equipmentRoutes, routeOptions, flatEquipment, selectedAssetId]);
 
   const routeAssets = useMemo(() => {
     if (!selectedRouteName) return [] as FlatEquipAsset[];
@@ -3084,7 +3090,7 @@ export default function TrendAnalyzer({
                   className={selectClass}
                 >
                   <option value="">Select Route</option>
-                  {equipmentRoutes.map((r) => (
+                  {routeOptions.map((r) => (
                     <option key={r.id} value={r.name}>
                       {r.name}
                     </option>

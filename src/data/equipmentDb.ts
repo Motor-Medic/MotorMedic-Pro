@@ -54,6 +54,7 @@ export interface TrendPoint {
 export interface EquipCollectionPoint {
   id: string;
   name: string;
+  serverId?: number;
   orientation: "Horizontal" | "Vertical" | "Axial" | "Radial";
   measurementType: "Vibration" | "Temp" | "Ultrasound";
 }
@@ -134,6 +135,7 @@ export interface ComponentKinematics {
 export interface EquipComponent {
   id: string;
   name: string;
+  serverId?: number;
   /** Optional component-level diagnostic metadata */
   status?: EquipHealthStatus;
   overallVibration?: number;
@@ -157,6 +159,7 @@ export interface EquipComponent {
 export interface EquipAsset {
   id: string;
   tag: string;
+  serverId?: number;
   name: string;
   location: string;
   components: EquipComponent[];
@@ -186,6 +189,10 @@ export interface EquipRoute {
   assets: EquipAsset[];
   plantId?: string;
   unitId?: string;
+  /** Server row id when this route came from /api/hierarchy. */
+  serverId?: number;
+  /** D4/D5 - invisible system route holding flat assets. */
+  isSystem?: boolean;
   collectionFrequency?:
     | "Daily"
     | "Weekly"
@@ -202,6 +209,7 @@ export interface EquipRoute {
 export interface EquipPlant {
   id: string;
   name: string;
+  serverId?: number;
   location: string;
   facilityType: "Refinery" | "Paper Mill" | "Motor Shop" | "Power Plant";
 }
@@ -210,6 +218,7 @@ export interface EquipUnit {
   id: string;
   name: string;
   plantId: string;
+  serverId?: number;
 }
 
 export interface EquipmentStore {
@@ -949,6 +958,11 @@ function normalizeStore(raw: unknown): EquipmentStore {
   return emptyStore();
 }
 
+/** Friendly label for the invisible system route (H7). */
+export function routeDisplayName(route: EquipRoute): string {
+  return route.isSystem ? "Facility (direct)" : route.name;
+}
+
 export function flattenEquipment(routes: EquipRoute[]): FlatEquipAsset[] {
   return routes.flatMap((route) =>
     route.assets.map((asset) => ({
@@ -957,7 +971,7 @@ export function flattenEquipment(routes: EquipRoute[]): FlatEquipAsset[] {
       name: asset.name,
       location: asset.location,
       routeId: route.id,
-      routeName: route.name,
+      routeName: routeDisplayName(route),
       hierarchyPath: `${route.location} → ${route.name} → ${asset.name}`,
       components: asset.components,
       status: asset.status,
@@ -1043,13 +1057,17 @@ export function ensureSitePlantRoot(
   facilityName: string = DEFAULT_FACILITY_NAME
 ): EquipmentStore {
   const current = readStoreFromStorage();
-  const name = (facilityName || DEFAULT_FACILITY_NAME).trim() || DEFAULT_FACILITY_NAME;
+  const fallback = (facilityName || DEFAULT_FACILITY_NAME).trim() || DEFAULT_FACILITY_NAME;
   const prior = current.plants.find((p) => p.id === SITE_PLANT_ID) ?? current.plants[0];
+  // H10 - the server plant name wins once it is known; props are only the
+  // first-paint fallback (never overwrite a renamed plant with the admin email).
+  const name = (prior?.name || "").trim() || fallback;
   const plant: EquipPlant = {
     id: SITE_PLANT_ID,
     name,
     location: prior?.location || name,
-    facilityType: prior?.facilityType || "Power Plant"
+    facilityType: prior?.facilityType || "Power Plant",
+    serverId: prior?.serverId
   };
   const next: EquipmentStore = {
     plants: [plant],
