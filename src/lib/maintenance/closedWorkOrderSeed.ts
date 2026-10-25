@@ -49,6 +49,9 @@ export interface ClosedWoStore {
 export const DEMO_PROVENANCE =
   "demo seed (declared) - client-side browser store, not a CMMS record";
 
+/** Client env rule: production builds never seed the demo store. */
+const isProdBuild = import.meta.env.PROD;
+
 export const DEMO_CLOSED_WO_STORE: ClosedWoStore = {
   version: CLOSED_WO_STORE_VERSION,
   provenance: DEMO_PROVENANCE,
@@ -182,6 +185,9 @@ export function loadClosedWoStore(): ClosedWoStore {
   try {
     const raw = localStorage.getItem(CLOSED_WO_STORE_KEY);
     if (raw === null) {
+      if (isProdBuild) {
+        return emptyStore("no closed work orders recorded yet");
+      }
       localStorage.setItem(CLOSED_WO_STORE_KEY, JSON.stringify(DEMO_CLOSED_WO_STORE));
       return DEMO_CLOSED_WO_STORE;
     }
@@ -201,6 +207,9 @@ export function loadClosedWoStore(): ClosedWoStore {
     }
     return emptyStore("store unreadable on record - no closed work orders");
   } catch {
+    if (isProdBuild) {
+      return emptyStore("browser store unavailable - no closed work orders");
+    }
     try {
       localStorage.setItem(CLOSED_WO_STORE_KEY, JSON.stringify(DEMO_CLOSED_WO_STORE));
     } catch {

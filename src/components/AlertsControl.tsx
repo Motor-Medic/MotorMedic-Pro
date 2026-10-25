@@ -154,7 +154,6 @@ const CMMS_PRIORITIES: CmmsPriority[] = [
   "Low Priority - Inspect Next Round"
 ];
 
-const FACILITY_ASSET_COUNT = 142;
 const BOILER_FEED_IDS = new Set(["p-101a", "p-101b", "m-101a"]);
 const SELECTED_FIVE_IDS = new Set(["gb-302", "m-101a", "p-101a", "fn-04", "p-402"]);
 
@@ -170,47 +169,6 @@ const MACHINE_CLASSES: {
   { id: "flex-gt15", label: "Flexible foundation · Motors > 15 kW (ISO Group 2)", warning: 4.5, critical: 7.1, group: "Group 2 Flexible" },
   { id: "flex-lte15", label: "Flexible foundation · Motors ≤ 15 kW (ISO Group 1)", warning: 2.8, critical: 4.5, group: "Group 1 Flexible" }
 ];
-
-function hypothesisForAlarm(alarm: HistoryAlarm): string {
-  const label = alarm.assetLabel.toLowerCase();
-  if (label.includes("gear")) return "Gear mesh wear / eccentricity — 1× GMF sidebands rising with load.";
-  if (label.includes("fan") || label.includes("tower")) return "Aerodynamic unbalance or blade-pass excitation on the fan assembly.";
-  if (label.includes("compressor")) return "Airend bearing distress — likely outer race (BPFO) with lubrication starvation.";
-  if (alarm.kind === "Critical" || alarm.value >= 4.5) {
-    return "Outer race bearing fault (BPFO) — spalling likely in progress. Immediate inspection required.";
-  }
-  return "Early-stage rolling-element defect or lubrication starvation — 1× / BPFO precursors.";
-}
-
-function fmeaModesForAlarm(alarm: HistoryAlarm): {
-  mode: string;
-  code: string;
-  rpn: number;
-  ap: "H" | "M" | "L";
-  action: string;
-}[] {
-  const label = alarm.assetLabel.toLowerCase();
-  if (label.includes("gear")) {
-    return [
-      { mode: "Gear tooth pitting / scuffing", code: "GMF 1×", rpn: 168, ap: "H", action: "Oil debris + mesh inspection" },
-      { mode: "Input shaft bearing spall", code: "BPFO", rpn: 120, ap: "H", action: "Ultrasound gSE survey" },
-      { mode: "Soft-foot / housing distortion", code: "2× RPM", rpn: 72, ap: "M", action: "Laser alignment check" }
-    ];
-  }
-  if (label.includes("fan") || label.includes("tower")) {
-    return [
-      { mode: "Fan unbalance / blade deposit", code: "1× RPM", rpn: 96, ap: "M", action: "Clean & balance rotor" },
-      { mode: "Motor DE bearing wear", code: "BPFO", rpn: 112, ap: "H", action: "Regrease + trend ultrasound" },
-      { mode: "Looseness in pedestal", code: "Harmonics", rpn: 80, ap: "M", action: "Torque foundation bolts" }
-    ];
-  }
-  return [
-    { mode: "Outer Race Bearing Fault", code: "BPFO", rpn: 144, ap: "H", action: "Replace NDE bearing / inspect lube" },
-    { mode: "Inner race defect", code: "BPFI", rpn: 108, ap: "H", action: "Confirm with envelope spectrum" },
-    { mode: "Shaft misalignment", code: "2× RPM", rpn: 90, ap: "M", action: "Laser align coupling" },
-    { mode: "Lubrication starvation", code: "gSE / temp", rpn: 84, ap: "M", action: "Precision lubrication protocol" }
-  ];
-}
 
 function formatRemaining(until: number, now: number): string {
   const ms = Math.max(0, until - now);
@@ -247,191 +205,6 @@ function statusBadge(status: AssetStatus) {
   if (status === "Warning") return "bg-amber-400/15 text-amber-300 border-amber-400/40";
   return "bg-emerald-500/15 text-emerald-300 border-emerald-500/40";
 }
-
-function makeTrend(seed: number, base: number): { t: string; vib: number }[] {
-  return Array.from({ length: 30 }, (_, i) => {
-    const wave = Math.sin((i + seed) / 4) * 0.35;
-    const drift = (i / 30) * (base > 3 ? 0.8 : 0.2);
-    const noise = ((seed * 17 + i * 13) % 10) / 40;
-    return {
-      t: `D${i + 1}`,
-      vib: Math.max(0.4, +(base * 0.55 + wave + drift + noise).toFixed(2))
-    };
-  });
-}
-
-const INITIAL_ASSETS: AlertAsset[] = [
-  {
-    id: "p-101a",
-    name: "Boiler Feed Pump A",
-    tag: "P-101A",
-    location: "Powerhouse — Floor 1",
-    currentVib: 3.45,
-    warningLimit: 2.8,
-    criticalLimit: 4.5,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.8,
-    trend: makeTrend(1, 3.2)
-  },
-  {
-    id: "p-101b",
-    name: "Boiler Feed Pump B",
-    tag: "P-101B",
-    location: "Powerhouse — Floor 1",
-    currentVib: 1.9,
-    warningLimit: 2.8,
-    criticalLimit: 4.5,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.6,
-    trend: makeTrend(2, 1.8)
-  },
-  {
-    id: "m-101a",
-    name: "Drive Motor M-101A",
-    tag: "M-101A",
-    location: "Powerhouse — Floor 1",
-    currentVib: 4.9,
-    warningLimit: 2.8,
-    criticalLimit: 4.5,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.5,
-    trend: makeTrend(3, 4.2)
-  },
-  {
-    id: "fn-04",
-    name: "Cooling Tower Fan 4",
-    tag: "FN-04",
-    location: "Roof Deck",
-    currentVib: 3.1,
-    warningLimit: 3.2,
-    criticalLimit: 5.0,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 3.0,
-    trend: makeTrend(4, 2.9)
-  },
-  {
-    id: "cmp-37",
-    name: "Screw Compressor RS37i",
-    tag: "CMP-37",
-    location: "Utility Pad",
-    currentVib: 2.2,
-    warningLimit: 3.0,
-    criticalLimit: 4.8,
-    monitoring: true,
-    muted: true,
-    shelvedUntil: Date.now() + Math.round(6.5 * 60 * 60 * 1000),
-    shelveReason: "Scheduled Maintenance",
-    shelveNotes: "Bearing re-greasing in progress by Team B",
-    isoVerified: false,
-    aiRecommend: 2.9,
-    trend: makeTrend(5, 2.1)
-  },
-  {
-    id: "gb-302",
-    name: "Extruder Gearbox GB-302",
-    tag: "GB-302",
-    location: "Polymer Line 3",
-    currentVib: 5.85,
-    warningLimit: 3.0,
-    criticalLimit: 4.8,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.9,
-    trend: makeTrend(6, 4.8)
-  },
-  {
-    id: "p-402",
-    name: "Slurry Recirc Pump P-402",
-    tag: "P-402",
-    location: "Chemical Unit 4",
-    currentVib: 2.6,
-    warningLimit: 2.8,
-    criticalLimit: 4.5,
-    monitoring: false,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.7,
-    trend: makeTrend(7, 2.4)
-  },
-  {
-    id: "cv-gb3",
-    name: "Conveyor Gearbox 3",
-    tag: "CV-GB-3",
-    location: "Conveyor Gallery",
-    currentVib: 1.4,
-    warningLimit: 2.8,
-    criticalLimit: 4.5,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.5,
-    trend: makeTrend(8, 1.3)
-  },
-  {
-    id: "m-210",
-    name: "Primary Induction Motor",
-    tag: "M-210",
-    location: "Drive Hall",
-    currentVib: 3.6,
-    warningLimit: 2.8,
-    criticalLimit: 4.5,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.8,
-    trend: makeTrend(9, 3.3)
-  },
-  {
-    id: "hx-12",
-    name: "Heat Exchanger Bundle 12",
-    tag: "HX-12",
-    location: "Process Area B",
-    currentVib: 0.9,
-    warningLimit: 2.5,
-    criticalLimit: 4.0,
-    monitoring: true,
-    muted: false,
-    shelvedUntil: null,
-    shelveReason: null,
-    shelveNotes: null,
-    isoVerified: false,
-    aiRecommend: 2.4,
-    trend: makeTrend(10, 0.85)
-  }
-];
 
 const DEFAULT_NOTIFY: NotifyConfig = {
   inApp: true,
@@ -694,16 +467,19 @@ function ShelveModal({
 
 function BatchThresholdModal({
   onCancel,
-  onApply
+  onApply,
+  plantAssetCount
 }: {
   onCancel: () => void;
   onApply: (scope: BatchScope, machineClass: MachineClassId) => void;
+  /** Real count of currently loaded assets — no hardcoded facility number. */
+  plantAssetCount: number;
 }) {
   const [scope, setScope] = useState<BatchScope>("plant");
   const [machineClass, setMachineClass] = useState<MachineClassId>("rigid-gt15");
   const klass = MACHINE_CLASSES.find((c) => c.id === machineClass) ?? MACHINE_CLASSES[0];
   const applyCount =
-    scope === "plant" ? FACILITY_ASSET_COUNT : scope === "boiler" ? BOILER_FEED_IDS.size : SELECTED_FIVE_IDS.size;
+    scope === "plant" ? plantAssetCount : scope === "boiler" ? BOILER_FEED_IDS.size : SELECTED_FIVE_IDS.size;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -741,7 +517,7 @@ function BatchThresholdModal({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {(
                 [
-                  { id: "plant" as const, label: "Entire Plant", hint: `${FACILITY_ASSET_COUNT} assets` },
+                  { id: "plant" as const, label: "Entire Plant", hint: `${plantAssetCount} assets` },
                   { id: "boiler" as const, label: "Boiler Feed Route", hint: `${BOILER_FEED_IDS.size} assets` },
                   { id: "selected5" as const, label: "Selected 5 Assets", hint: "Critical watchlist" }
                 ] as const
@@ -811,7 +587,8 @@ function RcaLaunchModal({
   alarm: HistoryAlarm;
   onClose: () => void;
 }) {
-  const hypothesis = hypothesisForAlarm(alarm);
+  // No generated hypothesis — honest empty state until one is captured in RCA.
+  const hypothesis = "";
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -861,7 +638,9 @@ function RcaLaunchModal({
           </div>
           <div className="rounded-xl border border-[#FFC700]/30 bg-[#FFC700]/5 p-3">
             <p className="text-[10px] uppercase tracking-widest text-[#FFC700] font-bold">Failure mode hypothesis</p>
-            <p className="text-xs text-slate-200 mt-1.5 leading-relaxed">{hypothesis}</p>
+            <p className="text-xs text-slate-200 mt-1.5 leading-relaxed">
+              {hypothesis || "No failure mode hypothesis configured — capture one in the RCA workspace."}
+            </p>
           </div>
         </div>
         <div className="p-4 border-t border-slate-800 flex flex-col sm:flex-row justify-end gap-2">
@@ -1715,7 +1494,11 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
       })
     );
     const count =
-      scope === "plant" ? FACILITY_ASSET_COUNT : scope === "boiler" ? BOILER_FEED_IDS.size : SELECTED_FIVE_IDS.size;
+      scope === "plant"
+        ? assets.length
+        : scope === "boiler"
+          ? assets.filter((a) => BOILER_FEED_IDS.has(a.id)).length
+          : assets.filter((a) => SELECTED_FIVE_IDS.has(a.id)).length;
     setBatchOpen(false);
     toast(
       `Applied ${klass.group} ISO 20816 limits (Warn ${klass.warning} / Crit ${klass.critical} mm/s) to ${count} assets. ISO 20816 Verified.`,
@@ -2132,26 +1915,9 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
                                   Linked FMEA · Vibration Alert
                                 </p>
                                 <div className="space-y-1.5">
-                                  {fmeaModesForAlarm(h).map((fm) => (
-                                    <div key={fm.code + fm.mode} className="rounded-lg border border-slate-800 bg-slate-950/70 p-2">
-                                      <div className="flex items-start justify-between gap-2">
-                                        <p className="text-[11px] font-bold text-slate-100">{fm.mode}</p>
-                                        <span
-                                          className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded border ${
-                                            fm.ap === "H"
-                                              ? "border-red-500/40 text-red-300 bg-red-500/10"
-                                              : fm.ap === "M"
-                                                ? "border-amber-400/40 text-amber-300 bg-amber-400/10"
-                                                : "border-emerald-500/40 text-emerald-300 bg-emerald-500/10"
-                                          }`}
-                                        >
-                                          AP {fm.ap} · RPN {fm.rpn}
-                                        </span>
-                                      </div>
-                                      <p className="text-[10px] text-cyan-300/90 font-mono mt-0.5">{fm.code}</p>
-                                      <p className="text-[10px] text-slate-400 mt-0.5">{fm.action}</p>
-                                    </div>
-                                  ))}
+                                  <p className="text-[11px] text-slate-400 italic">
+                                    No FMEA data configured for this asset — open the FMEA workspace to build one.
+                                  </p>
                                 </div>
                                 <button
                                   type="button"
@@ -2618,7 +2384,7 @@ export default function AlertsControl({ userId }: AlertsControlProps) {
       )}
 
       {batchOpen && (
-        <BatchThresholdModal onCancel={() => setBatchOpen(false)} onApply={applyBatchIso} />
+        <BatchThresholdModal onCancel={() => setBatchOpen(false)} onApply={applyBatchIso} plantAssetCount={assets.length} />
       )}
 
       {rcaAlarm && <RcaLaunchModal alarm={rcaAlarm} onClose={() => setRcaAlarm(null)} />}

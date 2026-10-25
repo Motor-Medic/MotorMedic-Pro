@@ -71,6 +71,11 @@ const INITIAL_PREVIEW_ROWS: PreviewRow[] = [
 ];
 
 export default function AIDataMigration({ selectedCompanyId, onNavigateToAssets }: AIDataMigrationProps) {
+  // PROD-HYGIENE: this wizard only simulates parsing of dropped files — it
+  // never performs a real import. Hidden in production builds.
+  const isProdBuild = import.meta.env.PROD;
+  if (isProdBuild) return null;
+
   // Wizard Step State (1: Upload, 2: Mapping, 3: Preview, 4: Progress/Success)
   const [currentStep, setCurrentStep] = useState<number>(1);
 

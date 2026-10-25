@@ -323,52 +323,7 @@ const getModalityTabs = (modality: string): { id: ReportTab; label: string }[] =
             ]
           : [{ id: 1, label: "1. Analysis Results" }];
 
-/** Spectrometry groups — wear / contaminants / additives (ppm). */
-const OIL_SPECTROMETRY = {
-  wear: [
-    { metal: "Fe", name: "Iron", ppm: 120, fill: "#eab308" },
-    { metal: "Cu", name: "Copper", ppm: 45, fill: "#22d3ee" },
-    { metal: "Cr", name: "Chromium", ppm: 8, fill: "#94a3b8" },
-    { metal: "Pb", name: "Lead", ppm: 3, fill: "#94a3b8" },
-    { metal: "Sn", name: "Tin", ppm: 2, fill: "#94a3b8" }
-  ],
-  contaminants: [
-    { metal: "Si", name: "Silicon/Dirt", ppm: 48, fill: "#eab308" },
-    { metal: "Na", name: "Sodium", ppm: 12, fill: "#94a3b8" }
-  ],
-  additives: [
-    { metal: "P", name: "Phosphorus", ppm: 410, fill: "#34d399" },
-    { metal: "Zn", name: "Zinc", ppm: 15, fill: "#22d3ee" },
-    { metal: "S", name: "Sulfur (EP Additives)", ppm: 1250, fill: "#eab308" }
-  ]
-} as const;
-
-type OilSpectrometryTab = keyof typeof OIL_SPECTROMETRY;
-
-/** Action Level 17/15/12 · Target Baseline 15/13/10 */
-const OIL_ISO_ACTION_LEVEL = "17/15/12";
-const OIL_ISO_TARGET_BASELINE = "15/13/10";
-
-const OIL_ACTION_PLAN = [
-  `Perform offline kidney-loop filtration to reduce ISO code below Action Level ${OIL_ISO_ACTION_LEVEL} toward Target Baseline ${OIL_ISO_TARGET_BASELINE}.`,
-  "Investigate water ingress source (check breathers, seals, or heat exchanger).",
-  "Schedule oil change if TAN exceeds 2.0 mg KOH/g.",
-  "Increase vibration analysis frequency to monitor gear mesh frequencies."
-];
-
 type OilAlertStatus = "NORMAL" | "WARNING" | "CRITICAL";
-
-const MCA_PHASE_INDUCTANCE = [
-  { phase: "Phase A", value: 12.5, fill: "#22d3ee" },
-  { phase: "Phase B", value: 12.6, fill: "#94a3b8" },
-  { phase: "Phase C", value: 12.8, fill: "#eab308" }
-];
-
-const MCA_PHASE_IMPEDANCE = [
-  { phase: "Phase A", value: 14.2, fill: "#22d3ee" },
-  { phase: "Phase B", value: 14.3, fill: "#94a3b8" },
-  { phase: "Phase C", value: 14.5, fill: "#eab308" }
-];
 
 type McaTestStatus = "PASS" | "WARNING" | "FAIL";
 type McaTestKind =
@@ -925,12 +880,6 @@ export interface ReportPart {
   quantity: number;
 }
 
-const INITIAL_REPORT_PARTS: ReportPart[] = [
-  { partId: 1, quantity: 1 },
-  { partId: 2, quantity: 1 },
-  { partId: 3, quantity: 4 }
-];
-
 interface RepairActionsPanelProps {
   inventory: InventoryPart[];
   reportParts: ReportPart[];
@@ -959,9 +908,8 @@ function RepairActionsPanel({
   canExport
 }: RepairActionsPanelProps) {
   const { toast } = useToast();
-  // Seeded to match the reference progress counts (2 of 4 steps, 1 of 3 recommendations).
-  const [completedSteps, setCompletedSteps] = useState<number[]>([1, 2]);
-  const [addressedRecs, setAddressedRecs] = useState<number[]>([3]);
+  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
+  const [addressedRecs, setAddressedRecs] = useState<number[]>([]);
   const [notes, setNotes] = useState<Record<number, string>>({});
   const [noteEditorId, setNoteEditorId] = useState<number | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
@@ -3729,6 +3677,13 @@ function McaPhaseMetricChart({
   return (
     <div className="min-w-0">
       <p className="text-xs font-bold text-slate-300 mb-2">{title}</p>
+      {data.length === 0 ? (
+        <div className="h-64 flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+          <p className="text-xs text-slate-500">
+            No measured phase data captured — run an MCA test to populate this chart.
+          </p>
+        </div>
+      ) : (
       <div className="h-64">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
@@ -3764,6 +3719,7 @@ function McaPhaseMetricChart({
           </BarChart>
         </ResponsiveContainer>
       </div>
+      )}
     </div>
   );
 }
@@ -3965,17 +3921,17 @@ function McaAnalysisResults({ assetLabel }: { assetLabel: string }) {
                 id: "inductance" as const,
                 title: "Inductance (mH)",
                 unit: "mH",
-                data: MCA_PHASE_INDUCTANCE,
+                data: [],
                 domain: [12, 13.2] as [number, number]
               },
               {
                 id: "impedance" as const,
                 title: "Impedance (Z)",
                 unit: "Ω",
-                data: MCA_PHASE_IMPEDANCE,
+                data: [],
                 domain: [13.5, 15] as [number, number]
               }
-            ] as const
+            ]
           ).map((chart) => (
             <div
               key={chart.id}
@@ -4007,12 +3963,9 @@ function McaAnalysisResults({ assetLabel }: { assetLabel: string }) {
         )}
 
         <div className="mt-4 border-t border-slate-800 pt-3 space-y-1">
-          <p className="text-xs text-yellow-500/90">
-            Phase C resistance imbalance of 6.82% exceeds 3% warning threshold per IEEE 1415 / NEMA
-            MG-1 standards.
-          </p>
-          <p className="text-[10px] text-slate-500">
-            Calculated via Max Deviation / 3-Phase Average (R̄).
+          <p className="text-xs text-slate-500 italic">
+            No phase imbalance computed — resistance, inductance and impedance values are not
+            captured for this asset yet.
           </p>
         </div>
       </section>
@@ -4022,6 +3975,13 @@ function McaAnalysisResults({ assetLabel }: { assetLabel: string }) {
         <h3 className="text-lg font-bold text-white mb-4">
           Polarization Index Trend (Last 5 Tests)
         </h3>
+        {MCA_PI_TREND.length === 0 ? (
+          <div className="h-48 flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+            <p className="text-xs text-slate-500">
+              No polarization index tests recorded — PI trend appears once periodic tests are saved.
+            </p>
+          </div>
+        ) : (
         <div className="h-48">
           <ResponsiveContainer width="100%" height="100%">
             <RechartsLineChart
@@ -4073,9 +4033,10 @@ function McaAnalysisResults({ assetLabel }: { assetLabel: string }) {
             </RechartsLineChart>
           </ResponsiveContainer>
         </div>
-        <p className="text-xs text-slate-400 mt-4 border-t border-slate-800 pt-3 leading-relaxed">
-          PI has declined from 4.1 to 2.9 over 18 months, indicating progressive insulation
-          degradation. Schedule motor rewind or replacement within 6 months.
+        )}
+        <p className="text-xs text-slate-500 italic mt-4 border-t border-slate-800 pt-3 leading-relaxed">
+          No polarization index history on file — trend narrative appears once at least two
+          periodic PI tests have been recorded.
         </p>
       </section>
 
@@ -4960,17 +4921,6 @@ function McaRepairActions({
 
 /** Oil Analysis — Tab 1: Lab Results & Analysis */
 function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
-  const [oilSpecTab, setOilSpecTab] = useState<OilSpectrometryTab>("wear");
-  const spectrometryData = OIL_SPECTROMETRY[oilSpecTab];
-  const spectrometryMax = Math.max(...spectrometryData.map((d) => d.ppm), 10);
-  const spectrometryYMax = Math.ceil(spectrometryMax * 1.15);
-
-  const spectrometryTabs: { id: OilSpectrometryTab; label: string }[] = [
-    { id: "wear", label: "Wear Metals" },
-    { id: "contaminants", label: "Dirt & Contaminants" },
-    { id: "additives", label: "Additive Package" }
-  ];
-
   return (
     <div className="space-y-6">
       {sampleDataBadge()}
@@ -4979,24 +4929,24 @@ function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
         <div className="space-y-1 min-w-0">
           <p>
             <span className="text-slate-500 uppercase tracking-wider font-bold mr-2">Asset</span>
-            <span className="text-white font-semibold">Main Gearbox - GB-101 (ISO VG 320)</span>
+            <span className="text-white font-semibold">Not recorded — no oil sample on file</span>
           </p>
           <p>
             <span className="text-slate-500 uppercase tracking-wider font-bold mr-2">Oil Type</span>
-            Mobil Gear 600 XP 320
+            Not recorded
           </p>
         </div>
         <div className="space-y-1 sm:text-right shrink-0">
           <p>
             <span className="text-slate-500 uppercase tracking-wider font-bold mr-2">Sample Date</span>
-            Oct 20, 2023
+            —
             <span className="mx-2 text-slate-600">|</span>
             <span className="text-slate-500 uppercase tracking-wider font-bold mr-2">Lab Received</span>
-            Oct 22, 2023
+            —
           </p>
           <p>
             <span className="text-slate-500 uppercase tracking-wider font-bold mr-2">Lab</span>
-            Spectra Certified Lab
+            Not recorded
           </p>
         </div>
       </div>
@@ -5007,27 +4957,27 @@ function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 leading-snug">
             Kinematic Viscosity @ 40°C (ASTM D445)
           </p>
-          <p className="text-2xl font-bold text-cyan-400 leading-none">318 cSt @ 40°C</p>
+          <p className="text-sm font-bold text-slate-500 leading-none">Not measured</p>
           <p className="text-xs text-slate-500 mt-2 leading-snug">
-            Target Band: 288 – 352 cSt (ISO VG 320 Grade)
+            No lab result on file for this asset
           </p>
         </div>
         <div className="bg-slate-900/50 border border-white/10 rounded-xl p-4">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 leading-snug">
             Water Content (ASTM D6304)
           </p>
-          <p className="text-2xl font-bold text-red-500 leading-none">450 ppm</p>
+          <p className="text-sm font-bold text-slate-500 leading-none">Not measured</p>
           <p className="text-xs text-slate-500 mt-2 leading-snug">
-            Warning Threshold: &gt; 200 ppm (Karl Fischer)
+            No lab result on file for this asset
           </p>
         </div>
         <div className="bg-slate-900/50 border border-white/10 rounded-xl p-4">
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 leading-snug">
             Total Acid Number (TAN)
           </p>
-          <p className="text-2xl font-bold text-yellow-500 leading-none">1.8 mg KOH/g</p>
+          <p className="text-sm font-bold text-slate-500 leading-none">Not measured</p>
           <p className="text-xs text-slate-500 mt-2 leading-snug">
-            Fresh Baseline: 0.4 mg KOH/g (Oxidation Warning &gt; 1.5)
+            No lab result on file for this asset
           </p>
         </div>
         <div className="bg-slate-900/50 border border-white/10 rounded-xl p-4">
@@ -5039,7 +4989,7 @@ function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
           </p>
           <p className="text-xs text-slate-500 mt-2 leading-snug">
             {liveIsoCode
-              ? `Action: ${OIL_ISO_ACTION_LEVEL} | Target: ${OIL_ISO_TARGET_BASELINE} (≥4µm / ≥6µm / ≥14µm)`
+              ? "Measured particle count on file — no configured action level for this asset"
               : "No particle count on file for this asset"}
           </p>
         </div>
@@ -5049,78 +4999,14 @@ function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
           <h3 className="text-lg font-bold text-white">Wear Metal Analysis (Spectrometry)</h3>
-          <div className="flex flex-wrap items-center gap-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-            <span className="inline-flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-yellow-500" /> Elevated
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-cyan-400" /> Moderate
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-slate-400" /> Nominal
-            </span>
-          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 mb-4">
-          {spectrometryTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setOilSpecTab(tab.id)}
-              className={`px-3 py-1.5 rounded text-xs border transition-colors cursor-pointer ${
-                oilSpecTab === tab.id
-                  ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                  : "bg-slate-800 border-slate-700 text-slate-400"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="h-64 flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+          <p className="text-xs text-slate-500">
+            No spectrometry results on file — upload a lab report to populate wear metal
+            concentrations.
+          </p>
         </div>
-
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={[...spectrometryData]} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
-              <CartesianGrid stroke="rgb(30 41 59)" strokeDasharray="3 3" vertical={false} />
-              <XAxis
-                dataKey="metal"
-                tick={{ fill: "#64748b", fontSize: 11 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-              />
-              <YAxis
-                domain={[0, spectrometryYMax]}
-                tick={{ fill: "#64748b", fontSize: 10 }}
-                axisLine={{ stroke: "#334155" }}
-                tickLine={false}
-                width={40}
-                unit=" ppm"
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "#0f172a",
-                  border: "1px solid #334155",
-                  borderRadius: 8,
-                  fontSize: 12
-                }}
-                formatter={(value: number, _name: string, item: { payload?: { name?: string } }) => [
-                  `${value} ppm`,
-                  item.payload?.name ?? "Concentration"
-                ]}
-              />
-              <Bar dataKey="ppm" radius={[4, 4, 0, 0]} maxBarSize={48}>
-                {spectrometryData.map((entry) => (
-                  <Cell key={entry.metal} fill={entry.fill} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <p className="mt-3 text-sm text-slate-300 italic">
-          Elevated Iron (120 ppm) combined with Silicon (48 ppm) indicates three-body abrasive wear
-          caused by external dirt ingress through a compromised breather cap.
-        </p>
       </section>
 
       {/* ===== SECTION 4: Oil Degradation Trend ===== */}
@@ -5150,10 +5036,9 @@ function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
         <p className="text-sm text-slate-300 leading-relaxed mb-5">
           {liveIsoCode ? (
             <>
-              The measured ISO 4406 cleanliness code is {liveIsoCode}, against Action
-              Level {OIL_ISO_ACTION_LEVEL} and Target Baseline{" "}
-              {OIL_ISO_TARGET_BASELINE}. Review the wear metals and fluid chemistry
-              below alongside this code before committing to a filtration plan.
+              The measured ISO 4406 cleanliness code is {liveIsoCode}. Review the wear
+              metals and fluid chemistry below alongside this code before committing to a
+              filtration plan.
             </>
           ) : (
             <>
@@ -5166,19 +5051,10 @@ function OilAnalysisResults({ liveIsoCode }: { liveIsoCode: string | null }) {
         <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-400 mb-3">
           Action Plan
         </p>
-        <ol className="space-y-2.5">
-          {OIL_ACTION_PLAN.map((step, index) => (
-            <li
-              key={step}
-              className="flex items-start gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2.5"
-            >
-              <span className="shrink-0 w-6 h-6 rounded-md bg-yellow-500/15 border border-yellow-500/40 text-yellow-500 text-xs font-bold flex items-center justify-center">
-                {index + 1}
-              </span>
-              <span className="text-sm text-slate-300 pt-0.5">{step}</span>
-            </li>
-          ))}
-        </ol>
+        <p className="text-sm text-slate-500 italic rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2.5">
+          No action plan configured — remediation steps are generated once a lab result
+          defines the condition.
+        </p>
       </section>
     </div>
   );
@@ -6067,7 +5943,7 @@ export default function AnalysisReport({
   const loadTimerRef = useRef<number | null>(null);
 
   const { inventory, savePart } = usePartsInventory();
-  const [reportParts, setReportParts] = useState<ReportPart[]>(INITIAL_REPORT_PARTS);
+  const [reportParts, setReportParts] = useState<ReportPart[]>([]);
   const [showInventory, setShowInventory] = useState(false);
 
   const [showWorkOrder, setShowWorkOrder] = useState(false);

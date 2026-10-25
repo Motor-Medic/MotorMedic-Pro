@@ -1600,6 +1600,9 @@ export default function EquipmentExplorer({
   const facilityName =
     (userPlantName && userPlantName.trim()) || "Main Facility";
 
+  // PROD-HYGIENE: demo/clear controls are dev-only — hidden in production builds.
+  const isProdBuild = import.meta.env.PROD;
+
   const [tick, setTick] = useState(0);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ExplorerNode | null>(null);
@@ -1641,26 +1644,7 @@ export default function EquipmentExplorer({
     severity: "normal" | "warning" | "critical";
   } | null>(null);
 
-  const [exceptions, setExceptions] = useState<CbmExceptionRow[]>(() => [
-    {
-      id: "ex-seed-1",
-      location: "Motor DE — Point 1H",
-      dateLogged: "1/7/2026 2:15 PM",
-      tech: "Vibration",
-      severity: "Critical",
-      faultDescription: "1X amplitude exceeded ISO Zone C — misalignment suspected",
-      actionRequired: "Schedule precision alignment within 48 hrs"
-    },
-    {
-      id: "ex-seed-2",
-      location: "Motor DE — Point 1V",
-      dateLogged: "1/5/2026 9:40 AM",
-      tech: "IR",
-      severity: "Warning",
-      faultDescription: "NDE bearing housing +12 °C above baseline",
-      actionRequired: "Verify lubrication interval and grease type"
-    }
-  ]);
+  const [exceptions, setExceptions] = useState<CbmExceptionRow[]>([]);
   const [showAddException, setShowAddException] = useState(false);
   const [newException, setNewException] = useState({
     tech: "Vibration" as DiagnosticTech,
@@ -1669,19 +1653,7 @@ export default function EquipmentExplorer({
     actionRequired: ""
   });
 
-  const [feedbackEntries, setFeedbackEntries] = useState<FeedbackEntry[]>(() => [
-    {
-      id: "fb-seed-1",
-      location: "Motor DE",
-      dateCreated: "1/6/2026 4:22 PM",
-      comment:
-        "Audible high-frequency whine at NDE — grease purge performed, noise reduced but not eliminated.",
-      acknowledged: true,
-      workOrderId: "WO-10482",
-      hasImage: true,
-      conditionUpdate: "Minor grease leakage at NDE seal"
-    }
-  ]);
+  const [feedbackEntries, setFeedbackEntries] = useState<FeedbackEntry[]>([]);
   const [feedbackDraft, setFeedbackDraft] = useState({
     comment: "",
     workOrderId: "",
@@ -2868,26 +2840,30 @@ export default function EquipmentExplorer({
         </div>
       </div>
       <div className="flex items-center gap-2 sm:gap-3 shrink-0 flex-wrap justify-end">
-        <span
-          className="hidden sm:block w-px h-6 bg-slate-700"
-          aria-hidden
-        />
-        <button
-          type="button"
-          onClick={handleLoadDemo}
-          className={`${QUICK_ADD_BTN} border-cyan-400/40 text-cyan-200 hover:bg-cyan-500/15`}
-        >
-          <span>🧪</span>
-          <span>Load Demo Data</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setConfirmResetOpen(true)}
-          className="bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/80 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
-        >
-          <span>🗑️</span>
-          <span>Clear Database</span>
-        </button>
+        {!isProdBuild && (
+          <>
+            <span
+              className="hidden sm:block w-px h-6 bg-slate-700"
+              aria-hidden
+            />
+            <button
+              type="button"
+              onClick={handleLoadDemo}
+              className={`${QUICK_ADD_BTN} border-cyan-400/40 text-cyan-200 hover:bg-cyan-500/15`}
+            >
+              <span>🧪</span>
+              <span>Load Demo Data</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmResetOpen(true)}
+              className="bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/80 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+            >
+              <span>🗑️</span>
+              <span>Clear Database</span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -4347,7 +4323,7 @@ export default function EquipmentExplorer({
                 onChange={(e) =>
                   setFeedbackDraft((p) => ({ ...p, workOrderId: e.target.value }))
                 }
-                placeholder="WO-10482"
+                placeholder="WO-20451"
               />
             </label>
             <label className="space-y-1 block">

@@ -30,13 +30,6 @@ import { useToast } from "./Toast";
 import type { SpectrumPoint } from "../types/vibration";
 import type { TargetContext } from "../types";
 import {
-  DEEP_FFT_DATA,
-  DEEP_FFT_DATA_HF,
-  TWF_DATA,
-  ENVELOPE_DATA,
-  SAMPLE_WATERMARK,
-} from "../lib/diagnostics/sampleSpectralData";
-import {
   emptySpecsFor,
   fieldsFor,
   getSpecTabs,
@@ -1398,162 +1391,12 @@ async function fetchWithTimeout(
 const SHOW_EXTENDED_RESULTS = false;
 const BPFO_BAND = { x1: 145, x2: 160, hz: 152 };
 
-const ANNOTATIONS: FaultAnnotation[] = [
-  {
-    id: "bpfo",
-    hz: 152,
-    measuredHz: 152.3,
-    theoreticalHz: 151.8,
-    label: "152 Hz - BPFO (Outer Race)",
-    faultType: "Ball Pass Frequency Outer Race",
-    amplitude: 4.2,
-    isoZone: "ISO Zone C",
-    significance: "Indicates outer race spalling",
-    color: "#ef4444",
-    width: 8
-  },
-  {
-    id: "1x",
-    hz: 29.8,
-    measuredHz: 29.8,
-    theoreticalHz: 29.67,
-    label: "1X Running Speed — Slight Misalignment",
-    faultType: "1× Running Speed",
-    amplitude: 1.8,
-    isoZone: "ISO Zone B",
-    significance: "Minor shaft misalignment contribution",
-    color: "#f59e0b",
-    width: 6
-  },
-  {
-    id: "bpfo-2x",
-    hz: 304,
-    measuredHz: 304.1,
-    theoreticalHz: 303.6,
-    label: "2× BPFO Harmonic",
-    faultType: "BPFO 2nd Harmonic",
-    amplitude: 1.1,
-    isoZone: "ISO Zone B",
-    significance: "Confirms outer race defect family",
-    color: "#f87171",
-    width: 5
-  }
-];
-
-const FAULTS: FaultFinding[] = [
-  {
-    id: "f1",
-    severity: "HIGH",
-    title: "Outer Race Bearing Defect (BPFO)",
-    frequency: "152 Hz",
-    amplitude: "4.2 mm/s",
-    confidence: 94,
-    detail:
-      "Bearing outer race defect signature with matching harmonic family — schedule DE bearing replacement."
-  },
-  {
-    id: "f2",
-    severity: "MEDIUM",
-    title: "Angular Misalignment",
-    frequency: "29.8 Hz (1X / 2X)",
-    amplitude: "1.8 mm/s",
-    confidence: 87,
-    detail:
-      "Elevated 1X/2X running-speed peaks with cross-channel phase shift consistent with angular misalignment."
-  },
-  {
-    id: "f3",
-    severity: "MEDIUM",
-    title: "Unbalance",
-    frequency: "29.7 Hz (1X RPM)",
-    amplitude: "1.4 mm/s",
-    confidence: 81,
-    detail:
-      "Dominant 1X radial energy suggests residual unbalance. Verify coupling balance and impeller/fan trim."
-  },
-  {
-    id: "f4",
-    severity: "LOW",
-    title: "Elevated Noise Floor",
-    frequency: "Broadband",
-    amplitude: "0.5 mm/s floor",
-    confidence: 72,
-    detail:
-      "Slight increase in broadband noise. Possible early lubrication variance or minor looseness."
-  }
-];
-
-const TREND_30D = [
-  { day: "D-30", amp: 0.6 },
-  { day: "D-24", amp: 0.8 },
-  { day: "D-18", amp: 1.1 },
-  { day: "D-14", amp: 1.6 },
-  { day: "D-10", amp: 2.2 },
-  { day: "D-7", amp: 2.9 },
-  { day: "D-4", amp: 3.5 },
-  { day: "D-2", amp: 3.9 },
-  { day: "Today", amp: 4.2 }
-];
-
 const IMMEDIATE_ACTIONS = [
   "Allocate replacement bearing from inventory.",
   "Schedule downtime within 7-14 days.",
   "Check holding-down bolts for soft foot condition before installing new bearing.",
   "Perform precision field balance in Plane 1 if 1X peak persists."
 ];
-
-function buildSpectrum(maxHz: number): SpectrumPoint[] {
-  const peaks = [
-    { f: 29.8, a: 1.8, w: 4 },
-    { f: 59.6, a: 0.9, w: 4 },
-    { f: 89.4, a: 0.28, w: 5 },
-    { f: 152, a: 4.2, w: 2.2 }, // Primary BPFO — sharp, unmistakable
-    { f: 304, a: 1.1, w: 4 },
-    { f: 456, a: 0.4, w: 6 }
-  ];
-
-  // Dense base grid (~100 pts) + extra samples around fault peaks
-  const hzSet = new Set<number>();
-  const step = maxHz <= 500 ? 5 : maxHz <= 1000 ? 10 : 25;
-  for (let hz = 0; hz <= maxHz; hz += step) hzSet.add(hz);
-  for (const p of peaks) {
-    if (p.f > maxHz) continue;
-    for (let d = -8; d <= 8; d += 1) {
-      const hz = Math.round((p.f + d) * 10) / 10;
-      if (hz >= 0 && hz <= maxHz) hzSet.add(hz);
-    }
-  }
-
-  const points: SpectrumPoint[] = Array.from(hzSet)
-    .sort((a, b) => a - b)
-    .map((hz) => {
-      let amp = 0.2 + Math.sin(hz * 0.09) * 0.05 + Math.sin(hz * 0.31) * 0.025;
-      let baseline = 0.15 + Math.sin(hz * 0.05) * 0.015;
-      for (const p of peaks) {
-        const d = Math.abs(hz - p.f);
-        amp += p.a * Math.exp(-(d * d) / (p.w * p.w));
-      }
-      return {
-        hz,
-        amp: Math.max(0.1, Math.min(9.5, Math.round(amp * 1000) / 1000)),
-        baseline: Math.max(0.12, Math.round(baseline * 1000) / 1000)
-      };
-    });
-
-  // Lock exact demo peaks
-  const lock = (f: number, a: number, b: number) => {
-    const i = points.findIndex((p) => Math.abs(p.hz - f) < 0.05);
-    if (i >= 0) points[i] = { hz: f, amp: a, baseline: b };
-    else {
-      points.push({ hz: f, amp: a, baseline: b });
-      points.sort((x, y) => x.hz - y.hz);
-    }
-  };
-  lock(29.8, 1.8, 0.2);
-  lock(59.6, 0.9, 0.15);
-  lock(152, 4.2, 0.15);
-  return points;
-}
 
 function unitLabel(unit: UnitMode) {
   if (unit === "acceleration") return "g";
@@ -1933,6 +1776,9 @@ export default function Diagnose({
 
   const hasEquipment = diagnoseAssets.length > 0;
 
+  // PROD-HYGIENE: demo-data loader is dev-only — hidden in production builds.
+  const isProdBuild = import.meta.env.PROD;
+
   const handleLoadDemoEquipment = () => {
     loadDemoData();
     const next = getFlatEquipment().map(flatToDiagnoseAsset);
@@ -2092,11 +1938,8 @@ export default function Diagnose({
         };
       });
     }
-    return FAULTS.map((f) => ({
-      ...f,
-      frequency: DIAGNOSE_NOT_RECORDED,
-      confidence: null
-    }));
+    // No analysis result yet — honest empty fault list, never a demo fallback.
+    return [];
   }, [analysisResult, selectedTech]);
 
   const repairSteps = useMemo(
@@ -2201,7 +2044,9 @@ export default function Diagnose({
   };
 
   const maxHz = range === "0-500" ? 500 : range === "0-1000" ? 1000 : 5000;
-  const spectrum = useMemo(() => buildSpectrum(maxHz), [maxHz]);
+  // Synthetic spectrum generation was removed (PROD-HYGIENE) — the chart only
+  // renders when a real (cropped) spectrum exists; otherwise an empty state.
+  const spectrum = useMemo<SpectrumPoint[]>(() => [], [maxHz]);
   const displaySpectrum = useMemo(
     () =>
       spectrum.map((p) => ({
@@ -2210,11 +2055,6 @@ export default function Diagnose({
         baseline: scaleAmp(p.baseline, unit)
       })),
     [spectrum, unit]
-  );
-
-  const visibleAnnotations = useMemo(
-    () => ANNOTATIONS.filter((a) => a.hz <= maxHz / Math.max(1, zoom * 0.85)),
-    [maxHz, zoom]
   );
 
   useEffect(() => {
@@ -4561,16 +4401,18 @@ useEffect(() => {
             {!hasEquipment ? (
               <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-4 space-y-3">
                 <p className="text-sm text-amber-100 leading-relaxed">
-                  ⚠️ No equipment found in database. Add equipment in Equipment DB or click
-                  &apos;Load Demo Data&apos;.
+                  ⚠️ No equipment found in database. Add equipment in Equipment DB
+                  {!isProdBuild && " or click 'Load Demo Data'"}.
                 </p>
-                <button
-                  type="button"
-                  onClick={handleLoadDemoEquipment}
-                  className="min-h-[40px] px-4 rounded-lg bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-500/30 transition-colors"
-                >
-                  🧪 Load Demo Data
-                </button>
+                {!isProdBuild && (
+                  <button
+                    type="button"
+                    onClick={handleLoadDemoEquipment}
+                    className="min-h-[40px] px-4 rounded-lg bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-500/30 transition-colors"
+                  >
+                    🧪 Load Demo Data
+                  </button>
+                )}
               </div>
             ) : (
               <>
@@ -5607,84 +5449,9 @@ useEffect(() => {
                     })()}
                     </>
 ) : (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart
-                        data={displaySpectrum}
-                        margin={{ top: 28, right: 48, left: 0, bottom: 8 }}
-                      >
-                        <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                        <XAxis
-                          dataKey="hz"
-                          type="number"
-                          domain={[0, maxHz]}
-                          tick={{ fill: "#64748b", fontSize: 10 }}
-                          axisLine={{ stroke: "#334155" }}
-                          tickLine={false}
-                          label={{ value: "Hz", position: "insideBottomRight", offset: -4, fill: "#64748b", fontSize: 10 }}
-                        />
-                      <YAxis
-                        tick={{ fill: "#64748b", fontSize: 10 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={36}
-                        domain={[0, 10]}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          background: "#0f172a",
-                          border: "1px solid #334155",
-                          borderRadius: 8,
-                          fontSize: 12
-                        }}
-                        labelFormatter={(v) => `${v} Hz`}
-                      />
-                      <ReferenceLine
-                        y={4.5}
-                        stroke="#ef4444"
-                        strokeDasharray="3 3"
-                        label={{
-                          value: "ISO 10816-3 Limit (4.5 mm/s)",
-                          position: "right",
-                          fill: "#ef4444",
-                          fontSize: 10
-                        }}
-                      />
-                      {fmaxView === "standard" && (
-                        <ReferenceLine
-                          x={150}
-                          stroke="#ef4444"
-                          strokeDasharray="4 4"
-                          strokeWidth={1.5}
-                          label={{
-                            value: "152 Hz - BPFO (Outer Race)",
-                            fill: "#f87171",
-                            fontSize: 10,
-                            position: "insideTopLeft"
-                          }}
-                        />
-                      )}
-                      <Line
-                        type="monotone"
-                        dataKey="baseline"
-                        stroke="#64748b"
-                        strokeWidth={1.5}
-                        strokeDasharray="5 4"
-                        dot={false}
-                        name="Healthy baseline"
-                        isAnimationActive={false}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="measured"
-                        stroke="#22d3ee"
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4, fill: "#ef4444", stroke: "#fff", strokeWidth: 1 }}
-                        name="Measured spectrum"
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                    <div className="h-full w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+                      <p className="text-xs text-slate-500">No spectrum captured — upload an analyzer screenshot to display the FFT panel.</p>
+                    </div>
                   )}
                 </div>
 
@@ -5698,19 +5465,7 @@ useEffect(() => {
                         <span className="h-2 w-2 rounded-full bg-red-500" /> Vision peak markers
                       </span>
                     </>
-                  ) : (
-                    <>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-0.5 w-4 bg-cyan-400 rounded" /> Measured spectrum
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-0.5 w-4 border-t-2 border-dashed border-slate-500" /> Healthy baseline
-                  </span>
-                  <span className="inline-flex items-center gap-1.5 text-red-400">
-                    <span className="h-2 w-2 rounded-full bg-red-500" /> Fault highlight
-                  </span>
-                    </>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
@@ -5735,47 +5490,15 @@ useEffect(() => {
                       }
                     />
                   ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={TWF_DATA} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                      <XAxis dataKey="t" hide />
-                      <YAxis tick={{ fill: "#64748b", fontSize: 10 }} width={32} axisLine={false} tickLine={false} />
-                      <Tooltip
-                        contentStyle={{
-                          background: "#0f172a",
-                          border: "1px solid #334155",
-                          borderRadius: 8,
-                          fontSize: 12
-                        }}
-                      />
-                      {syncCursorActive && (
-                        <ReferenceLine x={15} stroke="#22d3ee" strokeDasharray="3 3" />
-                      )}
-                      <Line
-                        type="monotone"
-                        dataKey="amp"
-                        stroke="#eab308"
-                        strokeWidth={1.5}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                    <div className="h-full w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+                      <p className="text-xs text-slate-500">No time waveform captured for this analysis.</p>
+                    </div>
                   )}
                 </div>
 
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-300 border border-slate-800 rounded-lg bg-slate-900/60 px-3 py-2">
-                  <span>
-                    Peak-to-Peak: <span className="font-bold text-white">18.4 mm/s</span>
-                  </span>
-                  <span className="text-slate-600">|</span>
-                  <span>
-                    Crest Factor:{" "}
-                    <span className="font-bold text-yellow-400">4.2 (High)</span>
-                  </span>
-                  <span className="text-slate-600">|</span>
-                  <span>
-                    RMS: <span className="font-bold text-white">4.2 mm/s</span>
+                  <span className="text-slate-500 italic">
+                    No waveform metrics captured — peak-to-peak, crest factor, and RMS are recorded with a real measurement.
                   </span>
                 </div>
 
@@ -5810,59 +5533,9 @@ useEffect(() => {
                     })()}
                     </>
                   ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={ENVELOPE_DATA} margin={{ top: 8, right: 72, left: 0, bottom: 0 }}>
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                      <XAxis dataKey="hz" hide />
-                      <YAxis
-                        domain={[0, 4]}
-                        tick={{ fill: "#64748b", fontSize: 10 }}
-                        width={32}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          background: "#0f172a",
-                          border: "1px solid #334155",
-                          borderRadius: 8,
-                          fontSize: 12
-                        }}
-                        labelFormatter={(v) => `${v} Hz`}
-                      />
-                      <ReferenceLine
-                        y={1.0}
-                        stroke="#eab308"
-                        strokeDasharray="3 3"
-                        label={{
-                          value: "1.0 gE (Warning)",
-                          position: "right",
-                          fill: "#eab308",
-                          fontSize: 10
-                        }}
-                      />
-                      <ReferenceLine
-                        y={2.5}
-                        stroke="#ef4444"
-                        strokeDasharray="3 3"
-                        label={{
-                          value: "2.5 gE (Danger)",
-                          position: "right",
-                          fill: "#ef4444",
-                          fontSize: 10
-                        }}
-                      />
-                      <Area
-                        type="monotone"
-                        dataKey="amp"
-                        stroke="#eab308"
-                        fill="#eab308"
-                        fillOpacity={0.2}
-                        strokeWidth={2}
-                        isAnimationActive={false}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                    <div className="h-full w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+                      <p className="text-xs text-slate-500">No envelope spectrum captured for this analysis.</p>
+                    </div>
                   )}
                 </div>
               </div>
@@ -5870,7 +5543,7 @@ useEffect(() => {
             <p className="text-[11px] text-slate-500 mt-4">
               {useCroppedFft || useCroppedTwf || useCroppedEnvelope
                 ? "Chart panels were cropped from the uploaded analyzer screenshot. Peak markers use Vision-extracted frequencies when available."
-                : "Hovering over an impact peak in the TWF automatically highlights the corresponding frequency component in the FFT spectrum."}
+                : "No spectrum captured — upload an analyzer screenshot to display FFT, TWF, and envelope panels."}
             </p>
             {!useCroppedFft && (
               <p className="text-[11px] text-slate-500 mt-1">

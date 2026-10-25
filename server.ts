@@ -11481,297 +11481,6 @@ app.get(["/api/analysis-history", "/api/analysis_history", "/api/analysis-histor
   }
 });
 
-// Helper: Seed analysis history in database for a component if none exists
-async function seedAnalysisHistoryForComponent(componentId: number, dbTech: string): Promise<any[]> {
-  if (!pool) return [];
-  
-  try {
-    // 1. Get or create collection point
-    let colPointId: number;
-    const colPointCheck = await pool.query(
-      "SELECT id FROM collection_points WHERE component_id = $1 LIMIT 1",
-      [componentId]
-    );
-    if (colPointCheck.rows.length > 0) {
-      colPointId = colPointCheck.rows[0].id;
-    } else {
-      const insertCol = await pool.query(
-        "INSERT INTO collection_points (component_id, name, location_order, notes) VALUES ($1, 'DE Inboard Bearing', 1, 'Drive End location for historical trends') RETURNING id",
-        [componentId]
-      );
-      colPointId = insertCol.rows[0].id;
-    }
-
-    // 2. Get or create measurement point
-    let measPointId: number;
-    const measPointCheck = await pool.query(
-      "SELECT id FROM measurement_points WHERE collection_point_id = $1 AND technology_type = $2 LIMIT 1",
-      [colPointId, dbTech]
-    );
-    if (measPointCheck.rows.length > 0) {
-      measPointId = measPointCheck.rows[0].id;
-    } else {
-      let defaultUnits = "in/sec";
-      if (dbTech === "Thermal") defaultUnits = "°F";
-      else if (dbTech === "Ultrasound") defaultUnits = "dBμV";
-      else if (dbTech === "Electrical") defaultUnits = "Ohms";
-      else if (dbTech === "Oil") defaultUnits = "ppm";
-
-      const insertMeas = await pool.query(
-        "INSERT INTO measurement_points (collection_point_id, direction, technology_type, units) VALUES ($1, 'Radial Horizontal', $2, $3) RETURNING id",
-        [colPointId, dbTech, defaultUnits]
-      );
-      measPointId = insertMeas.rows[0].id;
-    }
-
-    // 3. Define parameters
-    const params: { name: string; units: string; alarm_val: number; is_lower_alarm?: boolean; get_val: (f: number) => number }[] = [];
-
-    if (dbTech === "Vibration") {
-      params.push(
-        { name: "Velocity RMS", units: "in/sec", alarm_val: 0.25, get_val: (f) => 0.05 + f * 0.18 + Math.random() * 0.03 },
-        { name: "Acceleration True Peak", units: "g's", alarm_val: 3.0, get_val: (f) => 0.3 + f * 2.2 + Math.random() * 0.4 },
-        { name: "Displacement Peak-to-Peak", units: "mils", alarm_val: 4.5, get_val: (f) => 0.6 + f * 3.0 + Math.random() * 0.5 },
-        { name: "1X Running Speed amplitude", units: "in/sec", alarm_val: 0.15, get_val: (f) => 0.02 + f * 0.10 + Math.random() * 0.02 },
-        { name: "2X Running Speed amplitude", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
-        { name: "Bearing Frequencies (BPFO)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.6 ? (f - 0.6) * 0.4 : 0) + Math.random() * 0.01 },
-        { name: "Bearing Frequencies (BPFI)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.5 ? (f - 0.5) * 0.5 : 0) + Math.random() * 0.01 },
-        { name: "Gear Mesh Frequency", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
-        { name: "Sub-synchronous frequencies", units: "in/sec", alarm_val: 0.08, get_val: (f) => 0.005 + f * 0.03 + Math.random() * 0.005 }
-      );
-    } else if (dbTech === "Thermal") {
-      params.push(
-        { name: "Overall Temperature", units: "°F", alarm_val: 175.0, get_val: (f) => 98.0 + f * 65.0 + Math.random() * 5.0 },
-        { name: "Temperature Delta", units: "°F", alarm_val: 30.0, get_val: (f) => 1.5 + f * 24.0 + Math.random() * 2.0 },
-        { name: "Temperature Rate of Change", units: "°F/day", alarm_val: 4.0, get_val: (f) => 0.05 + f * 3.5 + Math.random() * 0.4 }
-      );
-    } else if (dbTech === "Ultrasound") {
-      params.push(
-        { name: "Overall dB Level", units: "dBμV", alarm_val: 36.0, get_val: (f) => 14.0 + f * 19.0 + Math.random() * 3.0 },
-        { name: "RMS Ultrasound Level", units: "dBμV", alarm_val: 30.0, get_val: (f) => 11.0 + f * 16.0 + Math.random() * 2.0 },
-        { name: "Crest Factor", units: "ratio", alarm_val: 6.0, get_val: (f) => 1.6 + f * 3.8 + Math.random() * 0.5 },
-        { name: "Bearing fault frequency amplitudes", units: "dBμV", alarm_val: 25.0, get_val: (f) => 3.0 + f * 18.0 + Math.random() * 2.0 }
-      );
-    } else if (dbTech === "Electrical") {
-      params.push(
-        { name: "Phase-to-Phase Resistance U-V", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
-        { name: "Phase-to-Phase Resistance V-W", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + f * 0.012 + Math.random() * 0.002 },
-        { name: "Phase-to-Phase Resistance W-U", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
-        { name: "Phase Impedance", units: "Ohms", alarm_val: 15.0, get_val: (f) => 12.1 + f * 0.4 + Math.random() * 0.05 },
-        { name: "Phase Unbalance (%)", units: "%", alarm_val: 5.0, get_val: (f) => 0.3 + f * 4.2 + Math.random() * 0.3 },
-        { name: "Insulation Resistance", units: "MegOhm", alarm_val: 20.0, is_lower_alarm: true, get_val: (f) => 3800.0 - f * 3700.0 - Math.random() * 100.0 },
-        { name: "Tan Delta / Power Factor", units: "%", alarm_val: 4.0, get_val: (f) => 0.6 + f * 3.2 + Math.random() * 0.2 }
-      );
-    } else if (dbTech === "Oil") {
-      params.push(
-        { name: "Viscosity @ 40°C", units: "cSt", alarm_val: 41.4, is_lower_alarm: true, get_val: (f) => 45.8 - f * 7.5 + Math.random() * 0.5 },
-        { name: "Water Content", units: "ppm", alarm_val: 300.0, get_val: (f) => 30.0 + f * 250.0 + Math.random() * 15.0 },
-        { name: "Particle Count Cleanliness Index", units: "index", alarm_val: 22.0, get_val: (f) => 14.0 + f * 8.0 + Math.random() * 1.0 },
-        { name: "Ferrous Density", units: "ppm", alarm_val: 100.0, get_val: (f) => 6.0 + f * 92.0 + Math.random() * 6.0 },
-        { name: "Iron Wear Metal", units: "ppm", alarm_val: 75.0, get_val: (f) => 10.0 + f * 80.0 + Math.random() * 5.0 },
-        { name: "Copper Wear Metal", units: "ppm", alarm_val: 25.0, get_val: (f) => 3.0 + f * 26.0 + Math.random() * 2.0 },
-        { name: "Aluminum Wear Metal", units: "ppm", alarm_val: 12.0, get_val: (f) => 1.5 + f * 11.0 + Math.random() * 1.0 },
-        { name: "Chromium Wear Metal", units: "ppm", alarm_val: 3.0, get_val: (f) => 0.2 + f * 2.8 + Math.random() * 0.2 },
-        { name: "Acid Number (AN)", units: "mg KOH/g", alarm_val: 0.8, get_val: (f) => 0.12 + f * 0.64 + Math.random() * 0.04 },
-        { name: "Zinc levels", units: "ppm", alarm_val: 700.0, is_lower_alarm: true, get_val: (f) => 1150.0 - f * 480.0 - Math.random() * 20.0 },
-        { name: "Phosphorus levels", units: "ppm", alarm_val: 600.0, is_lower_alarm: true, get_val: (f) => 950.0 - f * 420.0 - Math.random() * 15.0 }
-      );
-    }
-
-    // 4. Insert 30 readings for each parameter
-    const seededRows: any[] = [];
-    for (let i = 0; i < 30; i++) {
-      const factor = i / 29.0;
-      const measurementDate = new Date(Date.now() - (29 - i) * 24 * 3600 * 1000);
-      const op_speed = 1785.0 + Math.random() * 30.0; // Running around 1800 RPM
-
-      for (const param of params) {
-        const val = param.get_val(factor);
-        let isAlarm = false;
-        if (param.is_lower_alarm) {
-          isAlarm = val <= param.alarm_val;
-        } else {
-          isAlarm = val >= param.alarm_val;
-        }
-
-        const notes = isAlarm 
-          ? `⚠️ Warning limit exceeded for ${param.name}. Immediate inspection and re-greasing recommended.` 
-          : `Sensor telemetry within nominal operating limits for ${param.name}.`;
-
-        const stateVal = isAlarm ? "Alarm Active" : "Data Collected";
-
-        // Diagnose recommendations
-        const recommendedActions = isAlarm 
-          ? `Verify alignment, check mechanical coupling clearances, inspect for lubricant quality, and schedule repair action soon.`
-          : `No immediate actions required. Continue routine monitoring intervals.`;
-
-        const diagnosis_result = {
-          current_value: val,
-          alarm_threshold: param.alarm_val,
-          status: isAlarm ? "ALARM" : "NORMAL",
-          recommendation: recommendedActions,
-          diagnostic_brief: isAlarm 
-            ? `Critical deterioration observed in ${param.name} parameter. Standard operating tolerances violated.` 
-            : `System parameter ${param.name} is functioning normally.`
-        };
-
-        const result = await pool.query(
-          `INSERT INTO analysis_history 
-           (measurement_point_id, data_point_name, state, op_speed, measurement_value, units, measurement_date, notes, alarm_status, diagnosis_result) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
-           RETURNING *`,
-          [
-            measPointId,
-            param.name,
-            stateVal,
-            op_speed,
-            parseFloat(val.toFixed(6)),
-            param.units,
-            measurementDate,
-            notes,
-            isAlarm,
-            JSON.stringify(diagnosis_result)
-          ]
-        );
-        
-        const row = result.rows[0];
-        // Add technology_type for frontend compatibility
-        row.technology_type = dbTech;
-        seededRows.push(row);
-      }
-    }
-
-    return seededRows;
-  } catch (err) {
-    console.error("Failed to seed analysis history in DB:", err);
-    return [];
-  }
-}
-
-// Helper: Seed analysis history in-memory for a component if none exists
-async function seedAnalysisHistoryMemory(componentId: number, dbTech: string): Promise<any[]> {
-  try {
-    const params: { name: string; units: string; alarm_val: number; is_lower_alarm?: boolean; get_val: (f: number) => number }[] = [];
-
-    if (dbTech === "Vibration") {
-      params.push(
-        { name: "Velocity RMS", units: "in/sec", alarm_val: 0.25, get_val: (f) => 0.05 + f * 0.18 + Math.random() * 0.03 },
-        { name: "Acceleration True Peak", units: "g's", alarm_val: 3.0, get_val: (f) => 0.3 + f * 2.2 + Math.random() * 0.4 },
-        { name: "Displacement Peak-to-Peak", units: "mils", alarm_val: 4.5, get_val: (f) => 0.6 + f * 3.0 + Math.random() * 0.5 },
-        { name: "1X Running Speed amplitude", units: "in/sec", alarm_val: 0.15, get_val: (f) => 0.02 + f * 0.10 + Math.random() * 0.02 },
-        { name: "2X Running Speed amplitude", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
-        { name: "Bearing Frequencies (BPFO)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.6 ? (f - 0.6) * 0.4 : 0) + Math.random() * 0.01 },
-        { name: "Bearing Frequencies (BPFI)", units: "in/sec", alarm_val: 0.12, get_val: (f) => 0.005 + (f > 0.5 ? (f - 0.5) * 0.5 : 0) + Math.random() * 0.01 },
-        { name: "Gear Mesh Frequency", units: "in/sec", alarm_val: 0.10, get_val: (f) => 0.01 + f * 0.05 + Math.random() * 0.01 },
-        { name: "Sub-synchronous frequencies", units: "in/sec", alarm_val: 0.08, get_val: (f) => 0.005 + f * 0.03 + Math.random() * 0.005 }
-      );
-    } else if (dbTech === "Thermal") {
-      params.push(
-        { name: "Overall Temperature", units: "°F", alarm_val: 175.0, get_val: (f) => 98.0 + f * 65.0 + Math.random() * 5.0 },
-        { name: "Temperature Delta", units: "°F", alarm_val: 30.0, get_val: (f) => 1.5 + f * 24.0 + Math.random() * 2.0 },
-        { name: "Temperature Rate of Change", units: "°F/day", alarm_val: 4.0, get_val: (f) => 0.05 + f * 3.5 + Math.random() * 0.4 }
-      );
-    } else if (dbTech === "Ultrasound") {
-      params.push(
-        { name: "Overall dB Level", units: "dBμV", alarm_val: 36.0, get_val: (f) => 14.0 + f * 19.0 + Math.random() * 3.0 },
-        { name: "RMS Ultrasound Level", units: "dBμV", alarm_val: 30.0, get_val: (f) => 11.0 + f * 16.0 + Math.random() * 2.0 },
-        { name: "Crest Factor", units: "ratio", alarm_val: 6.0, get_val: (f) => 1.6 + f * 3.8 + Math.random() * 0.5 },
-        { name: "Bearing fault frequency amplitudes", units: "dBμV", alarm_val: 25.0, get_val: (f) => 3.0 + f * 18.0 + Math.random() * 2.0 }
-      );
-    } else if (dbTech === "Electrical") {
-      params.push(
-        { name: "Phase-to-Phase Resistance U-V", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
-        { name: "Phase-to-Phase Resistance V-W", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + f * 0.012 + Math.random() * 0.002 },
-        { name: "Phase-to-Phase Resistance W-U", units: "Ohms", alarm_val: 0.30, get_val: (f) => 0.245 + Math.random() * 0.002 },
-        { name: "Phase Impedance", units: "Ohms", alarm_val: 15.0, get_val: (f) => 12.1 + f * 0.4 + Math.random() * 0.05 },
-        { name: "Phase Unbalance (%)", units: "%", alarm_val: 5.0, get_val: (f) => 0.3 + f * 4.2 + Math.random() * 0.3 },
-        { name: "Insulation Resistance", units: "MegOhm", alarm_val: 20.0, is_lower_alarm: true, get_val: (f) => 3800.0 - f * 3700.0 - Math.random() * 100.0 },
-        { name: "Tan Delta / Power Factor", units: "%", alarm_val: 4.0, get_val: (f) => 0.6 + f * 3.2 + Math.random() * 0.2 }
-      );
-    } else if (dbTech === "Oil") {
-      params.push(
-        { name: "Viscosity @ 40°C", units: "cSt", alarm_val: 41.4, is_lower_alarm: true, get_val: (f) => 45.8 - f * 7.5 + Math.random() * 0.5 },
-        { name: "Water Content", units: "ppm", alarm_val: 300.0, get_val: (f) => 30.0 + f * 250.0 + Math.random() * 15.0 },
-        { name: "Particle Count Cleanliness Index", units: "index", alarm_val: 22.0, get_val: (f) => 14.0 + f * 8.0 + Math.random() * 1.0 },
-        { name: "Ferrous Density", units: "ppm", alarm_val: 100.0, get_val: (f) => 6.0 + f * 92.0 + Math.random() * 6.0 },
-        { name: "Iron Wear Metal", units: "ppm", alarm_val: 75.0, get_val: (f) => 10.0 + f * 80.0 + Math.random() * 5.0 },
-        { name: "Copper Wear Metal", units: "ppm", alarm_val: 25.0, get_val: (f) => 3.0 + f * 26.0 + Math.random() * 2.0 },
-        { name: "Aluminum Wear Metal", units: "ppm", alarm_val: 12.0, get_val: (f) => 1.5 + f * 11.0 + Math.random() * 1.0 },
-        { name: "Chromium Wear Metal", units: "ppm", alarm_val: 3.0, get_val: (f) => 0.2 + f * 2.8 + Math.random() * 0.2 },
-        { name: "Acid Number (AN)", units: "mg KOH/g", alarm_val: 0.8, get_val: (f) => 0.12 + f * 0.64 + Math.random() * 0.04 },
-        { name: "Zinc levels", units: "ppm", alarm_val: 700.0, is_lower_alarm: true, get_val: (f) => 1150.0 - f * 480.0 - Math.random() * 20.0 },
-        { name: "Phosphorus levels", units: "ppm", alarm_val: 600.0, is_lower_alarm: true, get_val: (f) => 950.0 - f * 420.0 - Math.random() * 15.0 }
-      );
-    }
-
-    const seededRows: any[] = [];
-    const baseId = Date.now() + Math.floor(Math.random() * 1000000);
-    
-    for (let i = 0; i < 30; i++) {
-      const factor = i / 29.0;
-      const measurementDate = new Date(Date.now() - (29 - i) * 24 * 3600 * 1000);
-      const op_speed = 1785.0 + Math.random() * 30.0;
-
-      for (let pIdx = 0; pIdx < params.length; pIdx++) {
-        const param = params[pIdx];
-        const val = param.get_val(factor);
-        let isAlarm = false;
-        if (param.is_lower_alarm) {
-          isAlarm = val <= param.alarm_val;
-        } else {
-          isAlarm = val >= param.alarm_val;
-        }
-
-        const notes = isAlarm 
-          ? `⚠️ Warning limit exceeded for ${param.name}. Immediate inspection and re-greasing recommended.` 
-          : `Sensor telemetry within nominal operating limits for ${param.name}.`;
-
-        const stateVal = isAlarm ? "Alarm Active" : "Data Collected";
-
-        const recommendedActions = isAlarm 
-          ? `Verify alignment, check mechanical coupling clearances, inspect for lubricant quality, and schedule repair action soon.`
-          : `No immediate actions required. Continue routine monitoring intervals.`;
-
-        const diagnosis_result = {
-          current_value: val,
-          alarm_threshold: param.alarm_val,
-          status: isAlarm ? "ALARM" : "NORMAL",
-          recommendation: recommendedActions,
-          diagnostic_brief: isAlarm 
-            ? `Critical deterioration observed in ${param.name} parameter. Standard operating tolerances violated.` 
-            : `System parameter ${param.name} is functioning normally.`
-        };
-
-        const item = {
-          id: baseId + i * 100 + pIdx,
-          measurement_point_id: 1, // dummy
-          component_id: componentId,
-          technology_type: dbTech,
-          technology: dbTech,
-          data_point_name: param.name,
-          state: stateVal,
-          op_speed,
-          measurement_value: parseFloat(val.toFixed(6)),
-          units: param.units,
-          measurement_date: measurementDate.toISOString(),
-          notes,
-          alarm_status: isAlarm,
-          diagnosis_result,
-          created_at: new Date().toISOString()
-        };
-
-        memoryAnalysisHistory.push(item);
-        seededRows.push(item);
-      }
-    }
-
-    return seededRows;
-  } catch (err) {
-    console.error("Failed to seed analysis history memory:", err);
-    return [];
-  }
-}
-
 // GET /api/analysis-history/:id - Single record OR component analysis history
 app.get(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, res) => {
   try {
@@ -11849,20 +11558,7 @@ app.get(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, 
 
         const result = await pool.query(query, params);
 
-        if (result.rows.length === 0) {
-          // If a specific tech is requested, seed it
-          const seeded = await seedAnalysisHistoryForComponent(id, dbTech || "Vibration");
-          return res.json(seeded.filter((row: any) => {
-            const rowTech = (row.technology_type || row.technology || "Vibration").toLowerCase();
-            let rowKey = "vibration";
-            if (rowTech.includes("vibration")) rowKey = "vibration";
-            else if (rowTech.includes("thermal") || rowTech.includes("infrared")) rowKey = "infrared";
-            else if (rowTech.includes("ultrasound")) rowKey = "ultrasound";
-            else if (rowTech.includes("electrical") || rowTech.includes("mca")) rowKey = "mca";
-            else if (rowTech.includes("oil")) rowKey = "oil_analysis";
-            return enabledTechs.includes(rowKey);
-          }));
-        }
+        // No history recorded for this component yet — honest empty list.
         return res.json(result.rows);
       } else {
         let filtered = memoryAnalysisHistory.filter(ah => ah.component_id === id);
@@ -11883,19 +11579,7 @@ app.get(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, 
           });
         }
 
-        if (filtered.length === 0) {
-          const seeded = await seedAnalysisHistoryMemory(id, dbTech || "Vibration");
-          return res.json(seeded.filter((row: any) => {
-            const rowTech = (row.technology_type || row.technology || "Vibration").toLowerCase();
-            let rowKey = "vibration";
-            if (rowTech.includes("vibration")) rowKey = "vibration";
-            else if (rowTech.includes("thermal") || rowTech.includes("infrared")) rowKey = "infrared";
-            else if (rowTech.includes("ultrasound")) rowKey = "ultrasound";
-            else if (rowTech.includes("electrical") || rowTech.includes("mca")) rowKey = "mca";
-            else if (rowTech.includes("oil")) rowKey = "oil_analysis";
-            return enabledTechs.includes(rowKey);
-          }));
-        }
+        // No history recorded for this component yet — honest empty list.
         return res.json(filtered);
       }
     } else {
@@ -12151,24 +11835,28 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50);");
     await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS next_billing_date TIMESTAMP;");
 
-    // Ensure we seed standard companies including Demo Reliability Corp
-    await pool.query(`
-      INSERT INTO companies (name, subscription_plan) VALUES ('Allied Reliability', 'vibration_only')
-      ON CONFLICT (name) DO NOTHING;
-    `);
-    await pool.query(`
-      INSERT INTO companies (name, subscription_plan) VALUES ('ExxonMobil', 'vibration_only')
-      ON CONFLICT (name) DO NOTHING;
-    `);
-    await pool.query(`
-      INSERT INTO companies (name, subscription_plan) VALUES ('Demo Reliability Corp', 'full_suite')
-      ON CONFLICT (name) DO NOTHING;
-    `);
+    // DEV-ONLY: seed standard demo companies (Allied Reliability / ExxonMobil /
+    // Demo Reliability Corp). Production boots must create zero company rows —
+    // tenants come only from signup.
+    if (process.env.NODE_ENV !== 'production') {
+      await pool.query(`
+        INSERT INTO companies (name, subscription_plan) VALUES ('Allied Reliability', 'vibration_only')
+        ON CONFLICT (name) DO NOTHING;
+      `);
+      await pool.query(`
+        INSERT INTO companies (name, subscription_plan) VALUES ('ExxonMobil', 'vibration_only')
+        ON CONFLICT (name) DO NOTHING;
+      `);
+      await pool.query(`
+        INSERT INTO companies (name, subscription_plan) VALUES ('Demo Reliability Corp', 'full_suite')
+        ON CONFLICT (name) DO NOTHING;
+      `);
 
-    // Ensure Demo Reliability Corp has full_suite in case it was already inserted
-    await pool.query(`
-      UPDATE companies SET subscription_plan = 'full_suite' WHERE name = 'Demo Reliability Corp';
-    `);
+      // Ensure Demo Reliability Corp has full_suite in case it was already inserted
+      await pool.query(`
+        UPDATE companies SET subscription_plan = 'full_suite' WHERE name = 'Demo Reliability Corp';
+      `);
+    }
 
     // Create users table
     await pool.query(`
@@ -13265,7 +12953,7 @@ async function initializeDatabase() {
 
     // Seed some maintenance logs if none exist
     const logsCountQuery = await pool.query("SELECT COUNT(*) FROM maintenance_logs");
-    if (parseInt(logsCountQuery.rows[0].count) === 0) {
+    if (isDevAuthSeedEnabled(process.env) && parseInt(logsCountQuery.rows[0].count) === 0) {
       console.log("🌱 Seeding dummy maintenance logs...");
       // Let's get the first two assets
       const assetsRes = await pool.query("SELECT id FROM assets ORDER BY id LIMIT 2");

@@ -3,8 +3,40 @@
  * and renders their live stock, supplier and lead-time values.
  */
 import assert from "node:assert/strict";
-import { INITIAL_INVENTORY, getStockStatus } from "../src/components/PartsInventory";
+import { getStockStatus } from "../src/components/PartsInventory";
 import { buildPickingTicketHtml } from "../src/lib/printPickingTicket";
+
+// Script-local verification inputs — not application data.
+const FIXTURE_INVENTORY = [
+  {
+    id: 1,
+    partNumber: "SKF-6308-C3",
+    description: "SKF 6308 C3 Deep Groove Ball Bearing",
+    category: "Bearings",
+    manufacturer: "SKF",
+    quantityInStock: 0,
+    unitPrice: 146.9,
+    reorderLevel: 4,
+    supplierName: "Motion Industries",
+    supplierContact: "orders@motion-ind.com",
+    leadTimeDays: 7,
+    lastUpdated: "2026-07-15"
+  },
+  {
+    id: 2,
+    partNumber: "ALN-SHIM-KIT",
+    description: "Stainless Alignment Shims Kit, 0.002-0.125 in",
+    category: "Alignment",
+    manufacturer: "Precision Brand",
+    quantityInStock: 9,
+    unitPrice: 142,
+    reorderLevel: 4,
+    supplierName: "Applied Industrial",
+    supplierContact: "sales@applied.com",
+    leadTimeDays: 3,
+    lastUpdated: "2026-07-11"
+  }
+] as const;
 
 // Mirrors STAGED_REPAIR_KIT in Diagnose.tsx.
 const STAGED = [
@@ -13,7 +45,7 @@ const STAGED = [
 ];
 
 const lines = STAGED.map((line) => {
-  const part = INITIAL_INVENTORY.find((p) => p.partNumber === line.partNumber);
+  const part = FIXTURE_INVENTORY.find((p) => p.partNumber === line.partNumber);
   assert.ok(part, `Staged part ${line.partNumber} is missing from inventory`);
   return {
     partNumber: line.partNumber,

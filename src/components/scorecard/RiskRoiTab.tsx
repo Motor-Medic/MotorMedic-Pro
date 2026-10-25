@@ -54,96 +54,13 @@ function saveFaults(faults: FaultEntry[]): void {
   localStorage.setItem(FAULTS_KEY, JSON.stringify(faults));
 }
 
-function seedFaults(): FaultEntry[] {
-  const now = Date.now();
-  const day = 86400000;
-  const seeded: FaultEntry[] = [
-    {
-      id: "seed-001",
-      modality: "vibration",
-      asset: "Boiler Feed Pump A",
-      component: "Motor DE",
-      firstSeen: new Date(now - 112 * day).toISOString(),
-      severityClass: "Critical",
-      woStatus: "open",
-      woClosedDate: null,
-      detectedAt: new Date(now - 112 * day).toISOString(),
-      identifiedAt: new Date(now - 110 * day).toISOString(),
-      goodCatch: false,
-      collectorId: "VIB-ROUTE-01",
-    },
-    {
-      id: "seed-002",
-      modality: "infrared",
-      asset: "Compressor Line 2",
-      component: "Screw Compressor RS37i",
-      firstSeen: new Date(now - 45 * day).toISOString(),
-      severityClass: "High",
-      woStatus: "closed",
-      woClosedDate: new Date(now - 30 * day).toISOString(),
-      detectedAt: new Date(now - 45 * day).toISOString(),
-      identifiedAt: new Date(now - 44 * day).toISOString(),
-      goodCatch: false,
-      collectorId: "IR-CAM-03",
-    },
-    {
-      id: "seed-003",
-      modality: "ultrasound",
-      asset: "Cooling Tower Fan 4",
-      component: "Fan DE",
-      firstSeen: new Date(now - 18 * day).toISOString(),
-      severityClass: "Medium",
-      woStatus: "open",
-      woClosedDate: null,
-      detectedAt: new Date(now - 18 * day).toISOString(),
-      identifiedAt: new Date(now - 17 * day).toISOString(),
-      goodCatch: true,
-      collectorId: "US-DET-02",
-    },
-    {
-      id: "seed-004",
-      modality: "vibration",
-      asset: "Main Overland Conveyor Drive",
-      component: "Motor DE",
-      firstSeen: new Date(now - 7 * day).toISOString(),
-      severityClass: "Low",
-      woStatus: "open",
-      woClosedDate: null,
-      detectedAt: new Date(now - 7 * day).toISOString(),
-      identifiedAt: null,
-      goodCatch: false,
-      collectorId: "VIB-ROUTE-02",
-    },
-    {
-      id: "seed-005",
-      modality: "mca",
-      asset: "Slurry Recirc Pump P-402",
-      component: "Motor NDE",
-      firstSeen: new Date(now - 60 * day).toISOString(),
-      severityClass: "High",
-      woStatus: "open",
-      woClosedDate: null,
-      detectedAt: new Date(now - 60 * day).toISOString(),
-      identifiedAt: new Date(now - 58 * day).toISOString(),
-      goodCatch: false,
-      collectorId: "MCA-01",
-    },
-  ];
-  saveFaults(seeded);
-  return seeded;
-}
-
 interface RiskRoiTabProps {
   selectedCompanyId: number;
 }
 
 export default function RiskRoiTab({ selectedCompanyId }: RiskRoiTabProps) {
   const [costModel, setCostModel] = useState<CostModel>(loadCostModel);
-  const [faults, setFaults] = useState<FaultEntry[]>(() => {
-    const existing = loadFaults();
-    if (existing.length > 0) return existing;
-    return seedFaults();
-  });
+  const [faults, setFaults] = useState<FaultEntry[]>(() => loadFaults());
 
   const onCostChange = useCallback(() => {
     setCostModel(loadCostModel());

@@ -305,11 +305,6 @@ const ACTION_ITEMS = [
   "Resample fluid in 250 operating hours to verify particle reduction."
 ];
 
-const BOM_PARTS = [
-  "High-Efficiency Filter Element: Beta 3 ≥ 1000 Absolute Micro-Glass Element",
-  "Desiccant Breather Cap: Z-134 Desiccant Breather with Phase-Inversion Color Indicator"
-];
-
 function StaticActionBar({
   onNewAnalysis,
   onExportPdf,
@@ -795,26 +790,17 @@ export default function OilResultsDashboard({
       <section className="bg-slate-900/50 border border-white/10 rounded-xl p-6 mb-6">
         <h3 className="text-lg font-bold text-white">AI Procurement &amp; Bill of Materials (BOM)</h3>
         <p className="text-sm text-slate-500 mt-0.5 mb-5">
-          Auto-matched to P-101A System Housing Specs
+          No BOM generated yet — parts are matched once a measured result defines the repair scope.
         </p>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="space-y-3">
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
               Required Parts
             </p>
-            <ul className="space-y-2.5">
-              {BOM_PARTS.map((part) => (
-                <li
-                  key={part}
-                  className="flex items-start gap-2 text-sm text-slate-300 leading-snug"
-                >
-                  <span className="mt-0.5 shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/40">
-                    PART
-                  </span>
-                  <span>{part}</span>
-                </li>
-              ))}
-            </ul>
+            <p className="text-sm text-slate-500 italic rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-3 py-4">
+              No parts listed — required parts appear here after a lab result triggers a
+              procurement recommendation.
+            </p>
           </div>
           <div className="flex flex-col gap-3 justify-center">
             <button

@@ -38,22 +38,6 @@ export interface InventoryPart {
   lastUpdated: string;
 }
 
-export const INITIAL_INVENTORY: InventoryPart[] = [
-  { id: 1, partNumber: "SKF-NU314-ECP", description: "SKF NU 314 ECP Cylindrical Roller Bearing", category: "Bearings", manufacturer: "SKF", quantityInStock: 6, unitPrice: 312.0, reorderLevel: 2, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 5, lastUpdated: "2026-07-18" },
-  { id: 2, partNumber: "ALN-SHIM-KIT", description: "Stainless Alignment Shims Kit, 0.002-0.125 in", category: "Alignment", manufacturer: "Precision Brand", quantityInStock: 9, unitPrice: 142, reorderLevel: 4, supplierName: "Applied Industrial", supplierContact: "sales@applied.com", leadTimeDays: 3, lastUpdated: "2026-07-11" },
-  { id: 3, partNumber: "VBD-40-NEO", description: "Neoprene Vibration Damper Mount, 40 mm", category: "Dampers", manufacturer: "Vibrasystems", quantityInStock: 32, unitPrice: 38.75, reorderLevel: 10, supplierName: "Grainger", supplierContact: "1-800-472-4643", leadTimeDays: 1, lastUpdated: "2026-07-21" },
-  { id: 4, partNumber: "NBR-3055-SL", description: "Nitrile Shaft Seal 30 x 55 x 7 mm", category: "Seals", manufacturer: "Freudenberg", quantityInStock: 24, unitPrice: 12.4, reorderLevel: 8, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 2, lastUpdated: "2026-06-29" },
-  { id: 5, partNumber: "LVX-EP2-400", description: "Lithium Complex EP2 Grease Cartridge, 400 g", category: "Lubricants", manufacturer: "Mobil", quantityInStock: 40, unitPrice: 9.85, reorderLevel: 12, supplierName: "Fastenal", supplierContact: "industrial@fastenal.com", leadTimeDays: 1, lastUpdated: "2026-07-22" },
-  { id: 6, partNumber: "CPL-L110-EL", description: "L110 Elastomeric Jaw Coupling Insert", category: "Couplings", manufacturer: "Lovejoy", quantityInStock: 5, unitPrice: 64.2, reorderLevel: 8, supplierName: "Applied Industrial", supplierContact: "sales@applied.com", leadTimeDays: 5, lastUpdated: "2026-07-09" },
-  { id: 7, partNumber: "SKF-6308-C3", description: "SKF 6308 C3 Deep Groove Ball Bearing", category: "Bearings", manufacturer: "SKF", quantityInStock: 0, unitPrice: 146.9, reorderLevel: 4, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 7, lastUpdated: "2026-07-15" },
-  { id: 8, partNumber: "FST-M16-A4", description: "M16 A4 Stainless Foundation Anchor Bolt Set", category: "Fasteners", manufacturer: "Hilti", quantityInStock: 60, unitPrice: 6.75, reorderLevel: 20, supplierName: "Fastenal", supplierContact: "industrial@fastenal.com", leadTimeDays: 1, lastUpdated: "2026-07-20" },
-  { id: 9, partNumber: "BLT-SPZ-1180", description: "SPZ 1180 Narrow Section V-Belt", category: "Belts", manufacturer: "Gates", quantityInStock: 12, unitPrice: 22.3, reorderLevel: 6, supplierName: "Grainger", supplierContact: "1-800-472-4643", leadTimeDays: 2, lastUpdated: "2026-07-05" },
-  { id: 10, partNumber: "SNS-ACC-100", description: "100 mV/g Accelerometer, Side Exit Connector", category: "Sensors", manufacturer: "Wilcoxon", quantityInStock: 7, unitPrice: 312, reorderLevel: 3, supplierName: "Amphenol Direct", supplierContact: "support@amphenol.com", leadTimeDays: 10, lastUpdated: "2026-06-30" },
-  { id: 11, partNumber: "ALN-LASER-CAL", description: "Laser Alignment Calibration Target Set", category: "Alignment", manufacturer: "Easy-Laser", quantityInStock: 3, unitPrice: 198.5, reorderLevel: 2, supplierName: "Easy-Laser NA", supplierContact: "service@easylaser.com", leadTimeDays: 14, lastUpdated: "2026-05-27" },
-  { id: 12, partNumber: "LVX-SYN-220", description: "Synthetic Gear Oil ISO VG 220, 5 L", category: "Lubricants", manufacturer: "Shell", quantityInStock: 15, unitPrice: 58.9, reorderLevel: 6, supplierName: "Fastenal", supplierContact: "industrial@fastenal.com", leadTimeDays: 3, lastUpdated: "2026-07-14" },
-  { id: 13, partNumber: "SEA-VRING-45", description: "V-Ring Axial Seal, 45 mm Shaft", category: "Seals", manufacturer: "SKF", quantityInStock: 30, unitPrice: 8.6, reorderLevel: 10, supplierName: "Motion Industries", supplierContact: "orders@motion-ind.com", leadTimeDays: 2, lastUpdated: "2026-07-02" },
-  { id: 14, partNumber: "DMP-ISO-PAD6", description: "Isolation Pad, 6 in Neoprene / Cork Composite", category: "Dampers", manufacturer: "Karman Rubber", quantityInStock: 22, unitPrice: 16.4, reorderLevel: 8, supplierName: "Grainger", supplierContact: "1-800-472-4643", leadTimeDays: 1, lastUpdated: "2026-07-19" }
-];
 
 export const formatUsd = (value: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
@@ -75,7 +59,7 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
  * lifetime of the page rather than resetting each time the modal is reopened.
  */
 export function usePartsInventory() {
-  const [inventory, setInventory] = useState<InventoryPart[]>(INITIAL_INVENTORY);
+  const [inventory, setInventory] = useState<InventoryPart[]>([]);
 
   const savePart = (draft: Omit<InventoryPart, "id" | "lastUpdated"> & { id?: number }) => {
     setInventory((prev) => {

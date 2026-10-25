@@ -139,8 +139,16 @@ export default function App() {
   }, []);
 
   const [selectedCompanyId, setSelectedCompanyId] = useState<number>(() => {
-    const stored = localStorage.getItem("reliability_selected_company_id");
-    return stored ? parseInt(stored, 10) : 1; // Default to Allied Reliability
+    // Derive the active company from the cached session/user payload only —
+    // no hardcoded default company id.
+    try {
+      const cached = localStorage.getItem("motormedic_user_session");
+      const session = cached ? JSON.parse(cached) : null;
+      const companyId = Number(session?.company_id);
+      return Number.isFinite(companyId) && companyId > 0 ? companyId : 0;
+    } catch {
+      return 0;
+    }
   });
 
   useEffect(() => {

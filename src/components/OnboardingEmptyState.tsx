@@ -20,6 +20,9 @@ export default function OnboardingEmptyState({
   onDataChange,
   onAddFirst
 }: OnboardingEmptyStateProps) {
+  // PROD-HYGIENE: demo/clear controls are dev-only — hidden in production builds.
+  const isProdBuild = import.meta.env.PROD;
+
   const primaryLabel =
     variant === "analysis" ? "📷 Upload Spectrum Image" : "+ Add First Equipment";
 
@@ -41,6 +44,10 @@ export default function OnboardingEmptyState({
   };
 
   const handleClear = () => {
+    const confirmed = window.confirm(
+      "Clear to Fresh Slate will permanently delete all local demo/equipment data from this browser. This cannot be undone. Continue?"
+    );
+    if (!confirmed) return;
     clearAllData();
     onDataChange?.();
   };
@@ -72,14 +79,16 @@ export default function OnboardingEmptyState({
           )}
           {primaryLabel}
         </button>
-        <button
-          type="button"
-          onClick={handleLoadDemo}
-          className="min-h-[44px] px-5 rounded-xl border border-cyan-400/40 bg-cyan-400/10 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-400/20 transition-colors"
-        >
-          Load Demo Plant Data
-        </button>
-        {hasDemo && (
+        {!isProdBuild && (
+          <button
+            type="button"
+            onClick={handleLoadDemo}
+            className="min-h-[44px] px-5 rounded-xl border border-cyan-400/40 bg-cyan-400/10 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-400/20 transition-colors"
+          >
+            Load Demo Plant Data
+          </button>
+        )}
+        {!isProdBuild && hasDemo && (
           <button
             type="button"
             onClick={handleClear}

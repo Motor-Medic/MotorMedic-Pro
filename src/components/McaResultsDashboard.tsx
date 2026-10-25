@@ -1,22 +1,6 @@
-import React, { useMemo } from "react";
-import {
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  PolarAngleAxis,
-  PolarGrid,
-  PolarRadiusAxis,
-  Radar,
-  RadarChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from "recharts";
+import React from "react";
 import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
-import type { VibrationAnalysisResult } from "../lib/consensusEngine";
 import {
   MCA_IR_CITATION,
   MCA_DEFAULT_SCORE_PROVENANCE,
@@ -26,65 +10,6 @@ import {
   DIAGNOSE_NORMALIZATION_NOT_APPLIED,
   DIAGNOSE_SAMPLE_DATASET
 } from "../lib/maintenance/prescriptiveDictionary";
-
-const FAULT_ZONE_DATA = [
-  { subject: "Power Quality", A: 85, fullMark: 100 },
-  { subject: "Power Circuit", A: 90, fullMark: 100 },
-  { subject: "Insulation", A: 40, fullMark: 100 },
-  { subject: "Stator", A: 65, fullMark: 100 },
-  { subject: "Rotor", A: 80, fullMark: 100 },
-  { subject: "Air Gap", A: 95, fullMark: 100 }
-];
-
-const ZONE_STATUS: {
-  zone: string;
-  score: number;
-  status: "critical" | "warning" | "normal";
-  detail: string;
-}[] = [
-  { zone: "Power Quality", score: 85, status: "normal", detail: "NORMAL" },
-  { zone: "Power Circuit", score: 90, status: "normal", detail: "NORMAL" },
-  {
-    zone: "Insulation",
-    score: 40,
-    status: "critical",
-    detail: "CRITICAL (Ground Wall Degradation)"
-  },
-  {
-    zone: "Stator",
-    score: 65,
-    status: "warning",
-    detail: "WARNING (Turn-to-Turn Imbalance)"
-  },
-  { zone: "Rotor", score: 80, status: "normal", detail: "NORMAL" },
-  { zone: "Air Gap", score: 95, status: "normal", detail: "NORMAL" }
-];
-
-/** 3-phase historical resistance — U-V drifts up (imbalance proof) */
-const RESISTANCE_TREND_3PH = [
-  { period: "Jan '21", uv: 1.8, vw: 1.8, wu: 1.8 },
-  { period: "Jul '21", uv: 1.92, vw: 1.81, wu: 1.8 },
-  { period: "Jan '22", uv: 2.05, vw: 1.82, wu: 1.81 },
-  { period: "Jul '22", uv: 2.15, vw: 1.83, wu: 1.81 },
-  { period: "Jan '23", uv: 2.28, vw: 1.84, wu: 1.82 },
-  { period: "Oct '23", uv: 2.4, vw: 1.85, wu: 1.82 }
-];
-
-/**
- * Insulation time-charge curve — resistance rises as winding polarizes (PI).
- * 50 MΩ at 1 min → 450 MΩ at 10 min (PI = 9.0).
- */
-const INSULATION_DISCHARGE = Array.from({ length: 11 }, (_, min) => {
-  const mohm =
-    min <= 0 ? 28 : Math.round(50 * Math.pow(9, (min - 1) / 9) * 10) / 10;
-  return { min, mohm };
-});
-
-const BOM_PARTS = [
-  "Insulation Material Kit: Class F Slot Liners & Wedges",
-  "Magnet Wire: Heavy Armored Polythermaleze",
-  "Bearings (Standard Overhaul): 6313-C3 (DE) / 6212-C3 (ODE)"
-];
 
 const NEUTRAL_BADGE_CLASS =
   "bg-slate-500/15 border-slate-500/40 text-slate-400";
@@ -178,9 +103,6 @@ export default function McaResultsDashboard({
   const motorHP: number | null = null;
   const recommendReplace = motorHP != null && motorHP < 100;
 
-  /** Mock primary fault flag — insulation drives left-column chart selection */
-  const isInsulationFault = true;
-
   // Load saved records for fusion, prognosis, sign-off and CMMS context
   const {
     loading: intelLoading,
@@ -264,39 +186,10 @@ export default function McaResultsDashboard({
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            <div className="h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <RadarChart cx="50%" cy="50%" outerRadius="70%" data={FAULT_ZONE_DATA}>
-                  <PolarGrid stroke="#334155" />
-                  <PolarAngleAxis
-                    dataKey="subject"
-                    tick={{ fill: "#94a3b8", fontSize: 11 }}
-                  />
-                  <PolarRadiusAxis
-                    angle={30}
-                    domain={[0, 100]}
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    axisLine={false}
-                  />
-                  <Radar
-                    name="Health"
-                    dataKey="A"
-                    stroke="#eab308"
-                    fill="#eab308"
-                    fillOpacity={0.2}
-                    strokeWidth={2}
-                    isAnimationActive={false}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: 8,
-                      fontSize: 12
-                    }}
-                  />
-                </RadarChart>
-              </ResponsiveContainer>
+            <div className="h-80 w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+              <p className="text-xs text-slate-500">
+                No fault zone data captured — run an MCA analysis to populate the health matrix.
+              </p>
             </div>
             <p className="text-[11px] text-slate-500 mt-1 text-center break-words">
               {MCA_DEFAULT_SCORE_PROVENANCE}
@@ -314,21 +207,9 @@ export default function McaResultsDashboard({
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
               Zone Status
             </p>
-            {ZONE_STATUS.map((z) => (
-              <div
-                key={z.zone}
-                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-lg border border-white/5 bg-slate-900/50 px-3 py-2.5"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm font-bold text-white">{z.zone}</span>
-                </div>
-                <span
-                  className={`inline-flex self-start sm:self-auto text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded border ${NEUTRAL_BADGE_CLASS}`}
-                >
-                  {DIAGNOSE_NOT_RECORDED_FOR_ASSET}
-                </span>
-              </div>
-            ))}
+            <p className="text-xs text-slate-500 italic">
+              No zone status recorded — zone scores appear after a measured MCA run.
+            </p>
           </div>
         </div>
       </section>
@@ -467,19 +348,9 @@ export default function McaResultsDashboard({
             <p className="text-sm font-bold text-white">
               Required Action: Motor In-Shop Overhaul &amp; Rewind
             </p>
-            <ul className="space-y-2.5">
-              {BOM_PARTS.map((part) => (
-                <li
-                  key={part}
-                  className="flex items-start gap-2 text-sm text-slate-300 leading-snug"
-                >
-                  <span className="mt-0.5 shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/40">
-                    Part
-                  </span>
-                  <span>{part}</span>
-                </li>
-              ))}
-            </ul>
+            <p className="text-xs text-slate-500 italic">
+              No BOM configured — parts list is generated once a measured analysis defines the repair scope.
+            </p>
           </div>
           <div className="flex flex-col gap-3 justify-center">
             <button
@@ -514,120 +385,12 @@ export default function McaResultsDashboard({
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            {isInsulationFault ? (
-              <>
-                <h4 className="text-sm font-bold text-white mb-3">
-                  Insulation Resistance Time-Discharge Plot
-                </h4>
-                <div className="h-48 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart
-                      data={INSULATION_DISCHARGE}
-                      margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
-                    >
-                      <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                      <XAxis
-                        dataKey="min"
-                        tick={{ fill: "#64748b", fontSize: 10 }}
-                        axisLine={false}
-                        tickLine={false}
-                        label={{
-                          value: "min",
-                          position: "insideBottomRight",
-                          offset: -2,
-                          fill: "#64748b",
-                          fontSize: 10
-                        }}
-                      />
-                      <YAxis
-                        domain={[0, 550]}
-                        tick={{ fill: "#64748b", fontSize: 10 }}
-                        width={56}
-                        axisLine={false}
-                        tickLine={false}
-                        label={{
-                          value: "Megohms (MΩ)",
-                          angle: -90,
-                          position: "insideLeft",
-                          fill: "#64748b",
-                          fontSize: 10,
-                          offset: 0
-                        }}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          background: "#0f172a",
-                          border: "1px solid #334155",
-                          borderRadius: 8,
-                          fontSize: 12
-                        }}
-                        labelFormatter={(v) => `${v} min`}
-                        formatter={(value: number | string) => [`${value} MΩ`, "IR"]}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="mohm"
-                        stroke="#22d3ee"
-                        strokeWidth={2}
-                        dot={false}
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-2 break-words">
-                  {DIAGNOSE_SAMPLE_DATASET} - (PI Ratio = 9.0 shown)
-                </p>
-              </>
-            ) : (
-              <>
-                <h4 className="text-sm font-bold text-white mb-3">
-                  Dynamic Stator Signature (Butterfly Plot)
-                </h4>
-                <div className="h-48 bg-slate-950 rounded-lg relative overflow-hidden border border-white/5">
-                  <svg
-                    viewBox="0 0 400 192"
-                    className="absolute inset-0 w-full h-full"
-                    preserveAspectRatio="none"
-                    aria-hidden
-                  >
-                    {[48, 96, 144].map((y) => (
-                      <line
-                        key={y}
-                        x1="0"
-                        y1={y}
-                        x2="400"
-                        y2={y}
-                        stroke="#1e293b"
-                        strokeWidth="1"
-                      />
-                    ))}
-                    <path
-                      d="M 20 96 C 80 40, 140 40, 200 96 C 260 152, 320 152, 380 96"
-                      fill="none"
-                      stroke="#22d3ee"
-                      strokeWidth="2.5"
-                      opacity="0.95"
-                    />
-                    <path
-                      d="M 20 96 C 80 152, 140 152, 200 96 C 260 40, 320 40, 380 96"
-                      fill="none"
-                      stroke="#eab308"
-                      strokeWidth="2.5"
-                      opacity="0.95"
-                    />
-                  </svg>
-                  <div className="absolute bottom-2 left-3 right-3 flex justify-between text-[10px] text-slate-500 font-mono">
-                    <span>0°</span>
-                    <span className="text-yellow-500/80">Phase separation</span>
-                    <span>360°</span>
-                  </div>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-2 break-words">
-                  {DIAGNOSE_SAMPLE_DATASET}
-                </p>
-              </>
-            )}
+            <h4 className="text-sm font-bold text-white mb-3">
+              Insulation Resistance / Stator Signature
+            </h4>
+            <div className="h-48 w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+              <p className="text-xs text-slate-500">No insulation or stator signature data captured — run a measured MCA analysis to populate this chart.</p>
+            </div>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
@@ -637,73 +400,11 @@ export default function McaResultsDashboard({
             <h4 className="text-sm font-bold text-white mb-3">
               Historical Resistance Trend (3 Years)
             </h4>
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={RESISTANCE_TREND_3PH}
-                  margin={{ top: 8, right: 8, left: 0, bottom: 4 }}
-                >
-                  <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="period"
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    domain={["auto", "auto"]}
-                    tick={{ fill: "#64748b", fontSize: 10 }}
-                    width={36}
-                    axisLine={false}
-                    tickLine={false}
-                    unit=" Ω"
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "#0f172a",
-                      border: "1px solid #334155",
-                      borderRadius: 8,
-                      fontSize: 12
-                    }}
-                    formatter={(value: number | string) => [`${value} Ω`, ""]}
-                  />
-                  <Legend
-                    verticalAlign="bottom"
-                    wrapperStyle={{ fontSize: 11, color: "#94a3b8", paddingTop: 8 }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="uv"
-                    name="Phase U-V"
-                    stroke="#22d3ee"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#22d3ee" }}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="vw"
-                    name="Phase V-W"
-                    stroke="#eab308"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#eab308" }}
-                    isAnimationActive={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="wu"
-                    name="Phase W-U"
-                    stroke="#94a3b8"
-                    strokeWidth={2}
-                    dot={{ r: 3, fill: "#94a3b8" }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+            <div className="h-56 w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+              <p className="text-xs text-slate-500">
+                No resistance trend captured — 3-phase historical readings appear after periodic measured runs.
+              </p>
             </div>
-            <p className="text-[11px] text-slate-500 mt-2 break-words">
-              {DIAGNOSE_SAMPLE_DATASET}
-            </p>
           </div>
         </div>
       </section>
