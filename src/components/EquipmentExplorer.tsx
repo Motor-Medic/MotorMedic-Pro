@@ -86,12 +86,53 @@ export type ExplorerKind =
   | "point";
 
 export interface ExplorerNode {
+  /** Unique tree identity (kind-namespaced); the single selection key. */
   id: string;
+  /** Raw store entity id used for persistence lookups. */
+  entityId: string;
   kind: ExplorerKind;
   label: string;
   path: string;
   parentId: string | null;
   children: ExplorerNode[];
+}
+
+/**
+ * Server tables have independent id sequences, so a unit, route and asset can
+ * all carry entity id "1". Namespacing keeps every tree row uniquely
+ * selectable while entityId remains the raw store id.
+ */
+export function explorerNodeId(kind: ExplorerKind, entityId: string): string {
+  return kind === "plant" ? entityId : `${kind}:${entityId}`;
+}
+
+export type ExplorerSelectionAction =
+  | { type: "select"; nodeId: string }
+  | { type: "outside-click" }
+  | { type: "create"; nodeId: string }
+  | { type: "rename"; nodeId: string }
+  | { type: "delete"; parentNodeId: string | null };
+
+/**
+ * Selection is exclusive and sticky: one node id at a time, outside clicks are
+ * no-ops, and post-write flows choose exactly the node they produced.
+ */
+export function reduceExplorerSelection(
+  currentSelectedNodeId: string,
+  action: ExplorerSelectionAction
+): string {
+  switch (action.type) {
+    case "select":
+    case "create":
+    case "rename":
+      return action.nodeId;
+    case "delete":
+      return action.parentNodeId || SITE_PLANT_ID;
+    case "outside-click":
+      return currentSelectedNodeId;
+    default:
+      return currentSelectedNodeId;
+  }
 }
 
 type PanelMode = "idle" | "create" | "edit";
@@ -1311,26 +1352,31 @@ export function buildExplorerTree(
       .filter((asset) => !(skipHoldingAsset && asset.id === SITE_FACILITY_HOLDING_ASSET_ID))
       .map((asset) => {
         const assetPath = `${parentPath} ➔ ${asset.tag}`;
+        const assetNodeId = explorerNodeId("asset", asset.id);
         return {
-          id: asset.id,
+          id: assetNodeId,
+          entityId: asset.id,
           kind: "asset" as const,
           label: `${asset.tag} — ${asset.name}`,
           path: assetPath,
           parentId,
           children: asset.components.map((comp) => {
             const compPath = `${assetPath} ➔ ${comp.name}`;
+            const compNodeId = explorerNodeId("component", comp.id);
             return {
-              id: comp.id,
+              id: compNodeId,
+              entityId: comp.id,
               kind: "component" as const,
               label: comp.name,
               path: compPath,
-              parentId: asset.id,
+              parentId: assetNodeId,
               children: (comp.collectionPoints ?? []).map((pt) => ({
-                id: pt.id,
+                id: explorerNodeId("point", pt.id),
+                entityId: pt.id,
                 kind: "point" as const,
                 label: pt.name,
                 path: `${compPath} ➔ ${pt.name}`,
-                parentId: comp.id,
+                parentId: compNodeId,
                 children: []
               }))
             };
@@ -1348,24 +1394,28 @@ export function buildExplorerTree(
   );
   const unitNodes: ExplorerNode[] = plantUnits.map((unit) => {
     const unitPath = `${plantPath} ➔ ${unit.name}`;
+    const unitNodeId = explorerNodeId("unit", unit.id);
     const unitRoutes = store.routes.filter(
       (r) => r.unitId === unit.id && !isSystemRoute(r)
     );
     return {
-      id: unit.id,
+      id: unitNodeId,
+      entityId: unit.id,
       kind: "unit" as const,
       label: unit.name,
       path: unitPath,
       parentId: SITE_PLANT_ID,
       children: unitRoutes.map((route) => {
         const routePath = `${unitPath} ➔ ${route.name}`;
+        const routeNodeId = explorerNodeId("route", route.id);
         return {
-          id: route.id,
+          id: routeNodeId,
+          entityId: route.id,
           kind: "route" as const,
           label: route.name,
           path: routePath,
-          parentId: unit.id,
-          children: attachAssetBranch(route, routePath, route.id)
+          parentId: unitNodeId,
+          children: attachAssetBranch(route, routePath, routeNodeId)
         };
       })
     };
@@ -1379,13 +1429,15 @@ export function buildExplorerTree(
   );
   const routeNodes = directRoutes.map((route) => {
     const routePath = `${plantPath} ➔ ${route.name}`;
+    const routeNodeId = explorerNodeId("route", route.id);
     return {
-      id: route.id,
+      id: routeNodeId,
+      entityId: route.id,
       kind: "route" as const,
       label: route.name,
       path: routePath,
       parentId: SITE_PLANT_ID,
-      children: attachAssetBranch(route, routePath, route.id)
+      children: attachAssetBranch(route, routePath, routeNodeId)
     };
   });
 
@@ -1407,7 +1459,8 @@ export function buildExplorerTree(
       if (comp.id === SITE_FACILITY_POINTS_COMP_ID) {
         for (const pt of comp.collectionPoints ?? []) {
           facilityDirectNodes.push({
-            id: pt.id,
+            id: explorerNodeId("point", pt.id),
+            entityId: pt.id,
             kind: "point",
             label: pt.name,
             path: `${plantPath} / ${pt.name}`,
@@ -1418,18 +1471,21 @@ export function buildExplorerTree(
         continue;
       }
       const compPath = `${plantPath} / ${comp.name}`;
+      const compNodeId = explorerNodeId("component", comp.id);
       facilityDirectNodes.push({
-        id: comp.id,
+        id: compNodeId,
+        entityId: comp.id,
         kind: "component",
         label: comp.name,
         path: compPath,
         parentId: SITE_PLANT_ID,
         children: (comp.collectionPoints ?? []).map((pt) => ({
-          id: pt.id,
+          id: explorerNodeId("point", pt.id),
+          entityId: pt.id,
           kind: "point" as const,
           label: pt.name,
           path: `${compPath} / ${pt.name}`,
-          parentId: comp.id,
+          parentId: compNodeId,
           children: []
         }))
       });
@@ -1439,6 +1495,7 @@ export function buildExplorerTree(
   return [
     {
       id: SITE_PLANT_ID,
+      entityId: SITE_PLANT_ID,
       kind: "plant",
       label: plantPath,
       path: plantPath,
@@ -1530,12 +1587,14 @@ export function ExplorerTreeNode({
         ) : null}
         <div
           data-tree-row="true"
+          data-selected={selected ? "true" : "false"}
+          data-node-id={node.id}
           data-depth={depth}
           data-has-children={hasKids ? "true" : "false"}
           className={`group flex items-center gap-1.5 rounded-lg py-1.5 pr-1.5 pl-1.5 transition-all border border-l-[3px] ${
             selected
               ? "bg-[#FFC700]/12 border-[#FFC700]/45 border-l-[#FFC700] shadow-[0_0_12px_rgba(255,199,0,0.18)]"
-              : "border-transparent border-l-transparent hover:bg-slate-800/75 hover:border-l-[#FFC700]/55"
+              : "border-transparent border-l-transparent hover:bg-slate-800/55 hover:border-l-[#FFC700]/35"
           }`}
           style={{ paddingLeft: `${indentPx}px` }}
         >
@@ -1703,24 +1762,25 @@ function lookupEditableEntity(
   component?: EquipComponent;
   point?: EquipCollectionPoint;
 } {
+  const entityId = node.entityId;
   if (node.kind === "unit") {
-    return { unit: store.units.find((u) => u.id === node.id) };
+    return { unit: store.units.find((u) => u.id === entityId) };
   }
   if (node.kind === "route") {
-    return { route: store.routes.find((r) => r.id === node.id) };
+    return { route: store.routes.find((r) => r.id === entityId) };
   }
   for (const route of store.routes) {
     for (const asset of route.assets) {
-      if (node.kind === "asset" && asset.id === node.id) {
+      if (node.kind === "asset" && asset.id === entityId) {
         return { asset };
       }
       for (const comp of asset.components) {
-        if (node.kind === "component" && comp.id === node.id) {
+        if (node.kind === "component" && comp.id === entityId) {
           return { component: comp };
         }
         if (node.kind === "point") {
           const point = (comp.collectionPoints ?? []).find(
-            (p) => p.id === node.id
+            (p) => p.id === entityId
           );
           if (point) return { point };
         }
@@ -1829,7 +1889,7 @@ export default function EquipmentExplorer({
     () =>
       tree.flatMap(function collect(node): { id: string; label: string }[] {
         const self =
-          node.kind === "asset" ? [{ id: node.id, label: node.label }] : [];
+          node.kind === "asset" ? [{ id: node.entityId, label: node.label }] : [];
         return [...self, ...node.children.flatMap(collect)];
       }),
     [tree]
@@ -1838,9 +1898,7 @@ export default function EquipmentExplorer({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     [SITE_PLANT_ID]: true
   });
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
-    SITE_PLANT_ID
-  );
+  const [selectedNodeId, setSelectedNodeId] = useState<string>(SITE_PLANT_ID);
   const [mode, setMode] = useState<PanelMode>("idle");
   const [detailTab, setDetailTab] = useState<DetailTab>("Location Profile");
   const [createKind, setCreateKind] = useState<ExplorerKind>("unit");
@@ -1877,8 +1935,18 @@ export default function EquipmentExplorer({
     conditionUpdate: ""
   });
 
-  const selectedNode = findNode(tree, selectedNodeId);
-  const parentNode = findNode(tree, parentNodeId);
+  const selectedNode = findNode(tree, selectedNodeId) ?? siteRoot;
+  const parentNode = findNode(tree, parentNodeId) ?? siteRoot;
+  const effectiveSelectedNodeId = selectedNode?.id ?? SITE_PLANT_ID;
+  const applySelection = useCallback((action: ExplorerSelectionAction) => {
+    setSelectedNodeId((prev) => reduceExplorerSelection(prev, action));
+  }, []);
+
+  useEffect(() => {
+    if (selectedNode && selectedNode.id !== selectedNodeId) {
+      setSelectedNodeId(selectedNode.id);
+    }
+  }, [selectedNode, selectedNodeId]);
 
   const withFacilityPrefix = (path: string) => {
     const bracketed = `[${facilityName}]`;
@@ -1918,7 +1986,7 @@ export default function EquipmentExplorer({
       return;
     }
     const snap = resolveActiveDbSelectionFromNode(
-      selectedNode.id,
+      selectedNode.entityId,
       selectedNode.kind,
       selectedNode.path
     );
@@ -1932,10 +2000,10 @@ export default function EquipmentExplorer({
     setParentNodeId(parent?.id ?? SITE_PLANT_ID);
     setMode("create");
     if (parent) {
-      setSelectedNodeId(parent.id);
+      applySelection({ type: "select", nodeId: parent.id });
       setExpanded((prev) => ({ ...prev, [parent.id]: true }));
     } else {
-      setSelectedNodeId(SITE_PLANT_ID);
+      applySelection({ type: "select", nodeId: SITE_PLANT_ID });
     }
   };
 
@@ -1997,7 +2065,7 @@ export default function EquipmentExplorer({
         "Parent asset is not saved on the server yet. Refresh and try again."
       );
     }
-    await createComponent({
+    const created = await createComponent({
       assetId: parentAsset.serverId,
       name: result.name,
       type: result.componentType,
@@ -2006,6 +2074,12 @@ export default function EquipmentExplorer({
     });
     setComponentModalOpen(false);
     await refreshFromServer();
+    const createdNodeId = explorerNodeId("component", String(created.id));
+    expandToRevealNode(
+      createdNodeId,
+      explorerNodeId("asset", componentParentAssetId)
+    );
+    applySelection({ type: "create", nodeId: createdNodeId });
     toast(`Component "${result.name}" created.`, "success");
   };
 
@@ -2058,22 +2132,22 @@ export default function EquipmentExplorer({
       setError("");
       try {
         if (target.kind === "unit") {
-          const unit = store.units.find((u) => u.id === target.id);
+          const unit = store.units.find((u) => u.id === target.entityId);
           if (!unit?.serverId) throw new Error("Unit is not saved on the server yet.");
           await deleteHierarchyNode("unit", unit.serverId);
         } else if (target.kind === "route") {
-          const route = store.routes.find((r) => r.id === target.id);
+          const route = store.routes.find((r) => r.id === target.entityId);
           if (!route?.serverId) throw new Error("Route is not saved on the server yet.");
           await deleteHierarchyNode("route", route.serverId);
         } else if (target.kind === "asset") {
-          const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === target.id);
+          const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === target.entityId);
           if (!asset?.serverId) throw new Error("Asset is not saved on the server yet.");
           await deleteHierarchyNode("asset", asset.serverId);
         } else if (target.kind === "component") {
           const component = store.routes
             .flatMap((r) => r.assets)
             .flatMap((a) => a.components)
-            .find((c) => c.id === target.id);
+            .find((c) => c.id === target.entityId);
           if (!component?.serverId) throw new Error("Component is not saved on the server yet.");
           await deleteHierarchyNode("component", component.serverId);
         } else if (target.kind === "point") {
@@ -2081,14 +2155,14 @@ export default function EquipmentExplorer({
             .flatMap((r) => r.assets)
             .flatMap((a) => a.components)
             .flatMap((c) => c.collectionPoints ?? [])
-            .find((p) => p.id === target.id);
+            .find((p) => p.id === target.entityId);
           if (!point?.serverId) throw new Error("Collection point is not saved on the server yet.");
           await deleteHierarchyNode("point", point.serverId);
         }
         await refreshFromServer();
         setMode("idle");
         setError("");
-        setSelectedNodeId(target.parentId || SITE_PLANT_ID);
+        applySelection({ type: "delete", parentNodeId: target.parentId });
         setParentNodeId(SITE_PLANT_ID);
         setDeleteTarget(null);
         toast(`"${target.label}" successfully deleted.`, "success");
@@ -2193,7 +2267,7 @@ export default function EquipmentExplorer({
       const parent = resolveQuickAddParent("component");
       const firstAsset =
         parent?.kind === "asset"
-          ? parent.id
+          ? parent.entityId
           : componentAssetOptions[0]?.id || "";
       setComponentParentAssetId(firstAsset);
       setComponentModalOpen(true);
@@ -2255,20 +2329,22 @@ export default function EquipmentExplorer({
         return;
       }
       const parentId = parentNodeId || SITE_PLANT_ID;
+      const parentForCreate = findNode(tree, parentId) ?? siteRoot;
+      const parentEntityId = parentForCreate?.entityId ?? SITE_PLANT_ID;
       let newId = "";
       if (createKind === "unit") {
         const created = await createUnit(plantId, displayName);
-        newId = String(created.id);
+        newId = explorerNodeId("unit", String(created.id));
       } else if (createKind === "route") {
-        const parentUnit = store.units.find((u) => u.id === parentId);
+        const parentUnit = store.units.find((u) => u.id === parentEntityId);
         const created = await createRoute(
           plantId,
           displayName,
           parentUnit?.serverId
         );
-        newId = String(created.id);
+        newId = explorerNodeId("route", String(created.id));
       } else if (createKind === "asset") {
-        const parentRoute = store.routes.find((r) => r.id === parentId);
+        const parentRoute = store.routes.find((r) => r.id === parentEntityId);
         const created = await createAsset({
           routeId: parentRoute?.serverId,
           simpleMode: !parentRoute?.serverId,
@@ -2280,16 +2356,16 @@ export default function EquipmentExplorer({
           criticality: "Medium",
           status: "Active"
         });
-        newId = String(created.id);
+        newId = explorerNodeId("asset", String(created.id));
       } else if (createKind === "component") {
-        setComponentParentAssetId(parentId);
+        setComponentParentAssetId(parentEntityId);
         setComponentModalOpen(true);
         return;
       } else if (createKind === "point") {
         const parentComponent = store.routes
           .flatMap((r) => r.assets)
           .flatMap((a) => a.components)
-          .find((c) => c.id === parentId);
+          .find((c) => c.id === parentEntityId);
         if (!parentComponent?.serverId) {
           setError("Choose a component parent to add a collection point.");
           return;
@@ -2299,13 +2375,13 @@ export default function EquipmentExplorer({
           displayName,
           pointOrient
         );
-        newId = String(created.id);
+        newId = explorerNodeId("point", String(created.id));
       } else {
         return;
       }
       await refreshFromServer();
       expandToRevealNode(newId, parentId);
-      setSelectedNodeId(newId);
+      applySelection({ type: "create", nodeId: newId });
       setQuickAddOpen(false);
       setQuickNodeName("");
       setQuickDriveType("Direct");
@@ -2389,6 +2465,7 @@ export default function EquipmentExplorer({
 
   const updateNode = async () => {
     if (!selectedNodeId || !EDITABLE_KINDS.includes(createKind)) return;
+    const targetEntityId = selectedNode?.entityId ?? selectedNodeId;
     setError("");
     try {
       if (createKind === "unit") {
@@ -2396,7 +2473,7 @@ export default function EquipmentExplorer({
           setError("Unit / Area name is required.");
           return;
         }
-        const unit = store.units.find((u) => u.id === selectedNodeId);
+        const unit = store.units.find((u) => u.id === targetEntityId);
         if (!unit?.serverId) {
           setError("Unit is not saved on the server yet. Refresh and try again.");
           return;
@@ -2407,7 +2484,7 @@ export default function EquipmentExplorer({
           setError("Route name is required.");
           return;
         }
-        const route = store.routes.find((r) => r.id === selectedNodeId);
+        const route = store.routes.find((r) => r.id === targetEntityId);
         if (!route?.serverId) {
           setError("Route is not saved on the server yet. Refresh and try again.");
           return;
@@ -2418,7 +2495,7 @@ export default function EquipmentExplorer({
           setError("Asset name is required.");
           return;
         }
-        const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === selectedNodeId);
+        const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === targetEntityId);
         if (!asset?.serverId) {
           setError("Asset is not saved on the server yet. Refresh and try again.");
           return;
@@ -2439,7 +2516,7 @@ export default function EquipmentExplorer({
         const component = store.routes
           .flatMap((r) => r.assets)
           .flatMap((a) => a.components)
-          .find((c) => c.id === selectedNodeId);
+          .find((c) => c.id === targetEntityId);
         if (!component?.serverId) {
           setError("Component is not saved on the server yet. Refresh and try again.");
           return;
@@ -2467,7 +2544,7 @@ export default function EquipmentExplorer({
           .flatMap((r) => r.assets)
           .flatMap((a) => a.components)
           .flatMap((c) => c.collectionPoints ?? [])
-          .find((p) => p.id === selectedNodeId);
+          .find((p) => p.id === targetEntityId);
         if (!point?.serverId) {
           setError("Collection point is not saved on the server yet. Refresh and try again.");
           return;
@@ -2481,7 +2558,7 @@ export default function EquipmentExplorer({
       }
       await refreshFromServer();
       cancelForm();
-      setSelectedNodeId(selectedNodeId);
+      applySelection({ type: "rename", nodeId: selectedNodeId });
       toast(`${KIND_LABEL[createKind]} updated.`, "success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update hierarchy node.");
@@ -2521,6 +2598,8 @@ export default function EquipmentExplorer({
         return;
       }
       const parentId = parentNodeId || SITE_PLANT_ID;
+      const parentForCreate = findNode(tree, parentId) ?? siteRoot;
+      const parentEntityId = parentForCreate?.entityId ?? SITE_PLANT_ID;
 
       if (createKind === "unit") {
         if (!unitName.trim()) {
@@ -2529,7 +2608,10 @@ export default function EquipmentExplorer({
         }
         const created = await createUnit(plantId, unitName.trim());
         await refreshFromServer();
-        setSelectedNodeId(String(created.id));
+        applySelection({
+          type: "create",
+          nodeId: explorerNodeId("unit", String(created.id))
+        });
         cancelForm();
         return;
       }
@@ -2539,14 +2621,17 @@ export default function EquipmentExplorer({
           setError("Route name is required.");
           return;
         }
-        const parentUnit = store.units.find((u) => u.id === parentId);
+        const parentUnit = store.units.find((u) => u.id === parentEntityId);
         const created = await createRoute(
           plantId,
           routeName.trim(),
           parentUnit?.serverId
         );
         await refreshFromServer();
-        setSelectedNodeId(String(created.id));
+        applySelection({
+          type: "create",
+          nodeId: explorerNodeId("route", String(created.id))
+        });
         cancelForm();
         return;
       }
@@ -2560,7 +2645,7 @@ export default function EquipmentExplorer({
           setError("Tag ID is required.");
           return;
         }
-        const parentRoute = store.routes.find((r) => r.id === parentId);
+        const parentRoute = store.routes.find((r) => r.id === parentEntityId);
         const created = await createAsset({
           routeId: parentRoute?.serverId,
           simpleMode: !parentRoute?.serverId,
@@ -2571,7 +2656,10 @@ export default function EquipmentExplorer({
           status: "Active"
         });
         await refreshFromServer();
-        setSelectedNodeId(String(created.id));
+        applySelection({
+          type: "create",
+          nodeId: explorerNodeId("asset", String(created.id))
+        });
         cancelForm();
         return;
       }
@@ -2590,7 +2678,7 @@ export default function EquipmentExplorer({
         }
         const parentAsset = store.routes
           .flatMap((r) => r.assets)
-          .find((a) => a.id === parentId);
+          .find((a) => a.id === parentEntityId);
         if (!parentAsset?.serverId) {
           setError("Select a real asset parent before adding a component.");
           return;
@@ -2611,7 +2699,10 @@ export default function EquipmentExplorer({
           specifications: kinematics ? { kinematics } : undefined
         });
         await refreshFromServer();
-        setSelectedNodeId(String(created.id));
+        applySelection({
+          type: "create",
+          nodeId: explorerNodeId("component", String(created.id))
+        });
         cancelForm();
         return;
       }
@@ -2624,7 +2715,7 @@ export default function EquipmentExplorer({
         const parentComponent = store.routes
           .flatMap((r) => r.assets)
           .flatMap((a) => a.components)
-          .find((c) => c.id === parentId);
+          .find((c) => c.id === parentEntityId);
         if (!parentComponent?.serverId) {
           setError("Select a real component parent before adding a collection point.");
           return;
@@ -2635,7 +2726,10 @@ export default function EquipmentExplorer({
           pointOrient
         );
         await refreshFromServer();
-        setSelectedNodeId(String(created.id));
+        applySelection({
+          type: "create",
+          nodeId: explorerNodeId("point", String(created.id))
+        });
         cancelForm();
         return;
       }
@@ -2658,12 +2752,12 @@ export default function EquipmentExplorer({
       depth={depth}
       isLast={isLast}
       expanded={expanded}
-      selectedNodeId={selectedNodeId}
+      selectedNodeId={effectiveSelectedNodeId}
       onToggle={(nodeId, nextOpen) =>
         setExpanded((prev) => ({ ...prev, [nodeId]: nextOpen }))
       }
       onSelect={(next) => {
-        setSelectedNodeId(next.id);
+        applySelection({ type: "select", nodeId: next.id });
         setMode("idle");
         setError("");
       }}
@@ -3217,14 +3311,14 @@ export default function EquipmentExplorer({
   const selectedPhotoUrl = useMemo(() => {
     if (!selectedNode) return null;
     return userUploadedPhotoUrl(
-      lookupNodePhoto(store, selectedNode.id, selectedNode.kind)
+      lookupNodePhoto(store, selectedNode.entityId, selectedNode.kind)
     );
   }, [store, selectedNode]);
 
   const selectedNameplateUrl = useMemo(() => {
     if (!selectedNode) return null;
     return userUploadedPhotoUrl(
-      lookupNameplatePhoto(store, selectedNode.id, selectedNode.kind)
+      lookupNameplatePhoto(store, selectedNode.entityId, selectedNode.kind)
     );
   }, [store, selectedNode]);
 
@@ -3279,7 +3373,7 @@ export default function EquipmentExplorer({
     if (selectedNode.kind !== "asset" && selectedNode.kind !== "component") return;
     const next = patchNodePhoto(
       cloneStore(getEquipmentStore()),
-      selectedNode.id,
+      selectedNode.entityId,
       selectedNode.kind,
       photoUrl || undefined
     );
@@ -3293,7 +3387,7 @@ export default function EquipmentExplorer({
       return;
     const next = patchNameplatePhoto(
       cloneStore(getEquipmentStore()),
-      selectedNode.id,
+      selectedNode.entityId,
       selectedNode.kind,
       nameplatePhotoUrl || undefined
     );
@@ -3360,11 +3454,11 @@ export default function EquipmentExplorer({
     const summaryEntity = lookupEditableEntity(store, selectedNode);
     let summarySubType = KIND_LABEL[kind];
     let summaryCriticality = "—";
-    let summaryId = selectedNode.id;
+    let summaryId = selectedNode.entityId;
     if (kind === "plant") {
-      const plant = store.plants.find((p) => p.id === selectedNode.id);
+      const plant = store.plants.find((p) => p.id === selectedNode.entityId);
       summarySubType = plant?.facilityType || "Plant Facility";
-      summaryId = plant?.id || selectedNode.id;
+      summaryId = plant?.id || selectedNode.entityId;
       summaryCriticality =
         selectedNode.children.length > 3
           ? "High"
