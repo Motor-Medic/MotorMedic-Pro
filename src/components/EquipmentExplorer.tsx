@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Camera,
   CheckCircle2,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
@@ -209,6 +208,20 @@ const KIND_LABEL: Record<ExplorerKind, string> = {
   component: "Component",
   point: "Collection Point"
 };
+
+const EDITABLE_KINDS: ExplorerKind[] = [
+  "unit",
+  "route",
+  "asset",
+  "component",
+  "point"
+];
+
+const TREE_INDENT_PX = 20;
+const TREE_ROW_LEFT_BORDER_PX = 3;
+const TREE_EXPANDER_SIZE_PX = 16;
+const TREE_EXPANDER_CENTER_PX =
+  TREE_ROW_LEFT_BORDER_PX + TREE_EXPANDER_SIZE_PX / 2;
 
 const COMPONENT_TYPES: EquipComponentType[] = [
   "Electric Motor (AC / DC / VFD)",
@@ -1448,6 +1461,193 @@ function findNode(
   return null;
 }
 
+export interface ExplorerTreeNodeProps {
+  node: ExplorerNode;
+  depth: number;
+  isLast?: boolean;
+  expanded: Record<string, boolean>;
+  selectedNodeId: string | null;
+  onToggle: (nodeId: string, nextOpen: boolean) => void;
+  onSelect: (node: ExplorerNode) => void;
+  onEdit: (node: ExplorerNode) => void;
+  onAddChild: (node: ExplorerNode) => void;
+  onDelete: (node: ExplorerNode) => void;
+}
+
+/**
+ * SmartCBM-style depth grammar: each level steps right by a fixed 20px, the
+ * expander column carries a vertical guide, and every child gets a horizontal
+ * elbow. Only the last child's guide stops at its elbow (no overhang).
+ */
+export function ExplorerTreeNode({
+  node,
+  depth,
+  isLast = true,
+  expanded,
+  selectedNodeId,
+  onToggle,
+  onSelect,
+  onEdit,
+  onAddChild,
+  onDelete
+}: ExplorerTreeNodeProps) {
+  const hasKids = node.children.length > 0;
+  const isOpen = expanded[node.id] ?? depth < 2;
+  const selected = selectedNodeId === node.id;
+  const canAddChild = CHILD_OF[node.kind] != null && node.kind !== "point";
+  const isPinnedRoot = node.id === SITE_PLANT_ID;
+  const canEdit = EDITABLE_KINDS.includes(node.kind);
+  const indentPx = depth * TREE_INDENT_PX;
+  const parentExpanderCenter =
+    (depth - 1) * TREE_INDENT_PX + TREE_EXPANDER_CENTER_PX;
+
+  return (
+    <div data-tree-node={node.id}>
+      <div className="relative">
+        {depth > 0 ? (
+          <>
+            <span
+              aria-hidden
+              className="pointer-events-none absolute border-l border-slate-800"
+              style={{
+                left: `${parentExpanderCenter}px`,
+                top: 0,
+                bottom: isLast ? "50%" : 0
+              }}
+            />
+            <span
+              aria-hidden
+              className="pointer-events-none absolute border-t border-slate-800"
+              style={{
+                left: `${parentExpanderCenter}px`,
+                top: "50%",
+                width: `${
+                  indentPx + TREE_ROW_LEFT_BORDER_PX - parentExpanderCenter
+                }px`
+              }}
+            />
+          </>
+        ) : null}
+        <div
+          data-tree-row="true"
+          data-depth={depth}
+          data-has-children={hasKids ? "true" : "false"}
+          className={`group flex items-center gap-1.5 rounded-lg py-1.5 pr-1.5 pl-1.5 transition-all border border-l-[3px] ${
+            selected
+              ? "bg-[#FFC700]/12 border-[#FFC700]/45 border-l-[#FFC700] shadow-[0_0_12px_rgba(255,199,0,0.18)]"
+              : "border-transparent border-l-transparent hover:bg-slate-800/75 hover:border-l-[#FFC700]/55"
+          }`}
+          style={{ paddingLeft: `${indentPx}px` }}
+        >
+          {hasKids ? (
+            <button
+              type="button"
+              onClick={() => onToggle(node.id, !isOpen)}
+              className="shrink-0 h-4 w-4 rounded-[3px] border border-slate-600 bg-slate-900/80 text-[10px] font-bold leading-none text-slate-400 hover:text-[#FFC700] hover:border-[#FFC700]/60 cursor-pointer flex items-center justify-center transition-colors"
+              aria-expanded={isOpen}
+              aria-label={isOpen ? "Collapse" : "Expand"}
+              data-tree-expander="true"
+            >
+              {isOpen ? "−" : "+"}
+            </button>
+          ) : (
+            <span className="w-4 shrink-0" aria-hidden />
+          )}
+          <button
+            type="button"
+            onClick={() => onSelect(node)}
+            className={`flex-1 min-w-0 text-left text-xs cursor-pointer truncate flex items-center gap-1.5 ${
+              selected
+                ? "text-[#FFC700] font-bold"
+                : isPinnedRoot
+                  ? "text-slate-100 font-semibold"
+                  : "text-slate-200 group-hover:text-slate-50"
+            }`}
+          >
+            <span className="shrink-0" aria-hidden>
+              {KIND_ICON[node.kind]}
+            </span>
+            <span className="truncate">{node.label}</span>
+            {isPinnedRoot ? (
+              <span className="ml-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
+                Licensed Site
+              </span>
+            ) : null}
+          </button>
+          {canEdit ? (
+            <button
+              type="button"
+              title={`Edit ${KIND_LABEL[node.kind]}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onEdit(node);
+              }}
+              className={`shrink-0 h-6 w-6 rounded-md border border-[#FFC700]/40 bg-[#FFC700]/10 text-[#FFC700] cursor-pointer hover:bg-[#FFC700]/25 hover:border-[#FFC700]/70 flex items-center justify-center transition-all ${
+                selected
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+          ) : null}
+          {canAddChild && (
+            <button
+              type="button"
+              title={`Add ${KIND_LABEL[CHILD_OF[node.kind]!]}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddChild(node);
+              }}
+              className={`shrink-0 h-6 w-6 rounded-md border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-500/30 flex items-center justify-center transition-opacity ${
+                selected
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
+            >
+              +
+            </button>
+          )}
+          {!isPinnedRoot ? (
+            <button
+              type="button"
+              title={`Delete ${KIND_LABEL[node.kind]}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(node);
+              }}
+              className={`shrink-0 h-6 w-6 rounded-md border border-red-800/60 bg-red-950/40 text-red-300 cursor-pointer hover:bg-red-900/60 flex items-center justify-center transition-opacity ${
+                selected
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {hasKids && isOpen
+        ? node.children.map((child, index) => (
+            <ExplorerTreeNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              isLast={index === node.children.length - 1}
+              expanded={expanded}
+              selectedNodeId={selectedNodeId}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              onEdit={onEdit}
+              onAddChild={onAddChild}
+              onDelete={onDelete}
+            />
+          ))
+        : null}
+    </div>
+  );
+}
+
 /** Collect ancestor ids from root → node for expand / breadcrumb navigation. */
 function collectAncestorIds(
   nodes: ExplorerNode[],
@@ -2127,14 +2327,6 @@ export default function EquipmentExplorer({
     await saveGuard.run(() => saveQuickAddNode(displayName));
   };
 
-  const EDITABLE_KINDS: ExplorerKind[] = [
-    "unit",
-    "route",
-    "asset",
-    "component",
-    "point"
-  ];
-
   const beginEdit = (node: ExplorerNode) => {
     if (!EDITABLE_KINDS.includes(node.kind)) {
       setSelectedNodeId(node.id);
@@ -2455,136 +2647,31 @@ export default function EquipmentExplorer({
   const handleSave = async () => {
     await saveGuard.run(saveNode);
   };
-  const renderTreeNode = (node: ExplorerNode, depth: number) => {
-    const hasKids = node.children.length > 0;
-    const isOpen = expanded[node.id] ?? depth < 2;
-    const selected = selectedNodeId === node.id;
-    const canAddChild =
-      CHILD_OF[node.kind] != null && node.kind !== "point";
-    const isPinnedRoot = node.id === SITE_PLANT_ID;
-    const canEdit = EDITABLE_KINDS.includes(node.kind);
-    const indentPx = depth * 18 + 10;
-
-    return (
-      <div key={node.id} className="relative">
-        {depth > 0 ? (
-          <span
-            aria-hidden
-            className="pointer-events-none absolute top-0 bottom-0 w-px bg-slate-800/90"
-            style={{ left: `${(depth - 1) * 18 + 18}px` }}
-          />
-        ) : null}
-        <div
-          className={`group flex items-center gap-1.5 rounded-lg py-1.5 pr-1.5 pl-1.5 transition-all border border-l-[3px] ${
-            selected
-              ? "bg-[#FFC700]/12 border-[#FFC700]/45 border-l-[#FFC700] shadow-[0_0_12px_rgba(255,199,0,0.18)]"
-              : "border-transparent border-l-transparent hover:bg-slate-800/75 hover:border-l-[#FFC700]/55"
-          }`}
-          style={{ paddingLeft: `${indentPx}px` }}
-        >
-          {hasKids ? (
-            <button
-              type="button"
-              onClick={() =>
-                setExpanded((prev) => ({ ...prev, [node.id]: !isOpen }))
-              }
-              className="text-slate-500 hover:text-[#FFC700] cursor-pointer shrink-0 rounded-md p-0.5 transition-colors"
-              aria-label={isOpen ? "Collapse" : "Expand"}
-            >
-              {isOpen ? (
-                <ChevronDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
-              )}
-            </button>
-          ) : (
-            <span className="w-3.5 shrink-0 flex items-center justify-center">
-              <span className="h-1 w-1 rounded-full bg-slate-600" />
-            </span>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedNodeId(node.id);
-              setMode("idle");
-              setError("");
-            }}
-            className={`flex-1 min-w-0 text-left text-xs cursor-pointer truncate flex items-center gap-1.5 ${
-              selected
-                ? "text-[#FFC700] font-bold"
-                : isPinnedRoot
-                  ? "text-slate-100 font-semibold"
-                  : "text-slate-200 group-hover:text-slate-50"
-            }`}
-          >
-            <span className="shrink-0" aria-hidden>
-              {KIND_ICON[node.kind]}
-            </span>
-            <span className="truncate">{node.label}</span>
-            {isPinnedRoot ? (
-              <span className="ml-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
-                Licensed Site
-              </span>
-            ) : null}
-          </button>
-          {canEdit ? (
-            <button
-              type="button"
-              title={`Edit ${KIND_LABEL[node.kind]}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                beginEdit(node);
-              }}
-              className={`shrink-0 h-6 w-6 rounded-md border border-[#FFC700]/40 bg-[#FFC700]/10 text-[#FFC700] cursor-pointer hover:bg-[#FFC700]/25 hover:border-[#FFC700]/70 flex items-center justify-center transition-all ${
-                selected
-                  ? "opacity-100"
-                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              }`}
-            >
-              <Pencil className="h-3 w-3" />
-            </button>
-          ) : null}
-          {canAddChild && (
-            <button
-              type="button"
-              title={`Add ${KIND_LABEL[CHILD_OF[node.kind]!]}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                beginCreateChild(node);
-              }}
-              className={`shrink-0 h-6 w-6 rounded-md border border-cyan-400/40 bg-cyan-500/15 text-cyan-200 text-sm font-bold cursor-pointer hover:bg-cyan-500/30 flex items-center justify-center transition-opacity ${
-                selected
-                  ? "opacity-100"
-                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              }`}
-            >
-              +
-            </button>
-          )}
-          {!isPinnedRoot ? (
-            <button
-              type="button"
-              title={`Delete ${KIND_LABEL[node.kind]}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                requestDeleteNode(node);
-              }}
-              className={`shrink-0 h-6 w-6 rounded-md border border-red-800/60 bg-red-950/40 text-red-300 cursor-pointer hover:bg-red-900/60 flex items-center justify-center transition-opacity ${
-                selected
-                  ? "opacity-100"
-                  : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              }`}
-            >
-              <Trash2 className="h-3 w-3" />
-            </button>
-          ) : null}
-        </div>
-        {hasKids && isOpen
-          ? node.children.map((child) => renderTreeNode(child, depth + 1))
-          : null}
-      </div>
-    );
-  };
+  const renderTreeNode = (
+    node: ExplorerNode,
+    depth: number,
+    isLast = true
+  ) => (
+    <ExplorerTreeNode
+      key={node.id}
+      node={node}
+      depth={depth}
+      isLast={isLast}
+      expanded={expanded}
+      selectedNodeId={selectedNodeId}
+      onToggle={(nodeId, nextOpen) =>
+        setExpanded((prev) => ({ ...prev, [nodeId]: nextOpen }))
+      }
+      onSelect={(next) => {
+        setSelectedNodeId(next.id);
+        setMode("idle");
+        setError("");
+      }}
+      onEdit={beginEdit}
+      onAddChild={beginCreateChild}
+      onDelete={requestDeleteNode}
+    />
+  );
 
   const beginCreateChild = (node: ExplorerNode) => {
     const child = CHILD_OF[node.kind];
@@ -4387,7 +4474,9 @@ export default function EquipmentExplorer({
                 </div>
               </div>
             ) : (
-              tree.map((node) => renderTreeNode(node, 0))
+              tree.map((node, index) =>
+                renderTreeNode(node, 0, index === tree.length - 1)
+              )
             )}
           </div>
         </aside>
