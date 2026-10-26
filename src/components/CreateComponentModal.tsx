@@ -4,6 +4,7 @@ import {
   Activity, CircleDot, Disc, Factory, Gauge, Hash, Layers, Loader2,
   Settings2, Sparkles, Tag, Thermometer, Wind, X, Zap, Droplets
 } from "lucide-react";
+import { useSingleFlight } from "../lib/useSingleFlight";
 
 /* ========================================================================== */
 /* Types                                                                      */
@@ -648,12 +649,13 @@ export default function CreateComponentModal({
   initialAssetId
 }: {
   onClose: () => void;
-  onSave: (result: CreateComponentResult) => void;
+  onSave: (result: CreateComponentResult) => void | Promise<void>;
   isEdit?: boolean;
   initialData?: Partial<CreateComponentResult>;
   assetOptions?: ComponentAssetOption[];
   initialAssetId?: string;
 }) {
+  const saveGuard = useSingleFlight();
   const [customTypes, setCustomTypes] = useState<ComponentTypeTemplate[]>(() => loadCustomTypes());
   const initialType = initialData?.componentType || "Electric Motor";
   const [parentAssetId, setParentAssetId] = useState(
@@ -810,7 +812,7 @@ export default function CreateComponentModal({
     }, 900);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (assetOptions && assetOptions.length > 0 && !parentAssetId) {
       setError("Select the parent asset for this component.");
       return;
@@ -847,31 +849,40 @@ export default function CreateComponentModal({
       }
     }
 
-    if (isOther && saveAsTemplate && generatedFields) {
-      saveCustomType({
-        type: resolvedType,
-        manufacturer: manufacturer.trim() || undefined,
-        specs,
-        customFields: generatedFields
-      });
-      setCustomTypes(loadCustomTypes());
-      setTemplates(loadTypeTemplates());
-    } else if (!isOther) {
-      saveTypeTemplate({
-        type: resolvedType,
-        manufacturer: manufacturer.trim() || undefined,
-        specs,
-        customFields: activeCustomFields ?? undefined
-      });
-      setTemplates(loadTypeTemplates());
-    }
+    await saveGuard.run(async () => {
+      setError("");
+      try {
+        if (isOther && saveAsTemplate && generatedFields) {
+          saveCustomType({
+            type: resolvedType,
+            manufacturer: manufacturer.trim() || undefined,
+            specs,
+            customFields: generatedFields
+          });
+          setCustomTypes(loadCustomTypes());
+          setTemplates(loadTypeTemplates());
+        } else if (!isOther) {
+          saveTypeTemplate({
+            type: resolvedType,
+            manufacturer: manufacturer.trim() || undefined,
+            specs,
+            customFields: activeCustomFields ?? undefined
+          });
+          setTemplates(loadTypeTemplates());
+        }
 
-    onSave({
-      name: name.trim(),
-      componentType: resolvedType,
-      manufacturer: manufacturer.trim(),
-      specs,
-      assetId: parentAssetId || undefined
+        await onSave({
+          name: name.trim(),
+          componentType: resolvedType,
+          manufacturer: manufacturer.trim(),
+          specs,
+          assetId: parentAssetId || undefined
+        });
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to save component."
+        );
+      }
     });
   };
 
@@ -904,7 +915,8 @@ export default function CreateComponentModal({
           <button
             type="button"
             onClick={onClose}
-            className="h-9 w-9 rounded-lg flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-700/60 cursor-pointer shrink-0 transition-all duration-200"
+            disabled={saveGuard.pending}
+            className="h-9 w-9 rounded-lg flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-700/60 cursor-pointer shrink-0 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
@@ -1171,16 +1183,25 @@ export default function CreateComponentModal({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-[42px] px-4 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold cursor-pointer transition-all duration-200"
+            disabled={saveGuard.pending}
+            className="min-h-[42px] px-4 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold cursor-pointer transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={handleSave}
-            className="min-h-[42px] px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-bold cursor-pointer transition-all duration-200 shadow-lg shadow-emerald-500/20"
+            disabled={saveGuard.pending}
+            className="min-h-[42px] px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-bold cursor-pointer transition-all duration-200 shadow-lg shadow-emerald-500/20 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
           >
-            Save Changes
+            {saveGuard.pending ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save Changes"
+            )}
           </button>
         </div>
       </div>

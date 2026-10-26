@@ -49,6 +49,7 @@ import {
   type EquipmentStore
 } from "../data/equipmentDb";
 import { navigateToTab } from "../navigation";
+import { useSingleFlight } from "../lib/useSingleFlight";
 import { useToast } from "./Toast";
 import { confirmArtifactExport } from "./ArtifactDisclaimer";
 import ComponentKinematicsSpecsForm, {
@@ -1568,6 +1569,9 @@ export default function EquipmentExplorer({
   userPlantName?: string;
 }) {
   const { toast } = useToast();
+  const saveGuard = useSingleFlight();
+  const deleteGuard = useSingleFlight();
+  const renameGuard = useSingleFlight();
   const facilityName =
     (userPlantName && userPlantName.trim()) || "Main Facility";
 
@@ -1783,34 +1787,31 @@ export default function EquipmentExplorer({
 
   const handleComponentModalSave = async (result: CreateComponentResult) => {
     if (!componentParentAssetId) {
-      setError("Select the parent asset for this component.");
-      return;
+      throw new Error("Select the parent asset for this component.");
     }
     const parentAsset = store.routes
       .flatMap((r) => r.assets)
       .find((a) => a.id === componentParentAssetId);
     if (!parentAsset?.serverId) {
-      setError("Parent asset is not saved on the server yet. Refresh and try again.");
-      return;
+      throw new Error(
+        "Parent asset is not saved on the server yet. Refresh and try again."
+      );
     }
-    try {
-      await createComponent({
-        assetId: parentAsset.serverId,
-        name: result.name,
-        type: result.componentType,
-        manufacturer: result.manufacturer,
-        specifications: { ...result.specs, kinematics: result.specs }
-      });
-      setComponentModalOpen(false);
-      await refreshFromServer();
-      toast(`Component "${result.name}" created.`, "success");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create component.");
-    }
+    await createComponent({
+      assetId: parentAsset.serverId,
+      name: result.name,
+      type: result.componentType,
+      manufacturer: result.manufacturer,
+      specifications: { ...result.specs, kinematics: result.specs }
+    });
+    setComponentModalOpen(false);
+    await refreshFromServer();
+    toast(`Component "${result.name}" created.`, "success");
   };
 
   const openPlantRename = () => {
     setPlantNameDraft(store.plants.find((p) => p.id === SITE_PLANT_ID)?.name || "");
+    setError("");
     setPlantRenameOpen(true);
   };
 
@@ -1820,25 +1821,29 @@ export default function EquipmentExplorer({
       setError("Plant name is required.");
       return;
     }
-    try {
-      const plantId = await resolveServerPlantId();
-      if (plantId == null) {
-        setError(
-          "We couldn't reach the server to load your facility. Check your connection and try again."
-        );
-        return;
+    await renameGuard.run(async () => {
+      setError("");
+      try {
+        const plantId = await resolveServerPlantId();
+        if (plantId == null) {
+          setError(
+            "We couldn't reach the server to load your facility. Check your connection and try again."
+          );
+          return;
+        }
+        await renamePlant(plantId, name);
+        setPlantRenameOpen(false);
+        await refreshFromServer();
+        toast("Plant renamed.", "success");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to rename plant.");
       }
-      await renamePlant(plantId, name);
-      setPlantRenameOpen(false);
-      await refreshFromServer();
-      toast("Plant renamed.", "success");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to rename plant.");
-    }
+    });
   };
 
   const requestDeleteNode = (node: ExplorerNode) => {
     if (node.id === SITE_PLANT_ID || node.kind === "plant") return;
+    setError("");
     setDeleteTarget(node);
   };
 
@@ -1848,48 +1853,49 @@ export default function EquipmentExplorer({
       setDeleteTarget(null);
       return;
     }
-    const label = deleteTarget.label;
-    const parentId = deleteTarget.parentId || SITE_PLANT_ID;
-    try {
-      if (deleteTarget.kind === "unit") {
-        const unit = store.units.find((u) => u.id === deleteTarget.id);
-        if (!unit?.serverId) throw new Error("Unit is not saved on the server yet.");
-        await deleteHierarchyNode("unit", unit.serverId);
-      } else if (deleteTarget.kind === "route") {
-        const route = store.routes.find((r) => r.id === deleteTarget.id);
-        if (!route?.serverId) throw new Error("Route is not saved on the server yet.");
-        await deleteHierarchyNode("route", route.serverId);
-      } else if (deleteTarget.kind === "asset") {
-        const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === deleteTarget.id);
-        if (!asset?.serverId) throw new Error("Asset is not saved on the server yet.");
-        await deleteHierarchyNode("asset", asset.serverId);
-      } else if (deleteTarget.kind === "component") {
-        const component = store.routes
-          .flatMap((r) => r.assets)
-          .flatMap((a) => a.components)
-          .find((c) => c.id === deleteTarget.id);
-        if (!component?.serverId) throw new Error("Component is not saved on the server yet.");
-        await deleteHierarchyNode("component", component.serverId);
-      } else if (deleteTarget.kind === "point") {
-        const point = store.routes
-          .flatMap((r) => r.assets)
-          .flatMap((a) => a.components)
-          .flatMap((c) => c.collectionPoints ?? [])
-          .find((p) => p.id === deleteTarget.id);
-        if (!point?.serverId) throw new Error("Collection point is not saved on the server yet.");
-        await deleteHierarchyNode("point", point.serverId);
-      }
-      await refreshFromServer();
-      setMode("idle");
+    const target = deleteTarget;
+    await deleteGuard.run(async () => {
       setError("");
-      setSelectedNodeId(parentId);
-      setParentNodeId(SITE_PLANT_ID);
-      setDeleteTarget(null);
-      toast(`"${label}" successfully deleted.`, "success");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete hierarchy node.");
-      setDeleteTarget(null);
-    }
+      try {
+        if (target.kind === "unit") {
+          const unit = store.units.find((u) => u.id === target.id);
+          if (!unit?.serverId) throw new Error("Unit is not saved on the server yet.");
+          await deleteHierarchyNode("unit", unit.serverId);
+        } else if (target.kind === "route") {
+          const route = store.routes.find((r) => r.id === target.id);
+          if (!route?.serverId) throw new Error("Route is not saved on the server yet.");
+          await deleteHierarchyNode("route", route.serverId);
+        } else if (target.kind === "asset") {
+          const asset = store.routes.flatMap((r) => r.assets).find((a) => a.id === target.id);
+          if (!asset?.serverId) throw new Error("Asset is not saved on the server yet.");
+          await deleteHierarchyNode("asset", asset.serverId);
+        } else if (target.kind === "component") {
+          const component = store.routes
+            .flatMap((r) => r.assets)
+            .flatMap((a) => a.components)
+            .find((c) => c.id === target.id);
+          if (!component?.serverId) throw new Error("Component is not saved on the server yet.");
+          await deleteHierarchyNode("component", component.serverId);
+        } else if (target.kind === "point") {
+          const point = store.routes
+            .flatMap((r) => r.assets)
+            .flatMap((a) => a.components)
+            .flatMap((c) => c.collectionPoints ?? [])
+            .find((p) => p.id === target.id);
+          if (!point?.serverId) throw new Error("Collection point is not saved on the server yet.");
+          await deleteHierarchyNode("point", point.serverId);
+        }
+        await refreshFromServer();
+        setMode("idle");
+        setError("");
+        setSelectedNodeId(target.parentId || SITE_PLANT_ID);
+        setParentNodeId(SITE_PLANT_ID);
+        setDeleteTarget(null);
+        toast(`"${target.label}" successfully deleted.`, "success");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to delete hierarchy node.");
+      }
+    });
   };
   /* ---- Form fields (create) ---- */
   const [unitName, setUnitName] = useState("");
@@ -2038,7 +2044,7 @@ export default function EquipmentExplorer({
     persistQuickAddNode(name);
   };
 
-  const persistQuickAddNode = async (displayName: string) => {
+  const saveQuickAddNode = async (displayName: string) => {
     setError("");
     try {
       const plantId = await resolveServerPlantId();
@@ -2117,6 +2123,10 @@ export default function EquipmentExplorer({
     }
   };
 
+  const persistQuickAddNode = async (displayName: string) => {
+    await saveGuard.run(() => saveQuickAddNode(displayName));
+  };
+
   const EDITABLE_KINDS: ExplorerKind[] = [
     "unit",
     "route",
@@ -2185,7 +2195,7 @@ export default function EquipmentExplorer({
     });
   };
 
-  const handleUpdate = async () => {
+  const updateNode = async () => {
     if (!selectedNodeId || !EDITABLE_KINDS.includes(createKind)) return;
     setError("");
     try {
@@ -2285,6 +2295,11 @@ export default function EquipmentExplorer({
       setError(err instanceof Error ? err.message : "Failed to update hierarchy node.");
     }
   };
+
+  const handleUpdate = async () => {
+    await saveGuard.run(updateNode);
+  };
+
   const runAiSpecSearch = () => {
     if (!customEquipType.trim()) {
       setError("Enter a custom equipment type before running AI search.");
@@ -2303,7 +2318,7 @@ export default function EquipmentExplorer({
     }, 1500);
   };
 
-  const handleSave = async () => {
+  const saveNode = async () => {
     setError("");
     try {
       const plantId = await resolveServerPlantId();
@@ -2435,6 +2450,10 @@ export default function EquipmentExplorer({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save hierarchy node.");
     }
+  };
+
+  const handleSave = async () => {
+    await saveGuard.run(saveNode);
   };
   const renderTreeNode = (node: ExplorerNode, depth: number) => {
     const hasKids = node.children.length > 0;
@@ -2802,9 +2821,17 @@ export default function EquipmentExplorer({
             <button
               type="button"
               onClick={handleQuickAddSave}
-              className={BTN_PRIMARY}
+              disabled={saveGuard.pending}
+              className={`${BTN_PRIMARY} disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2`}
             >
-              Save Node
+              {saveGuard.pending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save Node"
+              )}
             </button>
           </div>
         </div>
@@ -3082,11 +3109,19 @@ export default function EquipmentExplorer({
         <button
           type="button"
           onClick={mode === "edit" ? handleUpdate : handleSave}
-          className={BTN_PRIMARY}
+          disabled={saveGuard.pending}
+          className={`${BTN_PRIMARY} disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2`}
         >
-          {mode === "edit"
-            ? `Save ${KIND_LABEL[createKind]} Changes`
-            : `Save ${KIND_LABEL[createKind]}`}
+          {saveGuard.pending ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Saving...
+            </>
+          ) : mode === "edit" ? (
+            `Save ${KIND_LABEL[createKind]} Changes`
+          ) : (
+            `Save ${KIND_LABEL[createKind]}`
+          )}
         </button>
       </div>
     </div>
@@ -4793,21 +4828,37 @@ export default function EquipmentExplorer({
                 items.
               </p>
             </div>
+            {error ? (
+              <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 font-medium">
+                {error}
+              </div>
+            ) : null}
             <div className="flex flex-wrap justify-end gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setDeleteTarget(null)}
-                className={BTN_GHOST}
+                disabled={deleteGuard.pending}
+                className={`${BTN_GHOST} disabled:opacity-60 disabled:cursor-not-allowed`}
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmDelete}
-                className="min-h-[40px] px-4 rounded-xl bg-red-950/60 hover:bg-red-900/80 text-red-200 border border-red-700/80 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5"
+                disabled={deleteGuard.pending}
+                className="min-h-[40px] px-4 rounded-xl bg-red-950/60 hover:bg-red-900/80 text-red-200 border border-red-700/80 text-sm font-bold cursor-pointer transition-colors inline-flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                <Trash2 className="h-4 w-4" />
-                Confirm Delete
+                {deleteGuard.pending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    Confirm Delete
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -4831,12 +4882,34 @@ export default function EquipmentExplorer({
               onChange={(e) => setPlantNameDraft(e.target.value)}
               placeholder="Plant name"
             />
+            {error ? (
+              <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 font-medium">
+                {error}
+              </div>
+            ) : null}
             <div className="flex flex-wrap justify-end gap-2 pt-1">
-              <button type="button" onClick={() => setPlantRenameOpen(false)} className={BTN_GHOST}>
+              <button
+                type="button"
+                onClick={() => setPlantRenameOpen(false)}
+                disabled={renameGuard.pending}
+                className={`${BTN_GHOST} disabled:opacity-60 disabled:cursor-not-allowed`}
+              >
                 Cancel
               </button>
-              <button type="button" onClick={handlePlantRename} className={BTN_PRIMARY}>
-                Save Name
+              <button
+                type="button"
+                onClick={handlePlantRename}
+                disabled={renameGuard.pending}
+                className={`${BTN_PRIMARY} disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2`}
+              >
+                {renameGuard.pending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  "Save Name"
+                )}
               </button>
             </div>
           </div>
