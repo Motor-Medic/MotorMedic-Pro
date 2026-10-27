@@ -126,8 +126,8 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
     id: number;
     name: string;
     subscription_plan: string;
-    stripe_customer_id?: string | null;
-    stripe_subscription_id?: string | null;
+    square_customer_id?: string | null;
+    square_subscription_id?: string | null;
     subscription_status?: string | null;
     next_billing_date?: string | null;
   } | null>(null);
@@ -487,15 +487,15 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
             id="admin-billing-section"
           >
             {/* Subscription Status Display Card */}
-            <div className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-6" id="stripe-billing-summary-widget">
+            <div className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-6" id="square-billing-summary-widget">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-900/60 pb-5">
                 <div className="space-y-1">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Current Status</span>
                   <h3 className="text-sm font-bold text-slate-200">Organization Plan Details</h3>
                 </div>
-                {companyBillingData?.stripe_customer_id && (
+                {companyBillingData?.square_customer_id && (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-yellow-400/10 border border-yellow-400/20 text-yellow-400 rounded-full text-[10px] font-bold uppercase tracking-wider">
-                    <Sparkles className="w-3.5 h-3.5" /> Stripe Managed
+                    <Sparkles className="w-3.5 h-3.5" /> Square Managed
                   </span>
                 )}
               </div>
@@ -529,7 +529,7 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                       {companyBillingData?.subscription_status ? companyBillingData.subscription_status.toUpperCase() : "FREE TIER"}
                     </span>
                   </div>
-                  <p className="text-[10px] text-slate-500 font-medium">Billed through Stripe</p>
+                  <p className="text-[10px] text-slate-500 font-medium">Billed through Square</p>
                 </div>
 
                 {/* Next Billing Date */}
@@ -552,7 +552,7 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
               {/* Customer Portal (Manage Subscription) component */}
               <CustomerPortal 
                 companyId={selectedCompId} 
-                stripeCustomerId={companyBillingData?.stripe_customer_id} 
+                squareCustomerId={companyBillingData?.square_customer_id} 
               />
             </div>
 

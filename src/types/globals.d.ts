@@ -4,7 +4,7 @@
  */
 
 interface Window {
-  /** Runtime-injected env bridge (e.g. Stripe price ids); absent outside the injected shell. */
+  /** Runtime-injected env bridge (e.g. Square variation ids); absent outside the injected shell. */
   _env_?: Record<string, string | undefined>;
   /** Legacy WebKit-prefixed AudioContext constructor. */
   webkitAudioContext?: typeof AudioContext;

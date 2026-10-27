@@ -19,13 +19,13 @@ export interface CatalogModule {
   description: string;
   price_cents: number;
   currency: "usd";
-  stripe_price_env: string;
-  stripe_price_id?: string;
+  square_variation_env: string;
+  square_variation_id?: string;
   configured: boolean;
 }
 
 export interface ModuleCatalogEntry extends CatalogModule {
-  stripe_price_id: string | null;
+  square_variation_id: string | null;
 }
 
 export interface EntitlementRow {
@@ -33,7 +33,7 @@ export interface EntitlementRow {
   company_id: number;
   module_key: string;
   status: EntitlementStatus;
-  stripe_subscription_id: string | null;
+  square_subscription_id: string | null;
   created_at?: string | Date;
   updated_at?: string | Date;
 }
@@ -47,7 +47,7 @@ export interface Queryable {
 
 const STATIC_CATALOG: readonly Omit<
   CatalogModule,
-  "stripe_price_id" | "configured"
+  "square_variation_id" | "configured"
 >[] = [
   {
     key: "vibration",
@@ -56,7 +56,7 @@ const STATIC_CATALOG: readonly Omit<
       "ISO 10816/20816 rotating-equipment diagnostics, spectra and trend analysis.",
     price_cents: 39900,
     currency: "usd",
-    stripe_price_env: "STRIPE_PRICE_VIBRATION"
+    square_variation_env: "SQUARE_PRICE_VIBRATION"
   },
   {
     key: "thermography",
@@ -65,7 +65,7 @@ const STATIC_CATALOG: readonly Omit<
       "NFPA 70B thermal anomaly detection for electrical and mechanical assets.",
     price_cents: 19900,
     currency: "usd",
-    stripe_price_env: "STRIPE_PRICE_THERMOGRAPHY"
+    square_variation_env: "SQUARE_PRICE_THERMOGRAPHY"
   },
   {
     key: "ultrasound",
@@ -74,7 +74,7 @@ const STATIC_CATALOG: readonly Omit<
       "Airborne/contact ultrasound leak, steam-trap and bearing condition detection.",
     price_cents: 14900,
     currency: "usd",
-    stripe_price_env: "STRIPE_PRICE_ULTRASOUND"
+    square_variation_env: "SQUARE_PRICE_ULTRASOUND"
   },
   {
     key: "oil",
@@ -83,13 +83,13 @@ const STATIC_CATALOG: readonly Omit<
       "Tribology, contamination, wear-metal and ferrography interpretation.",
     price_cents: 14900,
     currency: "usd",
-    stripe_price_env: "STRIPE_PRICE_OIL"
+    square_variation_env: "SQUARE_PRICE_OIL"
   }
 ];
 
 export const MODULE_CATALOG: readonly Omit<
   CatalogModule,
-  "stripe_price_id" | "configured"
+  "square_variation_id" | "configured"
 >[] = STATIC_CATALOG;
 
 export const MODULE_KEYS: readonly ModuleKey[] = MODULE_CATALOG.map(
@@ -115,19 +115,19 @@ export function normalizeModuleKeys(raw: unknown): ModuleKey[] | null {
   return [...seen];
 }
 
-/** Catalog for GET /api/catalog. Prices are display values (Stripe price is source of truth). */
+/** Catalog for GET /api/catalog. Prices are display values (Square variation is source of truth). */
 export function getModuleCatalog(
   env: NodeJS.ProcessEnv = process.env
 ): ModuleCatalogEntry[] {
   return MODULE_CATALOG.map((entry) => {
-    const raw = env[entry.stripe_price_env];
+    const raw = env[entry.square_variation_env];
     const priceId =
       typeof raw === "string" && raw.trim() && !/^YOUR_/i.test(raw.trim())
         ? raw.trim()
         : null;
     return {
       ...entry,
-      stripe_price_id: priceId,
+      square_variation_id: priceId,
       configured: Boolean(priceId)
     };
   });
@@ -153,8 +153,8 @@ function toEntitlement(row: Record<string, unknown>): EntitlementRow {
     company_id: Number(row.company_id),
     module_key: String(row.module_key),
     status,
-    stripe_subscription_id:
-      row.stripe_subscription_id == null ? null : String(row.stripe_subscription_id),
+    square_subscription_id:
+      row.square_subscription_id == null ? null : String(row.square_subscription_id),
     created_at: row.created_at as string | Date | undefined,
     updated_at: row.updated_at as string | Date | undefined
   };
@@ -167,7 +167,7 @@ export async function getEntitlements(
 ): Promise<EntitlementRow[]> {
   if (companyId == null || !Number.isFinite(companyId) || companyId <= 0) return [];
   const result = await resolveDb(db).query(
-    `SELECT id, company_id, module_key, status, stripe_subscription_id, created_at, updated_at
+    `SELECT id, company_id, module_key, status, square_subscription_id, created_at, updated_at
        FROM tenant_entitlements
       WHERE company_id = $1 AND status = 'active'
       ORDER BY module_key ASC`,

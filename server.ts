@@ -4,7 +4,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 import pg from "pg";
 import crypto from "crypto";
-import Stripe from "stripe";
+import { SquareClient, SquareEnvironment } from "square";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { generateMcMasterQuery } from "./src/lib/mcmaster";
@@ -117,11 +117,14 @@ import {
   requireModule
 } from "./src/lib/entitlements";
 import {
-  assertProductionStripeMode,
+  assertProductionSquareMode,
+  assertSquareEnvironmentCoherence,
   createMockCheckoutSession,
-  isStripeTestMode,
-  resolveStripeWebhookEvent
-} from "./src/lib/stripeMode";
+  isSquareTestMode,
+  resolveSquareEnvironmentName,
+  resolveSquareWebhookEvent,
+  SQUARE_SIGNATURE_HEADER
+} from "./src/lib/squareMode";
 import { createInMemoryRateLimiter } from "./src/lib/checkoutRateLimit";
 import {
   provisionTenantFromCheckout,
@@ -134,8 +137,10 @@ dotenv.config();
 // SESSION_SECRET or DATABASE_URL (including CI-mock values). CI only
 // builds, never boots, so this is safe there.
 assertProductionAuthEnv(process.env);
-// STOREFRONT — production must also refuse the Stripe test bypass outright.
-assertProductionStripeMode(process.env);
+// STOREFRONT — production must also refuse the Square test bypass outright,
+// and the Square environment must agree with the access token at boot.
+assertProductionSquareMode(process.env);
+assertSquareEnvironmentCoherence(process.env);
 
 // Initialize Pool using DATABASE_URL
 const { Pool } = pg;
@@ -172,7 +177,7 @@ process.on("uncaughtException", (err) => {
 const app = express();
 const PORT = 3000;
 
-// Increase payload limits for base64 uploads (images, CSVs, etc.) and attach rawBody for Stripe
+// Increase payload limits for base64 uploads (images, CSVs, etc.) and attach rawBody for Square
 app.use(express.json({ 
   limit: "50mb",
   verify: (req: any, res, buf) => {
@@ -181,7 +186,7 @@ app.use(express.json({
 }));
 
 // AR-29 rules 3/8/9 — global /api guard. Whitelist: auth login/register/
-// session/demo-login, Stripe webhooks, health. Everything else requires
+// session/demo-login, Square webhooks, health. Everything else requires
 // a live server session; req.auth / req.tenantId come only from it.
 // AR-29 step 5 — memory-mode session revalidation resolves users from the
 // server's in-memory store (used only when DATABASE_URL-less).
@@ -6404,18 +6409,27 @@ app.post("/api/send-alert", async (req, res) => {
   }
 });
 
-let stripeClient: Stripe | null = null;
-function getStripe(): Stripe {
-  if (!stripeClient) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) {
-      throw new Error("STRIPE_SECRET_KEY environment variable is required to process payments");
+let squareClient: SquareClient | null = null;
+function getSquareClient(): SquareClient {
+  if (!squareClient) {
+    const token = process.env.SQUARE_ACCESS_TOKEN?.trim();
+    if (!token) {
+      throw new Error(
+        "SQUARE_ACCESS_TOKEN environment variable is required to process payments"
+      );
     }
-    stripeClient = new Stripe(key, {
-      apiVersion: "2023-10-16" as any
+    // The SDK requires BOTH an explicit token and environment; deriving the
+    // latter through squareMode keeps them from ever disagreeing.
+    const environmentName = resolveSquareEnvironmentName(process.env);
+    squareClient = new SquareClient({
+      token,
+      environment:
+        environmentName === "sandbox"
+          ? SquareEnvironment.Sandbox
+          : SquareEnvironment.Production
     });
   }
-  return stripeClient;
+  return squareClient;
 }
 
 /* ========================================================================== */
@@ -6433,7 +6447,7 @@ function checkoutClientKey(req: any): string {
   return first || req?.ip || "unknown";
 }
 
-function stripeObjectId(value: any): string | null {
+function squareId(value: any): string | null {
   if (typeof value === "string" && value.trim()) return value.trim();
   if (value && typeof value === "object" && typeof value.id === "string") {
     return value.id;
@@ -6457,10 +6471,10 @@ function pendingCheckoutFromRow(row: any): PendingCheckoutRecord {
     password_hash: String(row.password_hash ?? ""),
     terms_accepted: row.terms_accepted === true,
     module_keys: rawModules.map((key: unknown) => String(key)),
-    stripe_subscription_id:
-      row.stripe_subscription_id == null ? null : String(row.stripe_subscription_id),
-    stripe_customer_id:
-      row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
+    square_subscription_id:
+      row.square_subscription_id == null ? null : String(row.square_subscription_id),
+    square_customer_id:
+      row.square_customer_id == null ? null : String(row.square_customer_id),
     company_id: row.company_id == null ? null : Number(row.company_id),
     admin_user_id: row.admin_user_id == null ? null : Number(row.admin_user_id),
     plant_id: row.plant_id == null ? null : Number(row.plant_id),
@@ -6505,29 +6519,29 @@ async function findPendingBySubscription(
 ): Promise<PendingCheckoutRecord | null> {
   if (pool) {
     const result = await pool.query(
-      "SELECT * FROM checkout_pending_provisioning WHERE stripe_subscription_id = $1 LIMIT 1",
+      "SELECT * FROM checkout_pending_provisioning WHERE square_subscription_id = $1 LIMIT 1",
       [subscriptionId]
     );
     return result.rows[0] ? pendingCheckoutFromRow(result.rows[0]) : null;
   }
   const row = memoryPendingCheckouts.find(
-    (entry) => entry.stripe_subscription_id === subscriptionId
+    (entry) => entry.square_subscription_id === subscriptionId
   );
   return row ? pendingCheckoutFromRow(row) : null;
 }
 
-async function stampPendingCheckoutStripe(
+async function stampPendingCheckoutSquare(
   pending: PendingCheckoutRecord,
   subscriptionId: string | null,
   customerId: string | null
 ): Promise<void> {
-  pending.stripe_subscription_id = subscriptionId ?? pending.stripe_subscription_id;
-  pending.stripe_customer_id = customerId ?? pending.stripe_customer_id;
+  pending.square_subscription_id = subscriptionId ?? pending.square_subscription_id;
+  pending.square_customer_id = customerId ?? pending.square_customer_id;
   if (pool) {
     await pool.query(
       `UPDATE checkout_pending_provisioning
-          SET stripe_subscription_id = COALESCE($2, stripe_subscription_id),
-              stripe_customer_id = COALESCE($3, stripe_customer_id),
+          SET square_subscription_id = COALESCE($2, square_subscription_id),
+              square_customer_id = COALESCE($3, square_customer_id),
               updated_at = NOW()
         WHERE checkout_session_id = $1`,
       [pending.checkout_session_id, subscriptionId, customerId]
@@ -6538,8 +6552,8 @@ async function stampPendingCheckoutStripe(
     (entry) => entry.checkout_session_id === pending.checkout_session_id
   );
   if (row) {
-    row.stripe_subscription_id = pending.stripe_subscription_id;
-    row.stripe_customer_id = pending.stripe_customer_id;
+    row.square_subscription_id = pending.square_subscription_id;
+    row.square_customer_id = pending.square_customer_id;
   }
 }
 
@@ -6641,7 +6655,7 @@ function provisionPendingCheckoutInMemory(
     );
     if (existing) {
       existing.status = "active";
-      if (linkedSubscription) existing.stripe_subscription_id = linkedSubscription;
+      if (linkedSubscription) existing.square_subscription_id = linkedSubscription;
       existing.updated_at = new Date();
     } else {
       memoryEntitlements.push({
@@ -6649,7 +6663,7 @@ function provisionPendingCheckoutInMemory(
         company_id: companyId,
         module_key: moduleKey,
         status: "active",
-        stripe_subscription_id: linkedSubscription,
+        square_subscription_id: linkedSubscription,
         created_at: new Date(),
         updated_at: new Date()
       });
@@ -6657,8 +6671,8 @@ function provisionPendingCheckoutInMemory(
   });
 
   pending.status = "provisioned";
-  pending.stripe_subscription_id =
-    subscriptionId ?? pending.stripe_subscription_id;
+  pending.square_subscription_id =
+    subscriptionId ?? pending.square_subscription_id;
   const row = memoryPendingCheckouts.find(
     (entry) => entry.checkout_session_id === pending.checkout_session_id
   );
@@ -6693,7 +6707,7 @@ async function provisionPendingCheckout(
 async function isWebhookEventProcessed(eventId: string): Promise<boolean> {
   if (pool) {
     const result = await pool.query(
-      "SELECT 1 FROM stripe_webhook_events WHERE event_id = $1 LIMIT 1",
+      "SELECT 1 FROM square_webhook_events WHERE event_id = $1 LIMIT 1",
       [eventId]
     );
     return result.rows.length > 0;
@@ -6707,7 +6721,7 @@ async function markWebhookEventProcessed(
 ): Promise<void> {
   if (pool) {
     await pool.query(
-      `INSERT INTO stripe_webhook_events (event_id, event_type)
+      `INSERT INTO square_webhook_events (event_id, event_type)
        VALUES ($1, $2)
        ON CONFLICT (event_id) DO NOTHING`,
       [eventId, eventType]
@@ -6715,6 +6729,46 @@ async function markWebhookEventProcessed(
     return;
   }
   memoryProcessedWebhookEvents.add(eventId);
+}
+
+/**
+ * Trust guard: the amount a buyer sees must be the amount Square charges.
+ * The storefront/catalog display static price_cents; checkout charges the
+ * configured Square catalog variation. Fetch those variations and refuse the
+ * checkout loudly if any variation amount differs from the displayed amount.
+ */
+async function assertSquareCatalogPriceParity(
+  square: SquareClient,
+  entries: { name: string; price_cents: number; square_variation_id: string }[]
+): Promise<void> {
+  if (entries.length === 0) return;
+  const response = await square.catalog.batchGet({
+    objectIds: entries.map((entry) => entry.square_variation_id)
+  });
+  if (response.errors?.length) {
+    throw new Error(
+      `Square catalog lookup failed: ${response.errors
+        .map((error) => error.detail || error.code || "unknown error")
+        .join("; ")}`
+    );
+  }
+  const objects = (response.objects ?? []) as any[];
+  const byId = new Map(objects.map((object) => [String(object.id), object]));
+  for (const entry of entries) {
+    const object = byId.get(entry.square_variation_id);
+    const rawAmount = object?.itemVariationData?.priceMoney?.amount;
+    const chargedCents = rawAmount == null ? null : Number(rawAmount);
+    if (chargedCents == null) {
+      throw new Error(
+        `Square variation ${entry.square_variation_id} for "${entry.name}" has no fixed price; refusing checkout.`
+      );
+    }
+    if (chargedCents !== entry.price_cents) {
+      throw new Error(
+        `Price parity failure for "${entry.name}": Storefront displays ${entry.price_cents} cents but Square variation ${entry.square_variation_id} charges ${chargedCents} cents. Refusing checkout.`
+      );
+    }
+  }
 }
 
 // GET /api/catalog — PUBLIC. Static module list + display prices.
@@ -6798,7 +6852,7 @@ app.post("/api/checkout/create", async (req, res) => {
     const checkoutRef = crypto.randomBytes(12).toString("hex");
     const origin =
       req.headers.origin || process.env.APP_URL || "http://localhost:3000";
-    const testMode = isStripeTestMode(process.env);
+    const testMode = isSquareTestMode(process.env);
 
     let sessionId: string;
     let sessionUrl: string | null;
@@ -6808,34 +6862,53 @@ app.post("/api/checkout/create", async (req, res) => {
       sessionUrl = mock.url;
     } else {
       const catalog = getModuleCatalog(process.env);
-      const lineItems = moduleKeys.map((moduleKey) => {
+      const selectedEntries = moduleKeys.map((moduleKey) => {
         const entry = catalog.find((item) => item.key === moduleKey);
-        if (!entry?.stripe_price_id) {
+        if (!entry?.square_variation_id) {
           throw new Error(
-            `Stripe price is not configured for the "${moduleKey}" module.`
+            `Square catalog variation is not configured for the "${moduleKey}" module.`
           );
         }
-        return { price: entry.stripe_price_id, quantity: 1 };
+        return {
+          name: entry.name,
+          price_cents: entry.price_cents,
+          square_variation_id: entry.square_variation_id
+        };
       });
-      const stripe = getStripe();
-      const session = await stripe.checkout.sessions.create({
-        payment_method_types: ["card"],
-        line_items: lineItems,
-        mode: "subscription",
-        success_url: `${origin}/storefront?checkout=success&checkout_session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${origin}/storefront?checkout=cancel`,
-        client_reference_id: checkoutRef,
-        metadata: {
-          checkout_ref: checkoutRef,
-          module_keys: moduleKeys.join(",")
-        }
+      const lineItems = selectedEntries.map((entry) => ({
+        name: entry.name,
+        quantity: "1",
+        catalogObjectId: entry.square_variation_id
+      }));
+      const locationId = process.env.SQUARE_LOCATION_ID?.trim();
+      if (!locationId) {
+        throw new Error(
+          "SQUARE_LOCATION_ID environment variable is required to create checkout links."
+        );
+      }
+      const square = getSquareClient();
+      await assertSquareCatalogPriceParity(square, selectedEntries);
+      const created = await square.checkout.paymentLinks.create({
+        idempotencyKey: checkoutRef,
+        description: `Spectra CM modules: ${moduleKeys.join(", ")}`,
+        order: {
+          locationId,
+          referenceId: checkoutRef,
+          lineItems
+        },
+        checkoutOptions: {
+          redirectUrl: `${origin}/storefront?checkout=success`,
+          askForShippingAddress: false
+        },
+        ...(email ? { prePopulatedData: { buyerEmail: email } } : {}),
+        paymentNote: `checkout_ref=${checkoutRef}`
       });
-      sessionId = session.id;
-      sessionUrl = session.url;
+      sessionId = String(created.paymentLink?.id || "");
+      sessionUrl = created.paymentLink?.url ?? null;
     }
 
     if (!sessionId) {
-      throw new Error("Stripe did not return a checkout session id.");
+      throw new Error("Square did not return a payment link id.");
     }
 
     const passwordHash = await bcryptHashPassword(password);
@@ -6867,8 +6940,8 @@ app.post("/api/checkout/create", async (req, res) => {
         password_hash: passwordHash,
         terms_accepted: true,
         module_keys: moduleKeys,
-        stripe_subscription_id: null,
-        stripe_customer_id: null,
+        square_subscription_id: null,
+        square_customer_id: null,
         company_id: null,
         admin_user_id: null,
         plant_id: null,
@@ -6880,6 +6953,7 @@ app.post("/api/checkout/create", async (req, res) => {
 
     return res.status(201).json({
       checkout_session_id: sessionId,
+      checkout_ref: checkoutRef,
       url: sessionUrl,
       modules: moduleKeys
     });
@@ -6891,41 +6965,109 @@ app.post("/api/checkout/create", async (req, res) => {
   }
 });
 
-// POST /api/stripe/webhook — PUBLIC only in the sense that Stripe cannot carry
-// a session cookie. Authenticity is the signature (or the strictly gated test
-// bypass). Provisioning reads the server-held mapping, never client fields.
-app.post("/api/stripe/webhook", async (req: any, res) => {
-  const signatureHeader = req.headers["stripe-signature"];
-  const signature =
-    typeof signatureHeader === "string" ? signatureHeader : undefined;
-  const secret = process.env.STRIPE_WEBHOOK_SECRET?.trim() || undefined;
-  const testMode = isStripeTestMode(process.env);
+function entitlementStatusForSquareSubscription(
+  rawStatus: unknown
+): "active" | "expired" | "canceled" {
+  const status = String(rawStatus || "").toUpperCase();
+  if (status === "CANCELED" || status === "DEACTIVATED") return "canceled";
+  if (status === "PAUSED") return "expired";
+  return "active";
+}
 
-  let stripe: Stripe | null = null;
-  if (!testMode) {
-    try {
-      stripe = getStripe();
-    } catch (error: any) {
-      console.error("[stripe/webhook] Stripe not configured:", error?.message);
-      return res.status(500).send("Stripe not configured.");
+async function applySquareSubscriptionStatus(
+  subscriptionId: string | null,
+  rawStatus: unknown
+): Promise<void> {
+  if (!subscriptionId) return;
+  const status = entitlementStatusForSquareSubscription(rawStatus);
+  if (pool) {
+    await pool.query(
+      "UPDATE tenant_entitlements SET status = $1, updated_at = NOW() WHERE square_subscription_id = $2",
+      [status, subscriptionId]
+    );
+    await pool.query(
+      "UPDATE companies SET subscription_status = $1 WHERE square_subscription_id = $2",
+      [status, subscriptionId]
+    );
+    return;
+  }
+  for (const entry of memoryEntitlements) {
+    if (entry.square_subscription_id === subscriptionId) {
+      entry.status = status;
+      entry.updated_at = new Date();
     }
   }
+  for (const company of memoryCompanies) {
+    if (company.square_subscription_id === subscriptionId) {
+      company.subscription_status = status;
+    }
+  }
+}
+
+async function findPendingForSquarePayment(
+  payment: any,
+  eventObjectId?: string
+): Promise<PendingCheckoutRecord | null> {
+  const reference =
+    typeof payment?.referenceId === "string" ? payment.referenceId.trim() : "";
+  if (reference) {
+    const byRef = await findPendingByRef(reference);
+    if (byRef) return byRef;
+  }
+  const paymentId =
+    typeof payment?.id === "string" ? payment.id.trim() : "";
+  if (paymentId) {
+    const byPayment = await findPendingBySession(paymentId);
+    if (byPayment) return byPayment;
+  }
+  const objectId = String(eventObjectId || "").trim();
+  if (objectId) {
+    const byObject = await findPendingBySession(objectId);
+    if (byObject) return byObject;
+  }
+  // Payment Links attach the checkout_ref to the ORDER reference_id. If the
+  // payment event does not echo it, retrieve the server-created order (never a
+  // client field) to resolve the same mapping.
+  const orderId =
+    typeof payment?.orderId === "string" ? payment.orderId.trim() : "";
+  if (orderId && !isSquareTestMode(process.env)) {
+    const orderResponse = await getSquareClient().orders.get({ orderId });
+    const orderReference =
+      orderResponse.order?.referenceId ||
+      orderResponse.order?.metadata?.checkout_ref;
+    if (orderReference) {
+      return findPendingByRef(String(orderReference));
+    }
+  }
+  return null;
+}
+
+// POST /api/square/webhook — PUBLIC only in the sense that Square cannot carry
+// a session cookie. Authenticity is the official HMAC-SHA256 signature over
+// notification_url + raw_body (or the strictly gated test bypass).
+// Provisioning reads the server-held mapping, never client fields.
+app.post("/api/square/webhook", async (req: any, res) => {
+  const signatureHeader = req.headers[SQUARE_SIGNATURE_HEADER];
+  const signature =
+    typeof signatureHeader === "string" ? signatureHeader : undefined;
+  const secret =
+    process.env.SQUARE_WEBHOOK_SIGNATURE_SECRET?.trim() || undefined;
+  const notificationUrl =
+    process.env.SQUARE_WEBHOOK_NOTIFICATION_URL?.trim() || undefined;
+  const testMode = isSquareTestMode(process.env);
 
   let event: any;
   try {
-    event = resolveStripeWebhookEvent({
+    event = await resolveSquareWebhookEvent({
       isTestMode: testMode,
       rawBody: req.rawBody,
       signature,
       secret,
-      parsedBody: req.body,
-      constructEvent: (rawBody, sig, webhookSecret) => {
-        if (!stripe) throw new Error("Stripe is not configured.");
-        return stripe.webhooks.constructEvent(rawBody as Buffer, sig, webhookSecret);
-      }
+      notificationUrl,
+      parsedBody: req.body
     });
   } catch (error: any) {
-    console.error("[stripe/webhook] signature verification failed:", error?.message);
+    console.error("[square/webhook] signature verification failed:", error?.message);
     return res.status(400).send(`Webhook Error: ${error?.message || "invalid signature"}`);
   }
 
@@ -6935,8 +7077,9 @@ app.post("/api/stripe/webhook", async (req: any, res) => {
 
   const eventType = String(event.type || "");
   const eventObject = event.data?.object || {};
+  const subject = eventObject.payment || eventObject.subscription || eventObject;
   const eventId = String(
-    event.id || `${eventType}:${eventObject.id || "unknown"}`
+    event.event_id || `${eventType}:${subject?.id || "unknown"}`
   );
 
   try {
@@ -6946,41 +7089,51 @@ app.post("/api/stripe/webhook", async (req: any, res) => {
 
     let provisioned: any = null;
 
-    if (eventType === "checkout.session.completed") {
-      const checkoutSessionId =
-        typeof eventObject.id === "string" ? eventObject.id : "";
-      const subscriptionId = stripeObjectId(eventObject.subscription);
-      const customerId = stripeObjectId(eventObject.customer);
-
-      let pending = checkoutSessionId
-        ? await findPendingBySession(checkoutSessionId)
-        : null;
-      if (!pending && typeof eventObject.metadata?.checkout_ref === "string") {
-        pending = await findPendingByRef(eventObject.metadata.checkout_ref);
-      }
-      if (pending) {
-        await stampPendingCheckoutStripe(pending, subscriptionId, customerId);
-        provisioned = await provisionPendingCheckout(
-          pending,
-          subscriptionId,
-          customerId
+    if (eventType === "payment.created" || eventType === "payment.updated") {
+      const payment = subject;
+      const paymentStatus = String(payment?.status || "").toUpperCase();
+      if (paymentStatus === "COMPLETED" || testMode) {
+        const pending = await findPendingForSquarePayment(
+          payment,
+          typeof eventObject.id === "string" ? eventObject.id : undefined
         );
+        if (pending) {
+          const subscriptionId = squareId(payment?.subscriptionId);
+          const customerId = squareId(payment?.customerId);
+          await stampPendingCheckoutSquare(pending, subscriptionId, customerId);
+          provisioned = await provisionPendingCheckout(
+            pending,
+            subscriptionId,
+            customerId
+          );
+        }
       }
-    } else if (eventType === "invoice.paid") {
-      const subscriptionId =
-        stripeObjectId(eventObject.subscription) ||
-        stripeObjectId(eventObject.parent?.subscription_details?.subscription);
-      const customerId = stripeObjectId(eventObject.customer);
-
-      const pending = subscriptionId
-        ? await findPendingBySubscription(subscriptionId)
-        : null;
-      if (pending) {
-        await stampPendingCheckoutStripe(pending, subscriptionId, customerId);
-        provisioned = await provisionPendingCheckout(
-          pending,
+    } else if (
+      eventType === "subscription.created" ||
+      eventType === "subscription.updated"
+    ) {
+      const subscription = subject;
+      const subscriptionId = squareId(subscription?.id);
+      const subscriptionCustomerId = squareId(subscription?.customerId);
+      if (subscriptionId) {
+        // A subscription-created event can complete a checkout that carried a
+        // server-held pending mapping (e.g. a Square subscription plan link).
+        const pending = await findPendingBySubscription(subscriptionId);
+        if (pending) {
+          await stampPendingCheckoutSquare(
+            pending,
+            subscriptionId,
+            subscriptionCustomerId
+          );
+          provisioned = await provisionPendingCheckout(
+            pending,
+            subscriptionId,
+            subscriptionCustomerId
+          );
+        }
+        await applySquareSubscriptionStatus(
           subscriptionId,
-          customerId
+          subscription?.status
         );
       }
     }
@@ -6998,7 +7151,7 @@ app.post("/api/stripe/webhook", async (req: any, res) => {
         : {})
     });
   } catch (error: any) {
-    console.error("[stripe/webhook] handler failed:", error);
+    console.error("[square/webhook] handler failed:", error);
     return res.status(500).json({
       error: error?.message || "Webhook handling failed"
     });
@@ -7028,7 +7181,7 @@ app.get("/api/entitlements", async (req, res) => {
           company_id: entry.company_id,
           module_key: entry.module_key,
           status: entry.status,
-          stripe_subscription_id: entry.stripe_subscription_id ?? null
+          square_subscription_id: entry.square_subscription_id ?? null
         }));
     }
     return res.json({
@@ -7042,59 +7195,127 @@ app.get("/api/entitlements", async (req, res) => {
   }
 });
 
-// STRIPE PAYMENT INTEGRATION ENDPOINTS
+// SQUARE PAYMENT INTEGRATION ENDPOINTS
+function squarePlanMap(): Record<string, string> {
+  return {
+    [process.env.SQUARE_PLAN_STARTER || "square_plan_starter"]: "vibration_only",
+    [process.env.SQUARE_PLAN_PROFESSIONAL || "square_plan_professional"]: "vibration_ir",
+    [process.env.SQUARE_PLAN_ENTERPRISE || "square_plan_enterprise"]: "full_suite"
+  };
+}
+
+function planForSquareVariation(variationId: string | null | undefined): string {
+  if (!variationId) return "vibration_only";
+  return squarePlanMap()[variationId] || "vibration_only";
+}
+
+function knownSquareVariationIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of getModuleCatalog(process.env)) {
+    if (entry.square_variation_id) ids.add(entry.square_variation_id);
+  }
+  for (const id of Object.keys(squarePlanMap())) {
+    if (id && !/^square_plan_/.test(id)) ids.add(id);
+  }
+  if (process.env.SQUARE_PLAN_STARTER) ids.add(process.env.SQUARE_PLAN_STARTER);
+  if (process.env.SQUARE_PLAN_PROFESSIONAL) ids.add(process.env.SQUARE_PLAN_PROFESSIONAL);
+  if (process.env.SQUARE_PLAN_ENTERPRISE) ids.add(process.env.SQUARE_PLAN_ENTERPRISE);
+  return ids;
+}
+
+async function applyCompanySquarePlan(
+  companyId: number,
+  plan: string,
+  customerId: string | null,
+  subscriptionId: string | null,
+  status: string,
+  nextBillingDate: Date | null
+): Promise<void> {
+  if (pool) {
+    await pool.query(
+      `UPDATE companies
+          SET subscription_plan = $1,
+              square_customer_id = COALESCE($2, square_customer_id),
+              square_subscription_id = COALESCE($3, square_subscription_id),
+              subscription_status = $4,
+              next_billing_date = $5
+        WHERE id = $6`,
+      [plan, customerId, subscriptionId, status, nextBillingDate, companyId]
+    );
+    return;
+  }
+  const comp = memoryCompanies.find((c) => c.id === companyId);
+  if (comp) {
+    comp.subscription_plan = plan;
+    if (customerId) comp.square_customer_id = customerId;
+    if (subscriptionId) comp.square_subscription_id = subscriptionId;
+    comp.subscription_status = status;
+    comp.next_billing_date = nextBillingDate;
+  }
+}
+
+async function findCompanyIdBySquareSubscription(
+  subscriptionId: string
+): Promise<number | null> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT id FROM companies WHERE square_subscription_id = $1 LIMIT 1",
+      [subscriptionId]
+    );
+    return result.rows.length > 0 ? Number(result.rows[0].id) : null;
+  }
+  const comp = memoryCompanies.find(
+    (c) => c.square_subscription_id === subscriptionId
+  );
+  return comp ? Number(comp.id) : null;
+}
+
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
     const { priceId } = req.body;
     // Tenant comes from the verified session; a client-supplied companyId is
     // never an authority for whose billing profile is touched.
     const companyId = requestTenantId(req);
-    if (!priceId) {
+    if (!priceId || typeof priceId !== "string") {
       return res.status(400).json({ error: "Missing required field: priceId" });
     }
     if (companyId == null) {
       return res.status(403).json({ error: "Tenant context is required" });
     }
-
-    const stripe = getStripe();
-    
-    // Check if company already has a stripe_customer_id in db
-    let customerId: string | undefined = undefined;
-    if (pool) {
-      const compRes = await pool.query("SELECT stripe_customer_id, name FROM companies WHERE id = $1", [companyId]);
-      if (compRes.rows.length > 0) {
-        customerId = compRes.rows[0].stripe_customer_id || undefined;
-      }
-    } else {
-      const comp = memoryCompanies.find(c => c.id === Number(companyId));
-      if (comp) {
-        customerId = comp.stripe_customer_id || undefined;
-      }
+    if (!knownSquareVariationIds().has(priceId)) {
+      return res.status(400).json({
+        error: "Unknown Square catalog variation for this application."
+      });
     }
 
-    const sessionConfig: Stripe.Checkout.SessionCreateParams = {
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      mode: "subscription",
-      success_url: `${req.headers.origin || "https://ai.studio/build"}/admin?checkout=success`,
-      cancel_url: `${req.headers.origin || "https://ai.studio/build"}/admin?checkout=cancel`,
-      metadata: {
-        companyId: String(companyId),
-        priceId: priceId
+    const locationId = process.env.SQUARE_LOCATION_ID?.trim();
+    if (!locationId) {
+      return res.status(500).json({
+        error: "SQUARE_LOCATION_ID is not configured."
+      });
+    }
+    const origin =
+      req.headers.origin || process.env.APP_URL || "https://ai.studio/build";
+    const referenceId = `legacy:${companyId}:${priceId}`;
+    const square = getSquareClient();
+    const created = await square.checkout.paymentLinks.create({
+      idempotencyKey: crypto.randomUUID(),
+      description: `Spectra CM plan ${priceId}`,
+      order: {
+        locationId,
+        referenceId,
+        lineItems: [{ name: "Spectra CM plan", quantity: "1", catalogObjectId: priceId }]
       },
-    };
+      checkoutOptions: {
+        redirectUrl: `${origin}/admin?checkout=success`,
+        askForShippingAddress: false
+      }
+    });
 
-    if (customerId) {
-      sessionConfig.customer = customerId;
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionConfig);
-    return res.json({ id: session.id, url: session.url });
+    return res.json({
+      id: created.paymentLink?.id,
+      url: created.paymentLink?.url
+    });
   } catch (error: any) {
     console.error("Error creating checkout session:", error);
     return res.status(500).json({ error: error.message || "Failed to create checkout session" });
@@ -7102,114 +7323,102 @@ app.post("/api/create-checkout-session", async (req, res) => {
 });
 
 app.post("/api/create-portal-session", async (req, res) => {
-  try {
-    // Tenant from the session only (same rule as the storefront checkout).
-    const companyId = requestTenantId(req);
-    if (companyId == null) {
-      return res.status(403).json({ error: "Tenant context is required" });
-    }
-
-    let customerId: string | null = null;
-    if (pool) {
-      const compRes = await pool.query("SELECT stripe_customer_id FROM companies WHERE id = $1", [companyId]);
-      if (compRes.rows.length > 0) {
-        customerId = compRes.rows[0].stripe_customer_id;
-      }
-    } else {
-      const comp = memoryCompanies.find(c => c.id === Number(companyId));
-      if (comp) {
-        customerId = comp.stripe_customer_id || null;
-      }
-    }
-
-    if (!customerId) {
-      return res.status(400).json({ error: "No Stripe billing history found for this company. Please subscribe first." });
-    }
-
-    const stripe = getStripe();
-    const session = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: `${req.headers.origin || "https://ai.studio/build"}/admin`,
-    });
-
-    return res.json({ url: session.url });
-  } catch (error: any) {
-    console.error("Error creating portal session:", error);
-    return res.status(500).json({ error: error.message || "Failed to create portal session" });
+  // Square does not expose a hosted billing portal. The tenant is
+  // still resolved from the session so this route can never target another
+  // company; management happens in the seller's Square Dashboard.
+  const companyId = requestTenantId(req);
+  if (companyId == null) {
+    return res.status(403).json({ error: "Tenant context is required" });
   }
+  return res.status(501).json({
+    error:
+      "Square does not provide a hosted billing portal. Manage this subscription in the Square Dashboard."
+  });
 });
 
 app.post("/api/webhook", async (req: any, res) => {
-  const sig = req.headers["stripe-signature"];
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
-  if (!webhookSecret) {
-    console.error("[legacy /api/webhook] STRIPE_WEBHOOK_SECRET is not configured; refusing unsigned webhook.");
-    return res.status(500).send("Webhook secret not configured.");
-  }
+  const signatureHeader = req.headers[SQUARE_SIGNATURE_HEADER];
+  const sig =
+    typeof signatureHeader === "string" ? signatureHeader : undefined;
+  const webhookSecret =
+    process.env.SQUARE_WEBHOOK_SIGNATURE_SECRET?.trim();
+  const notificationUrl =
+    process.env.SQUARE_WEBHOOK_NOTIFICATION_URL?.trim();
+  const testMode = isSquareTestMode(process.env);
 
-  let event: Stripe.Event;
-
+  let event: any;
   try {
-    const stripe = getStripe();
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
+    event = await resolveSquareWebhookEvent({
+      isTestMode: testMode,
+      rawBody: req.rawBody,
+      signature: sig,
+      secret: webhookSecret,
+      notificationUrl,
+      parsedBody: req.body
+    });
   } catch (err: any) {
-    console.error("⚠️ Webhook signature verification failed:", err.message);
+    console.error("Webhook signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  console.log(`📡 Stripe Webhook received event: ${event.type}`);
+  try {
+    const eventType = String(event?.type || "");
+    const eventObject = event?.data?.object || {};
+    const subject = eventObject.payment || eventObject.subscription || eventObject;
 
-  if (event.type === "checkout.session.completed") {
-    const session = event.data.object as Stripe.Checkout.Session;
-    const companyId = session.metadata?.companyId;
-    const priceId = session.metadata?.priceId;
-
-    console.log(`💰 checkout.session.completed received. Company: ${companyId}, PriceID: ${priceId}`);
-
-    if (companyId) {
-      let subscriptionPlan = "vibration_only";
-      if (priceId === "price_1TrGj0Qfze97pRyvtrEBSEgU") {
-        subscriptionPlan = "vibration_only";
-      } else if (priceId === "price_1TrGQ1Qfze97pRyvZGU4JOEh") {
-        subscriptionPlan = "vibration_ir";
-      } else if (priceId === "price_1TrGQmQfze97pRyvkG6xGE29") {
-        subscriptionPlan = "full_suite";
+    if (eventType === "payment.created" || eventType === "payment.updated") {
+      const payment = subject;
+      const referenceId = String(payment?.referenceId || "");
+      const match = /^legacy:(\d+):(.+)$/.exec(referenceId);
+      if (match) {
+        const companyId = Number(match[1]);
+        const priceId = match[2];
+        await applyCompanySquarePlan(
+          companyId,
+          planForSquareVariation(priceId),
+          squareId(payment?.customerId),
+          squareId(payment?.subscriptionId),
+          "active",
+          new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+        );
       }
-
-      const stripeCustomerId = typeof session.customer === "string" ? session.customer : (session.customer?.id || null);
-      const stripeSubscriptionId = typeof session.subscription === "string" ? session.subscription : (session.subscription?.id || null);
-
-      if (pool) {
-        try {
-          await pool.query(
-            `UPDATE companies 
-             SET subscription_plan = $1, 
-                 stripe_customer_id = $2, 
-                 stripe_subscription_id = $3, 
-                 subscription_status = 'active',
-                 next_billing_date = NOW() + INTERVAL '1 month'
-             WHERE id = $4`,
-            [subscriptionPlan, stripeCustomerId, stripeSubscriptionId, parseInt(companyId, 10)]
-          );
-          console.log(`✅ Updated company ID ${companyId} in Neon db to plan ${subscriptionPlan}`);
-        } catch (dbErr: any) {
-          console.error("❌ Failed to update company subscription plan in db:", dbErr.message);
-        }
-      } else {
-        const comp = memoryCompanies.find(c => c.id === parseInt(companyId, 10));
-        if (comp) {
-          comp.subscription_plan = subscriptionPlan;
-          comp.stripe_customer_id = stripeCustomerId;
-          comp.stripe_subscription_id = stripeSubscriptionId;
-          comp.subscription_status = "active";
-          comp.next_billing_date = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-          console.log(`✅ Updated company ID ${companyId} in memory to plan ${subscriptionPlan}`);
-        }
+    } else if (
+      eventType === "subscription.updated" ||
+      eventType === "subscription.created"
+    ) {
+      const subscription = subject;
+      const subscriptionId = squareId(subscription?.id);
+      const companyId = subscriptionId
+        ? await findCompanyIdBySquareSubscription(subscriptionId)
+        : null;
+      if (companyId != null) {
+        const status = String(subscription?.status || "").toUpperCase();
+        const finalStatus =
+          status === "CANCELED" || status === "DEACTIVATED"
+            ? "canceled"
+            : status === "PAUSED"
+              ? "paused"
+              : "active";
+        const plan =
+          finalStatus === "active"
+            ? planForSquareVariation(subscription?.planVariationId)
+            : "vibration_only";
+        await applyCompanySquarePlan(
+          companyId,
+          plan,
+          squareId(subscription?.customerId),
+          subscriptionId,
+          finalStatus,
+          null
+        );
       }
     }
-  }
 
-  return res.json({ received: true });
+    return res.json({ received: true });
+  } catch (err: any) {
+    console.error("Webhook handling failed:", err);
+    return res.status(500).json({ error: err.message || "Webhook handling failed" });
+  }
 });
 
 // AUTOMATED ALERT PREFERENCES & HISTORY ENDPOINTS
@@ -9994,64 +10203,6 @@ app.put("/api/companies/:id/subscription", async (req, res) => {
   }
 });
 
-// --- STRIPE PAYMENTS INTEGRATION ---
-
-let stripeInstance: Stripe | null = null;
-function getStripeInstance(): Stripe {
-  if (!stripeInstance) {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) {
-      throw new Error("STRIPE_SECRET_KEY is required but not configured.");
-    }
-    stripeInstance = new Stripe(key, {
-      apiVersion: "2025-01-27.acacia" as any,
-    });
-  }
-  return stripeInstance;
-}
-
-// Database / Memory Helpers for Stripe Status Sync
-async function updateSubscriptionInDB(
-  companyId: number,
-  customerId: string | null,
-  subscriptionId: string | null,
-  status: string | null,
-  plan: string,
-  nextBillingDate: Date | null
-) {
-  if (pool) {
-    await pool.query(
-      `UPDATE companies 
-       SET subscription_plan = $1, 
-           stripe_customer_id = $2, 
-           stripe_subscription_id = $3, 
-           subscription_status = $4, 
-           next_billing_date = $5 
-       WHERE id = $6`,
-      [plan, customerId, subscriptionId, status, nextBillingDate, companyId]
-    );
-  } else {
-    const comp = memoryCompanies.find(c => c.id === companyId);
-    if (comp) {
-      comp.subscription_plan = plan;
-      comp.stripe_customer_id = customerId;
-      comp.stripe_subscription_id = subscriptionId;
-      comp.subscription_status = status;
-      comp.next_billing_date = nextBillingDate;
-    }
-  }
-}
-
-async function getCompanyIdByCustomerId(customerId: string): Promise<number | null> {
-  if (pool) {
-    const res = await pool.query("SELECT id FROM companies WHERE stripe_customer_id = $1 LIMIT 1", [customerId]);
-    return res.rows.length > 0 ? res.rows[0].id : null;
-  } else {
-    const comp = memoryCompanies.find(c => c.stripe_customer_id === customerId);
-    return comp ? comp.id : null;
-  }
-}
-
 // GET /api/companies/:id - Fetch single company subscription and billing status
 app.get("/api/companies/:id", async (req, res) => {
   try {
@@ -10062,7 +10213,7 @@ app.get("/api/companies/:id", async (req, res) => {
     }
 
     if (pool) {
-      const result = await pool.query("SELECT id, name, subscription_plan, stripe_customer_id, stripe_subscription_id, subscription_status, next_billing_date FROM companies WHERE id = $1 LIMIT 1", [id]);
+      const result = await pool.query("SELECT id, name, subscription_plan, square_customer_id, square_subscription_id, subscription_status, next_billing_date FROM companies WHERE id = $1 LIMIT 1", [id]);
       if (result.rows.length === 0) {
         return res.status(404).json({ error: "Company not found" });
       }
@@ -10216,228 +10367,6 @@ app.delete('/api/company/users/:userId', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// POST /api/create-checkout-session - Create a Stripe checkout session
-app.post("/api/create-checkout-session", async (req, res) => {
-  try {
-    const { priceId } = req.body;
-    const companyId = requestTenantId(req);
-    if (!priceId) return res.status(400).json({ error: "Missing priceId" });
-    if (companyId == null) {
-      return res.status(403).json({ error: "Tenant context is required" });
-    }
-
-    const stripe = getStripeInstance();
-
-    let customerId: string | undefined = undefined;
-    let companyName = "Valued Customer";
-
-    if (pool) {
-      const companyRes = await pool.query(
-        "SELECT name, stripe_customer_id FROM companies WHERE id = $1 LIMIT 1",
-        [companyId]
-      );
-      if (companyRes.rows.length > 0) {
-        companyName = companyRes.rows[0].name;
-        if (companyRes.rows[0].stripe_customer_id) {
-          customerId = companyRes.rows[0].stripe_customer_id;
-        }
-      }
-    } else {
-      const comp = memoryCompanies.find(c => c.id === companyId);
-      if (comp) {
-        companyName = comp.name;
-        if (comp.stripe_customer_id) {
-          customerId = comp.stripe_customer_id;
-        }
-      }
-    }
-
-    const origin = req.headers.origin || process.env.APP_URL || "http://localhost:3000";
-
-    const sessionParams: any = {
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: priceId,
-          quantity: 1,
-        },
-      ],
-      mode: "subscription",
-      success_url: `${origin}/?tab=admin&billing_status=success`,
-      cancel_url: `${origin}/?tab=admin&billing_status=cancel`,
-      client_reference_id: companyId.toString(),
-      metadata: {
-        companyId: companyId.toString(),
-      },
-    };
-
-    if (customerId) {
-      sessionParams.customer = customerId;
-    } else {
-      sessionParams.customer_creation = "always";
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionParams);
-    return res.json({ url: session.url });
-  } catch (err: any) {
-    console.error("Error creating checkout session:", err);
-    return res.status(500).json({ error: err.message || "Failed to create checkout session" });
-  }
-});
-
-// POST /api/create-portal-session - Create a Stripe Customer Portal session
-app.post("/api/create-portal-session", async (req, res) => {
-  try {
-    const companyId = requestTenantId(req);
-    if (companyId == null) {
-      return res.status(403).json({ error: "Tenant context is required" });
-    }
-
-    let customerId: string | null = null;
-    if (pool) {
-      const companyRes = await pool.query(
-        "SELECT stripe_customer_id FROM companies WHERE id = $1 LIMIT 1",
-        [companyId]
-      );
-      if (companyRes.rows.length > 0) {
-        customerId = companyRes.rows[0].stripe_customer_id;
-      }
-    } else {
-      const comp = memoryCompanies.find(c => c.id === companyId);
-      if (comp) {
-        customerId = comp.stripe_customer_id || null;
-      }
-    }
-
-    if (!customerId) {
-      return res.status(400).json({ 
-        error: "No billing profile found for this company. Please subscribe to a plan first." 
-      });
-    }
-
-    const stripe = getStripeInstance();
-    const origin = req.headers.origin || process.env.APP_URL || "http://localhost:3000";
-
-    const portalSession = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: `${origin}/?tab=admin`,
-    });
-
-    return res.json({ url: portalSession.url });
-  } catch (err: any) {
-    console.error("Error creating billing portal session:", err);
-    return res.status(500).json({ error: err.message || "Failed to open billing portal" });
-  }
-});
-
-// POST /api/webhook - Listen for Stripe events
-app.post("/api/webhook", async (req: any, res) => {
-  const sig = req.headers["stripe-signature"];
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
-
-  if (!webhookSecret || typeof sig !== "string") {
-    console.error(
-      "[legacy /api/webhook] missing STRIPE_WEBHOOK_SECRET or stripe-signature; refusing unsigned webhook."
-    );
-    return res
-      .status(400)
-      .send("Webhook Error: a valid Stripe signature is required.");
-  }
-
-  let stripe: Stripe;
-  try {
-    stripe = getStripeInstance();
-  } catch (e: any) {
-    console.error("Stripe initialized error in webhook:", e.message);
-    return res.status(500).send("Stripe not configured.");
-  }
-
-  let event: any;
-
-  try {
-    event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
-  } catch (err: any) {
-    console.error(`Webhook signature verification failed:`, err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  try {
-    const eventType = event.type;
-    console.log(`[Stripe Webhook] Received event of type: ${eventType}`);
-
-    if (eventType === "checkout.session.completed") {
-      const session = event.data.object;
-      const companyId = parseInt(session.client_reference_id || session.metadata?.companyId, 10);
-      const customerId = session.customer as string;
-      const subscriptionId = session.subscription as string;
-
-      if (companyId) {
-        let plan = "vibration_only";
-        let nextBillingDate: Date | null = null;
-        let status = "active";
-
-        if (subscriptionId) {
-          const sub = (await stripe.subscriptions.retrieve(subscriptionId)) as any;
-          status = sub.status;
-          const priceId = sub.items?.data?.[0]?.price?.id;
-          
-          const planMapping: Record<string, string> = {
-            [process.env.STRIPE_PRICE_STARTER || "price_starter_id"]: "vibration_only",
-            [process.env.STRIPE_PRICE_PROFESSIONAL || "price_professional_id"]: "vibration_ir",
-            [process.env.STRIPE_PRICE_ENTERPRISE || "price_enterprise_id"]: "full_suite"
-          };
-          plan = planMapping[priceId] || "vibration_only";
-          nextBillingDate = new Date(sub.current_period_end * 1000);
-        }
-
-        await updateSubscriptionInDB(companyId, customerId, subscriptionId, status, plan, nextBillingDate);
-        console.log(`[Stripe Webhook] Successfully completed checkout for company ${companyId}. Assigned plan: ${plan}`);
-      }
-
-    } else if (eventType === "customer.subscription.updated") {
-      const subscription = event.data.object as any;
-      const customerId = subscription.customer as string;
-      const companyId = await getCompanyIdByCustomerId(customerId);
-
-      if (companyId) {
-        const priceId = subscription.items?.data?.[0]?.price?.id;
-        const planMapping: Record<string, string> = {
-          [process.env.STRIPE_PRICE_STARTER || "price_starter_id"]: "vibration_only",
-          [process.env.STRIPE_PRICE_PROFESSIONAL || "price_professional_id"]: "vibration_ir",
-          [process.env.STRIPE_PRICE_ENTERPRISE || "price_enterprise_id"]: "full_suite"
-        };
-        const plan = planMapping[priceId] || "vibration_only";
-        const status = subscription.status;
-        const nextBillingDate = new Date(subscription.current_period_end * 1000);
-
-        let finalPlan = plan;
-        if (status === "unpaid" || status === "canceled") {
-          finalPlan = "vibration_only";
-        }
-
-        await updateSubscriptionInDB(companyId, customerId, subscription.id, status, finalPlan, nextBillingDate);
-        console.log(`[Stripe Webhook] Successfully updated subscription for company ${companyId}. Status: ${status}, Plan: ${finalPlan}`);
-      }
-
-    } else if (eventType === "customer.subscription.deleted") {
-      const subscription = event.data.object;
-      const customerId = subscription.customer as string;
-      const companyId = await getCompanyIdByCustomerId(customerId);
-
-      if (companyId) {
-        await updateSubscriptionInDB(companyId, customerId, subscription.id, "canceled", "vibration_only", null);
-        console.log(`[Stripe Webhook] Subscription canceled for company ${companyId}. Reset to vibration_only.`);
-      }
-    }
-
-    return res.json({ received: true });
-  } catch (err: any) {
-    console.error(`[Stripe Webhook Handler Error]:`, err);
-    return res.status(500).json({ error: err.message || "Webhook handling process failed" });
-  }
-});
-
 
 // --------------------------------------------------------
 // PLANTS ENDPOINTS
@@ -13281,8 +13210,8 @@ async function initializeDatabase() {
 
     // Ensure column exists for already created tables
     await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'vibration_only';");
-    await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);");
-    await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255);");
+    await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS square_customer_id VARCHAR(255);");
+    await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS square_subscription_id VARCHAR(255);");
     await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50);");
     await pool.query("ALTER TABLE companies ADD COLUMN IF NOT EXISTS next_billing_date TIMESTAMP;");
 
@@ -13370,7 +13299,7 @@ async function initializeDatabase() {
         module_key TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active'
           CHECK (status IN ('active', 'expired', 'canceled')),
-        stripe_subscription_id TEXT UNIQUE,
+        square_subscription_id TEXT UNIQUE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (company_id, module_key)
@@ -13393,8 +13322,8 @@ async function initializeDatabase() {
         password_hash TEXT NOT NULL,
         terms_accepted BOOLEAN NOT NULL DEFAULT FALSE,
         module_keys TEXT[] NOT NULL DEFAULT '{}',
-        stripe_subscription_id TEXT UNIQUE,
-        stripe_customer_id TEXT,
+        square_subscription_id TEXT UNIQUE,
+        square_customer_id TEXT,
         company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
         admin_user_id INTEGER,
         plant_id INTEGER,
@@ -13408,7 +13337,7 @@ async function initializeDatabase() {
       "CREATE INDEX IF NOT EXISTS idx_checkout_pending_status ON checkout_pending_provisioning (status);"
     );
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+      CREATE TABLE IF NOT EXISTS square_webhook_events (
         event_id TEXT PRIMARY KEY,
         event_type TEXT,
         processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

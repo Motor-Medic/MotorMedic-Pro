@@ -241,6 +241,7 @@ let tenantB: Tenant;
 let storeTenant: Tenant;
 let storePassword: string;
 let storeCheckoutSessionId: string;
+let storeCheckoutRef: string;
 let bSystemRouteId: number;
 let bAssetId: number;
 let bComponentId: number;
@@ -308,17 +309,27 @@ beforeAll(async () => {
   });
   expect([200, 201]).toContain(checkoutRes.statusCode);
   storeCheckoutSessionId = checkoutRes.body.checkout_session_id;
+  storeCheckoutRef = checkoutRes.body.checkout_ref;
   expect(typeof storeCheckoutSessionId).toBe("string");
+  expect(typeof storeCheckoutRef).toBe("string");
 
-  const webhookRes = await callApi("POST", "/api/stripe/webhook", {
+  const webhookRes = await callApi("POST", "/api/square/webhook", {
     body: {
-      id: `evt_store_${run}`,
-      type: "checkout.session.completed",
+      event_id: `evt_store_${run}`,
+      type: "payment.created",
       data: {
         object: {
-          id: storeCheckoutSessionId,
-          subscription: `sub_store_${run}`,
-          customer: `cus_store_${run}`
+          payment: {
+            id: `pay_store_${run}`,
+            status: "COMPLETED",
+            referenceId: storeCheckoutRef,
+            subscriptionId: `sub_store_${run}`,
+            customerId: `cus_store_${run}`,
+            // Forged tenancy carried by the caller: must be ignored; the
+            // server-held checkout_ref is the only mapping authority.
+            company_id: tenantA.companyId,
+            companyId: tenantA.companyId
+          }
         }
       }
     }
@@ -790,15 +801,19 @@ describe("E3/E4 - storefront checkout provisions a NEW, isolated tenant", () => 
   });
 
   it("webhook replay is idempotent and does not create a second tenant", async () => {
-    const replay = await callApi("POST", "/api/stripe/webhook", {
+    const replay = await callApi("POST", "/api/square/webhook", {
       body: {
-        id: `evt_store_${run}`,
-        type: "checkout.session.completed",
+        event_id: `evt_store_${run}`,
+        type: "payment.created",
         data: {
           object: {
-            id: storeCheckoutSessionId,
-            subscription: `sub_store_${run}`,
-            customer: `cus_store_${run}`
+            payment: {
+              id: `pay_store_${run}`,
+              status: "COMPLETED",
+              referenceId: storeCheckoutRef,
+              subscriptionId: `sub_store_${run}`,
+              customerId: `cus_store_${run}`
+            }
           }
         }
       }

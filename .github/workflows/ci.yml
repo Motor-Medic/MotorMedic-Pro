@@ -51,4 +51,8 @@ jobs:
           LM_STUDIO_MODEL: ci-mock-model
           SCADA_PI_BASE_URL: http://localhost:0
           SCADA_PI_TOKEN: ci-mock-scada-token
-          STRIPE_SECRET_KEY: sk_test_ci_mock
+          SQUARE_ENVIRONMENT: sandbox
+          SQUARE_ACCESS_TOKEN: sandbox-ci-mock
+          SQUARE_WEBHOOK_SIGNATURE_SECRET: ci-mock-square-signature-key
+          SQUARE_WEBHOOK_NOTIFICATION_URL: https://ci.example.com/api/square/webhook
+          SQUARE_LOCATION_ID: ci-mock-square-location

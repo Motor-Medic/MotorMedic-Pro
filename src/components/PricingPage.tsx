@@ -14,9 +14,9 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
   const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null);
 
   // Fallback price IDs in case env variables aren't injected to the window
-  const priceStarter = window._env_?.STRIPE_PRICE_STARTER || "price_1TrGj0Qfze97pRyvtrEBSEgU";
-  const priceProfessional = window._env_?.STRIPE_PRICE_PROFESSIONAL || "price_1TrGQ1Qfze97pRyvZGU4JOEh";
-  const priceEnterprise = window._env_?.STRIPE_PRICE_ENTERPRISE || "price_1TrGQmQfze97pRyvkG6xGE29";
+  const priceStarter = window._env_?.SQUARE_PLAN_STARTER || "";
+  const priceProfessional = window._env_?.SQUARE_PLAN_PROFESSIONAL || "";
+  const priceEnterprise = window._env_?.SQUARE_PLAN_ENTERPRISE || "";
 
   const tiers = [
     {
@@ -78,20 +78,20 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ priceId, companyId }),
+        body: JSON.stringify({ priceId }),
       });
 
       const data = await response.json();
 
       if (!response.ok || !data.url) {
-        throw new Error(data.error || "Failed to create Stripe Checkout session");
+        throw new Error(data.error || "Failed to create Square checkout session");
       }
 
-      // Redirect to Stripe Checkout
+      // Redirect to Square hosted checkout
       window.location.href = data.url;
     } catch (error: any) {
-      console.error("Stripe subscription redirect error:", error);
-      showToast(error.message || "Failed to redirect to billing page. Check Stripe setup.", "error");
+      console.error("Square subscription redirect error:", error);
+      showToast(error.message || "Failed to redirect to billing page. Check Square setup.", "error");
     } finally {
       setLoadingPriceId(null);
     }
@@ -194,7 +194,7 @@ export default function PricingPage({ companyId, currentPlan, onSuccess }: Prici
       <div className="bg-slate-900/10 border border-slate-900 rounded-2xl p-4 flex gap-3 text-[11px] text-slate-500 leading-normal">
         <AlertCircle className="w-4.5 h-4.5 text-yellow-400 shrink-0 mt-0.5" />
         <p>
-          You are currently in **Stripe Test Mode**. All payments are simulated. Use any of Stripe's official credit cards (e.g. `4242 4242 4242 4242` with any expiry in the future and any CVV) to test the completed checkout process.
+          You are currently in **Square Sandbox Mode**. All payments are simulated. Use a Square sandbox test card (e.g. `4111 1111 1111 1111` with any future expiry and any CVV) to test the completed checkout process.
         </p>
       </div>
     </div>

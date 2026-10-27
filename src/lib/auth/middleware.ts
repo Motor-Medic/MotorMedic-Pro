@@ -3,7 +3,7 @@
  * auto-stamping.
  *
  * requireAuth is mounted once for the whole /api surface with a tight
- * public whitelist (login | register | session | stripe-webhook |
+ * public whitelist (login | register | session | square-webhook |
  * health). Every other API request must present a live session cookie;
  * the structured role and tenant_id come from the verified server
  * session only. Client-supplied tenant_id / role / user_id fields are
@@ -27,10 +27,10 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/auth/register",
   "/auth/session",
   "/auth/demo-login", // handler itself hard-blocks production + unseeded envs
-  "/webhook", // Stripe signature-verified webhooks
+  "/webhook", // Square signature-verified webhooks
   "/catalog", // STOREFRONT — static module list + prices
   "/checkout/create", // STOREFRONT — auth-less, rate-limited, no client company_id
-  "/stripe/webhook", // STOREFRONT — signature-verified (test bypass gated)
+  "/square/webhook", // STOREFRONT - signature-verified (test bypass gated)
   "/health",
 ]);
 
@@ -132,7 +132,7 @@ export function stripClientTenancyFields(req: Request): void {
 
 /**
  * Global /api guard. Whitelist: auth login/register/session/demo-login,
- * Stripe webhooks, health. Everything else requires a live session;
+ * Square webhooks, health. Everything else requires a live session;
  * the structured role and tenant_id are attached to req.auth / req.tenantId.
  */
 export function createApiAuthGuard(pool: () => Pool | null) {

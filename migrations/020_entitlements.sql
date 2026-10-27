@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS tenant_entitlements (
   module_key TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active', 'expired', 'canceled')),
-  stripe_subscription_id TEXT UNIQUE,
+  square_subscription_id TEXT UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (company_id, module_key)
@@ -26,9 +26,9 @@ CREATE INDEX IF NOT EXISTS idx_tenant_entitlements_status
 
 -- Server-held checkout mapping. The browser never supplies a company_id:
 -- checkout/create writes the chosen modules + generated account placeholder
--- here, keyed by the Stripe Checkout Session id, and the webhook reads it
--- back to provision the NEW tenant. checkout_ref is the value carried in
--- Stripe metadata / client_reference_id so a retried session is resolvable.
+-- here, keyed by the Square payment-link id, and the webhook reads it
+-- back to provision the NEW tenant. checkout_ref is the value carried in the
+-- Square order reference_id so a retried payment is resolvable.
 CREATE TABLE IF NOT EXISTS checkout_pending_provisioning (
   id SERIAL PRIMARY KEY,
   checkout_session_id TEXT NOT NULL UNIQUE,
@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS checkout_pending_provisioning (
   password_hash TEXT NOT NULL,
   terms_accepted BOOLEAN NOT NULL DEFAULT FALSE,
   module_keys TEXT[] NOT NULL DEFAULT '{}',
-  stripe_subscription_id TEXT UNIQUE,
-  stripe_customer_id TEXT,
+  square_subscription_id TEXT UNIQUE,
+  square_customer_id TEXT,
   company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
   admin_user_id INTEGER,
   plant_id INTEGER,
@@ -54,8 +54,8 @@ CREATE INDEX IF NOT EXISTS idx_checkout_pending_status
   ON checkout_pending_provisioning (status);
 
 -- Webhook replay memory. Inserted only after a handler completes, so a
--- transient failure still lets Stripe retry the same event.
-CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+-- transient failure still lets Square retry the same event.
+CREATE TABLE IF NOT EXISTS square_webhook_events (
   event_id TEXT PRIMARY KEY,
   event_type TEXT,
   processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

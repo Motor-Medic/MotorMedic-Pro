@@ -4,7 +4,7 @@
  * A visitor selects catalog modules, creates the account credentials that
  * will own the new tenant, accepts the existing Terms/Privacy documents, and
  * pays. There is no login wall before payment. The success return shows the
- * honest "setting up your plant" state while the Stripe webhook provisions,
+ * honest "setting up your plant" state while the Square webhook provisions,
  * then signs the new admin in (using the credentials captured below) and
  * lands on their own empty Equipment DB.
  */
@@ -33,7 +33,7 @@ interface CatalogModule {
   description: string;
   price_cents: number;
   currency: string;
-  stripe_price_id: string | null;
+  square_variation_id: string | null;
   configured: boolean;
 }
 
@@ -504,7 +504,7 @@ export default function Storefront({
               </button>
               <p className="flex items-center gap-1.5 text-[10px] text-slate-500 leading-normal">
                 <Shield className="h-3 w-3 shrink-0" />
-                Payment is handled on Stripe&apos;s hosted checkout. No company is
+                Payment is handled on Square&apos;s hosted checkout. No company is
                 created until the payment succeeds.
               </p>
             </div>

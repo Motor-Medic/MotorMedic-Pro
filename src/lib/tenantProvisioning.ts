@@ -25,8 +25,8 @@ export interface PendingCheckoutRecord {
   password_hash: string;
   terms_accepted: boolean;
   module_keys: string[];
-  stripe_subscription_id: string | null;
-  stripe_customer_id: string | null;
+  square_subscription_id: string | null;
+  square_customer_id: string | null;
   company_id: number | null;
   admin_user_id: number | null;
   plant_id: number | null;
@@ -145,7 +145,7 @@ export async function provisionTenantFromCheckout(
   const acceptedAt = pending.terms_accepted
     ? (options.now ? options.now() : new Date())
     : null;
-  const subscriptionId = options.subscriptionId ?? pending.stripe_subscription_id;
+  const subscriptionId = options.subscriptionId ?? pending.square_subscription_id;
 
   if (pending.company_id != null && pending.admin_user_id != null) {
     const existingPlant = await db.query(
@@ -194,13 +194,13 @@ export async function provisionTenantFromCheckout(
   );
 
   for (const [index, moduleKey] of modules.entries()) {
-    // The schema's stripe_subscription_id is UNIQUE, so exactly one row per
+    // The schema's square_subscription_id is UNIQUE, so exactly one row per
     // subscription carries the link; the (company_id, module_key) unique key
     // is the entitlement idempotency guard.
     const linkedSubscription = index === 0 ? subscriptionId : null;
     await db.query(
       `INSERT INTO tenant_entitlements
-         (company_id, module_key, status, stripe_subscription_id)
+         (company_id, module_key, status, square_subscription_id)
        VALUES ($1, $2, 'active', $3)
        ON CONFLICT (company_id, module_key) DO UPDATE
          SET status = 'active', updated_at = NOW()`,
@@ -212,8 +212,8 @@ export async function provisionTenantFromCheckout(
     `UPDATE checkout_pending_provisioning
         SET admin_user_id = $2,
             status = 'provisioned',
-            stripe_subscription_id = COALESCE($3, stripe_subscription_id),
-            stripe_customer_id = COALESCE($4, stripe_customer_id),
+            square_subscription_id = COALESCE($3, square_subscription_id),
+            square_customer_id = COALESCE($4, square_customer_id),
             updated_at = NOW()
       WHERE checkout_session_id = $1`,
     [pending.checkout_session_id, adminUserId, subscriptionId, options.customerId]

@@ -1,5 +1,5 @@
 /**
- * STOREFRONT — entitlement enforcement, provisioning scope, and the Stripe
+ * STOREFRONT �?" entitlement enforcement, provisioning scope, and the Square
  * mock guard. These tests run fully offline (no DATABASE_URL, no live keys).
  */
 import { readFileSync } from "node:fs";
@@ -15,10 +15,11 @@ import {
   requireModule
 } from "./entitlements";
 import {
-  assertProductionStripeMode,
-  isStripeTestMode,
-  resolveStripeWebhookEvent
-} from "./stripeMode";
+  assertProductionSquareMode,
+  isSquareTestMode,
+  resolveSquareEnvironmentName,
+  resolveSquareWebhookEvent
+} from "./squareMode";
 import { isTabEntitled, visibleTabs } from "./moduleNav";
 import {
   provisionTenantFromCheckout,
@@ -65,9 +66,9 @@ function entitlementDb(rows: Record<string, unknown>[]) {
 
 describe("E2 — entitlement reads are tenant-scoped and module-only", () => {
   const rows = [
-    { company_id: 7, module_key: "vibration", status: "active", stripe_subscription_id: null },
-    { company_id: 7, module_key: "oil", status: "expired", stripe_subscription_id: null },
-    { company_id: 8, module_key: "thermography", status: "active", stripe_subscription_id: null }
+    { company_id: 7, module_key: "vibration", status: "active", square_subscription_id: null },
+    { company_id: 7, module_key: "oil", status: "expired", square_subscription_id: null },
+    { company_id: 8, module_key: "thermography", status: "active", square_subscription_id: null }
   ];
 
   it("isModuleActive only matches THIS company's ACTIVE row", async () => {
@@ -235,8 +236,8 @@ describe("E4 — provisioning is scoped to the NEW company via the shared helper
     password_hash: "hashed-at-checkout",
     terms_accepted: true,
     module_keys: ["vibration", "oil"],
-    stripe_subscription_id: null,
-    stripe_customer_id: null,
+    square_subscription_id: null,
+    square_customer_id: null,
     company_id: null,
     admin_user_id: null,
     plant_id: null,
@@ -321,83 +322,167 @@ describe("E4 — provisioning is scoped to the NEW company via the shared helper
   });
 });
 
-describe("Stripe mock guard — impossible to activate in production", () => {
+describe("Square guard — impossible to activate in production", () => {
   it("test mode is strict: NODE_ENV=test, or the explicit flag in a non-prod boot", () => {
-    expect(isStripeTestMode({ NODE_ENV: "test" })).toBe(true);
-    expect(isStripeTestMode({ NODE_ENV: "development" })).toBe(false);
+    expect(isSquareTestMode({ NODE_ENV: "test" })).toBe(true);
+    expect(isSquareTestMode({ NODE_ENV: "development" })).toBe(false);
     expect(
-      isStripeTestMode({ NODE_ENV: "development", STRIPE_TEST_MODE: "true" })
+      isSquareTestMode({ NODE_ENV: "development", SQUARE_TEST_MODE: "true" })
     ).toBe(true);
     expect(
-      isStripeTestMode({ NODE_ENV: "production", STRIPE_TEST_MODE: "true" })
+      isSquareTestMode({ NODE_ENV: "production", SQUARE_TEST_MODE: "true" })
     ).toBe(false);
   });
 
-  it("production boot refuses STRIPE_TEST_MODE (fail-loud, DATABASE_URL-guard family)", () => {
+  it("production boot refuses SQUARE_TEST_MODE (fail-loud, DATABASE_URL-guard family)", () => {
     expect(() =>
-      assertProductionStripeMode({
+      assertProductionSquareMode({
         NODE_ENV: "production",
-        STRIPE_TEST_MODE: "true"
+        SQUARE_TEST_MODE: "true"
       })
     ).toThrow(/refusing to start in production/i);
     expect(() =>
-      assertProductionStripeMode({ NODE_ENV: "production" })
+      assertProductionSquareMode({ NODE_ENV: "production" })
     ).not.toThrow();
-    expect(serverSource).toContain("assertProductionStripeMode(process.env)");
+    expect(serverSource).toContain("assertProductionSquareMode(process.env)");
   });
 
-  it("a forged unsigned webhook is rejected when the bypass is not in test mode", () => {
-    const forged = {
-      id: "evt_forged",
-      type: "checkout.session.completed",
-      data: { object: { id: "cs_forged", subscription: "sub_forged" } }
-    };
+  it("S1b — the access token type and SQUARE_ENVIRONMENT must agree at boot", () => {
     expect(() =>
-      resolveStripeWebhookEvent({
-        isTestMode: false,
-        rawBody: Buffer.from("{}"),
-        signature: undefined,
-        secret: "whsec_real",
-        parsedBody: forged,
-        constructEvent: () => forged
+      resolveSquareEnvironmentName({
+        SQUARE_ENVIRONMENT: "production",
+        SQUARE_ACCESS_TOKEN: "sandbox-sq0atb-ci"
       })
-    ).toThrow(/signature/i);
+    ).toThrow(/mismatch/i);
 
     expect(() =>
-      resolveStripeWebhookEvent({
-        isTestMode: false,
-        rawBody: Buffer.from("{}"),
-        signature: "t=1,v1=deadbeef",
-        secret: undefined,
-        parsedBody: forged,
-        constructEvent: () => forged
+      resolveSquareEnvironmentName({
+        SQUARE_ENVIRONMENT: "sandbox",
+        SQUARE_ACCESS_TOKEN: "sq0atp-live-ci"
       })
-    ).toThrow(/STRIPE_WEBHOOK_SECRET/);
+    ).toThrow(/mismatch/i);
 
-    // The only path that accepts the raw body is the guarded test mode.
     expect(
-      resolveStripeWebhookEvent({
+      resolveSquareEnvironmentName({
+        SQUARE_ENVIRONMENT: "sandbox",
+        SQUARE_ACCESS_TOKEN: "sandbox-sq0atb-ci"
+      })
+    ).toBe("sandbox");
+    expect(
+      resolveSquareEnvironmentName({
+        SQUARE_ENVIRONMENT: "production",
+        SQUARE_ACCESS_TOKEN: "sq0atp-live-ci"
+      })
+    ).toBe("production");
+    expect(
+      resolveSquareEnvironmentName({ SQUARE_ACCESS_TOKEN: "sandbox-sq0atb-ci" })
+    ).toBe("sandbox");
+
+    // The production choke point itself refuses the incoherent pair.
+    expect(() =>
+      assertProductionSquareMode({
+        NODE_ENV: "production",
+        SQUARE_ENVIRONMENT: "sandbox",
+        SQUARE_ACCESS_TOKEN: "sq0atp-live-ci"
+      })
+    ).toThrow(/mismatch/i);
+  });
+
+  it("a forged/unsigned webhook is REJECTED outside NODE_ENV=test", async () => {
+    const forged = {
+      type: "payment.created",
+      event_id: "evt_forged",
+      data: { object: { payment: { id: "pay_forged", status: "COMPLETED" } } }
+    };
+    const base = {
+      isTestMode: false,
+      rawBody: Buffer.from("{}"),
+      secret: "signature-key",
+      notificationUrl: "https://example.com/api/square/webhook",
+      parsedBody: forged
+    };
+
+    await expect(
+      resolveSquareWebhookEvent({ ...base, signature: undefined })
+    ).rejects.toThrow(/signature/i);
+
+    await expect(
+      resolveSquareWebhookEvent({
+        ...base,
+        signature: "deadbeef",
+        secret: undefined
+      })
+    ).rejects.toThrow(/SQUARE_WEBHOOK_SIGNATURE_SECRET/);
+
+    await expect(
+      resolveSquareWebhookEvent({
+        ...base,
+        signature: "deadbeef",
+        verifySignature: async () => false
+      })
+    ).rejects.toThrow(/Invalid Square webhook signature/);
+
+    // Official scheme: HMAC-SHA256 over notification_url + raw_body.
+    const seen: Record<string, string> = {};
+    const accepted = await resolveSquareWebhookEvent({
+      ...base,
+      rawBody: Buffer.from('{"a":1}'),
+      signature: "valid-signature",
+      verifySignature: async (args) => {
+        Object.assign(seen, args);
+        return true;
+      }
+    });
+    expect(accepted).toBe(forged);
+    expect(seen.requestBody).toBe('{"a":1}');
+    expect(seen.notificationUrl).toBe(
+      "https://example.com/api/square/webhook"
+    );
+
+    // The only path that accepts an unsigned body is the guarded test mode.
+    await expect(
+      resolveSquareWebhookEvent({
         isTestMode: true,
         rawBody: undefined,
         signature: undefined,
         secret: undefined,
-        parsedBody: forged,
-        constructEvent: () => {
-          throw new Error("constructEvent must not run");
-        }
+        notificationUrl: undefined,
+        parsedBody: forged
       })
-    ).toBe(forged);
+    ).resolves.toBe(forged);
+  });
+
+  it("the Square client is constructed with explicit token + environment", () => {
+    expect(serverSource).toContain("new SquareClient({");
+    expect(serverSource).toContain("token,");
+    expect(serverSource).toContain("environment:");
+    expect(serverSource).toContain("SquareEnvironment.Sandbox");
+    expect(serverSource).toContain("SquareEnvironment.Production");
   });
 
   it("server webhook goes through the guarded resolver (no ad-hoc bypass)", () => {
-    expect(serverSource).toContain("resolveStripeWebhookEvent({");
-    expect(serverSource).toContain("isStripeTestMode(process.env)");
+    expect(serverSource).toContain("resolveSquareWebhookEvent({");
+    expect(serverSource).toContain("isSquareTestMode(process.env)");
+    expect(serverSource).toContain("assertProductionSquareMode(process.env)");
+    expect(serverSource).toContain(
+      "assertSquareEnvironmentCoherence(process.env)"
+    );
+  });
+
+  it("the billing path carries zero Stripe symbols", () => {
+    expect(serverSource).not.toMatch(/process\.env\.STRIPE_/);
+    expect(serverSource).not.toContain('from "stripe"');
+    expect(serverSource).not.toContain("new Stripe");
+    expect(serverSource).not.toContain("stripe-signature");
+    expect(serverSource).not.toContain("stripe_webhook_events");
+    expect(serverSource).not.toContain("STRIPE_WEBHOOK_SECRET");
+    expect(entitlementsSource).not.toMatch(/stripe|Stripe/);
   });
 });
 
 describe("E3 — checkout/webhook do not read a client company id", () => {
   const start = serverSource.indexOf("/* STOREFRONT (E3/E4)");
-  const end = serverSource.indexOf("// STRIPE PAYMENT INTEGRATION ENDPOINTS");
+  const end = serverSource.indexOf("// SQUARE PAYMENT INTEGRATION ENDPOINTS");
   const storefrontSlice = serverSource.slice(start, end);
 
   it("the public storefront slice is present", () => {
