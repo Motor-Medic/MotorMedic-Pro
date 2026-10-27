@@ -98,12 +98,9 @@ export async function findOrCreateTenantPlant(
       [companyId]
     );
     plant = plantRes.rows[0] ? toPlant(plantRes.rows[0]) : undefined;
-  } else {
-    const fallback = await db.query(
-      "SELECT * FROM plants ORDER BY id ASC LIMIT 1"
-    );
-    plant = fallback.rows[0] ? toPlant(fallback.rows[0]) : undefined;
   }
+  // A null company has no lineage: never borrow another tenant's first plant.
+  // Create an orphan "Main Site" instead so rows can never cross tenants.
   if (plant) return plant;
   const created = await db.query(
     `INSERT INTO plants (name, location, company_id)

@@ -1415,8 +1415,8 @@ app.post("/api/save-analysis-result", async (req, res) => {
         if (alertSev !== "HIGH") continue;
         await pool.query(
           `INSERT INTO alerts (
-             analysis_result_id, asset_id, severity, title, description
-           ) VALUES ($1,$2,$3,$4,$5)`,
+             analysis_result_id, asset_id, severity, title, description, tenant_id
+           ) VALUES ($1,$2,$3,$4,$5,$6)`,
           [
             analysis.id,
             assetId,
@@ -1427,7 +1427,8 @@ app.post("/api/save-analysis-result", async (req, res) => {
                 fault?.description ||
                 summary ||
                 `High-severity finding on ${component || assetId || "asset"}`
-            )
+            ),
+            tenantId
           ]
         );
         alertsCreated += 1;
@@ -1441,13 +1442,14 @@ app.post("/api/save-analysis-result", async (req, res) => {
       ) {
         await pool.query(
           `INSERT INTO alerts (
-             analysis_result_id, asset_id, severity, title, description
-           ) VALUES ($1,$2,'HIGH',$3,$4)`,
+             analysis_result_id, asset_id, severity, title, description, tenant_id
+           ) VALUES ($1,$2,'HIGH',$3,$4,$5)`,
           [
             analysis.id,
             assetId,
             primaryFault,
-            summary || `Critical diagnosis for ${component || assetId || "asset"}`
+            summary || `Critical diagnosis for ${component || assetId || "asset"}`,
+            tenantId
           ]
         );
         alertsCreated = 1;
@@ -1911,7 +1913,10 @@ app.get(OIL_ANALYSIS_API_PATH, async (req, res) => {
     if (!assetId) {
       return res.status(400).json({ error: "assetId is required" });
     }
-    const { samples } = await fetchOilSamplesForAsset(assetId);
+    // Tenant comes from the verified session only; the client cannot ask for
+    // another company's oil history by changing query params.
+    const tenantId = req.tenantId ?? requestTenantId(req);
+    const { samples } = await fetchOilSamplesForAsset(assetId, tenantId);
     return res.json({ success: true, samples });
   } catch (error: any) {
     console.error("[oil-analysis] GET error:", error);
@@ -1930,7 +1935,7 @@ app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
       return res.status(400).json({ error: input.error });
     }
 
-    const result = await saveOilSample(input);
+    const result = await saveOilSample(input, req.tenantId ?? requestTenantId(req));
 
     if ("error" in result) {
       return res.status(result.status).json({ error: result.error });
@@ -2364,6 +2369,9 @@ app.get("/api/alerts", async (req, res) => {
       clauses.push(`${sql} $${params.length}`);
     };
 
+    // Tenant is always the session's company; never a client query param.
+    push("tenant_id =", req.tenantId ?? -1);
+
     if (req.query.asset_id != null && String(req.query.asset_id)) {
       push("asset_id =", String(req.query.asset_id));
     }
@@ -2398,8 +2406,8 @@ app.post("/api/acknowledge-alert/:id", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `UPDATE alerts SET acknowledged = TRUE WHERE id = $1 RETURNING *`,
-      [req.params.id]
+      `UPDATE alerts SET acknowledged = TRUE WHERE id = $1 AND tenant_id = $2 RETURNING *`,
+      [req.params.id, req.tenantId ?? -1]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Alert not found." });
@@ -2417,8 +2425,8 @@ app.post("/api/alerts/:id/acknowledge", async (req, res) => {
   }
   try {
     const result = await pool.query(
-      `UPDATE alerts SET acknowledged = TRUE WHERE id = $1 RETURNING *`,
-      [req.params.id]
+      `UPDATE alerts SET acknowledged = TRUE WHERE id = $1 AND tenant_id = $2 RETURNING *`,
+      [req.params.id, req.tenantId ?? -1]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Alert not found." });
@@ -7074,6 +7082,8 @@ let memoryMeasurementPoints: any[] = [
   { id: 10, collection_point_id: 4, direction: "Radial", technology_type: "Electrical", units: "Ohms", created_at: new Date() }
 ];
 
+const memoryDemoSeedEnabled = isDevAuthSeedEnabled(process.env);
+
 let memoryAnalysisHistory: any[] = [
   {
     id: 1,
@@ -7144,6 +7154,125 @@ let memoryAnalysisHistory: any[] = [
     created_at: new Date()
   }
 ];
+
+// AR-29 rule 5 - the all-tenant demo store must never be served unless the
+// explicit dev seed gate is on (and never in production). Without it every
+// tenant collection starts honestly empty; tenants come only from signup.
+if (!memoryDemoSeedEnabled) {
+  memoryCompanies = [];
+  memoryPlants = [];
+  memoryUnits = [];
+  memoryRoutes = [];
+  memoryEquipment = [];
+  memoryAssets = memoryEquipment;
+  memoryComponents = [];
+  memoryCollectionPoints = [];
+  memoryMeasurementPoints = [];
+  memoryAnalysisHistory = [];
+}
+
+// Tenant is derived exclusively from the verified session. Query params are
+// never an authority for which tenant's data a request may read or mutate.
+function requestTenantId(req: any): number | null {
+  const raw = req?.tenantId ?? req?.auth?.tenantId ?? null;
+  if (raw == null || String(raw).trim() === "") return null;
+  const id = Number(raw);
+  return Number.isFinite(id) ? id : null;
+}
+
+function memoryTenantPlantIds(tenantId: number | null): number[] {
+  if (tenantId == null) return [];
+  return memoryPlants
+    .filter((p) => p.company_id === tenantId)
+    .map((p) => p.id);
+}
+
+function memoryTenantRouteIds(tenantId: number | null): number[] {
+  const plantIds = memoryTenantPlantIds(tenantId);
+  return memoryRoutes
+    .filter((r) => plantIds.includes(r.plant_id))
+    .map((r) => r.id);
+}
+
+function memoryTenantAssetIds(tenantId: number | null): number[] {
+  const routeIds = memoryTenantRouteIds(tenantId);
+  return memoryAssets
+    .filter((a) => routeIds.includes(a.route_id))
+    .map((a) => a.id);
+}
+
+function memoryTenantComponentIds(tenantId: number | null): number[] {
+  const assetIds = memoryTenantAssetIds(tenantId);
+  return memoryComponents
+    .filter((c) => assetIds.includes(c.asset_id) || assetIds.includes(c.equipment_id))
+    .map((c) => c.id);
+}
+
+function memoryTenantCollectionPointIds(tenantId: number | null): number[] {
+  const componentIds = memoryTenantComponentIds(tenantId);
+  return memoryCollectionPoints
+    .filter((cp) => componentIds.includes(cp.component_id))
+    .map((cp) => cp.id);
+}
+
+function memoryTenantMeasurementPointIds(tenantId: number | null): number[] {
+  const cpIds = memoryTenantCollectionPointIds(tenantId);
+  return memoryMeasurementPoints
+    .filter((mp) => cpIds.includes(mp.collection_point_id))
+    .map((mp) => mp.id);
+}
+
+// Parent ownership check for create/update mutations. A row that exists in
+// another tenant is treated exactly like a missing row (404/400, no leak).
+async function tenantOwnsRow(
+  db: any,
+  table:
+    | "plants"
+    | "routes"
+    | "assets"
+    | "components"
+    | "collection_points"
+    | "measurement_points",
+  id: number,
+  tenantId: number | null
+): Promise<boolean> {
+  if (tenantId == null) return false;
+  const sql: Record<typeof table, string> = {
+    plants:
+      "SELECT 1 FROM plants WHERE id = $1 AND company_id = $2 LIMIT 1",
+    routes:
+      `SELECT 1 FROM routes r JOIN plants pl ON pl.id = r.plant_id
+        WHERE r.id = $1 AND pl.company_id = $2 LIMIT 1`,
+    assets:
+      `SELECT 1 FROM assets a
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
+        WHERE a.id = $1 AND pl.company_id = $2 LIMIT 1`,
+    components:
+      `SELECT 1 FROM components c
+        JOIN assets a ON a.id = c.asset_id
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
+        WHERE c.id = $1 AND pl.company_id = $2 LIMIT 1`,
+    collection_points:
+      `SELECT 1 FROM collection_points cp
+        JOIN components c ON c.id = cp.component_id
+        JOIN assets a ON a.id = c.asset_id
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
+        WHERE cp.id = $1 AND pl.company_id = $2 LIMIT 1`,
+    measurement_points:
+      `SELECT 1 FROM measurement_points mp
+        JOIN collection_points cp ON cp.id = mp.collection_point_id
+        JOIN components c ON c.id = cp.component_id
+        JOIN assets a ON a.id = c.asset_id
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
+        WHERE mp.id = $1 AND pl.company_id = $2 LIMIT 1`
+  };
+  const result = await db.query(sql[table], [id, tenantId]);
+  return result.rows.length > 0;
+}
 
 // Helper to generate a unique sequential ID for memory fallback
 let nextId = 100;
@@ -7583,19 +7712,31 @@ app.get("/api/dashboard", async (req, res) => {
 
   try {
     if (!pool) {
-      return res.status(503).json({
-        error: "Database is not configured (DATABASE_URL).",
-        ...emptyPayload
+      // Memory mode must not serve the all-tenant store. Return the honest
+      // session-derived empty state instead of a 503 or global demo rows.
+      const tenantId = requestTenantId(req);
+      const tenantPlant = tenantId == null
+        ? null
+        : memoryPlants.find((p) => p.company_id === tenantId) ?? null;
+      return res.json({
+        ...emptyPayload,
+        plantName: tenantPlant ? String(tenantPlant.name) : null
       });
     }
 
-    // Extract companyId from query params
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
+    // Tenant comes from the verified session, never req.query.company_id.
+    const companyId = requestTenantId(req);
+    if (companyId == null) {
+      return res.json(emptyPayload);
+    }
 
     // 3) Plant name
     let plantName: string | null = null;
     try {
-      const plantRes = await pool.query(`SELECT name FROM plants LIMIT 1`);
+      const plantRes = await pool.query(
+        `SELECT name FROM plants WHERE company_id = $1 ORDER BY id ASC LIMIT 1`,
+        [companyId]
+      );
       plantName = plantRes.rows[0]?.name ? String(plantRes.rows[0].name) : null;
     } catch (err) {
       console.error("[dashboard] plants query failed:", err);
@@ -7604,7 +7745,14 @@ app.get("/api/dashboard", async (req, res) => {
     // Asset count
     let assetCount = 0;
     try {
-      const assetsRes = await pool.query(`SELECT COUNT(*)::int AS n FROM assets`);
+      const assetsRes = await pool.query(
+        `SELECT COUNT(*)::int AS n
+           FROM assets ast
+           LEFT JOIN routes rt ON ast.route_id = rt.id
+           LEFT JOIN plants pl ON rt.plant_id = pl.id
+          WHERE pl.company_id = $1`,
+        [companyId]
+      );
       assetCount = Number(assetsRes.rows[0]?.n) || 0;
     } catch (err) {
       console.error("[dashboard] assets count failed:", err);
@@ -7618,12 +7766,9 @@ app.get("/api/dashboard", async (req, res) => {
         FROM assets ast
         LEFT JOIN routes rt ON ast.route_id = rt.id
         LEFT JOIN plants pl ON rt.plant_id = pl.id
+        WHERE pl.company_id = $1
       `;
-      const params: any[] = [];
-      if (companyId) {
-        assetsQuery += " WHERE pl.company_id = $1";
-        params.push(companyId);
-      }
+      const params: any[] = [companyId];
       const assetsRes = await pool.query(assetsQuery, params);
       allAssets = assetsRes.rows;
     } catch (err) {
@@ -7651,7 +7796,8 @@ app.get("/api/dashboard", async (req, res) => {
       // Fallback: AVG from analysis_results if no asset scores available
       if (fleetHealthScore == null) {
         const avgRes = await pool.query(
-          `SELECT AVG(health_score)::float AS avg FROM analysis_results WHERE health_score IS NOT NULL`
+          `SELECT AVG(health_score)::float AS avg FROM analysis_results WHERE health_score IS NOT NULL AND tenant_id = $1`,
+          [companyId]
         );
         const avg = Number(avgRes.rows[0]?.avg);
         fleetHealthScore = Number.isFinite(avg) ? Math.round(avg) : null;
@@ -7668,8 +7814,9 @@ app.get("/api/dashboard", async (req, res) => {
            id, asset_id, component, health_score, primary_fault, severity,
            summary, financial_impact, recommendations, timestamp, telemetry_data
          FROM analysis_results
-         WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> ''
-         ORDER BY LOWER(TRIM(asset_id)), timestamp DESC NULLS LAST, created_at DESC`
+         WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> '' AND tenant_id = $1
+         ORDER BY LOWER(TRIM(asset_id)), timestamp DESC NULLS LAST, created_at DESC`,
+        [companyId]
       );
       latestAnalyses = latestAnalysesRes.rows;
     } catch (err) {
@@ -7694,25 +7841,30 @@ app.get("/api/dashboard", async (req, res) => {
     let liveAlarms: typeof emptyPayload.liveAlarms = [];
     try {
       const highRes = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM alerts WHERE severity = 'HIGH'`
+        `SELECT COUNT(*)::int AS n FROM alerts WHERE severity = 'HIGH' AND tenant_id = $1`,
+        [companyId]
       );
       highAlerts = Number(highRes.rows[0]?.n) || 0;
 
       const warnRes = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM alerts WHERE severity = 'MEDIUM'`
+        `SELECT COUNT(*)::int AS n FROM alerts WHERE severity = 'MEDIUM' AND tenant_id = $1`,
+        [companyId]
       );
       warningAlerts = Number(warnRes.rows[0]?.n) || 0;
 
       const unackedRes = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM alerts WHERE acknowledged IS NOT TRUE`
+        `SELECT COUNT(*)::int AS n FROM alerts WHERE acknowledged IS NOT TRUE AND tenant_id = $1`,
+        [companyId]
       );
       unacknowledgedAlerts = Number(unackedRes.rows[0]?.n) || 0;
 
       const alarmRes = await pool.query(
         `SELECT id, asset_id, severity, title, description, acknowledged, created_at
          FROM alerts
+         WHERE tenant_id = $1
          ORDER BY created_at DESC
-         LIMIT 20`
+         LIMIT 20`,
+        [companyId]
       );
       liveAlarms = alarmRes.rows.map((row) => {
         const sev = String(row.severity || "").toUpperCase();
@@ -7756,17 +7908,20 @@ app.get("/api/dashboard", async (req, res) => {
       );
       if (woExists.rows[0]?.ok) {
         const scheduledRes = await pool.query(
-          `SELECT COUNT(*)::int AS n FROM work_orders WHERE status = 'scheduled'`
+          `SELECT COUNT(*)::int AS n FROM work_orders WHERE status = 'scheduled' AND tenant_id = $1`,
+          [companyId]
         );
         scheduledWorkOrders = Number(scheduledRes.rows[0]?.n) || 0;
 
         const unassignedRes = await pool.query(
           `SELECT COUNT(*)::int AS n FROM work_orders
-           WHERE LOWER(COALESCE(status, '')) IN ('unassigned', 'new')
+           WHERE tenant_id = $1
+             AND (LOWER(COALESCE(status, '')) IN ('unassigned', 'new')
               OR (
                 assignee IS NULL
                 AND LOWER(COALESCE(status, '')) NOT IN ('closed', 'complete', 'completed', 'cancelled', 'scheduled')
-              )`
+              ))`,
+          [companyId]
         );
         unassignedWorkOrders = Number(unassignedRes.rows[0]?.n) || 0;
       }
@@ -7838,7 +7993,9 @@ app.get("/api/dashboard", async (req, res) => {
         `SELECT DISTINCT LOWER(TRIM(asset_id)) AS asset_id,
                 LOWER(TRIM(COALESCE(analysis_type, 'vibration'))) AS analysis_type
          FROM diagnosis_logs
-         WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> ''`
+         WHERE asset_id IS NOT NULL AND TRIM(asset_id) <> ''
+           AND tenant_id = $1`,
+        [companyId]
       );
       for (const row of techRes.rows) {
         const a = String(row.asset_id || "");
@@ -7906,8 +8063,10 @@ app.get("/api/dashboard", async (req, res) => {
       const recentRes = await pool.query(
         `SELECT asset_id, component, health_score, primary_fault, severity, summary, timestamp, telemetry_data
          FROM analysis_results
+         WHERE tenant_id = $1
          ORDER BY timestamp DESC NULLS LAST
-         LIMIT 8`
+         LIMIT 8`,
+        [companyId]
       );
       recentAnalyses = recentRes.rows.map((r) => ({
         assetId: r.asset_id != null ? String(r.asset_id) : null,
@@ -8080,8 +8239,8 @@ app.get('/api/trends/:assetId', async (req, res) => {
 // GET /api/dashboard/health-summary
 app.get("/api/dashboard/health-summary", async (req, res) => {
   try {
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
-    const assets = await getAssetsWithStatus(companyId);
+    const companyId = requestTenantId(req);
+    const assets = await getAssetsWithStatus(companyId ?? -1);
     
     const total = assets.length;
     const healthy = assets.filter(a => a.analysis_status === "Healthy").length;
@@ -8103,8 +8262,8 @@ app.get("/api/dashboard/health-summary", async (req, res) => {
 // GET /api/dashboard/critical-alerts
 app.get("/api/dashboard/critical-alerts", async (req, res) => {
   try {
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
-    const assets = await getAssetsWithStatus(companyId);
+    const companyId = requestTenantId(req);
+    const assets = await getAssetsWithStatus(companyId ?? -1);
     
     const alerts = assets
       .filter(a => a.severity === "Critical" || a.severity === "High")
@@ -8131,11 +8290,12 @@ app.get("/api/dashboard/critical-alerts", async (req, res) => {
 // GET /api/dashboard/fault-distribution
 app.get("/api/dashboard/fault-distribution", async (req, res) => {
   try {
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
+    const companyId = requestTenantId(req);
     let records: any[] = [];
 
     if (pool) {
-      let query = `
+      const result = await pool.query(
+        `
         SELECT ah.diagnosis_result, ah.created_at, ah.measurement_date
         FROM analysis_history ah
         JOIN measurement_points mp ON ah.measurement_point_id = mp.id
@@ -8144,19 +8304,13 @@ app.get("/api/dashboard/fault-distribution", async (req, res) => {
         JOIN assets ast ON comp.asset_id = ast.id
         LEFT JOIN routes rt ON ast.route_id = rt.id
         LEFT JOIN plants pl ON rt.plant_id = pl.id
-      `;
-      const params: any[] = [];
-      if (companyId) {
-        query += " WHERE pl.company_id = $1";
-        params.push(companyId);
-      }
-      const result = await pool.query(query, params);
+        WHERE pl.company_id = $1
+        `,
+        [companyId ?? -1]
+      );
       records = result.rows;
     } else {
-      let plants = memoryPlants;
-      if (companyId) {
-        plants = plants.filter(p => p.company_id === companyId);
-      }
+      const plants = memoryPlants.filter(p => p.company_id === companyId);
       const plantIds = plants.map(p => p.id);
       const routes = memoryRoutes.filter(r => plantIds.includes(r.plant_id));
       const routeIds = routes.map(r => r.id);
@@ -8221,16 +8375,8 @@ app.get("/api/dashboard/fault-distribution", async (req, res) => {
       }
     }
 
-    // Fallback counts for visual completeness if database records are 0
-    if (totalCount === 0) {
-      counts["Unbalance"] = 2;
-      counts["Misalignment"] = 3;
-      counts["Bearing Defects"] = 4;
-      counts["Looseness"] = 1;
-      counts["Electrical Issues"] = 1;
-      counts["Other"] = 1;
-      totalCount = 12;
-    }
+    // Honest empty state: a tenant with no analyses gets zeros, never invented
+    // global-looking distribution counts.
 
     const distribution = Object.entries(counts).map(([name, count]) => ({
       name,
@@ -8251,7 +8397,7 @@ app.get("/api/dashboard/fault-distribution", async (req, res) => {
 // GET /api/dashboard/health-trend
 app.get("/api/dashboard/health-trend", async (req, res) => {
   try {
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
+    const companyId = requestTenantId(req) ?? -1;
     
     let assets: any[] = [];
     let analyses: any[] = [];
@@ -8364,14 +8510,6 @@ app.get("/api/dashboard/health-trend", async (req, res) => {
       });
     }
 
-    const allPerfect = trendPoints.every(tp => tp.percentage === 100);
-    if (allPerfect) {
-      const mockPercentages = [82, 85, 84, 87, 86, 89, 88, 91, 90, 93, 91, 88, 87];
-      for (let idx = 0; idx < trendPoints.length; idx++) {
-        trendPoints[idx].percentage = mockPercentages[idx] || 87;
-      }
-    }
-
     return res.json(trendPoints);
   } catch (error: any) {
     console.error("GET /api/dashboard/health-trend failed:", error);
@@ -8382,7 +8520,7 @@ app.get("/api/dashboard/health-trend", async (req, res) => {
 // GET /api/dashboard/recent-activity
 app.get("/api/dashboard/recent-activity", async (req, res) => {
   try {
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
+    const companyId = requestTenantId(req) ?? -1;
     let recentRows: any[] = [];
 
     if (pool) {
@@ -8471,16 +8609,7 @@ app.get("/api/dashboard/recent-activity", async (req, res) => {
       };
     });
 
-    // Provide robust mock activity if none is available (visual completeness)
-    if (activity.length === 0) {
-      const mockActivities = [
-        { id: 901, timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000), asset_name: "Screw Compressor C-101", fault: "Bearing Defects", severity: "High", engineer_name: "S. Dufrene" },
-        { id: 902, timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000), asset_name: "Exhaust Fan EF-204", fault: "Healthy", severity: "Low", engineer_name: "System Daemon" },
-        { id: 903, timestamp: new Date(Date.now() - 48 * 60 * 60 * 1000), asset_name: "Main Water Intake Pump P-201", fault: "Misalignment", severity: "Medium", engineer_name: "J. Doe" }
-      ];
-      return res.json(mockActivities);
-    }
-
+    // Honest empty state: no invented activity rows for an empty tenant.
     return res.json(activity);
   } catch (error: any) {
     console.error("GET /api/dashboard/recent-activity failed:", error);
@@ -8491,11 +8620,12 @@ app.get("/api/dashboard/recent-activity", async (req, res) => {
 // GET /api/dashboard/roi-calculation
 app.get("/api/dashboard/roi-calculation", async (req, res) => {
   try {
-    const companyId = req.query.company_id ? parseInt(req.query.company_id as string, 10) : undefined;
+    const companyId = requestTenantId(req) ?? -1;
     
     let records: any[] = [];
     if (pool) {
-      let query = `
+      const result = await pool.query(
+        `
         SELECT ah.diagnosis_result, ah.created_at, ah.measurement_date
         FROM analysis_history ah
         JOIN measurement_points mp ON ah.measurement_point_id = mp.id
@@ -8504,19 +8634,13 @@ app.get("/api/dashboard/roi-calculation", async (req, res) => {
         JOIN assets ast ON comp.asset_id = ast.id
         LEFT JOIN routes rt ON ast.route_id = rt.id
         LEFT JOIN plants pl ON rt.plant_id = pl.id
-      `;
-      const params: any[] = [];
-      if (companyId) {
-        query += " WHERE pl.company_id = $1";
-        params.push(companyId);
-      }
-      const result = await pool.query(query, params);
+        WHERE pl.company_id = $1
+        `,
+        [companyId]
+      );
       records = result.rows;
     } else {
-      let plants = memoryPlants;
-      if (companyId) {
-        plants = plants.filter(p => p.company_id === companyId);
-      }
+      const plants = memoryPlants.filter(p => p.company_id === companyId);
       const plantIds = plants.map(p => p.id);
       const routes = memoryRoutes.filter(r => plantIds.includes(r.plant_id));
       const routeIds = routes.map(r => r.id);
@@ -8548,7 +8672,7 @@ app.get("/api/dashboard/roi-calculation", async (req, res) => {
       }
     }
 
-    const displayCriticalCount = criticalCount > 0 ? criticalCount : 6; 
+    const displayCriticalCount = criticalCount;
     const estimatedSavings = displayCriticalCount * 10000;
 
     const plannedRatio = 85; 
@@ -9057,14 +9181,21 @@ app.post("/api/auth/demo-login", async (req, res) => {
 // COMPANIES ENDPOINTS
 // --------------------------------------------------------
 
-// GET /api/companies - List all companies
+// GET /api/companies - List the session tenant's own company only
 app.get("/api/companies", async (req, res) => {
   try {
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.json([]);
+    }
     if (pool) {
-      const result = await pool.query("SELECT * FROM companies ORDER BY name ASC");
+      const result = await pool.query(
+        "SELECT * FROM companies WHERE id = $1 ORDER BY name ASC",
+        [company_id]
+      );
       return res.json(result.rows);
     } else {
-      return res.json(memoryCompanies);
+      return res.json(memoryCompanies.filter(c => c.id === company_id));
     }
   } catch (error: any) {
     console.error("GET /api/companies failed:", error);
@@ -9140,6 +9271,9 @@ app.put("/api/companies/:id/subscription", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid company ID" });
+    if (id !== requestTenantId(req)) {
+      return res.status(404).json({ error: "Company not found" });
+    }
     
     const { subscription_plan } = req.body;
     const validPlans = ['vibration_only', 'ir_only', 'vibration_ir', 'full_suite', 'custom'];
@@ -9228,6 +9362,9 @@ app.get("/api/companies/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid company ID" });
+    if (id !== requestTenantId(req)) {
+      return res.status(404).json({ error: "Company not found" });
+    }
 
     if (pool) {
       const result = await pool.query("SELECT id, name, subscription_plan, stripe_customer_id, stripe_subscription_id, subscription_status, next_billing_date FROM companies WHERE id = $1 LIMIT 1", [id]);
@@ -9605,13 +9742,9 @@ app.post("/api/webhook", async (req: any, res) => {
 // GET /api/plants/count - Get count of plants for a company
 app.get("/api/plants/count", async (req, res) => {
   try {
-    const companyIdParam = req.query.company_id || req.query.companyId;
-    if (!companyIdParam) {
-      return res.status(400).json({ error: "Missing required query parameter: company_id" });
-    }
-    const company_id = parseInt(companyIdParam as string, 10);
-    if (isNaN(company_id)) {
-      return res.status(400).json({ error: "Invalid company_id parameter" });
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.status(400).json({ error: "Tenant context is required" });
     }
 
     if (pool) {
@@ -9627,16 +9760,12 @@ app.get("/api/plants/count", async (req, res) => {
   }
 });
 
-// GET /api/plants - List all plants for a company
+// GET /api/plants - List all plants for the session tenant
 app.get("/api/plants", async (req, res) => {
   try {
-    const companyIdParam = req.query.company_id || req.query.companyId;
-    if (!companyIdParam) {
-      return res.status(400).json({ error: "Missing required query parameter: company_id" });
-    }
-    const company_id = parseInt(companyIdParam as string, 10);
-    if (isNaN(company_id)) {
-      return res.status(400).json({ error: "Invalid company_id parameter" });
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.status(400).json({ error: "Tenant context is required" });
     }
 
     if (pool) {
@@ -9652,22 +9781,26 @@ app.get("/api/plants", async (req, res) => {
   }
 });
 
-// GET /api/plants/:id - Get a single plant
+// GET /api/plants/:id - Get a single plant (tenant-scoped; cross-tenant is 404)
 app.get("/api/plants/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
       return res.status(400).json({ error: "Invalid ID parameter" });
     }
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.status(404).json({ error: "Plant not found" });
+    }
 
     if (pool) {
-      const result = await pool.query("SELECT * FROM plants WHERE id = $1", [id]);
+      const result = await pool.query("SELECT * FROM plants WHERE id = $1 AND company_id = $2", [id, company_id]);
       if (result.rows.length === 0) {
         return res.status(404).json({ error: "Plant not found" });
       }
       return res.json(result.rows[0]);
     } else {
-      const plant = memoryPlants.find(p => p.id === id);
+      const plant = memoryPlants.find(p => p.id === id && p.company_id === company_id);
       if (!plant) {
         return res.status(404).json({ error: "Plant not found" });
       }
@@ -9679,21 +9812,17 @@ app.get("/api/plants/:id", async (req, res) => {
   }
 });
 
-// POST /api/plants - Create new plant linked to a company_id
+// POST /api/plants - Create new plant for the session tenant
 app.post("/api/plants", async (req, res) => {
   try {
     const { name, location } = req.body;
-    const company_id = req.body.company_id !== undefined ? req.body.company_id : req.body.companyId;
+    const companyIdNum = requestTenantId(req);
 
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "Missing required field: name (string)" });
     }
-    if (company_id === undefined || company_id === null) {
-      return res.status(400).json({ error: "Missing required field: company_id" });
-    }
-    const companyIdNum = parseInt(company_id, 10);
-    if (isNaN(companyIdNum)) {
-      return res.status(400).json({ error: "Invalid company_id field" });
+    if (companyIdNum == null) {
+      return res.status(400).json({ error: "Tenant context is required" });
     }
 
     if (pool) {
@@ -9729,11 +9858,13 @@ app.post("/api/plants", async (req, res) => {
   }
 });
 
-// PUT /api/plants/:id - Update a plant
+// PUT /api/plants/:id - Update a plant (tenant-scoped)
 app.put("/api/plants/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const company_id = requestTenantId(req);
+    if (company_id == null) return res.status(404).json({ error: "Plant not found" });
     const { name, location } = req.body;
     if (!name || typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ error: "Missing required field: name (string)" });
@@ -9741,13 +9872,13 @@ app.put("/api/plants/:id", async (req, res) => {
 
     if (pool) {
       const result = await pool.query(
-        "UPDATE plants SET name = $1, location = $2 WHERE id = $3 RETURNING *",
-        [name.trim(), location ? location.trim() : null, id]
+        "UPDATE plants SET name = $1, location = $2 WHERE id = $3 AND company_id = $4 RETURNING *",
+        [name.trim(), location ? location.trim() : null, id, company_id]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Plant not found" });
       return res.json(result.rows[0]);
     } else {
-      const plant = memoryPlants.find(p => p.id === id);
+      const plant = memoryPlants.find(p => p.id === id && p.company_id === company_id);
       if (!plant) return res.status(404).json({ error: "Plant not found" });
       plant.name = name.trim();
       plant.location = location ? location.trim() : null;
@@ -9759,18 +9890,23 @@ app.put("/api/plants/:id", async (req, res) => {
   }
 });
 
-// DELETE /api/plants/:id - Delete a plant
+// DELETE /api/plants/:id - Delete a plant (tenant-scoped)
 app.delete("/api/plants/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
+    const company_id = requestTenantId(req);
+    if (company_id == null) return res.status(404).json({ error: "Plant not found" });
 
     if (pool) {
-      const result = await pool.query("DELETE FROM plants WHERE id = $1 RETURNING *", [id]);
+      const result = await pool.query(
+        "DELETE FROM plants WHERE id = $1 AND company_id = $2 RETURNING *",
+        [id, company_id]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Plant not found" });
       return res.json({ message: "Plant deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryPlants.findIndex(p => p.id === id);
+      const index = memoryPlants.findIndex(p => p.id === id && p.company_id === company_id);
       if (index === -1) return res.status(404).json({ error: "Plant not found" });
       const deleted = memoryPlants.splice(index, 1)[0];
       // Cascade delete routes
@@ -9787,7 +9923,7 @@ app.delete("/api/plants/:id", async (req, res) => {
 // UNITS ENDPOINTS (optional grouping above routes)
 // --------------------------------------------------------
 
-// GET /api/units?plant_id= - List units for a plant
+// GET /api/units?plant_id= - List units for a tenant-owned plant
 app.get("/api/units", async (req, res) => {
   try {
     const plantId = req.query.plant_id
@@ -9796,13 +9932,26 @@ app.get("/api/units", async (req, res) => {
     if (plantId === undefined || isNaN(plantId)) {
       return res.status(400).json({ error: "Missing or invalid query parameter: plant_id" });
     }
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.status(404).json({ error: "Plant not found" });
+    }
     if (pool) {
+      const owned = await pool.query(
+        "SELECT 1 FROM plants WHERE id = $1 AND company_id = $2 LIMIT 1",
+        [plantId, company_id]
+      );
+      if (owned.rows.length === 0) {
+        return res.status(404).json({ error: "Plant not found" });
+      }
       const result = await pool.query(
         "SELECT * FROM units WHERE plant_id = $1 ORDER BY name ASC",
         [plantId]
       );
       return res.json(result.rows);
     }
+    const plant = memoryPlants.find((p) => p.id === plantId && p.company_id === company_id);
+    if (!plant) return res.status(404).json({ error: "Plant not found" });
     return res.json(memoryUnits.filter((u) => u.plant_id === plantId));
   } catch (error: any) {
     console.error("GET /api/units failed:", error);
@@ -9822,7 +9971,7 @@ app.post("/api/units", async (req, res) => {
       return res.status(400).json({ error: "Missing required field: name (string)" });
     }
     if (pool) {
-      if (!(await parentExists(pool, "plants", pId))) {
+      if (!(await tenantOwnsRow(pool, "plants", pId, requestTenantId(req)))) {
         return res.status(400).json({ error: `Parent plant not found: ${pId}` });
       }
       const result = await pool.query(
@@ -9831,7 +9980,8 @@ app.post("/api/units", async (req, res) => {
       );
       return res.status(201).json(result.rows[0]);
     }
-    if (!memoryPlants.some((p) => p.id === pId)) {
+    const tenantId = requestTenantId(req);
+    if (!memoryPlants.some((p) => p.id === pId && p.company_id === tenantId)) {
       return res.status(400).json({ error: `Parent plant not found: ${pId}` });
     }
     const unit = { id: getNextId(), plant_id: pId, name: name.trim(), created_at: new Date() };
@@ -9854,13 +10004,20 @@ app.put("/api/units/:id", async (req, res) => {
     }
     if (pool) {
       const result = await pool.query(
-        "UPDATE units SET name = $1 WHERE id = $2 RETURNING *",
-        [name.trim(), id]
+        `UPDATE units u SET name = $1
+           FROM plants p
+          WHERE u.id = $2 AND u.plant_id = p.id AND p.company_id = $3
+          RETURNING u.*`,
+        [name.trim(), id, requestTenantId(req) ?? -1]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Unit not found" });
       return res.json(result.rows[0]);
     }
-    const unit = memoryUnits.find((u) => u.id === id);
+    const tenantId = requestTenantId(req);
+    const unit = memoryUnits.find((u) => {
+      const plant = memoryPlants.find((p) => p.id === u.plant_id);
+      return u.id === id && plant?.company_id === tenantId;
+    });
     if (!unit) return res.status(404).json({ error: "Unit not found" });
     unit.name = name.trim();
     return res.json(unit);
@@ -9876,11 +10033,21 @@ app.delete("/api/units/:id", async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
     if (pool) {
-      const result = await pool.query("DELETE FROM units WHERE id = $1 RETURNING *", [id]);
+      const result = await pool.query(
+        `DELETE FROM units u
+               USING plants p
+               WHERE u.id = $1 AND u.plant_id = p.id AND p.company_id = $2
+               RETURNING u.*`,
+        [id, requestTenantId(req) ?? -1]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Unit not found" });
       return res.json({ message: "Unit deleted successfully", deleted: result.rows[0] });
     }
-    const index = memoryUnits.findIndex((u) => u.id === id);
+    const tenantId = requestTenantId(req);
+    const index = memoryUnits.findIndex((u) => {
+      const plant = memoryPlants.find((p) => p.id === u.plant_id);
+      return u.id === id && plant?.company_id === tenantId;
+    });
     if (index === -1) return res.status(404).json({ error: "Unit not found" });
     const deleted = memoryUnits.splice(index, 1)[0];
     return res.json({ message: "Unit deleted successfully", deleted });
@@ -9894,22 +10061,35 @@ app.delete("/api/units/:id", async (req, res) => {
 // ROUTES ENDPOINTS
 // --------------------------------------------------------
 
-// GET /api/routes and GET /api/routes/:plantId - Get routes
+// GET /api/routes and GET /api/routes/:plantId - Get tenant-scoped routes
 app.get(["/api/routes", "/api/routes/:plantId"], async (req, res) => {
   try {
     const plantIdParam = req.params.plantId ? parseInt(req.params.plantId, 10) : undefined;
     const plantIdQuery = req.query.plant_id ? parseInt(req.query.plant_id as string, 10) : undefined;
     const plantId = plantIdParam || plantIdQuery;
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.json([]);
+    }
 
     if (pool) {
       if (plantId !== undefined) {
         if (isNaN(plantId)) {
           return res.status(400).json({ error: "Invalid plant ID parameter" });
         }
-        const result = await pool.query("SELECT * FROM routes WHERE plant_id = $1 ORDER BY name ASC", [plantId]);
+        if (!(await tenantOwnsRow(pool, "plants", plantId, company_id))) {
+          return res.status(404).json({ error: "Plant not found" });
+        }
+        const result = await pool.query(
+          "SELECT r.* FROM routes r JOIN plants pl ON pl.id = r.plant_id WHERE r.plant_id = $1 AND pl.company_id = $2 ORDER BY r.name ASC",
+          [plantId, company_id]
+        );
         return res.json(result.rows);
       } else {
-        const result = await pool.query("SELECT * FROM routes ORDER BY name ASC");
+        const result = await pool.query(
+          "SELECT r.* FROM routes r JOIN plants pl ON pl.id = r.plant_id WHERE pl.company_id = $1 ORDER BY r.name ASC",
+          [company_id]
+        );
         return res.json(result.rows);
       }
     } else {
@@ -9917,10 +10097,13 @@ app.get(["/api/routes", "/api/routes/:plantId"], async (req, res) => {
         if (isNaN(plantId)) {
           return res.status(400).json({ error: "Invalid plant ID parameter" });
         }
+        const plant = memoryPlants.find((p) => p.id === plantId && p.company_id === company_id);
+        if (!plant) return res.status(404).json({ error: "Plant not found" });
         const filtered = memoryRoutes.filter(r => r.plant_id === plantId);
         return res.json(filtered);
       } else {
-        return res.json(memoryRoutes);
+        const routeIds = memoryTenantRouteIds(company_id);
+        return res.json(memoryRoutes.filter(r => routeIds.includes(r.id)));
       }
     }
   } catch (error: any) {
@@ -9933,19 +10116,36 @@ app.get(["/api/routes", "/api/routes/:plantId"], async (req, res) => {
 app.get("/api/hierarchy", async (req, res) => {
   try {
     if (!pool) {
+      const tenantId = requestTenantId(req);
+      const tenantPlantIds = memoryTenantPlantIds(tenantId);
+      const tenantRouteIds = memoryTenantRouteIds(tenantId);
+      const tenantAssetIds = memoryTenantAssetIds(tenantId);
+      const tenantComponentIds = memoryTenantComponentIds(tenantId);
+      const tenantCollectionPointIds = memoryTenantCollectionPointIds(tenantId);
       return res.json({
-        plants: memoryPlants,
-        units: memoryUnits,
-        routes: memoryRoutes,
-        assets: memoryAssets,
-        components: memoryComponents,
-        collection_points: memoryCollectionPoints
+        plants: memoryPlants.filter((p) => tenantPlantIds.includes(p.id)),
+        units: memoryUnits.filter((u) => tenantPlantIds.includes(u.plant_id)),
+        routes: memoryRoutes.filter((r) => tenantRouteIds.includes(r.id)),
+        assets: memoryAssets.filter((a) => tenantAssetIds.includes(a.id)),
+        components: memoryComponents.filter((c) => tenantComponentIds.includes(c.id)),
+        collection_points: memoryCollectionPoints.filter((cp) => tenantCollectionPointIds.includes(cp.id))
       });
     }
-    const tenantId = req.tenantId ?? req.auth?.tenantId ?? null;
-    const plantsRes = tenantId == null
-      ? await pool.query("SELECT * FROM plants ORDER BY id ASC")
-      : await pool.query("SELECT * FROM plants WHERE company_id = $1 ORDER BY id ASC", [tenantId]);
+    const tenantId = req.tenantId ?? req.auth?.tenantId ?? requestTenantId(req);
+    if (tenantId == null) {
+      return res.json({
+        plants: [],
+        units: [],
+        routes: [],
+        assets: [],
+        components: [],
+        collection_points: []
+      });
+    }
+    const plantsRes = await pool.query(
+      "SELECT * FROM plants WHERE company_id = $1 ORDER BY id ASC",
+      [tenantId]
+    );
     let plants = plantsRes.rows;
     if (plants.length === 0) {
       // First-run fix: the Explorer root must always carry a real server id.
@@ -10022,18 +10222,25 @@ app.post("/api/wipe-equipment", async (req, res) => {
   }
 });
 
-// GET /api/routes/single/:id - Get single route details
+// GET /api/routes/single/:id - Get single route details (tenant-scoped)
 app.get("/api/routes/single/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid route ID" });
+    const company_id = requestTenantId(req);
+    if (company_id == null) return res.status(404).json({ error: "Route not found" });
 
     if (pool) {
-      const result = await pool.query("SELECT * FROM routes WHERE id = $1", [id]);
+      const result = await pool.query(
+        "SELECT r.* FROM routes r JOIN plants pl ON pl.id = r.plant_id WHERE r.id = $1 AND pl.company_id = $2",
+        [id, company_id]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Route not found" });
       return res.json(result.rows[0]);
     } else {
-      const route = memoryRoutes.find(r => r.id === id);
+      const route = memoryRoutes.find(
+        (r) => r.id === id && memoryTenantRouteIds(company_id).includes(r.id)
+      );
       if (!route) return res.status(404).json({ error: "Route not found" });
       return res.json(route);
     }
@@ -10064,7 +10271,8 @@ app.post("/api/routes", async (req, res) => {
     }
 
     if (pool) {
-      if (!(await parentExists(pool, "plants", pId))) {
+      const tenantId = requestTenantId(req);
+      if (!(await tenantOwnsRow(pool, "plants", pId, tenantId))) {
         return res.status(400).json({ error: `Parent plant not found: ${pId}` });
       }
       if (uId != null) {
@@ -10083,7 +10291,8 @@ app.post("/api/routes", async (req, res) => {
       );
       return res.status(201).json(result.rows[0]);
     } else {
-      if (!memoryPlants.some((p) => p.id === pId)) {
+      const tenantId = requestTenantId(req);
+      if (!memoryPlants.some((p) => p.id === pId && p.company_id === tenantId)) {
         return res.status(400).json({ error: `Parent plant not found: ${pId}` });
       }
       if (uId != null && !memoryUnits.some((u) => u.id === uId && u.plant_id === pId)) {
@@ -10119,13 +10328,19 @@ app.put("/api/routes/:id", async (req, res) => {
 
     if (pool) {
       const result = await pool.query(
-        "UPDATE routes SET name = $1, description = $2 WHERE id = $3 RETURNING *",
-        [name.trim(), description ? description.trim() : null, id]
+        `UPDATE routes r SET name = $1, description = $2
+           FROM plants pl
+          WHERE r.id = $3 AND r.plant_id = pl.id AND pl.company_id = $4
+          RETURNING r.*`,
+        [name.trim(), description ? description.trim() : null, id, requestTenantId(req) ?? -1]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Route not found" });
       return res.json(result.rows[0]);
     } else {
-      const route = memoryRoutes.find(r => r.id === id);
+      const tenantId = requestTenantId(req);
+      const route = memoryRoutes.find(
+        r => r.id === id && memoryTenantRouteIds(tenantId).includes(r.id)
+      );
       if (!route) return res.status(404).json({ error: "Route not found" });
       route.name = name.trim();
       route.description = description ? description.trim() : null;
@@ -10145,6 +10360,12 @@ app.delete("/api/routes/:id", async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
+      const tenantId = requestTenantId(req) ?? -1;
+      const owned = await pool.query(
+        "SELECT r.id FROM routes r JOIN plants pl ON pl.id = r.plant_id WHERE r.id = $1 AND pl.company_id = $2",
+        [id, tenantId]
+      );
+      if (owned.rows.length === 0) return res.status(404).json({ error: "Route not found" });
       // 1. First, delete all analysis history for measurement points under collection points of components of assets in this route.
       await pool.query(
         "DELETE FROM analysis_history WHERE measurement_point_id IN " +
@@ -10181,7 +10402,9 @@ app.delete("/api/routes/:id", async (req, res) => {
       if (result.rows.length === 0) return res.status(404).json({ error: "Route not found" });
       return res.json({ message: "Route deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryRoutes.findIndex(r => r.id === id);
+      const tenantId = requestTenantId(req);
+      const tenantRouteIds = memoryTenantRouteIds(tenantId);
+      const index = memoryRoutes.findIndex(r => r.id === id && tenantRouteIds.includes(r.id));
       if (index === -1) return res.status(404).json({ error: "Route not found" });
       const deletedRoute = memoryRoutes[index];
       
@@ -10218,22 +10441,43 @@ app.delete("/api/routes/:id", async (req, res) => {
 // ASSETS/EQUIPMENT ENDPOINTS
 // --------------------------------------------------------
 
-// GET all assets/equipment or filter by route
+// GET all assets/equipment or filter by route (tenant-scoped)
 app.get(["/api/assets", "/api/equipment", "/api/equipments", "/api/equipment/:routeId", "/api/assets/route/:routeId"], async (req, res) => {
   try {
     const routeIdParam = req.params.routeId ? parseInt(req.params.routeId, 10) : undefined;
     const routeIdQuery = req.query.route_id ? parseInt(req.query.route_id as string, 10) : undefined;
     const routeId = routeIdParam || routeIdQuery;
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.json([]);
+    }
 
     if (pool) {
       if (routeId !== undefined) {
         if (isNaN(routeId)) {
           return res.status(400).json({ error: "Invalid route ID parameter" });
         }
-        const result = await pool.query("SELECT * FROM assets WHERE route_id = $1 ORDER BY name ASC", [routeId]);
+        if (!(await tenantOwnsRow(pool, "routes", routeId, company_id))) {
+          return res.status(404).json({ error: "Route not found" });
+        }
+        const result = await pool.query(
+          `SELECT a.* FROM assets a
+             JOIN routes r ON r.id = a.route_id
+             JOIN plants pl ON pl.id = r.plant_id
+            WHERE a.route_id = $1 AND pl.company_id = $2
+            ORDER BY a.name ASC`,
+          [routeId, company_id]
+        );
         return res.json(result.rows);
       } else {
-        const result = await pool.query("SELECT * FROM assets ORDER BY name ASC");
+        const result = await pool.query(
+          `SELECT a.* FROM assets a
+             LEFT JOIN routes r ON r.id = a.route_id
+             LEFT JOIN plants pl ON pl.id = r.plant_id
+            WHERE pl.company_id = $1
+            ORDER BY a.name ASC`,
+          [company_id]
+        );
         return res.json(result.rows);
       }
     } else {
@@ -10241,10 +10485,14 @@ app.get(["/api/assets", "/api/equipment", "/api/equipments", "/api/equipment/:ro
         if (isNaN(routeId)) {
           return res.status(400).json({ error: "Invalid route ID parameter" });
         }
+        if (!memoryTenantRouteIds(company_id).includes(routeId)) {
+          return res.status(404).json({ error: "Route not found" });
+        }
         const filtered = memoryAssets.filter(e => e.route_id === routeId);
         return res.json(filtered);
       } else {
-        return res.json(memoryAssets);
+        const assetIds = memoryTenantAssetIds(company_id);
+        return res.json(memoryAssets.filter(e => assetIds.includes(e.id)));
       }
     }
   } catch (error: any) {
@@ -10253,22 +10501,34 @@ app.get(["/api/assets", "/api/equipment", "/api/equipments", "/api/equipment/:ro
   }
 });
 
-// GET single asset/equipment
+// GET single asset/equipment (tenant-scoped; cross-tenant is 404)
 app.get(["/api/assets/:id", "/api/equipment/single/:id"], async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
       return res.status(400).json({ error: "Invalid asset ID parameter" });
     }
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.status(404).json({ error: "Equipment not found" });
+    }
 
     if (pool) {
-      const result = await pool.query("SELECT * FROM assets WHERE id = $1", [id]);
+      const result = await pool.query(
+        `SELECT a.* FROM assets a
+           LEFT JOIN routes r ON r.id = a.route_id
+           LEFT JOIN plants pl ON pl.id = r.plant_id
+          WHERE a.id = $1 AND pl.company_id = $2`,
+        [id, company_id]
+      );
       if (result.rows.length === 0) {
         return res.status(404).json({ error: "Equipment not found" });
       }
       return res.json(result.rows[0]);
     } else {
-      const asset = memoryAssets.find(e => e.id === id);
+      const asset = memoryAssets.find(
+        e => e.id === id && memoryTenantAssetIds(company_id).includes(e.id)
+      );
       if (!asset) {
         return res.status(404).json({ error: "Equipment not found" });
       }
@@ -10354,16 +10614,14 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
       return res.status(400).json({ success: false, error: "Invalid payload: Missing request body.", message: "Invalid payload: Missing request body." });
     }
 
-    const { companyId, assets } = req.body;
+    const { assets } = req.body;
 
-    // Validate that req.user and req.user.company_id exist, fallback to req.body.companyId if not authenticated
-    const user = (req as any).user || (companyId ? { company_id: parseInt(companyId, 10) } : null);
-    if (!user || !user.company_id || isNaN(user.company_id)) {
-      console.error("Bulk import unauthorized or invalid company ID. parsed user:", user);
+    // Import target is the session tenant only; a body companyId is ignored.
+    const finalCompanyId = requestTenantId(req);
+    if (finalCompanyId == null) {
+      console.error("Bulk import unauthorized: no tenant in session.");
       return res.status(400).json({ success: false, error: "Unauthorized: Missing user session or company association.", message: "Unauthorized: Missing user session or company association." });
     }
-
-    const finalCompanyId = user.company_id;
 
     if (!Array.isArray(assets)) {
       console.error("Bulk import failed: assets parameter is not an array. assets received:", assets);
@@ -10441,11 +10699,11 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
             assetId = assetCheck.rows[0].id;
           } else {
             const assetInsert = await pool.query(
-              `INSERT INTO assets 
-               (route_id, name, tag_number, type, status, criticality, description) 
-               VALUES ($1, $2, $3, $4, 'Active', 'Medium', $5) 
+              `INSERT INTO assets
+               (route_id, company_id, name, tag_number, type, status, criticality, description)
+               VALUES ($1, $2, $3, $4, $5, 'Active', 'Medium', $6)
                RETURNING id`,
-              [routeId, assetName.trim(), assetTag ? assetTag.trim() : null, assetType.trim(), `Auto-imported ${assetType.trim()}`]
+              [routeId, finalCompanyId, assetName.trim(), assetTag ? assetTag.trim() : null, assetType.trim(), `Auto-imported ${assetType.trim()}`]
             );
             assetId = assetInsert.rows[0].id;
           }
@@ -10523,6 +10781,7 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
             asset = {
               id: getNextMemoryId(memoryAssets),
               route_id: routeId,
+              company_id: finalCompanyId,
               name: assetName.trim(),
               tag_number: assetTag ? assetTag.trim() : null,
               type: assetType.trim(),
@@ -10638,11 +10897,10 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       const companyIdRaw =
         req.tenantId ??
         req.auth?.tenantId ??
-        req.body.company_id ??
-        req.body.companyId;
+        null;
       const companyIdNum =
         companyIdRaw !== undefined && companyIdRaw !== null && String(companyIdRaw).trim() !== ""
-          ? parseInt(companyIdRaw, 10)
+          ? Number(companyIdRaw)
           : null;
       const companyId = companyIdNum != null && !isNaN(companyIdNum) ? companyIdNum : null;
       if (pool) {
@@ -10651,7 +10909,7 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       } else {
         let plant = companyId != null
           ? memoryPlants.find((p) => p.company_id === companyId)
-          : memoryPlants[0];
+          : undefined;
         if (!plant) {
           plant = {
             id: getNextId(),
@@ -10682,16 +10940,18 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
     const equipStatus = status || 'Active';
 
     if (pool) {
-      if (!simpleMode && !(await parentExists(pool, "routes", rId))) {
+      const tenantId = requestTenantId(req);
+      if (!simpleMode && !(await tenantOwnsRow(pool, "routes", rId, tenantId))) {
         return res.status(400).json({ error: `Parent route not found: ${rId}` });
       }
       const result = await pool.query(
-        `INSERT INTO assets 
-         (route_id, name, tag_number, type, manufacturer, model, serial_number, install_date, criticality, status, description) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+        `INSERT INTO assets
+         (route_id, company_id, name, tag_number, type, manufacturer, model, serial_number, install_date, criticality, status, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *`,
         [
           rId,
+          tenantId,
           name.trim(),
           tag_number ? tag_number.trim() : null,
           type ? type.trim() : null,
@@ -10709,6 +10969,7 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       const newAsset = {
         id: getNextId(),
         route_id: rId,
+        company_id: requestTenantId(req),
         name: name.trim(),
         tag_number: tag_number ? tag_number.trim() : null,
         type: type ? type.trim() : null,
@@ -10754,9 +11015,11 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
 
     if (pool) {
       const result = await pool.query(
-        `UPDATE assets SET 
-         name = $1, tag_number = $2, type = $3, manufacturer = $4, model = $5, serial_number = $6, install_date = $7, criticality = $8, status = $9, description = $10 
-         WHERE id = $11 RETURNING *`,
+        `UPDATE assets a SET
+         name = $1, tag_number = $2, type = $3, manufacturer = $4, model = $5, serial_number = $6, install_date = $7, criticality = $8, status = $9, description = $10
+         FROM routes r
+         JOIN plants pl ON pl.id = r.plant_id
+         WHERE a.id = $11 AND a.route_id = r.id AND pl.company_id = $12 RETURNING a.*`,
         [
           name.trim(),
           tag_number ? tag_number.trim() : null,
@@ -10768,13 +11031,16 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
           criticality ? criticality.trim() : null,
           status || 'Active',
           description ? description.trim() : null,
-          id
+          id,
+          requestTenantId(req) ?? -1
         ]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Equipment not found" });
       return res.json(result.rows[0]);
     } else {
-      const asset = memoryAssets.find(e => e.id === id);
+      const asset = memoryAssets.find(
+        e => e.id === id && memoryTenantAssetIds(requestTenantId(req)).includes(e.id)
+      );
       if (!asset) return res.status(404).json({ error: "Equipment not found" });
       asset.name = name.trim();
       asset.tag_number = tag_number ? tag_number.trim() : null;
@@ -10843,6 +11109,15 @@ app.delete(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], asy
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
+      const tenantId = requestTenantId(req) ?? -1;
+      const owned = await pool.query(
+        `SELECT a.id FROM assets a
+           LEFT JOIN routes r ON r.id = a.route_id
+           LEFT JOIN plants pl ON pl.id = r.plant_id
+          WHERE a.id = $1 AND pl.company_id = $2`,
+        [id, tenantId]
+      );
+      if (owned.rows.length === 0) return res.status(404).json({ error: "Equipment not found" });
       // 1. Delete all analysis history for measurement points under collection points of components of this asset.
       await pool.query(
         "DELETE FROM analysis_history WHERE measurement_point_id IN " +
@@ -10871,7 +11146,8 @@ app.delete(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], asy
       if (result.rows.length === 0) return res.status(404).json({ error: "Equipment not found" });
       return res.json({ message: "Equipment deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryAssets.findIndex(e => e.id === id);
+      const assetIds = memoryTenantAssetIds(requestTenantId(req));
+      const index = memoryAssets.findIndex(e => e.id === id && assetIds.includes(e.id));
       if (index === -1) return res.status(404).json({ error: "Equipment not found" });
       const deleted = memoryAssets.splice(index, 1)[0];
       
@@ -10906,6 +11182,10 @@ app.get(["/api/components", "/api/components/:equipmentId", "/api/components/ass
     const assetIdQuery = req.query.asset_id ? parseInt(req.query.asset_id as string, 10) : undefined;
 
     const finalAssetId = equipIdParam || assetIdParam || equipIdQuery || assetIdQuery;
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.json([]);
+    }
 
     if (pool) {
       let query = `
@@ -10940,13 +11220,19 @@ app.get(["/api/components", "/api/components/:equipmentId", "/api/components/ass
           ) as latest_analysis
         FROM components c
         LEFT JOIN assets a ON c.asset_id = a.id
+        LEFT JOIN routes rt ON a.route_id = rt.id
+        LEFT JOIN plants pl ON rt.plant_id = pl.id
+        WHERE pl.company_id = $1
       `;
-      const queryParams: any[] = [];
+      const queryParams: any[] = [company_id];
       if (finalAssetId !== undefined) {
         if (isNaN(finalAssetId)) {
           return res.status(400).json({ error: "Invalid asset/equipment ID parameter" });
         }
-        query += " WHERE c.asset_id = $1";
+        if (!(await tenantOwnsRow(pool, "assets", finalAssetId, company_id))) {
+          return res.status(404).json({ error: "Equipment not found" });
+        }
+        query += " AND c.asset_id = $2";
         queryParams.push(finalAssetId);
       }
       query += " ORDER BY c.name ASC";
@@ -10995,12 +11281,16 @@ app.get(["/api/components", "/api/components/:equipmentId", "/api/components/ass
 
       return res.json(rows);
     } else {
+      const assetIds = memoryTenantAssetIds(company_id);
       if (finalAssetId !== undefined) {
         if (isNaN(finalAssetId)) {
           return res.status(400).json({ error: "Invalid asset/equipment ID parameter" });
         }
+        if (!assetIds.includes(finalAssetId)) {
+          return res.status(404).json({ error: "Equipment not found" });
+        }
         const filtered = memoryComponents
-          .filter(c => c.asset_id === finalAssetId || c.equipment_id === finalAssetId)
+          .filter(c => (c.asset_id === finalAssetId || c.equipment_id === finalAssetId))
           .map(c => {
             const specs = c.specifications || c.specs || {};
             const criticality = specs.criticality || specs.assetCriticality || "Medium";
@@ -11016,7 +11306,8 @@ app.get(["/api/components", "/api/components/:equipmentId", "/api/components/ass
           });
         return res.json(filtered);
       } else {
-        return res.json(memoryComponents.map(c => ({
+        const compIds = memoryTenantComponentIds(company_id);
+        return res.json(memoryComponents.filter(c => compIds.includes(c.id)).map(c => ({
           ...c,
           status: c.status || "Healthy",
           vibration_status: c.status || "Healthy",
@@ -11045,10 +11336,10 @@ app.post(["/api/components", "/api/component"], async (req, res) => {
 
     const astId = parseInt(incomingId, 10);
     if (pool) {
-      if (!(await parentExists(pool, "assets", astId))) {
+      if (!(await tenantOwnsRow(pool, "assets", astId, requestTenantId(req)))) {
         return res.status(400).json({ error: `Parent asset not found: ${astId}` });
       }
-    } else if (!memoryAssets.some((a) => a.id === astId)) {
+    } else if (!memoryTenantAssetIds(requestTenantId(req)).includes(astId)) {
       return res.status(400).json({ error: `Parent asset not found: ${astId}` });
     }
     let parsedSpecs: any = null;
@@ -11119,15 +11410,19 @@ app.put("/api/components/:id", async (req, res) => {
 
     if (pool) {
       const result = await pool.query(
-        `UPDATE components SET name = $1, type = $2, manufacturer = $3, model = $4, specifications = $5, notes = $6 
-         WHERE id = $7 
-         RETURNING id, asset_id, asset_id as equipment_id, name, type, manufacturer, model, specifications, notes, created_at`,
-        [name.trim(), type ? type.trim() : null, manufacturer ? manufacturer.trim() : null, model ? model.trim() : null, parsedSpecs, notes ? notes.trim() : null, id]
+        `UPDATE components c SET name = $1, type = $2, manufacturer = $3, model = $4, specifications = $5, notes = $6
+         FROM assets a
+         LEFT JOIN routes r ON r.id = a.route_id
+         LEFT JOIN plants pl ON pl.id = r.plant_id
+         WHERE c.id = $7 AND c.asset_id = a.id AND pl.company_id = $8
+         RETURNING c.id, c.asset_id, c.asset_id as equipment_id, c.name, c.type, c.manufacturer, c.model, c.specifications, c.notes, c.created_at`,
+        [name.trim(), type ? type.trim() : null, manufacturer ? manufacturer.trim() : null, model ? model.trim() : null, parsedSpecs, notes ? notes.trim() : null, id, requestTenantId(req) ?? -1]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Component not found" });
       return res.json(result.rows[0]);
     } else {
-      const comp = memoryComponents.find(c => c.id === id);
+      const compIds = memoryTenantComponentIds(requestTenantId(req));
+      const comp = memoryComponents.find(c => c.id === id && compIds.includes(c.id));
       if (!comp) return res.status(404).json({ error: "Component not found" });
       comp.name = name.trim();
       comp.type = type ? type.trim() : null;
@@ -11151,6 +11446,9 @@ app.delete("/api/components/:id", async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
+      if (!(await tenantOwnsRow(pool, "components", id, requestTenantId(req)))) {
+        return res.status(404).json({ error: "Component not found" });
+      }
       // 1. Delete analysis history for measurement points under collection points of this component.
       await pool.query(
         "DELETE FROM analysis_history WHERE measurement_point_id IN " +
@@ -11171,7 +11469,8 @@ app.delete("/api/components/:id", async (req, res) => {
       if (result.rows.length === 0) return res.status(404).json({ error: "Component not found" });
       return res.json({ message: "Component deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryComponents.findIndex(c => c.id === id);
+      const compIds = memoryTenantComponentIds(requestTenantId(req));
+      const index = memoryComponents.findIndex(c => c.id === id && compIds.includes(c.id));
       if (index === -1) return res.status(404).json({ error: "Component not found" });
       const deleted = memoryComponents.splice(index, 1)[0];
       
@@ -11202,23 +11501,47 @@ app.get(["/api/collection-points", "/api/collection_points", "/api/collection-po
     const compIdParam = req.params.componentId ? parseInt(req.params.componentId, 10) : undefined;
     const compIdQuery = req.query.component_id ? parseInt(req.query.component_id as string, 10) : undefined;
     const compId = compIdParam || compIdQuery;
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.json([]);
+    }
 
     if (pool) {
       if (compId !== undefined) {
         if (isNaN(compId)) return res.status(400).json({ error: "Invalid component_id" });
-        const result = await pool.query("SELECT * FROM collection_points WHERE component_id = $1 ORDER BY location_order ASC, name ASC", [compId]);
+        if (!(await tenantOwnsRow(pool, "components", compId, company_id))) {
+          return res.status(404).json({ error: "Component not found" });
+        }
+        const result = await pool.query(
+          "SELECT * FROM collection_points WHERE component_id = $1 ORDER BY location_order ASC, name ASC",
+          [compId]
+        );
         return res.json(result.rows);
       } else {
-        const result = await pool.query("SELECT * FROM collection_points ORDER BY name ASC");
+        const result = await pool.query(
+          `SELECT cp.* FROM collection_points cp
+             JOIN components c ON c.id = cp.component_id
+             JOIN assets a ON a.id = c.asset_id
+             LEFT JOIN routes r ON r.id = a.route_id
+             LEFT JOIN plants pl ON pl.id = r.plant_id
+            WHERE pl.company_id = $1
+            ORDER BY cp.name ASC`,
+          [company_id]
+        );
         return res.json(result.rows);
       }
     } else {
+      const componentIds = memoryTenantComponentIds(company_id);
       if (compId !== undefined) {
         if (isNaN(compId)) return res.status(400).json({ error: "Invalid component_id" });
+        if (!componentIds.includes(compId)) {
+          return res.status(404).json({ error: "Component not found" });
+        }
         const filtered = memoryCollectionPoints.filter(cp => cp.component_id === compId);
         return res.json(filtered);
       } else {
-        return res.json(memoryCollectionPoints);
+        const cpIds = memoryTenantCollectionPointIds(company_id);
+        return res.json(memoryCollectionPoints.filter(cp => cpIds.includes(cp.id)));
       }
     }
   } catch (error: any) {
@@ -11234,11 +11557,20 @@ app.get(["/api/collection-points/:id", "/api/collection_points/:id"], async (req
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
-      const result = await pool.query("SELECT * FROM collection_points WHERE id = $1", [id]);
+      const result = await pool.query(
+        `SELECT cp.* FROM collection_points cp
+           JOIN components c ON c.id = cp.component_id
+           JOIN assets a ON a.id = c.asset_id
+           LEFT JOIN routes r ON r.id = a.route_id
+           LEFT JOIN plants pl ON pl.id = r.plant_id
+          WHERE cp.id = $1 AND pl.company_id = $2`,
+        [id, requestTenantId(req) ?? -1]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Collection point not found" });
       return res.json(result.rows[0]);
     } else {
-      const cp = memoryCollectionPoints.find(item => item.id === id);
+      const cpIds = memoryTenantCollectionPointIds(requestTenantId(req));
+      const cp = memoryCollectionPoints.find(item => item.id === id && cpIds.includes(item.id));
       if (!cp) return res.status(404).json({ error: "Collection point not found" });
       return res.json(cp);
     }
@@ -11259,6 +11591,13 @@ app.post(["/api/collection-points/batch", "/api/collection_points/batch"], async
       return res.status(400).json({ error: "points must be an array" });
     }
     const compId = parseInt(component_id, 10);
+    if (pool) {
+      if (!(await tenantOwnsRow(pool, "components", compId, requestTenantId(req)))) {
+        return res.status(400).json({ error: `Parent component not found: ${compId}` });
+      }
+    } else if (!memoryTenantComponentIds(requestTenantId(req)).includes(compId)) {
+      return res.status(400).json({ error: `Parent component not found: ${compId}` });
+    }
     
     if (pool) {
       await pool.query("BEGIN");
@@ -11373,10 +11712,10 @@ app.post(["/api/collection-points", "/api/collection_points"], async (req, res) 
     }
     const compId = parseInt(component_id, 10);
     if (pool) {
-      if (!(await parentExists(pool, "components", compId))) {
+      if (!(await tenantOwnsRow(pool, "components", compId, requestTenantId(req)))) {
         return res.status(400).json({ error: `Parent component not found: ${compId}` });
       }
-    } else if (!memoryComponents.some((c) => c.id === compId)) {
+    } else if (!memoryTenantComponentIds(requestTenantId(req)).includes(compId)) {
       return res.status(400).json({ error: `Parent component not found: ${compId}` });
     }
 
@@ -11542,13 +11881,20 @@ app.put(["/api/collection-points/:id", "/api/collection_points/:id"], async (req
 
     if (pool) {
       const result = await pool.query(
-        "UPDATE collection_points SET name = $1, location_order = $2, notes = $3 WHERE id = $4 RETURNING *",
-        [name.trim(), locOrder, notes ? notes.trim() : null, id]
+        `UPDATE collection_points cp SET name = $1, location_order = $2, notes = $3
+           FROM components c
+           JOIN assets a ON a.id = c.asset_id
+           LEFT JOIN routes r ON r.id = a.route_id
+           LEFT JOIN plants pl ON pl.id = r.plant_id
+          WHERE cp.id = $4 AND cp.component_id = c.id AND pl.company_id = $5
+          RETURNING cp.*`,
+        [name.trim(), locOrder, notes ? notes.trim() : null, id, requestTenantId(req) ?? -1]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Collection point not found" });
       return res.json(result.rows[0]);
     } else {
-      const cp = memoryCollectionPoints.find(item => item.id === id);
+      const cpIds = memoryTenantCollectionPointIds(requestTenantId(req));
+      const cp = memoryCollectionPoints.find(item => item.id === id && cpIds.includes(item.id));
       if (!cp) return res.status(404).json({ error: "Collection point not found" });
       cp.name = name.trim();
       cp.location_order = locOrder;
@@ -11568,11 +11914,24 @@ app.delete(["/api/collection-points/:id", "/api/collection_points/:id"], async (
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
-      const result = await pool.query("DELETE FROM collection_points WHERE id = $1 RETURNING *", [id]);
+      const result = await pool.query(
+        `DELETE FROM collection_points
+          WHERE id = $1
+            AND component_id IN (
+              SELECT c.id FROM components c
+                JOIN assets a ON a.id = c.asset_id
+                LEFT JOIN routes r ON r.id = a.route_id
+                LEFT JOIN plants pl ON pl.id = r.plant_id
+               WHERE pl.company_id = $2
+            )
+          RETURNING *`,
+        [id, requestTenantId(req) ?? -1]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Collection point not found" });
       return res.json({ message: "Collection point deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryCollectionPoints.findIndex(item => item.id === id);
+      const cpIds = memoryTenantCollectionPointIds(requestTenantId(req));
+      const index = memoryCollectionPoints.findIndex(item => item.id === id && cpIds.includes(item.id));
       if (index === -1) return res.status(404).json({ error: "Collection point not found" });
       const deleted = memoryCollectionPoints.splice(index, 1)[0];
       // Cascade delete measurement points in memory
@@ -11596,23 +11955,48 @@ app.get(["/api/measurement-points", "/api/measurement_points", "/api/measurement
     const cpIdParam = req.params.cpId ? parseInt(req.params.cpId, 10) : undefined;
     const cpIdQuery = req.query.collection_point_id ? parseInt(req.query.collection_point_id as string, 10) : undefined;
     const cpId = cpIdParam || cpIdQuery;
+    const company_id = requestTenantId(req);
+    if (company_id == null) {
+      return res.json([]);
+    }
 
     if (pool) {
       if (cpId !== undefined) {
         if (isNaN(cpId)) return res.status(400).json({ error: "Invalid collection_point_id" });
-        const result = await pool.query("SELECT * FROM measurement_points WHERE collection_point_id = $1 ORDER BY direction ASC", [cpId]);
+        if (!(await tenantOwnsRow(pool, "collection_points", cpId, company_id))) {
+          return res.status(404).json({ error: "Collection point not found" });
+        }
+        const result = await pool.query(
+          "SELECT * FROM measurement_points WHERE collection_point_id = $1 ORDER BY direction ASC",
+          [cpId]
+        );
         return res.json(result.rows);
       } else {
-        const result = await pool.query("SELECT * FROM measurement_points ORDER BY id ASC");
+        const result = await pool.query(
+          `SELECT mp.* FROM measurement_points mp
+             JOIN collection_points cp ON cp.id = mp.collection_point_id
+             JOIN components c ON c.id = cp.component_id
+             JOIN assets a ON a.id = c.asset_id
+             LEFT JOIN routes r ON r.id = a.route_id
+             LEFT JOIN plants pl ON pl.id = r.plant_id
+            WHERE pl.company_id = $1
+            ORDER BY mp.id ASC`,
+          [company_id]
+        );
         return res.json(result.rows);
       }
     } else {
+      const cpIds = memoryTenantCollectionPointIds(company_id);
       if (cpId !== undefined) {
         if (isNaN(cpId)) return res.status(400).json({ error: "Invalid collection_point_id" });
+        if (!cpIds.includes(cpId)) {
+          return res.status(404).json({ error: "Collection point not found" });
+        }
         const filtered = memoryMeasurementPoints.filter(mp => mp.collection_point_id === cpId);
         return res.json(filtered);
       } else {
-        return res.json(memoryMeasurementPoints);
+        const mpIds = memoryTenantMeasurementPointIds(company_id);
+        return res.json(memoryMeasurementPoints.filter(mp => mpIds.includes(mp.id)));
       }
     }
   } catch (error: any) {
@@ -11628,11 +12012,21 @@ app.get(["/api/measurement-points/:id", "/api/measurement_points/:id"], async (r
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
-      const result = await pool.query("SELECT * FROM measurement_points WHERE id = $1", [id]);
+      const result = await pool.query(
+        `SELECT mp.* FROM measurement_points mp
+           JOIN collection_points cp ON cp.id = mp.collection_point_id
+           JOIN components c ON c.id = cp.component_id
+           JOIN assets a ON a.id = c.asset_id
+           LEFT JOIN routes r ON r.id = a.route_id
+           LEFT JOIN plants pl ON pl.id = r.plant_id
+          WHERE mp.id = $1 AND pl.company_id = $2`,
+        [id, requestTenantId(req) ?? -1]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Measurement point not found" });
       return res.json(result.rows[0]);
     } else {
-      const mp = memoryMeasurementPoints.find(item => item.id === id);
+      const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
+      const mp = memoryMeasurementPoints.find(item => item.id === id && mpIds.includes(item.id));
       if (!mp) return res.status(404).json({ error: "Measurement point not found" });
       return res.json(mp);
     }
@@ -11655,10 +12049,10 @@ app.post(["/api/measurement-points", "/api/measurement_points"], async (req, res
 
     const cpId = parseInt(collection_point_id, 10);
     if (pool) {
-      if (!(await parentExists(pool, "collection_points", cpId))) {
+      if (!(await tenantOwnsRow(pool, "collection_points", cpId, requestTenantId(req)))) {
         return res.status(400).json({ error: `Parent collection point not found: ${cpId}` });
       }
-    } else if (!memoryCollectionPoints.some((cp) => cp.id === cpId)) {
+    } else if (!memoryTenantCollectionPointIds(requestTenantId(req)).includes(cpId)) {
       return res.status(400).json({ error: `Parent collection point not found: ${cpId}` });
     }
     const tech = technology_type || "Vibration";
@@ -11701,13 +12095,21 @@ app.put(["/api/measurement-points/:id", "/api/measurement_points/:id"], async (r
 
     if (pool) {
       const result = await pool.query(
-        "UPDATE measurement_points SET direction = $1, technology_type = $2, units = $3 WHERE id = $4 RETURNING *",
-        [direction.trim(), technology_type ? technology_type.trim() : "Vibration", units ? units.trim() : "in/Sec", id]
+        `UPDATE measurement_points mp SET direction = $1, technology_type = $2, units = $3
+           FROM collection_points cp
+           JOIN components c ON c.id = cp.component_id
+           JOIN assets a ON a.id = c.asset_id
+           LEFT JOIN routes r ON r.id = a.route_id
+           LEFT JOIN plants pl ON pl.id = r.plant_id
+          WHERE mp.id = $4 AND mp.collection_point_id = cp.id AND pl.company_id = $5
+          RETURNING mp.*`,
+        [direction.trim(), technology_type ? technology_type.trim() : "Vibration", units ? units.trim() : "in/Sec", id, requestTenantId(req) ?? -1]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Measurement point not found" });
       return res.json(result.rows[0]);
     } else {
-      const mp = memoryMeasurementPoints.find(item => item.id === id);
+      const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
+      const mp = memoryMeasurementPoints.find(item => item.id === id && mpIds.includes(item.id));
       if (!mp) return res.status(404).json({ error: "Measurement point not found" });
       mp.direction = direction.trim();
       mp.technology_type = technology_type ? technology_type.trim() : "Vibration";
@@ -11727,11 +12129,25 @@ app.delete(["/api/measurement-points/:id", "/api/measurement_points/:id"], async
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
-      const result = await pool.query("DELETE FROM measurement_points WHERE id = $1 RETURNING *", [id]);
+      const result = await pool.query(
+        `DELETE FROM measurement_points
+          WHERE id = $1
+            AND collection_point_id IN (
+              SELECT cp.id FROM collection_points cp
+                JOIN components c ON c.id = cp.component_id
+                JOIN assets a ON a.id = c.asset_id
+                LEFT JOIN routes r ON r.id = a.route_id
+                LEFT JOIN plants pl ON pl.id = r.plant_id
+               WHERE pl.company_id = $2
+            )
+          RETURNING *`,
+        [id, requestTenantId(req) ?? -1]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Measurement point not found" });
       return res.json({ message: "Measurement point deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryMeasurementPoints.findIndex(item => item.id === id);
+      const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
+      const index = memoryMeasurementPoints.findIndex(item => item.id === id && mpIds.includes(item.id));
       if (index === -1) return res.status(404).json({ error: "Measurement point not found" });
       const deleted = memoryMeasurementPoints.splice(index, 1)[0];
       return res.json({ message: "Measurement point deleted successfully", deleted });
@@ -11755,21 +12171,29 @@ app.get(["/api/analysis-history", "/api/analysis_history", "/api/analysis-histor
     const mpId = mpIdParam || mpIdQuery;
 
     if (pool) {
+      const tenantId = req.tenantId ?? -1;
       if (mpId !== undefined) {
         if (isNaN(mpId)) return res.status(400).json({ error: "Invalid measurement_point_id" });
-        const result = await pool.query("SELECT * FROM analysis_history WHERE measurement_point_id = $1 ORDER BY measurement_date DESC, created_at DESC", [mpId]);
+        const result = await pool.query(
+          "SELECT * FROM analysis_history WHERE measurement_point_id = $1 AND tenant_id = $2 ORDER BY measurement_date DESC, created_at DESC",
+          [mpId, tenantId]
+        );
         return res.json(result.rows);
       } else {
-        const result = await pool.query("SELECT * FROM analysis_history ORDER BY measurement_date DESC, created_at DESC");
+        const result = await pool.query(
+          "SELECT * FROM analysis_history WHERE tenant_id = $1 ORDER BY measurement_date DESC, created_at DESC",
+          [tenantId]
+        );
         return res.json(result.rows);
       }
     } else {
+      const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
       if (mpId !== undefined) {
         if (isNaN(mpId)) return res.status(400).json({ error: "Invalid measurement_point_id" });
-        const filtered = memoryAnalysisHistory.filter(ah => ah.measurement_point_id === mpId);
+        const filtered = memoryAnalysisHistory.filter(ah => ah.measurement_point_id === mpId && mpIds.includes(mpId));
         return res.json(filtered);
       } else {
-        return res.json(memoryAnalysisHistory);
+        return res.json(memoryAnalysisHistory.filter(ah => mpIds.includes(ah.measurement_point_id)));
       }
     }
   } catch (error: any) {
@@ -11790,6 +12214,14 @@ app.get(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, 
     if (isComponent) {
       // Determine company context to verify subscription active tech keys
       const targetCompanyId = await getCompanyIdForComponent(id);
+      const sessionTenant = req.tenantId ?? requestTenantId(req);
+      if (
+        targetCompanyId != null &&
+        sessionTenant != null &&
+        targetCompanyId !== sessionTenant
+      ) {
+        return res.status(404).json({ error: "Component not found" });
+      }
       let enabledTechs = ["vibration", "infrared", "ultrasound", "mca", "oil_analysis"];
       if (targetCompanyId) {
         enabledTechs = await getEnabledTechnologies(targetCompanyId);
@@ -11881,11 +12313,17 @@ app.get(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, 
       }
     } else {
       if (pool) {
-        const result = await pool.query("SELECT * FROM analysis_history WHERE id = $1", [id]);
+        const result = await pool.query(
+          "SELECT * FROM analysis_history WHERE id = $1 AND tenant_id = $2",
+          [id, req.tenantId ?? -1]
+        );
         if (result.rows.length === 0) return res.status(404).json({ error: "Analysis history record not found" });
         return res.json(result.rows[0]);
       } else {
-        const ah = memoryAnalysisHistory.find(item => item.id === id);
+        const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
+        const ah = memoryAnalysisHistory.find(
+          item => item.id === id && mpIds.includes(item.measurement_point_id)
+        );
         if (!ah) return res.status(404).json({ error: "Analysis history record not found" });
         return res.json(ah);
       }
@@ -12015,7 +12453,10 @@ app.put(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, 
 
     if (pool) {
       // Build dynamic update to only overwrite provided fields
-      const currentRes = await pool.query("SELECT * FROM analysis_history WHERE id = $1", [id]);
+      const currentRes = await pool.query(
+        "SELECT * FROM analysis_history WHERE id = $1 AND tenant_id = $2",
+        [id, req.tenantId ?? -1]
+      );
       if (currentRes.rows.length === 0) return res.status(404).json({ error: "Analysis history record not found" });
       const current = currentRes.rows[0];
 
@@ -12032,12 +12473,15 @@ app.put(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (req, 
       const result = await pool.query(
         `UPDATE analysis_history SET 
          data_point_name = $1, state = $2, op_speed = $3, measurement_value = $4, units = $5, notes = $6, alarm_status = $7, was_correct = $8, corrected_diagnosis = $9 
-         WHERE id = $10 RETURNING *`,
-        [finalName, finalState, finalSpeed, finalVal, finalUnits, finalNotes, finalAlarm, finalWasCorrect, finalCorrectedDiag, id]
+         WHERE id = $10 AND tenant_id = $11 RETURNING *`,
+        [finalName, finalState, finalSpeed, finalVal, finalUnits, finalNotes, finalAlarm, finalWasCorrect, finalCorrectedDiag, id, req.tenantId ?? -1]
       );
       return res.json(result.rows[0]);
     } else {
-      const ah = memoryAnalysisHistory.find(item => item.id === id);
+      const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
+      const ah = memoryAnalysisHistory.find(
+        item => item.id === id && mpIds.includes(item.measurement_point_id)
+      );
       if (!ah) return res.status(404).json({ error: "Analysis history record not found" });
 
       if (data_point_name !== undefined) ah.data_point_name = data_point_name;
@@ -12065,11 +12509,17 @@ app.delete(["/api/analysis-history/:id", "/api/analysis_history/:id"], async (re
     if (isNaN(id)) return res.status(400).json({ error: "Invalid ID parameter" });
 
     if (pool) {
-      const result = await pool.query("DELETE FROM analysis_history WHERE id = $1 RETURNING *", [id]);
+      const result = await pool.query(
+        "DELETE FROM analysis_history WHERE id = $1 AND tenant_id = $2 RETURNING *",
+        [id, req.tenantId ?? -1]
+      );
       if (result.rows.length === 0) return res.status(404).json({ error: "Analysis history record not found" });
       return res.json({ message: "Analysis record deleted successfully", deleted: result.rows[0] });
     } else {
-      const index = memoryAnalysisHistory.findIndex(item => item.id === id);
+      const mpIds = memoryTenantMeasurementPointIds(requestTenantId(req));
+      const index = memoryAnalysisHistory.findIndex(
+        item => item.id === id && mpIds.includes(item.measurement_point_id)
+      );
       if (index === -1) return res.status(404).json({ error: "Analysis history record not found" });
       const deleted = memoryAnalysisHistory.splice(index, 1)[0];
       return res.json({ message: "Analysis record deleted successfully", deleted });
@@ -12134,8 +12584,9 @@ async function initializeDatabase() {
 
     // DEV-ONLY: seed standard demo companies (Allied Reliability / ExxonMobil /
     // Demo Reliability Corp). Production boots must create zero company rows —
-    // tenants come only from signup.
-    if (process.env.NODE_ENV !== 'production') {
+    // tenants come only from signup. Gated by the AR-29 explicit opt-in, never
+    // NODE_ENV alone, so a dev boot without the flag stays empty too.
+    if (isDevAuthSeedEnabled(process.env)) {
       await pool.query(`
         INSERT INTO companies (name, subscription_plan) VALUES ('Allied Reliability', 'vibration_only')
         ON CONFLICT (name) DO NOTHING;
@@ -12256,12 +12707,9 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE plants ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE;");
     await pool.query("ALTER TABLE plants ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;");
 
-    // Seed existing plants with Allied Reliability (id: 1) if company_id is null
-    const firstCompanyRes = await pool.query("SELECT id FROM companies ORDER BY id ASC LIMIT 1");
-    if (firstCompanyRes.rows.length > 0) {
-      const defaultCompanyId = firstCompanyRes.rows[0].id;
-      await pool.query("UPDATE plants SET company_id = $1 WHERE company_id IS NULL", [defaultCompanyId]);
-    }
+    // Legacy plants with no company_id stay orphaned. Never reassign them to
+    // the globally-first company — that would move one tenant's rows into
+    // another tenant. Tenant ownership must come from the row's own lineage.
 
     // Create units table (optional grouping above routes, H5 persistence)
     await pool.query(`
@@ -12330,6 +12778,7 @@ async function initializeDatabase() {
       CREATE TABLE IF NOT EXISTS assets (
         id SERIAL PRIMARY KEY,
         route_id INTEGER REFERENCES routes(id) ON DELETE CASCADE,
+        company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE,
         name VARCHAR(255) NOT NULL,
         tag_number VARCHAR(100),
         type VARCHAR(100),
@@ -12346,6 +12795,7 @@ async function initializeDatabase() {
     `);
 
     // Ensure assets table columns exist
+    await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE CASCADE;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS tag_number VARCHAR(100);");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS description TEXT;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS bearing_config JSONB;");
@@ -12360,9 +12810,20 @@ async function initializeDatabase() {
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS horsepower DOUBLE PRECISION NULL;");
     await pool.query("ALTER TABLE assets ADD COLUMN IF NOT EXISTS planning_config JSONB NULL;");
 
-    // H4 backfill - mirror of migrations/017_hierarchy_flex.sql. Assets with a
-    // NULL route_id have no plant linkage, so the deterministic fallback is the
-    // lowest-id system route once each plant that has such assets owns one.
+    // H4 backfill - mirror of migrations/017_hierarchy_flex.sql plus the
+    // tenant-scoped repair. Route-backed assets inherit their company from
+    // their own route -> plant lineage first; NULL-route assets are then
+    // attached only to the is_system route of their OWN company. Assets with
+    // no derivable tenant stay NULL rather than being moved across tenants.
+    await pool.query(`
+      UPDATE assets a
+         SET company_id = pl.company_id
+        FROM routes r
+        JOIN plants pl ON pl.id = r.plant_id
+       WHERE a.route_id = r.id
+         AND a.company_id IS NULL
+         AND pl.company_id IS NOT NULL;
+    `);
     await pool.query(`
       DO $$
       DECLARE
@@ -12370,7 +12831,7 @@ async function initializeDatabase() {
         system_route_id INTEGER;
       BEGIN
         IF EXISTS (SELECT 1 FROM assets WHERE route_id IS NULL) THEN
-          FOR p IN SELECT id FROM plants LOOP
+          FOR p IN SELECT id, company_id FROM plants WHERE company_id IS NOT NULL LOOP
             INSERT INTO routes (plant_id, name, description, is_system)
             SELECT p.id, 'System (Simple Mode)',
                    'Auto-created route for assets added without a route.', TRUE
@@ -12378,11 +12839,15 @@ async function initializeDatabase() {
               SELECT 1 FROM routes
                WHERE plant_id = p.id AND is_system = TRUE
             );
+            SELECT id INTO system_route_id
+              FROM routes
+             WHERE plant_id = p.id AND is_system = TRUE
+             ORDER BY id ASC
+             LIMIT 1;
+            IF system_route_id IS NOT NULL THEN
+              UPDATE assets SET route_id = system_route_id WHERE route_id IS NULL AND company_id = p.company_id;
+            END IF;
           END LOOP;
-          SELECT MIN(id) INTO system_route_id FROM routes WHERE is_system = TRUE;
-          IF system_route_id IS NOT NULL THEN
-            UPDATE assets SET route_id = system_route_id WHERE route_id IS NULL;
-          END IF;
         END IF;
       END $$;
     `);
@@ -13222,7 +13687,9 @@ async function initializeDatabase() {
       "diagnosis_history",
       "work_orders",
       "reports",
-      "oil_analysis"
+      "oil_analysis",
+      "oil_samples",
+      "alerts"
     ]) {
       await pool.query(
         `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS tenant_id INTEGER NOT NULL DEFAULT -1;`
@@ -13242,6 +13709,15 @@ async function initializeDatabase() {
     );
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_work_orders_tenant ON work_orders (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_oil_analysis_tenant ON oil_analysis (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_oil_samples_tenant ON oil_samples (tenant_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_alerts_tenant ON alerts (tenant_id);"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).
@@ -13293,6 +13769,47 @@ async function initializeDatabase() {
          SET tenant_id = rp.company_id
        WHERE rp.tenant_id = -1
          AND rp.company_id IS NOT NULL;
+    `);
+    // BLOCKER-12 - oil analysis is tenant data too. Derive the owning company
+    // through assets -> routes -> plants, then stamp both oil tables. Rows with
+    // no derivable lineage stay on the disclosed -1 sentinel.
+    await pool.query(`
+      UPDATE oil_analysis oa
+         SET tenant_id = pl.company_id
+        FROM assets a
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
+       WHERE oa.tenant_id = -1
+         AND (a.id::text = oa.asset_id OR a.tag_number = oa.asset_id OR a.name = oa.asset_id)
+         AND pl.company_id IS NOT NULL;
+    `);
+    await pool.query(`
+      UPDATE oil_samples os
+         SET tenant_id = oa.tenant_id
+        FROM oil_analysis oa
+       WHERE os.oil_analysis_id = oa.id
+         AND os.tenant_id = -1
+         AND oa.tenant_id <> -1;
+    `);
+    // Alerts inherit the tenant of the analysis result that raised them (or,
+    // for legacy rows, the owning asset lineage).
+    await pool.query(`
+      UPDATE alerts al
+         SET tenant_id = ar.tenant_id
+        FROM analysis_results ar
+       WHERE al.analysis_result_id = ar.id
+         AND al.tenant_id = -1
+         AND ar.tenant_id <> -1;
+    `);
+    await pool.query(`
+      UPDATE alerts al
+         SET tenant_id = pl.company_id
+        FROM assets a
+        LEFT JOIN routes r ON r.id = a.route_id
+        LEFT JOIN plants pl ON pl.id = r.plant_id
+       WHERE al.tenant_id = -1
+         AND (a.id::text = al.asset_id OR a.tag_number = al.asset_id OR a.name = al.asset_id)
+         AND pl.company_id IS NOT NULL;
     `);
 
     console.log(

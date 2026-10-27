@@ -241,7 +241,7 @@ describe("MICRO-FIX empty-tenant first run never dead-ends", () => {
     const start = serverSource.indexOf('app.post(["/api/assets", "/api/equipment"]');
     const body = serverSource.slice(start, start + 6000);
     expect(body).toContain("if (hasRoute && !simpleMode)");
-    expect(body).toContain("if (!simpleMode && !(await parentExists(pool, \"routes\", rId)))");
+    expect(body).toContain("if (!simpleMode && !(await tenantOwnsRow(pool, \"routes\", rId, tenantId)))");
     expect(body).toContain("resolveSimpleModeHierarchy(pool, companyId)");
   });
 

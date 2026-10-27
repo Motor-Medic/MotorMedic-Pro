@@ -163,42 +163,57 @@ export function coerceSaveOilSampleInput(
   };
 }
 
-async function findOilAnalysisId(assetId: string): Promise<string | null> {
-  const result = await query(
-    "SELECT id FROM oil_analysis WHERE asset_id = $1",
-    [assetId]
-  );
+async function findOilAnalysisId(
+  assetId: string,
+  tenantId: number | null
+): Promise<string | null> {
+  const result = tenantId == null
+    ? await query("SELECT id FROM oil_analysis WHERE asset_id = $1", [assetId])
+    : await query(
+        "SELECT id FROM oil_analysis WHERE asset_id = $1 AND tenant_id = $2",
+        [assetId, tenantId]
+      );
   return result.rows.length > 0 ? (result.rows[0].id as string) : null;
 }
 
-export async function getOrCreateOilAnalysisId(assetId: string): Promise<string> {
-  const existingId = await findOilAnalysisId(assetId);
+export async function getOrCreateOilAnalysisId(
+  assetId: string,
+  tenantId: number | null = null
+): Promise<string> {
+  const existingId = await findOilAnalysisId(assetId, tenantId);
   if (existingId) return existingId;
 
   const inserted = await query(
-    "INSERT INTO oil_analysis (asset_id) VALUES ($1) RETURNING id",
-    [assetId]
+    `INSERT INTO oil_analysis (asset_id, tenant_id) VALUES ($1, $2) RETURNING id`,
+    [assetId, tenantId ?? -1]
   );
   return inserted.rows[0].id as string;
 }
 
-export async function fetchOilSamplesForAsset(assetId: string) {
+export async function fetchOilSamplesForAsset(
+  assetId: string,
+  tenantId: number | null = null
+) {
   if (!isDbConfigured()) {
     throw new Error("Database is not configured (DATABASE_URL).");
   }
 
-  const analysisId = await getOrCreateOilAnalysisId(assetId);
+  const analysisId = await getOrCreateOilAnalysisId(assetId, tenantId);
   const samples = await query(
     `SELECT * FROM oil_samples
      WHERE oil_analysis_id = $1
+       AND tenant_id = $2
      ORDER BY sample_date ASC`,
-    [analysisId]
+    [analysisId, tenantId ?? -1]
   );
 
   return { analysisId, samples: samples.rows };
 }
 
-export async function saveOilSample(input: SaveOilSampleInput) {
+export async function saveOilSample(
+  input: SaveOilSampleInput,
+  tenantId: number | null = null
+) {
   if (!isDbConfigured()) {
     throw new Error("Database is not configured (DATABASE_URL).");
   }
@@ -241,7 +256,7 @@ export async function saveOilSample(input: SaveOilSampleInput) {
   const morph = (key: MorphCategoryKey): MorphSeverity | null =>
     morphology?.[key] ?? null;
 
-  const analysisId = await getOrCreateOilAnalysisId(assetId);
+  const analysisId = await getOrCreateOilAnalysisId(assetId, tenantId);
 
   const existingSamples = await query(
     `SELECT id FROM oil_samples
@@ -304,7 +319,8 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       chromium_alarm_limit,
       lead_alarm_limit,
       aluminum_alarm_limit,
-      silicon_alarm_limit
+      silicon_alarm_limit,
+      tenant_id
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
       $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
@@ -313,7 +329,7 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       $31, $32, $33, $34, $35, $36, $37, $38,
       $39,
       $40, $41, $42, $43, $44, $45,
-      $46, $47, $48, $49, $50, $51
+      $46, $47, $48, $49, $50, $51, $52
     )
     RETURNING *`,
     [
@@ -367,7 +383,8 @@ export async function saveOilSample(input: SaveOilSampleInput) {
       DEFAULT_ALARM_LIMITS.chromium,
       DEFAULT_ALARM_LIMITS.lead,
       DEFAULT_ALARM_LIMITS.aluminum,
-      DEFAULT_ALARM_LIMITS.silicon
+      DEFAULT_ALARM_LIMITS.silicon,
+      tenantId ?? -1
     ]
   );
 
