@@ -107,6 +107,26 @@ import {
   parentExists,
   resolveSimpleModeHierarchy
 } from "./src/lib/hierarchyFlex";
+import {
+  MODULE_CATALOG,
+  getEntitlements,
+  getModuleCatalog,
+  isModuleActive,
+  normalizeModuleKeys,
+  registerModuleAccessResolver,
+  requireModule
+} from "./src/lib/entitlements";
+import {
+  assertProductionStripeMode,
+  createMockCheckoutSession,
+  isStripeTestMode,
+  resolveStripeWebhookEvent
+} from "./src/lib/stripeMode";
+import { createInMemoryRateLimiter } from "./src/lib/checkoutRateLimit";
+import {
+  provisionTenantFromCheckout,
+  type PendingCheckoutRecord
+} from "./src/lib/tenantProvisioning";
 
 dotenv.config();
 
@@ -114,6 +134,8 @@ dotenv.config();
 // SESSION_SECRET or DATABASE_URL (including CI-mock values). CI only
 // builds, never boots, so this is safe there.
 assertProductionAuthEnv(process.env);
+// STOREFRONT — production must also refuse the Stripe test bypass outright.
+assertProductionStripeMode(process.env);
 
 // Initialize Pool using DATABASE_URL
 const { Pool } = pg;
@@ -339,8 +361,16 @@ async function handleAnalyzeVibrationExpress(
   }
 }
 
-app.post(ANALYZE_VIBRATION_API_PATH, asyncJsonHandler(handleAnalyzeVibrationExpress));
-app.post(ANALYZE_VIBRATION_API_ALIAS, asyncJsonHandler(handleAnalyzeVibrationExpress));
+app.post(
+  ANALYZE_VIBRATION_API_PATH,
+  requireModule("vibration"),
+  asyncJsonHandler(handleAnalyzeVibrationExpress)
+);
+app.post(
+  ANALYZE_VIBRATION_API_ALIAS,
+  requireModule("vibration"),
+  asyncJsonHandler(handleAnalyzeVibrationExpress)
+);
 app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
   res.json({
     ok: true,
@@ -764,7 +794,11 @@ async function handleAnalyzeThermographyExpress(
   }
 }
 
-app.post(ANALYZE_THERMOGRAPHY_API_PATH, handleAnalyzeThermographyExpress);
+app.post(
+  ANALYZE_THERMOGRAPHY_API_PATH,
+  requireModule("thermography"),
+  handleAnalyzeThermographyExpress
+);
 app.get(ANALYZE_THERMOGRAPHY_API_PATH, (_req, res) => {
   res.json({
     ok: true,
@@ -890,7 +924,11 @@ async function handleAnalyzeUltrasoundExpress(
   }
 }
 
-app.post(ANALYZE_ULTRASOUND_API_PATH, handleAnalyzeUltrasoundExpress);
+app.post(
+  ANALYZE_ULTRASOUND_API_PATH,
+  requireModule("ultrasound"),
+  handleAnalyzeUltrasoundExpress
+);
 app.get(ANALYZE_ULTRASOUND_API_PATH, (_req, res) => {
   res.json({
     ok: true,
@@ -1903,7 +1941,7 @@ app.get("/api/analysis-results", async (req, res) => {
   }
 });
 
-app.get(OIL_ANALYSIS_API_PATH, async (req, res) => {
+app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -1924,7 +1962,7 @@ app.get(OIL_ANALYSIS_API_PATH, async (req, res) => {
   }
 });
 
-app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
+app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -1948,7 +1986,7 @@ app.post(OIL_ANALYSIS_API_PATH, async (req, res) => {
   }
 });
 
-app.post(OIL_VISION_API_PATH, async (req, res) => {
+app.post(OIL_VISION_API_PATH, requireModule("oil"), async (req, res) => {
   req.setTimeout(180_000);
   res.setTimeout(180_000);
   try {
@@ -6380,15 +6418,642 @@ function getStripe(): Stripe {
   return stripeClient;
 }
 
+/* ========================================================================== */
+/* STOREFRONT (E3/E4) — public catalog, auth-less build checkout, webhook    */
+/* ========================================================================== */
+
+const checkoutCreateLimiter = createInMemoryRateLimiter({
+  windowMs: 10 * 60 * 1000,
+  max: 20
+});
+
+function checkoutClientKey(req: any): string {
+  const forwarded = req?.headers?.["x-forwarded-for"];
+  const first = typeof forwarded === "string" ? forwarded.split(",")[0].trim() : "";
+  return first || req?.ip || "unknown";
+}
+
+function stripeObjectId(value: any): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object" && typeof value.id === "string") {
+    return value.id;
+  }
+  return null;
+}
+
+function pendingCheckoutFromRow(row: any): PendingCheckoutRecord {
+  const rawModules = Array.isArray(row.module_keys)
+    ? row.module_keys
+    : String(row.module_keys ?? "")
+        .split(",")
+        .map((part: string) => part.trim())
+        .filter(Boolean);
+  return {
+    checkout_session_id: String(row.checkout_session_id),
+    checkout_ref: String(row.checkout_ref),
+    company_name: String(row.company_name ?? ""),
+    admin_username: String(row.admin_username ?? ""),
+    admin_email: row.admin_email == null ? null : String(row.admin_email),
+    password_hash: String(row.password_hash ?? ""),
+    terms_accepted: row.terms_accepted === true,
+    module_keys: rawModules.map((key: unknown) => String(key)),
+    stripe_subscription_id:
+      row.stripe_subscription_id == null ? null : String(row.stripe_subscription_id),
+    stripe_customer_id:
+      row.stripe_customer_id == null ? null : String(row.stripe_customer_id),
+    company_id: row.company_id == null ? null : Number(row.company_id),
+    admin_user_id: row.admin_user_id == null ? null : Number(row.admin_user_id),
+    plant_id: row.plant_id == null ? null : Number(row.plant_id),
+    status: String(row.status ?? "pending")
+  };
+}
+
+async function findPendingBySession(
+  checkoutSessionId: string
+): Promise<PendingCheckoutRecord | null> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT * FROM checkout_pending_provisioning WHERE checkout_session_id = $1 LIMIT 1",
+      [checkoutSessionId]
+    );
+    return result.rows[0] ? pendingCheckoutFromRow(result.rows[0]) : null;
+  }
+  const row = memoryPendingCheckouts.find(
+    (entry) => entry.checkout_session_id === checkoutSessionId
+  );
+  return row ? pendingCheckoutFromRow(row) : null;
+}
+
+async function findPendingByRef(
+  checkoutRef: string
+): Promise<PendingCheckoutRecord | null> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT * FROM checkout_pending_provisioning WHERE checkout_ref = $1 LIMIT 1",
+      [checkoutRef]
+    );
+    return result.rows[0] ? pendingCheckoutFromRow(result.rows[0]) : null;
+  }
+  const row = memoryPendingCheckouts.find(
+    (entry) => entry.checkout_ref === checkoutRef
+  );
+  return row ? pendingCheckoutFromRow(row) : null;
+}
+
+async function findPendingBySubscription(
+  subscriptionId: string
+): Promise<PendingCheckoutRecord | null> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT * FROM checkout_pending_provisioning WHERE stripe_subscription_id = $1 LIMIT 1",
+      [subscriptionId]
+    );
+    return result.rows[0] ? pendingCheckoutFromRow(result.rows[0]) : null;
+  }
+  const row = memoryPendingCheckouts.find(
+    (entry) => entry.stripe_subscription_id === subscriptionId
+  );
+  return row ? pendingCheckoutFromRow(row) : null;
+}
+
+async function stampPendingCheckoutStripe(
+  pending: PendingCheckoutRecord,
+  subscriptionId: string | null,
+  customerId: string | null
+): Promise<void> {
+  pending.stripe_subscription_id = subscriptionId ?? pending.stripe_subscription_id;
+  pending.stripe_customer_id = customerId ?? pending.stripe_customer_id;
+  if (pool) {
+    await pool.query(
+      `UPDATE checkout_pending_provisioning
+          SET stripe_subscription_id = COALESCE($2, stripe_subscription_id),
+              stripe_customer_id = COALESCE($3, stripe_customer_id),
+              updated_at = NOW()
+        WHERE checkout_session_id = $1`,
+      [pending.checkout_session_id, subscriptionId, customerId]
+    );
+    return;
+  }
+  const row = memoryPendingCheckouts.find(
+    (entry) => entry.checkout_session_id === pending.checkout_session_id
+  );
+  if (row) {
+    row.stripe_subscription_id = pending.stripe_subscription_id;
+    row.stripe_customer_id = pending.stripe_customer_id;
+  }
+}
+
+function provisionPendingCheckoutInMemory(
+  pending: PendingCheckoutRecord,
+  subscriptionId: string | null
+) {
+  if (pending.company_id != null && pending.admin_user_id != null) {
+    return {
+      companyId: pending.company_id,
+      adminUserId: pending.admin_user_id,
+      plantId: pending.plant_id ?? 0,
+      routeId: 0,
+      moduleKeys: pending.module_keys,
+      alreadyProvisioned: true
+    };
+  }
+
+  let companyId = pending.company_id;
+  if (companyId == null) {
+    let companyName =
+      pending.company_name.trim() || `Account ${pending.checkout_ref.slice(0, 8)}`;
+    if (memoryCompanies.some((company) => company.name === companyName)) {
+      companyName = `${companyName} (${pending.checkout_ref.slice(0, 8)})`;
+    }
+    companyId = getNextId();
+    memoryCompanies.push({
+      id: companyId,
+      name: companyName,
+      subscription_plan: "module_entitlements",
+      created_at: new Date()
+    });
+    pending.company_id = companyId;
+  }
+
+  let plant = memoryPlants.find((entry) => entry.company_id === companyId);
+  if (!plant) {
+    plant = {
+      id: getNextId(),
+      company_id: companyId,
+      name: "Main Site",
+      location: "Main Site",
+      created_at: new Date()
+    };
+    memoryPlants.push(plant);
+  }
+  let route = memoryRoutes.find(
+    (entry) => entry.plant_id === plant.id && entry.is_system === true
+  );
+  if (!route) {
+    route = {
+      id: getNextId(),
+      plant_id: plant.id,
+      name: SYSTEM_ROUTE_NAME,
+      description: "Auto-created route for assets added without a route.",
+      is_system: true,
+      created_at: new Date()
+    };
+    memoryRoutes.push(route);
+  }
+  pending.plant_id = plant.id;
+
+  let userId = pending.admin_user_id;
+  if (userId == null) {
+    const existing = memoryUsers.find(
+      (user) => String(user.username).toLowerCase() === pending.admin_username.toLowerCase()
+    );
+    if (existing) {
+      if (Number(existing.company_id) !== companyId) {
+        throw new Error(
+          "The selected username already belongs to another tenant; no cross-tenant user was touched."
+        );
+      }
+      userId = existing.id;
+    } else {
+      userId = getNextId();
+      memoryUsers.push({
+        id: userId,
+        company_id: companyId,
+        username: pending.admin_username,
+        password_hash: pending.password_hash,
+        role: "reliability-manager",
+        email: pending.admin_email,
+        is_temp_password: false,
+        terms_accepted_at: pending.terms_accepted ? new Date() : null,
+        created_at: new Date()
+      });
+    }
+  }
+  pending.admin_user_id = userId;
+  plant.user_id = userId;
+
+  const modules = normalizeModuleKeys(pending.module_keys) || [];
+  modules.forEach((moduleKey, index) => {
+    const linkedSubscription = index === 0 ? subscriptionId : null;
+    const existing = memoryEntitlements.find(
+      (entry) =>
+        Number(entry.company_id) === companyId && entry.module_key === moduleKey
+    );
+    if (existing) {
+      existing.status = "active";
+      if (linkedSubscription) existing.stripe_subscription_id = linkedSubscription;
+      existing.updated_at = new Date();
+    } else {
+      memoryEntitlements.push({
+        id: getNextId(),
+        company_id: companyId,
+        module_key: moduleKey,
+        status: "active",
+        stripe_subscription_id: linkedSubscription,
+        created_at: new Date(),
+        updated_at: new Date()
+      });
+    }
+  });
+
+  pending.status = "provisioned";
+  pending.stripe_subscription_id =
+    subscriptionId ?? pending.stripe_subscription_id;
+  const row = memoryPendingCheckouts.find(
+    (entry) => entry.checkout_session_id === pending.checkout_session_id
+  );
+  if (row) {
+    Object.assign(row, pending);
+  }
+
+  return {
+    companyId,
+    adminUserId: userId,
+    plantId: plant.id,
+    routeId: route.id,
+    moduleKeys: modules,
+    alreadyProvisioned: false
+  };
+}
+
+async function provisionPendingCheckout(
+  pending: PendingCheckoutRecord,
+  subscriptionId: string | null,
+  customerId: string | null
+) {
+  if (pool) {
+    return provisionTenantFromCheckout(pool, pending, {
+      subscriptionId,
+      customerId
+    });
+  }
+  return provisionPendingCheckoutInMemory(pending, subscriptionId);
+}
+
+async function isWebhookEventProcessed(eventId: string): Promise<boolean> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT 1 FROM stripe_webhook_events WHERE event_id = $1 LIMIT 1",
+      [eventId]
+    );
+    return result.rows.length > 0;
+  }
+  return memoryProcessedWebhookEvents.has(eventId);
+}
+
+async function markWebhookEventProcessed(
+  eventId: string,
+  eventType: string
+): Promise<void> {
+  if (pool) {
+    await pool.query(
+      `INSERT INTO stripe_webhook_events (event_id, event_type)
+       VALUES ($1, $2)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [eventId, eventType]
+    );
+    return;
+  }
+  memoryProcessedWebhookEvents.add(eventId);
+}
+
+// GET /api/catalog — PUBLIC. Static module list + display prices.
+app.get("/api/catalog", (_req, res) => {
+  return res.json({
+    currency: "usd",
+    modules: getModuleCatalog(process.env)
+  });
+});
+
+// POST /api/checkout/create — PUBLIC (auth-less) + light IP rate limit.
+// The client selects catalog keys and its future account credentials. It
+// never supplies a company id; the server-held mapping below is the only
+// authority the webhook will use.
+app.post("/api/checkout/create", async (req, res) => {
+  const rate = checkoutCreateLimiter.check(checkoutClientKey(req));
+  if (!rate.allowed) {
+    res.setHeader("Retry-After", String(Math.ceil(rate.retryAfterMs / 1000)));
+    return res.status(429).json({
+      error: "Too many checkout attempts. Please wait and try again.",
+      retry_after_ms: rate.retryAfterMs
+    });
+  }
+
+  try {
+    const body = req.body || {};
+    const moduleKeys = normalizeModuleKeys(body.moduleKeys ?? body.module_keys);
+    if (!moduleKeys) {
+      return res.status(400).json({
+        error: "Select at least one valid module from the catalog.",
+        allowed_modules: MODULE_CATALOG.map((entry) => entry.key)
+      });
+    }
+    if (body.termsAccepted !== true) {
+      return res.status(400).json({
+        error:
+          "Acceptance of the Terms of Service and Privacy Policy is required to create your plant."
+      });
+    }
+
+    const companyName =
+      typeof body.companyName === "string" && body.companyName.trim()
+        ? body.companyName.trim()
+        : typeof body.plantCompanyName === "string" && body.plantCompanyName.trim()
+          ? body.plantCompanyName.trim()
+          : "";
+    const username =
+      typeof body.username === "string" ? body.username.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    const email =
+      typeof body.email === "string" && body.email.trim()
+        ? body.email.trim()
+        : null;
+
+    if (!companyName) {
+      return res.status(400).json({ error: "Missing required field: companyName" });
+    }
+    if (!username) {
+      return res.status(400).json({ error: "Missing required field: username" });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({
+        error: "Password must be at least 8 characters."
+      });
+    }
+
+    if (pool) {
+      const exists = await pool.query(
+        "SELECT id FROM users WHERE LOWER(username) = $1 LIMIT 1",
+        [username]
+      );
+      if (exists.rows.length > 0) {
+        return res.status(409).json({ error: "Username is already taken" });
+      }
+    } else if (
+      memoryUsers.some((user) => String(user.username).toLowerCase() === username)
+    ) {
+      return res.status(409).json({ error: "Username is already taken" });
+    }
+
+    const checkoutRef = crypto.randomBytes(12).toString("hex");
+    const origin =
+      req.headers.origin || process.env.APP_URL || "http://localhost:3000";
+    const testMode = isStripeTestMode(process.env);
+
+    let sessionId: string;
+    let sessionUrl: string | null;
+    if (testMode) {
+      const mock = createMockCheckoutSession(origin);
+      sessionId = mock.id;
+      sessionUrl = mock.url;
+    } else {
+      const catalog = getModuleCatalog(process.env);
+      const lineItems = moduleKeys.map((moduleKey) => {
+        const entry = catalog.find((item) => item.key === moduleKey);
+        if (!entry?.stripe_price_id) {
+          throw new Error(
+            `Stripe price is not configured for the "${moduleKey}" module.`
+          );
+        }
+        return { price: entry.stripe_price_id, quantity: 1 };
+      });
+      const stripe = getStripe();
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items: lineItems,
+        mode: "subscription",
+        success_url: `${origin}/storefront?checkout=success&checkout_session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${origin}/storefront?checkout=cancel`,
+        client_reference_id: checkoutRef,
+        metadata: {
+          checkout_ref: checkoutRef,
+          module_keys: moduleKeys.join(",")
+        }
+      });
+      sessionId = session.id;
+      sessionUrl = session.url;
+    }
+
+    if (!sessionId) {
+      throw new Error("Stripe did not return a checkout session id.");
+    }
+
+    const passwordHash = await bcryptHashPassword(password);
+    if (pool) {
+      await pool.query(
+        `INSERT INTO checkout_pending_provisioning
+           (checkout_session_id, checkout_ref, company_name, admin_username,
+            admin_email, password_hash, terms_accepted, module_keys, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+         ON CONFLICT (checkout_session_id) DO NOTHING`,
+        [
+          sessionId,
+          checkoutRef,
+          companyName,
+          username,
+          email,
+          passwordHash,
+          true,
+          moduleKeys
+        ]
+      );
+    } else {
+      memoryPendingCheckouts.push({
+        checkout_session_id: sessionId,
+        checkout_ref: checkoutRef,
+        company_name: companyName,
+        admin_username: username,
+        admin_email: email,
+        password_hash: passwordHash,
+        terms_accepted: true,
+        module_keys: moduleKeys,
+        stripe_subscription_id: null,
+        stripe_customer_id: null,
+        company_id: null,
+        admin_user_id: null,
+        plant_id: null,
+        status: "pending",
+        created_at: new Date(),
+        updated_at: new Date()
+      });
+    }
+
+    return res.status(201).json({
+      checkout_session_id: sessionId,
+      url: sessionUrl,
+      modules: moduleKeys
+    });
+  } catch (error: any) {
+    console.error("[checkout/create] failed:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to create checkout session."
+    });
+  }
+});
+
+// POST /api/stripe/webhook — PUBLIC only in the sense that Stripe cannot carry
+// a session cookie. Authenticity is the signature (or the strictly gated test
+// bypass). Provisioning reads the server-held mapping, never client fields.
+app.post("/api/stripe/webhook", async (req: any, res) => {
+  const signatureHeader = req.headers["stripe-signature"];
+  const signature =
+    typeof signatureHeader === "string" ? signatureHeader : undefined;
+  const secret = process.env.STRIPE_WEBHOOK_SECRET?.trim() || undefined;
+  const testMode = isStripeTestMode(process.env);
+
+  let stripe: Stripe | null = null;
+  if (!testMode) {
+    try {
+      stripe = getStripe();
+    } catch (error: any) {
+      console.error("[stripe/webhook] Stripe not configured:", error?.message);
+      return res.status(500).send("Stripe not configured.");
+    }
+  }
+
+  let event: any;
+  try {
+    event = resolveStripeWebhookEvent({
+      isTestMode: testMode,
+      rawBody: req.rawBody,
+      signature,
+      secret,
+      parsedBody: req.body,
+      constructEvent: (rawBody, sig, webhookSecret) => {
+        if (!stripe) throw new Error("Stripe is not configured.");
+        return stripe.webhooks.constructEvent(rawBody as Buffer, sig, webhookSecret);
+      }
+    });
+  } catch (error: any) {
+    console.error("[stripe/webhook] signature verification failed:", error?.message);
+    return res.status(400).send(`Webhook Error: ${error?.message || "invalid signature"}`);
+  }
+
+  if (!event || typeof event !== "object") {
+    return res.status(400).send("Webhook Error: empty event payload");
+  }
+
+  const eventType = String(event.type || "");
+  const eventObject = event.data?.object || {};
+  const eventId = String(
+    event.id || `${eventType}:${eventObject.id || "unknown"}`
+  );
+
+  try {
+    if (await isWebhookEventProcessed(eventId)) {
+      return res.json({ received: true, duplicate: true });
+    }
+
+    let provisioned: any = null;
+
+    if (eventType === "checkout.session.completed") {
+      const checkoutSessionId =
+        typeof eventObject.id === "string" ? eventObject.id : "";
+      const subscriptionId = stripeObjectId(eventObject.subscription);
+      const customerId = stripeObjectId(eventObject.customer);
+
+      let pending = checkoutSessionId
+        ? await findPendingBySession(checkoutSessionId)
+        : null;
+      if (!pending && typeof eventObject.metadata?.checkout_ref === "string") {
+        pending = await findPendingByRef(eventObject.metadata.checkout_ref);
+      }
+      if (pending) {
+        await stampPendingCheckoutStripe(pending, subscriptionId, customerId);
+        provisioned = await provisionPendingCheckout(
+          pending,
+          subscriptionId,
+          customerId
+        );
+      }
+    } else if (eventType === "invoice.paid") {
+      const subscriptionId =
+        stripeObjectId(eventObject.subscription) ||
+        stripeObjectId(eventObject.parent?.subscription_details?.subscription);
+      const customerId = stripeObjectId(eventObject.customer);
+
+      const pending = subscriptionId
+        ? await findPendingBySubscription(subscriptionId)
+        : null;
+      if (pending) {
+        await stampPendingCheckoutStripe(pending, subscriptionId, customerId);
+        provisioned = await provisionPendingCheckout(
+          pending,
+          subscriptionId,
+          customerId
+        );
+      }
+    }
+
+    await markWebhookEventProcessed(eventId, eventType);
+    return res.json({
+      received: true,
+      ...(provisioned
+        ? {
+            provisioned: {
+              company_id: provisioned.companyId,
+              modules: provisioned.moduleKeys
+            }
+          }
+        : {})
+    });
+  } catch (error: any) {
+    console.error("[stripe/webhook] handler failed:", error);
+    return res.status(500).json({
+      error: error?.message || "Webhook handling failed"
+    });
+  }
+});
+
+// GET /api/entitlements — session-scoped module list for nav/router gating.
+app.get("/api/entitlements", async (req, res) => {
+  const companyId = requestTenantId(req);
+  if (companyId == null) {
+    return res.status(403).json({ error: "Tenant context is required" });
+  }
+  try {
+    let rows: any[];
+    if (pool) {
+      const activePool = pool;
+      rows = await getEntitlements(companyId, {
+        query: (text, params) => activePool.query(text, params)
+      });
+    } else {
+      rows = memoryEntitlements
+        .filter(
+          (entry) =>
+            Number(entry.company_id) === companyId && entry.status === "active"
+        )
+        .map((entry) => ({
+          company_id: entry.company_id,
+          module_key: entry.module_key,
+          status: entry.status,
+          stripe_subscription_id: entry.stripe_subscription_id ?? null
+        }));
+    }
+    return res.json({
+      company_id: companyId,
+      modules: rows,
+      active_modules: rows.map((row) => String(row.module_key))
+    });
+  } catch (error: any) {
+    console.error("[entitlements] read failed:", error);
+    return res.status(500).json({ error: "Failed to read entitlements" });
+  }
+});
+
 // STRIPE PAYMENT INTEGRATION ENDPOINTS
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
-    const { priceId, companyId } = req.body;
+    const { priceId } = req.body;
+    // Tenant comes from the verified session; a client-supplied companyId is
+    // never an authority for whose billing profile is touched.
+    const companyId = requestTenantId(req);
     if (!priceId) {
       return res.status(400).json({ error: "Missing required field: priceId" });
     }
-    if (!companyId) {
-      return res.status(400).json({ error: "Missing required field: companyId" });
+    if (companyId == null) {
+      return res.status(403).json({ error: "Tenant context is required" });
     }
 
     const stripe = getStripe();
@@ -6438,9 +7103,10 @@ app.post("/api/create-checkout-session", async (req, res) => {
 
 app.post("/api/create-portal-session", async (req, res) => {
   try {
-    const { companyId } = req.body;
-    if (!companyId) {
-      return res.status(400).json({ error: "Missing companyId" });
+    // Tenant from the session only (same rule as the storefront checkout).
+    const companyId = requestTenantId(req);
+    if (companyId == null) {
+      return res.status(403).json({ error: "Tenant context is required" });
     }
 
     let customerId: string | null = null;
@@ -6475,7 +7141,11 @@ app.post("/api/create-portal-session", async (req, res) => {
 
 app.post("/api/webhook", async (req: any, res) => {
   const sig = req.headers["stripe-signature"];
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "whsec_MBxEkWQllLC7XikqXBqKfcBJYWBbHvdz";
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
+  if (!webhookSecret) {
+    console.error("[legacy /api/webhook] STRIPE_WEBHOOK_SECRET is not configured; refusing unsigned webhook.");
+    return res.status(500).send("Webhook secret not configured.");
+  }
 
   let event: Stripe.Event;
 
@@ -7155,6 +7825,13 @@ let memoryAnalysisHistory: any[] = [
   }
 ];
 
+// STOREFRONT — module entitlements and the server-held checkout mapping.
+// These are tenant data and start empty; they are populated only by a paid
+// webhook (or the explicit memory fallback used by offline tests).
+let memoryEntitlements: any[] = [];
+let memoryPendingCheckouts: any[] = [];
+const memoryProcessedWebhookEvents = new Set<string>();
+
 // AR-29 rule 5 - the all-tenant demo store must never be served unless the
 // explicit dev seed gate is on (and never in production). Without it every
 // tenant collection starts honestly empty; tenants come only from signup.
@@ -7179,6 +7856,24 @@ function requestTenantId(req: any): number | null {
   const id = Number(raw);
   return Number.isFinite(id) ? id : null;
 }
+
+// STOREFRONT — requireModule() resolves through this host injector so both
+// the DB and memory boots consult the same entitlement store. The company id
+// always arrives from the verified session, never from a client field.
+registerModuleAccessResolver(async (companyId, moduleKey) => {
+  if (pool) {
+    const activePool = pool;
+    return isModuleActive(companyId, moduleKey, {
+      query: (text, params) => activePool.query(text, params)
+    });
+  }
+  return memoryEntitlements.some(
+    (row) =>
+      Number(row.company_id) === companyId &&
+      String(row.module_key) === moduleKey &&
+      row.status === "active"
+  );
+});
 
 function memoryTenantPlantIds(tenantId: number | null): number[] {
   if (tenantId == null) return [];
@@ -9525,9 +10220,12 @@ app.delete('/api/company/users/:userId', async (req, res) => {
 // POST /api/create-checkout-session - Create a Stripe checkout session
 app.post("/api/create-checkout-session", async (req, res) => {
   try {
-    const { priceId, companyId } = req.body;
+    const { priceId } = req.body;
+    const companyId = requestTenantId(req);
     if (!priceId) return res.status(400).json({ error: "Missing priceId" });
-    if (!companyId) return res.status(400).json({ error: "Missing companyId" });
+    if (companyId == null) {
+      return res.status(403).json({ error: "Tenant context is required" });
+    }
 
     const stripe = getStripeInstance();
 
@@ -9591,8 +10289,10 @@ app.post("/api/create-checkout-session", async (req, res) => {
 // POST /api/create-portal-session - Create a Stripe Customer Portal session
 app.post("/api/create-portal-session", async (req, res) => {
   try {
-    const { companyId } = req.body;
-    if (!companyId) return res.status(400).json({ error: "Missing companyId" });
+    const companyId = requestTenantId(req);
+    if (companyId == null) {
+      return res.status(403).json({ error: "Tenant context is required" });
+    }
 
     let customerId: string | null = null;
     if (pool) {
@@ -9634,8 +10334,17 @@ app.post("/api/create-portal-session", async (req, res) => {
 // POST /api/webhook - Listen for Stripe events
 app.post("/api/webhook", async (req: any, res) => {
   const sig = req.headers["stripe-signature"];
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
+
+  if (!webhookSecret || typeof sig !== "string") {
+    console.error(
+      "[legacy /api/webhook] missing STRIPE_WEBHOOK_SECRET or stripe-signature; refusing unsigned webhook."
+    );
+    return res
+      .status(400)
+      .send("Webhook Error: a valid Stripe signature is required.");
+  }
+
   let stripe: Stripe;
   try {
     stripe = getStripeInstance();
@@ -9647,12 +10356,7 @@ app.post("/api/webhook", async (req: any, res) => {
   let event: any;
 
   try {
-    if (webhookSecret && sig) {
-      event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
-    } else {
-      console.warn("⚠️ Bypassing Stripe Webhook Signature Verification due to missing webhookSecret");
-      event = req.body;
-    }
+    event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
   } catch (err: any) {
     console.error(`Webhook signature verification failed:`, err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -12652,6 +13356,64 @@ async function initializeDatabase() {
     } catch (bootstrapErr) {
       console.error("❌ [bootstrap] First-admin bootstrap failed:", bootstrapErr);
     }
+
+    // ------------------------------------------------------------------
+    // STOREFRONT (E1/E3/E4) — mirror of migrations/020_entitlements.sql.
+    // Module entitlements only (no count/capacity columns), the server-held
+    // checkout mapping, and the webhook replay ledger. DEP-1 style:
+    // CREATE TABLE/INDEX IF NOT EXISTS are idempotent on every boot.
+    // ------------------------------------------------------------------
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tenant_entitlements (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        module_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'expired', 'canceled')),
+        stripe_subscription_id TEXT UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (company_id, module_key)
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_tenant_entitlements_company ON tenant_entitlements (company_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_tenant_entitlements_status ON tenant_entitlements (company_id, status);"
+    );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS checkout_pending_provisioning (
+        id SERIAL PRIMARY KEY,
+        checkout_session_id TEXT NOT NULL UNIQUE,
+        checkout_ref TEXT NOT NULL UNIQUE,
+        company_name TEXT NOT NULL,
+        admin_username TEXT NOT NULL,
+        admin_email TEXT,
+        password_hash TEXT NOT NULL,
+        terms_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+        module_keys TEXT[] NOT NULL DEFAULT '{}',
+        stripe_subscription_id TEXT UNIQUE,
+        stripe_customer_id TEXT,
+        company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+        admin_user_id INTEGER,
+        plant_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'provisioning', 'provisioned', 'failed')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_checkout_pending_status ON checkout_pending_provisioning (status);"
+    );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS stripe_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT,
+        processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
 
     // ------------------------------------------------------------------
     // AR-29 — auth sessions, invites, structured roles, tenant rollout.

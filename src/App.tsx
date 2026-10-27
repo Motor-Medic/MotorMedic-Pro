@@ -9,6 +9,7 @@ import ScrollToTop from "./components/ScrollToTop";
 import AppLink from "./components/AppLink";
 import RouteSkeleton from "./components/suspense/RouteSkeleton";
 import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigation";
+import { isTabEntitled } from "./lib/moduleNav";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
   Sun, Moon, Sparkles, FileText, Target, Calendar, Layers, BarChart3
@@ -62,6 +63,8 @@ const loadFMEA = () => import("./components/FMEA");
 const FMEA = lazy(loadFMEA);
 const loadReliabilityScorecard = () => import("./components/scorecard/ReliabilityScorecard");
 const ReliabilityScorecard = lazy(loadReliabilityScorecard);
+const loadStorefront = () => import("./components/Storefront");
+const Storefront = lazy(loadStorefront);
 
 /** Route chunks eligible for targeted prefetch — every route but the eager core flow. */
 const ROUTE_LOADERS: Partial<Record<AppTab, () => Promise<unknown>>> = {
@@ -164,7 +167,49 @@ export default function App() {
     localStorage.setItem("reliability_selected_company_id", String(selectedCompanyId));
   }, [selectedCompanyId]);
 
+  // STOREFRONT (E5) — nav/router entries come from the session company's
+  // active modules. Until the read lands, gated entries stay hidden rather
+  // than flashing a module the tenant has not paid for.
+  const [activeModules, setActiveModules] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!user) {
+      setActiveModules(null);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/entitlements", { credentials: "same-origin" })
+      .then(async (res) => {
+        if (!res.ok) return { active_modules: [] };
+        return res.json();
+      })
+      .then((payload) => {
+        if (cancelled) return;
+        setActiveModules(
+          Array.isArray(payload?.active_modules)
+            ? payload.active_modules.map((key: unknown) => String(key))
+            : []
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setActiveModules([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   const [activeTab, setActiveTab] = useState<AppTab>(() => tabFromPath(window.location.pathname) ?? "dashboard");
+
+  useEffect(() => {
+    if (!user || activeModules === null) return;
+    if (!isTabEntitled(activeTab, activeModules)) {
+      navigateToTab("dashboard");
+    }
+  }, [user, activeModules, activeTab]);
+
+  const canSeeTab = (tab: AppTab): boolean =>
+    isTabEntitled(tab, activeModules ?? []);
+
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("motormedic_theme") || "dark";
   });
@@ -682,6 +727,26 @@ const updated = [newReport, ...reports];
     );
   }
 
+  if (!user && (currentPath === "/storefront" || currentPath === "/pricing")) {
+    return (
+      <>
+        <ScrollToTop routeKey={scrollRouteKey} />
+        <Suspense
+          fallback={
+            <div className="min-h-screen w-full flex items-center justify-center bg-slate-950">
+              <div className="h-9 w-9 rounded-full border-2 border-emerald-500/30 border-t-emerald-400 animate-spin" />
+            </div>
+          }
+        >
+          <Storefront
+            onLoginSuccess={(u) => setUser(u)}
+            onShowLegal={(tab) => setShowLegalDoc(tab)}
+          />
+        </Suspense>
+      </>
+    );
+  }
+
   if (!user) {
     return (
       <>
@@ -944,7 +1009,7 @@ const updated = [newReport, ...reports];
           {/* MONITORING & ANALYTICS */}
           <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Monitoring & Analytics</p>
           <div className="space-y-1">
-            {user?.role !== 'mechanic' && (
+            {user?.role !== 'mechanic' && canSeeTab("diagnose") && (
               <AppLink
                 href={TAB_TO_PATH.diagnose}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
@@ -958,7 +1023,7 @@ const updated = [newReport, ...reports];
               </AppLink>
             )}
 
-            {user?.role !== 'mechanic' && (
+            {user?.role !== 'mechanic' && canSeeTab("trends") && (
               <AppLink
                 href={TAB_TO_PATH.trends}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
@@ -972,7 +1037,7 @@ const updated = [newReport, ...reports];
               </AppLink>
             )}
 
-            {user?.role !== 'mechanic' && (
+            {user?.role !== 'mechanic' && canSeeTab("sensors") && (
               <AppLink
                 href={TAB_TO_PATH.sensors}
                 className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
@@ -998,48 +1063,54 @@ const updated = [newReport, ...reports];
               <span>Automated Data Migration</span>
             </AppLink>
 
-            <AppLink
-              href={TAB_TO_PATH["multi-tech"]}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "multi-tech" && !selectedReport
-                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-              }`}
-              id="sidebar-multi-tech-btn"
-            >
-              <Layers className="w-4.5 h-4.5" />
-              <span>Multi-Tech Fusion</span>
-            </AppLink>
+            {canSeeTab("multi-tech") && (
+              <AppLink
+                href={TAB_TO_PATH["multi-tech"]}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "multi-tech" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+                id="sidebar-multi-tech-btn"
+              >
+                <Layers className="w-4.5 h-4.5" />
+                <span>Multi-Tech Fusion</span>
+              </AppLink>
+            )}
           </div>
 
           {/* RELIABILITY ENGINEERING */}
           <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Reliability Engineering</p>
           <div className="space-y-1">
-            <AppLink
-              href={TAB_TO_PATH.analysis}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "analysis" && !selectedReport
-                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-              }`}
-              id="sidebar-analysis-btn"
-            >
-              <FileText className="w-4.5 h-4.5" />
-              <span>Analysis Reports</span>
-            </AppLink>
+            {canSeeTab("analysis") && (
+              <AppLink
+                href={TAB_TO_PATH.analysis}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "analysis" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+                id="sidebar-analysis-btn"
+              >
+                <FileText className="w-4.5 h-4.5" />
+                <span>Analysis Reports</span>
+              </AppLink>
+            )}
 
-            <AppLink
-              href={TAB_TO_PATH.rca}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                activeTab === "rca" && !selectedReport
-                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
-              }`}
-              id="sidebar-rca-btn"
-            >
-              <Target className="w-4.5 h-4.5" />
-              <span>Root Cause Analysis</span>
-            </AppLink>
+            {canSeeTab("rca") && (
+              <AppLink
+                href={TAB_TO_PATH.rca}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                  activeTab === "rca" && !selectedReport
+                    ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                    : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+                }`}
+                id="sidebar-rca-btn"
+              >
+                <Target className="w-4.5 h-4.5" />
+                <span>Root Cause Analysis</span>
+              </AppLink>
+            )}
 
             <AppLink
               href={TAB_TO_PATH.fmea}
@@ -1176,6 +1247,27 @@ const updated = [newReport, ...reports];
               onBack={() => setSelectedReport(null)}
               onDelete={handleDeleteReport}
             />
+          ) : !isTabEntitled(activeTab, activeModules ?? []) ? (
+            <div
+              className="flex flex-col items-center justify-center py-20 text-center gap-3"
+              id="module-not-entitled"
+            >
+              <ShieldAlert className="h-10 w-10 text-amber-400" />
+              <h2 className="text-lg font-semibold text-slate-200">
+                Module not enabled
+              </h2>
+              <p className="text-sm text-slate-400 max-w-sm">
+                This module is not part of your current subscription. The
+                server also enforces this entitlement on the matching APIs.
+              </p>
+              <button
+                type="button"
+                onClick={() => navigateToTab("dashboard")}
+                className="mt-2 px-4 py-2 rounded-xl bg-yellow-400 text-slate-950 text-xs font-bold hover:bg-yellow-500 transition-colors"
+              >
+                Back to dashboard
+              </button>
+            </div>
           ) : activeTab === "dashboard" ? (
             <Dashboard
               companyId={selectedCompanyId}
@@ -1338,41 +1430,47 @@ const updated = [newReport, ...reports];
           <span className="text-[9px]">Assets</span>
         </button>
 
-        <button
-          onClick={() => {
-            navigateToTab("diagnose");
-          }}
-          className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
-            activeTab === "diagnose" && !selectedReport ? "text-yellow-400" : "text-slate-400"
-          }`}
-        >
-          <Wrench className="w-5 h-5" />
-          <span className="text-[9px]">Diagnose</span>
-        </button>
+        {canSeeTab("diagnose") && (
+          <button
+            onClick={() => {
+              navigateToTab("diagnose");
+            }}
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
+              activeTab === "diagnose" && !selectedReport ? "text-yellow-400" : "text-slate-400"
+            }`}
+          >
+            <Wrench className="w-5 h-5" />
+            <span className="text-[9px]">Diagnose</span>
+          </button>
+        )}
 
-        <button
-          onClick={() => {
-            navigateToTab("sensors");
-          }}
-          className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
-            activeTab === "sensors" && !selectedReport ? "text-yellow-400" : "text-slate-400"
-          }`}
-        >
-          <Compass className="w-5 h-5" />
-          <span className="text-[9px]">Mounting</span>
-        </button>
+        {canSeeTab("sensors") && (
+          <button
+            onClick={() => {
+              navigateToTab("sensors");
+            }}
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
+              activeTab === "sensors" && !selectedReport ? "text-yellow-400" : "text-slate-400"
+            }`}
+          >
+            <Compass className="w-5 h-5" />
+            <span className="text-[9px]">Mounting</span>
+          </button>
+        )}
 
-        <button
-          onClick={() => {
-            navigateToTab("trends");
-          }}
-          className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
-            activeTab === "trends" && !selectedReport ? "text-yellow-400" : "text-slate-400"
-          }`}
-        >
-          <LineChart className="w-5 h-5" />
-          <span className="text-[9px]">Trends</span>
-        </button>
+        {canSeeTab("trends") && (
+          <button
+            onClick={() => {
+              navigateToTab("trends");
+            }}
+            className={`flex flex-col items-center gap-1 py-1 px-2.5 rounded-lg text-xs font-semibold ${
+              activeTab === "trends" && !selectedReport ? "text-yellow-400" : "text-slate-400"
+            }`}
+          >
+            <LineChart className="w-5 h-5" />
+            <span className="text-[9px]">Trends</span>
+          </button>
+        )}
 
         <button
           onClick={() => {
@@ -1443,7 +1541,7 @@ const updated = [newReport, ...reports];
 
               <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Monitoring & Analytics</p>
               <div className="space-y-1.5">
-                {user?.role !== 'mechanic' && (
+                {user?.role !== 'mechanic' && canSeeTab("diagnose") && (
                   <AppLink
                     href={TAB_TO_PATH.diagnose}
                     onClick={() => setIsHamburgerOpen(false)}
@@ -1458,7 +1556,7 @@ const updated = [newReport, ...reports];
                   </AppLink>
                 )}
 
-                {user?.role !== 'mechanic' && (
+                {user?.role !== 'mechanic' && canSeeTab("trends") && (
                   <AppLink
                     href={TAB_TO_PATH.trends}
                     onClick={() => setIsHamburgerOpen(false)}
@@ -1473,7 +1571,7 @@ const updated = [newReport, ...reports];
                   </AppLink>
                 )}
 
-                {user?.role !== 'mechanic' && (
+                {user?.role !== 'mechanic' && canSeeTab("sensors") && (
                   <AppLink
                     href={TAB_TO_PATH.sensors}
                     onClick={() => setIsHamburgerOpen(false)}
@@ -1501,50 +1599,56 @@ const updated = [newReport, ...reports];
                   <span>Automated Data Migration</span>
                 </AppLink>
 
-                <AppLink
-                  href={TAB_TO_PATH["multi-tech"]}
-                  onClick={() => setIsHamburgerOpen(false)}
-                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "multi-tech" && !selectedReport
-                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                      : "text-slate-300 hover:text-white active:bg-slate-900"
-                  }`}
-                  id="drawer-multi-tech-btn"
-                >
-                  <Layers className="w-5 h-5 shrink-0" />
-                  <span>Multi-Tech Fusion</span>
-                </AppLink>
+                {canSeeTab("multi-tech") && (
+                  <AppLink
+                    href={TAB_TO_PATH["multi-tech"]}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "multi-tech" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                    id="drawer-multi-tech-btn"
+                  >
+                    <Layers className="w-5 h-5 shrink-0" />
+                    <span>Multi-Tech Fusion</span>
+                  </AppLink>
+                )}
               </div>
 
               <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Reliability Engineering</p>
               <div className="space-y-1.5">
-                <AppLink
-                  href={TAB_TO_PATH.analysis}
-                  onClick={() => setIsHamburgerOpen(false)}
-                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "analysis" && !selectedReport
-                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                      : "text-slate-300 hover:text-white active:bg-slate-900"
-                  }`}
-                  id="drawer-analysis-btn"
-                >
-                  <FileText className="w-5 h-5 shrink-0" />
-                  <span>Analysis Reports</span>
-                </AppLink>
+                {canSeeTab("analysis") && (
+                  <AppLink
+                    href={TAB_TO_PATH.analysis}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "analysis" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                    id="drawer-analysis-btn"
+                  >
+                    <FileText className="w-5 h-5 shrink-0" />
+                    <span>Analysis Reports</span>
+                  </AppLink>
+                )}
 
-                <AppLink
-                  href={TAB_TO_PATH.rca}
-                  onClick={() => setIsHamburgerOpen(false)}
-                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
-                    activeTab === "rca" && !selectedReport
-                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
-                      : "text-slate-300 hover:text-white active:bg-slate-900"
-                  }`}
-                  id="drawer-rca-btn"
-                >
-                  <Target className="w-5 h-5 shrink-0" />
-                  <span>Root Cause Analysis</span>
-                </AppLink>
+                {canSeeTab("rca") && (
+                  <AppLink
+                    href={TAB_TO_PATH.rca}
+                    onClick={() => setIsHamburgerOpen(false)}
+                    className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                      activeTab === "rca" && !selectedReport
+                        ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                        : "text-slate-300 hover:text-white active:bg-slate-900"
+                    }`}
+                    id="drawer-rca-btn"
+                  >
+                    <Target className="w-5 h-5 shrink-0" />
+                    <span>Root Cause Analysis</span>
+                  </AppLink>
+                )}
 
                 <AppLink
                   href={TAB_TO_PATH.fmea}

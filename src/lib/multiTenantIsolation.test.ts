@@ -36,9 +36,32 @@ const harness = vi.hoisted(() => {
     return { regex: new RegExp(`^${source}$`), keys };
   };
 
+  const compose = (middleware: Handler[], terminal: Handler): Handler => {
+    return (req: any, res: any, next?: any) => {
+      let index = -1;
+      const dispatch = (position: number): unknown => {
+        if (position <= index) {
+          throw new Error("next() called multiple times");
+        }
+        index = position;
+        const fn = middleware[position];
+        if (!fn) return terminal(req, res, next);
+        return fn(req, res, () => dispatch(position + 1));
+      };
+      return dispatch(0);
+    };
+  };
+
   const register = (method: string, args: unknown[]) => {
-    const handler = args[args.length - 1] as Handler;
-    const paths = args.slice(0, -1).flat() as string[];
+    const terminal = args[args.length - 1] as Handler;
+    const leading = args.slice(0, -1);
+    const paths = leading
+      .filter((item): item is string | string[] => typeof item === "string" || Array.isArray(item))
+      .flat();
+    const middleware = leading.filter(
+      (item): item is Handler => typeof item === "function"
+    );
+    const handler = compose(middleware, terminal);
     for (const pattern of paths) {
       if (typeof pattern !== "string") continue;
       const { regex, keys } = makeRegex(pattern);
@@ -215,6 +238,9 @@ async function registerTenant(label: string): Promise<Tenant> {
 
 let tenantA: Tenant;
 let tenantB: Tenant;
+let storeTenant: Tenant;
+let storePassword: string;
+let storeCheckoutSessionId: string;
 let bSystemRouteId: number;
 let bAssetId: number;
 let bComponentId: number;
@@ -263,6 +289,55 @@ beforeAll(async () => {
   });
   expect(mpRes.statusCode).toBe(201);
   bMeasurementPointId = mpRes.body.id;
+
+  // STOREFRONT — public build checkout + webhook provisions a third tenant.
+  // The checkout body deliberately carries a FORGED company_id (tenant A's)
+  // to prove the mapping/provisioning ignores client tenancy.
+  storePassword = "store-password-123";
+  const storeUsername = `store_${run}`;
+  const checkoutRes = await callApi("POST", "/api/checkout/create", {
+    body: {
+      moduleKeys: ["vibration", "oil"],
+      companyName: `Storefront Co ${run}`,
+      username: storeUsername,
+      password: storePassword,
+      email: `store_${run}@example.com`,
+      termsAccepted: true,
+      company_id: tenantA.companyId
+    }
+  });
+  expect([200, 201]).toContain(checkoutRes.statusCode);
+  storeCheckoutSessionId = checkoutRes.body.checkout_session_id;
+  expect(typeof storeCheckoutSessionId).toBe("string");
+
+  const webhookRes = await callApi("POST", "/api/stripe/webhook", {
+    body: {
+      id: `evt_store_${run}`,
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          id: storeCheckoutSessionId,
+          subscription: `sub_store_${run}`,
+          customer: `cus_store_${run}`
+        }
+      }
+    }
+  });
+  expect(webhookRes.statusCode).toBe(200);
+
+  const loginRes = await callApi("POST", "/api/auth/login", {
+    body: { username: storeUsername, password: storePassword }
+  });
+  expect(loginRes.statusCode).toBe(200);
+  storeTenant = {
+    username: storeUsername,
+    companyName: `Storefront Co ${run}`,
+    companyId: loginRes.body.company_id,
+    userId: loginRes.body.id,
+    plantId: loginRes.body.plant_id,
+    cookie: cookieFrom(loginRes),
+    termsAcceptedAt: loginRes.body.terms_accepted_at
+  };
 });
 
 describe("Q1 - self-serve signup creates an isolated tenant shell", () => {
@@ -613,6 +688,131 @@ describe("Q2 - legal assent and dev-seed/bootstrap do not cross tenant boundarie
       expect(body).toContain("isDevAuthSeedEnabled(process.env)");
     }
   );
+});
+
+describe("E3/E4 - storefront checkout provisions a NEW, isolated tenant", () => {
+  it("GET /api/catalog is public and lists the module catalog keys", async () => {
+    const res = await callApi("GET", "/api/catalog");
+    expect(res.statusCode).toBe(200);
+    const keys = (res.body.modules ?? []).map((module: any) => module.key);
+    expect(keys).toEqual(["vibration", "thermography", "ultrasound", "oil"]);
+    expect(res.body.modules.every((module: any) => module.price_cents > 0)).toBe(
+      true
+    );
+  });
+
+  it("checkout/create ignores a forged client company_id; webhook provisions the new company", () => {
+    // The forged tenant A id was sent in beforeAll. The paid tenant must not
+    // borrow A's company, plant, user or route.
+    expect(storeTenant.companyId).not.toBe(tenantA.companyId);
+    expect(storeTenant.companyId).not.toBe(tenantB.companyId);
+    expect(storeTenant.plantId).not.toBe(tenantA.plantId);
+    expect(storeTenant.plantId).not.toBe(tenantB.plantId);
+    expect(storeTenant.userId).not.toBe(tenantA.userId);
+    expect(storeTenant.userId).not.toBe(tenantB.userId);
+  });
+
+  it("provisioning creates company/user/plant scoped to the NEW company (no borrowed plant/route)", async () => {
+    const res = await callApi("GET", "/api/hierarchy", {
+      cookie: storeTenant.cookie
+    });
+    expect(res.statusCode).toBe(200);
+
+    const plants = res.body.plants ?? [];
+    expect(plants.length).toBeGreaterThan(0);
+    expect(new Set(plants.map((plant: any) => plant.company_id))).toEqual(
+      new Set([storeTenant.companyId])
+    );
+    expect(plants.map((plant: any) => plant.id)).not.toContain(tenantA.plantId);
+    expect(plants.map((plant: any) => plant.id)).not.toContain(tenantB.plantId);
+
+    const ownPlantIds = plants.map((plant: any) => plant.id);
+    const routes = res.body.routes ?? [];
+    expect(routes.length).toBeGreaterThan(0);
+    expect(
+      routes.every((route: any) => ownPlantIds.includes(route.plant_id))
+    ).toBe(true);
+    expect(routes.map((route: any) => route.id)).not.toContain(bSystemRouteId);
+
+    const assetNames = (res.body.assets ?? []).map((asset: any) => asset.name);
+    expect(assetNames).not.toContain(`B-only asset ${run}`);
+  });
+
+  it("terms assent is recorded for the NEW tenant user and remains per-tenant", async () => {
+    const storeSession = await callApi("GET", "/api/auth/session", {
+      cookie: storeTenant.cookie
+    });
+    const aSession = await callApi("GET", "/api/auth/session", {
+      cookie: tenantA.cookie
+    });
+    expect(storeSession.statusCode).toBe(200);
+    expect(aSession.statusCode).toBe(200);
+    expect(storeSession.body.company_id).toBe(storeTenant.companyId);
+    expect(aSession.body.company_id).toBe(tenantA.companyId);
+    expect(storeSession.body.terms_accepted_at).not.toBeNull();
+    expect(aSession.body.terms_accepted_at).not.toBeNull();
+    expect(storeSession.body.id).not.toBe(aSession.body.id);
+  });
+
+  it("entitlements are module-based: active module present, unpaid module absent/403", async () => {
+    const ent = await callApi("GET", "/api/entitlements", {
+      cookie: storeTenant.cookie
+    });
+    expect(ent.statusCode).toBe(200);
+    expect(ent.body.company_id).toBe(storeTenant.companyId);
+    expect(ent.body.active_modules).toContain("vibration");
+    expect(ent.body.active_modules).toContain("oil");
+    expect(ent.body.active_modules).not.toContain("thermography");
+
+    // Unpaid module: requireModule rejects before any AI/DB work.
+    const denied = await callApi("POST", "/api/analyze-thermography", {
+      cookie: storeTenant.cookie,
+      body: {}
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.body.code).toBe("MODULE_NOT_ENTITLED");
+
+    // Active module: the guard passes and the handler runs (memory mode has
+    // no pool, so the honest downstream answer is 503, never a 403).
+    const allowed = await callApi("POST", "/api/oil-analysis", {
+      cookie: storeTenant.cookie,
+      body: {}
+    });
+    expect(allowed.statusCode).not.toBe(403);
+    expect(allowed.statusCode).toBe(503);
+
+    // The nav builder omits the same unpaid module entry entirely.
+    const { visibleTabs } = await import("./moduleNav");
+    expect(visibleTabs(["dashboard", "trends", "analysis"], ["oil"])).toEqual([
+      "dashboard",
+      "analysis"
+    ]);
+  });
+
+  it("webhook replay is idempotent and does not create a second tenant", async () => {
+    const replay = await callApi("POST", "/api/stripe/webhook", {
+      body: {
+        id: `evt_store_${run}`,
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            id: storeCheckoutSessionId,
+            subscription: `sub_store_${run}`,
+            customer: `cus_store_${run}`
+          }
+        }
+      }
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.body.duplicate).toBe(true);
+
+    const loginAgain = await callApi("POST", "/api/auth/login", {
+      body: { username: storeTenant.username, password: storePassword }
+    });
+    expect(loginAgain.statusCode).toBe(200);
+    expect(loginAgain.body.company_id).toBe(storeTenant.companyId);
+    expect(loginAgain.body.id).toBe(storeTenant.userId);
+  });
 });
 
 function readServer(): string {

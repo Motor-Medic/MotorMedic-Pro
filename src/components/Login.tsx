@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { Shield, Key, User, ArrowRight, Activity, AlertCircle, Loader2, Building } from "lucide-react";
+import { Shield, Key, User, ArrowRight, Activity, AlertCircle, Loader2, Building, Sparkles } from "lucide-react";
+import { navigateApp } from "../navigation";
 
 export interface UserSession {
   id: number;
@@ -376,6 +377,17 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
             >
               {isRegister ? "Already registered? Sign In" : "Need an account? Sign Up & Setup Plant"}
             </button>
+            {!isRegister && (
+              <button
+                type="button"
+                onClick={() => navigateApp("/storefront")}
+                className="mt-2 w-full flex items-center justify-center gap-1.5 text-yellow-400 hover:text-yellow-300 text-xs font-semibold hover:underline transition-colors bg-transparent border-none p-0 outline-none cursor-pointer"
+                id="login-storefront-link"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                Build your own plant &amp; pay
+              </button>
+            )}
           </div>
 
           {/* Demo Credentials Badge — development only (AR-29: no demo
