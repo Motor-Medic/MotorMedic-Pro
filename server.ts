@@ -101,6 +101,10 @@ import {
 } from "./src/lib/auth";
 import { connectWithRetry } from "./src/lib/db";
 import {
+  buildPoolConfig,
+  resolveBootTlsMode
+} from "./src/lib/dbConnection";
+import {
   SYSTEM_ROUTE_NAME,
   findOrCreateSimpleModeRoute,
   findOrCreateTenantPlant,
@@ -142,26 +146,14 @@ assertProductionAuthEnv(process.env);
 assertProductionSquareMode(process.env);
 assertSquareEnvironmentCoherence(process.env);
 
-// Initialize Pool using DATABASE_URL
+// Initialize Pool using DATABASE_URL. TLS-1: pool creation is deferred until
+// setupServer has resolved the boot TLS mode (probe or DATABASE_SSLMODE), so
+// the probe runs BEFORE the main pool is opened.
 const { Pool } = pg;
 const dbUrl = process.env.DATABASE_URL;
 let pool: pg.Pool | null = null;
 
-if (dbUrl) {
-  pool = new Pool({
-    connectionString: dbUrl,
-    connectionTimeoutMillis: 15000,
-    ssl: {
-      rejectUnauthorized: false
-    }
-  });
-  console.log("🔋 PostgreSQL connection pool initialized.");
-  
-  // Prevent unhandled pool errors
-  pool.on("error", (err) => {
-    console.error("Unexpected error on idle SQL pool client:", err);
-  });
-} else {
+if (!dbUrl) {
   console.warn("⚠️ DATABASE_URL is not configured. Database storage will be bypassed.");
 }
 
@@ -14953,6 +14945,24 @@ app.use("/api", (req, res) => {
 });
 
 async function setupServer() {
+  // TLS-1: resolve the TLS mode BEFORE opening the main pool. A verify-full
+  // probe runs first; if the certificate chain cannot be verified it degrades
+  // loudly to require (never bricks boot). DATABASE_SSLMODE overrides both.
+  const tlsMode = await resolveBootTlsMode({
+    databaseUrl: dbUrl,
+    env: process.env
+  });
+  if (dbUrl && tlsMode) {
+    pool = new Pool(buildPoolConfig(dbUrl, tlsMode));
+    console.log(
+      `🔋 PostgreSQL connection pool initialized (sslmode=${tlsMode}).`
+    );
+    // Prevent unhandled pool errors
+    pool.on("error", (err) => {
+      console.error("Unexpected error on idle SQL pool client:", err);
+    });
+  }
+
   // DEP-2 boot order (the real restart-loop fix): when DATABASE_URL is set
   // (production), AWAIT the DB connect-with-retry BEFORE app.listen so
   // Render never routes traffic — or passes /api/health — before the DB is

@@ -5,6 +5,10 @@
 
 import dotenv from "dotenv";
 import pg from "pg";
+import {
+  buildPoolConfig,
+  resolveTlsModeForPool
+} from "./dbConnection";
 
 dotenv.config();
 
@@ -18,13 +22,9 @@ function getPool(): pg.Pool {
     if (!dbUrl) {
       throw new Error("Database is not configured (DATABASE_URL).");
     }
-    pool = new Pool({
-      connectionString: dbUrl,
-      connectionTimeoutMillis: 15000,
-      ssl: {
-        rejectUnauthorized: false
-      }
-    });
+    pool = new Pool(
+      buildPoolConfig(dbUrl, resolveTlsModeForPool(process.env))
+    );
   }
   return pool;
 }

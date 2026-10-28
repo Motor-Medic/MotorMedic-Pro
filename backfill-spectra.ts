@@ -8,15 +8,18 @@
 import dotenv from "dotenv";
 import pg from "pg";
 import { synthesizeSpectrumFromPeaks } from "./src/lib/vibration/synthesizeSpectrum";
+import {
+  buildPoolConfig,
+  resolveTlsModeForPool
+} from "./src/lib/dbConnection";
 
 dotenv.config();
 
 const EXPECT_LACKING = 51;
 
-const pool = new pg.Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = new pg.Pool(
+  buildPoolConfig(process.env.DATABASE_URL ?? "", resolveTlsModeForPool())
+);
 
 function hasSynthesizedTrace(td: unknown): boolean {
   if (!td || typeof td !== "object" || Array.isArray(td)) return false;
