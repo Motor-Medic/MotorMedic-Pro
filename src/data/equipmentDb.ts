@@ -1047,7 +1047,10 @@ export const SITE_FACILITY_HOLDING_ASSET_ID = "site-facility-holding";
 /** Component host for collection points attached directly under the facility. */
 export const SITE_FACILITY_POINTS_COMP_ID = "site-facility-points";
 
-const DEFAULT_FACILITY_NAME = "Main Facility";
+// COPY-1 — visibly-placeholder token, never a plausible real facility name.
+// Used only before company/plant hydration; the crumb omits the leading
+// segment entirely when neither company.name nor plant.name resolves.
+const DEFAULT_FACILITY_NAME = "Unnamed Site";
 
 /**
  * Pins the store to exactly one non-deletable plant root named after the

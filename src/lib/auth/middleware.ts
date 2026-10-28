@@ -88,9 +88,11 @@ async function loadSessionUser(
     const result = await pool.query(
       `SELECT u.id, u.username, u.company_id, u.role, u.is_temp_password,
               u.terms_accepted_at,
-              p.id AS plant_id, p.name AS plant_name
+              p.id AS plant_id, p.name AS plant_name,
+              c.name AS company_name
          FROM users u
          LEFT JOIN plants p ON p.company_id = u.company_id
+         LEFT JOIN companies c ON c.id = u.company_id
         WHERE u.id = $1
         ORDER BY p.id ASC
         LIMIT 1`,
@@ -106,6 +108,7 @@ async function loadSessionUser(
       is_temp_password: !!row.is_temp_password,
       plant_id: row.plant_id ?? null,
       plant_name: row.plant_name ?? null,
+      company_name: row.company_name ?? null,
       terms_accepted_at: row.terms_accepted_at ?? null,
     };
   }

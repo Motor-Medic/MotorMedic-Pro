@@ -193,14 +193,17 @@ app.use(express.json({
 registerMemoryUserLoader((userId: number) => {
   const u = memoryUsers.find((m) => m.id === userId);
   if (!u) return null;
+  const company = memoryCompanies.find((c) => c.id === u.company_id);
+  const plant = memoryPlants.find((p) => p.company_id === u.company_id);
   return {
     id: u.id,
     username: u.username,
     company_id: u.company_id ?? null,
     role: normalizeRole(u.role),
     is_temp_password: !!u.is_temp_password,
-    plant_id: null,
-    plant_name: null,
+    plant_id: plant ? plant.id : null,
+    plant_name: plant ? plant.name : null,
+    company_name: company ? company.name : null,
     terms_accepted_at: u.terms_accepted_at ?? null
   };
 });
@@ -9609,6 +9612,8 @@ function publicUserPayload(user: {
   is_temp_password: unknown;
   plant_id?: number | null;
   plant_name?: string | null;
+  /** COPY-1 — company display name for the location-context crumb. */
+  company_name?: string | null;
   /** LEGAL-WRAPPER-A (E5/E6) — ISO timestamp of legal-document acceptance. */
   terms_accepted_at?: string | Date | null;
 }) {
@@ -9621,6 +9626,7 @@ function publicUserPayload(user: {
     is_temp_password: !!user.is_temp_password,
     plant_id: user.plant_id ?? null,
     plant_name: user.plant_name ?? null,
+    company_name: user.company_name ?? null,
     terms_accepted_at: user.terms_accepted_at
       ? new Date(user.terms_accepted_at).toISOString()
       : null
@@ -9680,6 +9686,12 @@ app.post("/api/auth/login", async (req, res) => {
       );
       const plant_id = plantRes.rows.length > 0 ? plantRes.rows[0].id : null;
       const plant_name = plantRes.rows.length > 0 ? plantRes.rows[0].name : null;
+      const companyRes = await pool.query(
+        "SELECT name FROM companies WHERE id = $1 LIMIT 1",
+        [user.company_id]
+      );
+      const company_name =
+        companyRes.rows.length > 0 ? companyRes.rows[0].name : null;
 
       const { token, sessionId } = await createSession(pool, user.id);
       res.setHeader("Set-Cookie", buildSessionCookie(token));
@@ -9689,7 +9701,7 @@ app.post("/api/auth/login", async (req, res) => {
         username: user.username
       });
       return res.json(
-        publicUserPayload({ ...user, plant_id, plant_name })
+        publicUserPayload({ ...user, plant_id, plant_name, company_name })
       );
     } else {
       const user = memoryUsers.find(u => u.username.toLowerCase() === normUsername);
@@ -9708,11 +9720,13 @@ app.post("/api/auth/login", async (req, res) => {
       const plant = memoryPlants.find(
         p => p.user_id === user.id || p.company_id === user.company_id
       );
+      const company = memoryCompanies.find(c => c.id === user.company_id);
       return res.json(
         publicUserPayload({
           ...user,
           plant_id: plant ? plant.id : null,
-          plant_name: plant ? plant.name : null
+          plant_name: plant ? plant.name : null,
+          company_name: company ? company.name : null
         })
       );
     }
@@ -9827,13 +9841,20 @@ app.post("/api/auth/register", async (req, res) => {
                 )
               ).rows[0];
 
+        const companyRes = await pool.query(
+          "SELECT name FROM companies WHERE id = $1 LIMIT 1",
+          [companyId]
+        );
+        const company_name =
+          companyRes.rows.length > 0 ? companyRes.rows[0].name : null;
         const { token } = await createSession(pool, user.id);
         res.setHeader("Set-Cookie", buildSessionCookie(token));
         return res.status(201).json(
           publicUserPayload({
             ...user,
             plant_id: plant?.id ?? null,
-            plant_name: plant?.name ?? null
+            plant_name: plant?.name ?? null,
+            company_name
           })
         );
       }
@@ -9868,7 +9889,12 @@ app.post("/api/auth/register", async (req, res) => {
       const { token } = await createSession(pool, user.id);
       res.setHeader("Set-Cookie", buildSessionCookie(token));
       return res.status(201).json(
-        publicUserPayload({ ...user, plant_id: plant.id, plant_name: plant.name })
+        publicUserPayload({
+          ...user,
+          plant_id: plant.id,
+          plant_name: plant.name,
+          company_name: plantCompanyName.trim()
+        })
       );
     } else {
       // Memory Fallback (dev without DATABASE_URL)
@@ -9918,7 +9944,8 @@ app.post("/api/auth/register", async (req, res) => {
         publicUserPayload({
           ...newUser,
           plant_id: plantId,
-          plant_name: `${plantName} - Main Location`
+          plant_name: `${plantName} - Main Location`,
+          company_name: plantName
         })
       );
     }
@@ -10051,9 +10078,17 @@ app.post("/api/auth/demo-login", async (req, res) => {
         );
         const plant_id = plantRes.rows.length > 0 ? plantRes.rows[0].id : 3;
         const plant_name = plantRes.rows.length > 0 ? plantRes.rows[0].name : null;
+        const companyRes = await pool.query(
+          "SELECT name FROM companies WHERE id = $1 LIMIT 1",
+          [user.company_id]
+        );
+        const company_name =
+          companyRes.rows.length > 0 ? companyRes.rows[0].name : null;
         const { token } = await createSession(pool, user.id);
         res.setHeader("Set-Cookie", buildSessionCookie(token));
-        return res.json(publicUserPayload({ ...user, plant_id, plant_name }));
+        return res.json(
+          publicUserPayload({ ...user, plant_id, plant_name, company_name })
+        );
       }
       return res
         .status(404)
@@ -10068,11 +10103,15 @@ app.post("/api/auth/demo-login", async (req, res) => {
     const { token } = createMemorySession(demoUser.id, sessionTtlHours());
     res.setHeader("Set-Cookie", buildSessionCookie(token));
     const plant = memoryPlants.find(p => p.company_id === demoUser.company_id);
+    const company = memoryCompanies.find(
+      c => c.id === demoUser.company_id
+    );
     return res.json(
       publicUserPayload({
         ...demoUser,
         plant_id: plant ? plant.id : 3,
-        plant_name: plant ? plant.name : null
+        plant_name: plant ? plant.name : null,
+        company_name: company ? company.name : null
       })
     );
   } catch (error: any) {

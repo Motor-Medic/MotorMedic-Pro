@@ -551,13 +551,13 @@ export function getSpecTabs(type: string): { id: SpecTabId; label: string }[] {
 /* ========================================================================== */
 
 const INPUT_BASE =
-  "w-full min-h-[44px] rounded-lg bg-slate-900/50 border border-slate-700 text-sm text-white placeholder:text-slate-500 transition-all duration-200 focus:outline-none focus:ring-1 focus:ring-amber-500 focus:border-amber-500";
+  "w-full min-h-[44px] rounded-xl bg-slate-900 border border-slate-700 text-sm text-white placeholder:text-slate-500 transition-colors focus:outline-none focus:border-[#FFC700]";
 
 function FieldLabel({ label, required }: { label: string; required?: boolean }) {
   return (
-    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+    <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
       {label}
-      {required && <span className="text-amber-400 ml-0.5">*</span>}
+      {required && <span className="text-[#FFC700] ml-0.5">*</span>}
     </span>
   );
 }
@@ -893,16 +893,16 @@ export default function CreateComponentModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="relative bg-slate-900 rounded-xl shadow-2xl border border-slate-700 w-full max-w-3xl max-h-[90vh] flex flex-col mx-4 overflow-hidden">
         {/* Header */}
-        <div className="shrink-0 flex items-start justify-between gap-3 px-5 sm:px-6 pt-5 pb-4 border-b border-slate-700/50 bg-slate-900">
+        <div className="shrink-0 flex items-start justify-between gap-3 px-5 sm:px-6 pt-5 pb-4 border-b border-slate-800 bg-slate-900">
           <div className="min-w-0 space-y-1">
-            <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">
+            <h2 className="text-base font-bold text-white tracking-tight">
               {isEdit ? (
                 <>
-                  Edit <span className="text-amber-400">COMPONENT</span>
+                  Edit <span className="text-[#FFC700]">COMPONENT</span>
                 </>
               ) : (
                 <>
-                  Create New <span className="text-amber-400">COMPONENT</span>
+                  Create New <span className="text-[#FFC700]">COMPONENT</span>
                 </>
               )}
             </h2>
@@ -992,7 +992,7 @@ export default function CreateComponentModal({
                     }
                     className={`min-h-[30px] px-2.5 rounded-lg text-[10px] font-bold inline-flex items-center gap-1.5 cursor-pointer transition-all duration-200 ${
                       aiEnabled
-                        ? "bg-amber-500 text-slate-900 hover:bg-amber-400 shadow-lg shadow-amber-500/40 ring-1 ring-amber-300/40"
+                        ? "bg-[#FFC700] text-slate-950 hover:bg-[#e6b400] shadow-lg shadow-[#FFC700]/40 ring-1 ring-[#FFC700]/40"
                         : "bg-slate-800 text-slate-600 cursor-not-allowed"
                     }`}
                   >
@@ -1020,7 +1020,7 @@ export default function CreateComponentModal({
                 </select>
               </div>
               {knownTemplate && !isOther && (
-                <p className="mt-1.5 text-[10px] text-emerald-400/90 font-medium">
+                <p className="mt-1.5 text-[10px] text-[#FFC700]/90 font-medium">
                   Saved template loaded — specs filled instantly.
                 </p>
               )}
@@ -1071,7 +1071,7 @@ export default function CreateComponentModal({
                     type="button"
                     disabled={researchBusy || !customTypeName.trim()}
                     onClick={runAiResearch}
-                    className="min-h-[44px] px-4 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 text-xs font-bold inline-flex items-center justify-center gap-2 cursor-pointer transition-all duration-200 shadow-lg shadow-amber-500/25 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                    className="min-h-[44px] px-4 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-xs font-bold inline-flex items-center justify-center gap-2 cursor-pointer transition-colors shadow-lg shadow-[#FFC700]/25 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                   >
                     {researchBusy ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1098,7 +1098,7 @@ export default function CreateComponentModal({
                 </span>
               </label>
               {researchDone && (
-                <p className="text-[10px] text-emerald-400 font-medium">
+                <p className="text-[10px] text-[#FFC700] font-medium">
                   Generated {generatedFields?.length ?? 0} vibration-relevant fields for Core Specs.
                 </p>
               )}
@@ -1115,7 +1115,7 @@ export default function CreateComponentModal({
               <h3 className="text-xs font-bold uppercase tracking-widest text-slate-300">
                 Machine Specifications
               </h3>
-              <span className="text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/40 text-emerald-400">
+              <span className="text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-md bg-[#FFC700]/10 border border-[#FFC700]/40 text-[#FFC700]">
                 ISO 13373 / 14224
               </span>
             </div>
@@ -1129,7 +1129,7 @@ export default function CreateComponentModal({
                   onClick={() => setTab(t.id)}
                   className={`min-h-[34px] px-3.5 rounded-full text-xs font-bold cursor-pointer transition-all duration-200 ${
                     tab === t.id
-                      ? "bg-amber-500 text-slate-900 shadow-lg shadow-amber-500/20"
+                      ? "bg-[#FFC700] text-slate-950 shadow-lg shadow-[#FFC700]/20"
                       : "bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700"
                   }`}
                 >
@@ -1184,7 +1184,7 @@ export default function CreateComponentModal({
             type="button"
             onClick={onClose}
             disabled={saveGuard.pending}
-            className="min-h-[42px] px-4 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold cursor-pointer transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="min-h-[42px] px-4 rounded-xl border border-slate-700 bg-slate-900/60 text-slate-300 text-xs font-bold cursor-pointer hover:border-slate-500 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             Cancel
           </button>
@@ -1192,7 +1192,7 @@ export default function CreateComponentModal({
             type="button"
             onClick={handleSave}
             disabled={saveGuard.pending}
-            className="min-h-[42px] px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-bold cursor-pointer transition-all duration-200 shadow-lg shadow-emerald-500/20 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+            className="min-h-[42px] px-4 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-xs font-bold cursor-pointer transition-colors shadow-lg shadow-[#FFC700]/20 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
           >
             {saveGuard.pending ? (
               <>

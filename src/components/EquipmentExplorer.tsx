@@ -1824,16 +1824,22 @@ function isFacilityEmpty(store: EquipmentStore): boolean {
 /* ========================================================================== */
 
 export default function EquipmentExplorer({
+  userCompanyName,
   userPlantName
 }: {
+  userCompanyName?: string;
   userPlantName?: string;
 }) {
   const { toast } = useToast();
   const saveGuard = useSingleFlight();
   const deleteGuard = useSingleFlight();
   const renameGuard = useSingleFlight();
+  // COPY-1 — leading crumb is company.name, else plant.name, else omitted.
+  // Company wins so we never resurrect the signed-in email in the crumb.
   const facilityName =
-    (userPlantName && userPlantName.trim()) || "Main Facility";
+    (userCompanyName && userCompanyName.trim()) ||
+    (userPlantName && userPlantName.trim()) ||
+    "";
 
   // PROD-HYGIENE: demo/clear controls are dev-only — hidden in production builds.
   const isProdBuild = import.meta.env.PROD;
@@ -1949,13 +1955,15 @@ export default function EquipmentExplorer({
   }, [selectedNode, selectedNodeId]);
 
   const withFacilityPrefix = (path: string) => {
-    const bracketed = `[${facilityName}]`;
-    if (!path || path === "—") return bracketed;
-    if (path.startsWith(bracketed)) return path;
-    if (path === facilityName || path.startsWith(`${facilityName} ➔`)) {
-      return bracketed + path.slice(facilityName.length);
+    // COPY-1 — no bracketed email/name fallback. When neither company nor
+    // plant resolves, the leading segment is omitted entirely.
+    const cleanPath = !path || path === "—" ? "" : path;
+    if (!facilityName) return cleanPath;
+    if (!cleanPath) return facilityName;
+    if (cleanPath === facilityName || cleanPath.startsWith(`${facilityName} ➔`)) {
+      return cleanPath;
     }
-    return `${bracketed} ➔ ${path}`;
+    return `${facilityName} ➔ ${cleanPath}`;
   };
 
   const contextPath =
@@ -2903,7 +2911,7 @@ export default function EquipmentExplorer({
               >
                 {quickAddParentOptions.length === 0 ? (
                   <option value={SITE_PLANT_ID}>
-                    [{facilityName}] (Plant Root)
+                    {facilityName ? `${facilityName} ` : ""}(Plant Root)
                   </option>
                 ) : (
                   quickAddParentOptions.map((opt) => (
@@ -4641,9 +4649,11 @@ export default function EquipmentExplorer({
               <div className="h-full min-h-[240px] flex flex-col items-center justify-center gap-3 text-center">
                 <p className="text-slate-400 text-sm max-w-md leading-relaxed">
                   Your licensed site{" "}
-                  <span className="text-white font-semibold">
-                    [{facilityName}]
-                  </span>{" "}
+                  {facilityName ? (
+                    <span className="text-white font-semibold">
+                      {facilityName}
+                    </span>
+                  ) : null}{" "}
                   is ready. Choose a level from{" "}
                   <span className="text-slate-200 font-medium">
                     Quick Add Level

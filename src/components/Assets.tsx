@@ -49,16 +49,16 @@ export default function Assets({
   void onNavigateToMigration;
   void onNavigateToTrends;
 
-  const userPlantName =
-    user?.plant_name ||
-    user?.company_name ||
-    user?.facility_name ||
-    user?.username ||
-    "Main Facility";
+  // COPY-1 — company.name -> plant.name -> omit. Never username/email.
+  const userCompanyName = user?.company_name || "";
+  const userPlantName = user?.plant_name || "";
 
   return (
     <div className="w-full min-h-full px-2 sm:px-4 py-4 md:px-6">
-      <EquipmentExplorer userPlantName={String(userPlantName)} />
+      <EquipmentExplorer
+        userCompanyName={String(userCompanyName)}
+        userPlantName={String(userPlantName)}
+      />
     </div>
   );
 }

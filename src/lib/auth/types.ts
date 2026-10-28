@@ -13,6 +13,7 @@ export interface SessionUser {
   is_temp_password: boolean;
   plant_id: number | null;
   plant_name?: string | null;
+  company_name?: string | null;
   /** LEGAL-WRAPPER-A (E6) — null until the user accepts the legal documents. */
   terms_accepted_at?: string | Date | null;
 }
