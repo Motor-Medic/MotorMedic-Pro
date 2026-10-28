@@ -18,6 +18,10 @@ import {
   ESTIMATED_PEAK_BADGE,
   isEstimatedExtractionMode
 } from "../lib/oilVisionExtractor";
+import BearingCalculatorPanel, {
+  EMPTY_BEARING_OVERLAY,
+  type BearingOverlayState
+} from "./BearingCalculatorPanel";
 
 // Downsample by MAX-per-bucket (never first/mean) so bump heights and
 // positions survive (the max point keeps its own frequency).
@@ -43,6 +47,8 @@ export interface SpectrumLibraryTabProps {
   reportVibrationRecord: VibrationDiagnosticRecord | null;
   allAnalyses?: SavedAnalysisResult[];
   onSelectAnalysis?: (analysis: SavedAnalysisResult) => void;
+  /** Real server component id; enables save/auto-load of the bearing spec. */
+  componentId?: number | null;
 }
 
 /**
@@ -59,10 +65,12 @@ export default function SpectrumLibraryTab({
   baselineSpectrum,
   reportVibrationRecord,
   allAnalyses = [],
-  onSelectAnalysis
+  onSelectAnalysis,
+  componentId = null
 }: SpectrumLibraryTabProps) {
-  const [showBearingHarmonics, setShowBearingHarmonics] = useState(false);
   const [manualRefRpm, setManualRefRpm] = useState<number | null>(null);
+  const [bearingOverlay, setBearingOverlay] =
+    useState<BearingOverlayState>(EMPTY_BEARING_OVERLAY);
   // Waterfall hover — mouse-only (no touch), reads exact values under cursor
   const [wfHover, setWfHover] = useState<{ svgX: number; runIdx: number; freq: number; amp: number; date: string; stored?: boolean } | null>(null);
 
@@ -172,15 +180,9 @@ export default function SpectrumLibraryTab({
     const o = td as Record<string, unknown>;
     return o.rpm_source === "vision-extracted";
   })();
-  const rpmHz = effectiveRpm != null ? effectiveRpm / 60 : 0;
-  const hasRpm = effectiveRpm != null;
 
-  // geometry: only the asset's own bearing model when its geometry is in the
-  // library; otherwise null (confessed downstream - never a silent generic).
-  const BEARING_GEOMETRY: Record<string, { n: number; bd: number; pd: number; angle: number }> = {
-    "SKF 6210": { n: 9, bd: 12.7, pd: 70.0, angle: 0 },
-    "NSK 6312": { n: 8, bd: 22.225, pd: 95.0, angle: 0 },
-  };
+  // The reference label is free text from the user/asset record. It is NEVER
+  // resolved through a manufacturer part-number geometry table.
   const extractBearingModel = (row: SavedAnalysisResult): string | null => {
     const td = row.telemetry_data;
     if (!td || typeof td !== "object") return null;
@@ -190,26 +192,16 @@ export default function SpectrumLibraryTab({
     return typeof model === "string" && model.trim() ? model.trim() : null;
   };
   const assetBearingModel = selectedAnalysis ? extractBearingModel(selectedAnalysis) : null;
-  const geometryModel: string | null =
-    assetBearingModel && BEARING_GEOMETRY[assetBearingModel] ? assetBearingModel : null;
 
-  // Bearing fault characteristic orders (ISO 15242)
-  const bearingHz = (() => {
-    const geo = geometryModel ? BEARING_GEOMETRY[geometryModel] : undefined;
-    if (!geo || !hasRpm) return null;
-    const r = (geo.bd / geo.pd) * Math.cos((geo.angle * Math.PI) / 180);
-    const bpfoOrder = (geo.n / 2) * (1 - r);
-    const bpfiOrder = (geo.n / 2) * (1 + r);
-    const bsfOrder = (geo.pd / (2 * geo.bd)) * (1 - r * r);
-    const ftfOrder = 0.5 * (1 - r);
-    const hz = (order: number) => order * rpmHz;
-    return {
-      BPFO: { order: bpfoOrder, hz: hz(bpfoOrder) },
-      BPFI: { order: bpfiOrder, hz: hz(bpfiOrder) },
-      BSF:  { order: bsfOrder,  hz: hz(bsfOrder) },
-      FTF:  { order: ftfOrder,  hz: hz(ftfOrder) },
-    };
-  })();
+  // Fault frequencies come ONLY from the calculator's validated user geometry.
+  const demodBearing = bearingOverlay.frequencies
+    ? {
+        BPFO: { hz: bearingOverlay.frequencies.bpfo },
+        BPFI: { hz: bearingOverlay.frequencies.bpfi },
+        BSF: { hz: bearingOverlay.frequencies.bsf },
+        FTF: { hz: bearingOverlay.frequencies.ftf },
+      }
+    : null;
 
   // Waterfall data prep: only the selected asset's vibration runs, apply
   // as-of cutoff, sort chronologically, take last 6 (never other assets).
@@ -262,37 +254,6 @@ export default function SpectrumLibraryTab({
   const envelopePeaks = envelopeLocalMaxima.filter((p) => envelopeFloor > 0 && p.amplitude > envelopeFloor * 5);
   const hasBearingEnergy = envelopePeaks.length > 0;
 
-  // Demod cursor anchoring: recorded-fault (dominant peak) only when a bearing
-  // fault is diagnosed AND row rpm is missing; otherwise theoretical geometry
-  // for the selected bearing at the effective RPM.
-  const diagnosisImpliesBearingFault = /bearing|bpfo|bpfi|bsf|ftf|outer race|inner race|rolling element/i.test(
-    selectedAnalysis
-      ? [selectedAnalysis.primary_fault, ...(Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list.map((f) => `${f.title ?? ""} ${f.frequency ?? ""}`) : [])].join(" ")
-      : ""
-  );
-  const useRecordedFaultAnchor = diagnosisImpliesBearingFault && rowRpm == null && geometryModel != null;
-
-  const demodBearing = (() => {
-    if (useRecordedFaultAnchor && geometryModel) {
-      const geo = BEARING_GEOMETRY[geometryModel];
-      const r = (geo.bd / geo.pd) * Math.cos((geo.angle * Math.PI) / 180);
-      const bpfoOrder = (geo.n / 2) * (1 - r);
-      const bpfiOrder = (geo.n / 2) * (1 + r);
-      const bsfOrder = (geo.pd / (2 * geo.bd)) * (1 - r * r);
-      const ftfOrder = 0.5 * (1 - r);
-      const peaks = selectedAnalysis ? extractPeaks(selectedAnalysis) : [];
-      const bpfo = peaks.reduce((m, p) => (p.amplitude > m.amplitude ? p : m), { frequency: 0, amplitude: 0 }).frequency;
-      return {
-        BPFO: { order: bpfoOrder, hz: bpfo },
-        BPFI: { order: bpfiOrder, hz: bpfo * (bpfiOrder / bpfoOrder) },
-        BSF: { order: bsfOrder, hz: bpfo * (bsfOrder / bpfoOrder) },
-        FTF: { order: ftfOrder, hz: bpfo * (ftfOrder / bpfoOrder) },
-      };
-    }
-    return bearingHz;
-  })();
-  const demodShaftHz = useRecordedFaultAnchor && demodBearing ? demodBearing.BPFO.hz / demodBearing.BPFO.order : rpmHz;
-
   // Stagger the 4 bearing cursor labels into vertical lanes; hide a
   // lower-priority label when cursors sit within ~40 Hz (≈40 px).
   const demodCursorDefs: { key: "FTF" | "BSF" | "BPFO" | "BPFI"; hz: number; stroke: string; offset: number }[] = demodBearing ? [
@@ -308,22 +269,16 @@ export default function SpectrumLibraryTab({
     else keptCursorHz.push(def.hz);
   }
 
-  const demodHarmonicLines: { x: number; label: string; sideband: boolean }[] = (() => {
-    if (!demodBearing) return [];
-    const bpfo = demodBearing.BPFO.hz;
-    const bpfi = demodBearing.BPFI.hz;
-    const s = demodShaftHz;
-    return [
-      { x: bpfo * 2, label: "2xBPFO", sideband: false },
-      { x: bpfo * 3, label: "3xBPFO", sideband: false },
-      { x: bpfi * 2, label: "2xBPFI", sideband: false },
-      { x: bpfi * 3, label: "3xBPFI", sideband: false },
-      { x: bpfo - s, label: "BPFO-1X", sideband: true },
-      { x: bpfo + s, label: "BPFO+1X", sideband: true },
-      { x: bpfi - s, label: "BPFI-1X", sideband: true },
-      { x: bpfi + s, label: "BPFI+1X", sideband: true },
-    ];
-  })();
+  // 2x / 3x harmonics for each of the four user-calculated frequencies.
+  const demodHarmonicLines: { x: number; label: string }[] = demodBearing
+    ? (["FTF", "BSF", "BPFO", "BPFI"] as const).flatMap((key) => {
+        const base = demodBearing[key].hz;
+        return [
+          { x: base * 2, label: `2x${key}` },
+          { x: base * 3, label: `3x${key}` },
+        ];
+      })
+    : [];
 
   const envelopeChartRows = envelopeRows.map((p, i) => ({
     ...p,
@@ -346,10 +301,9 @@ export default function SpectrumLibraryTab({
   };
   const envelopeTablePeaks = envelopePeaks.map((p) => ({ ...p, family: assignFamily(p.frequency) }));
 
-  // Caption assembly: energy + RPM source + geometry
-  const rpmSourceNote = useRecordedFaultAnchor
-    ? "row RPM not stored - cursors anchored to recorded fault frequency"
-    : rpmSource === "record" && isVisionRpm
+  // Caption assembly: energy + RPM source + reference label.
+  const rpmSourceNote =
+    rpmSource === "record" && isVisionRpm
       ? "record RPM (vision-extracted)"
       : rpmSource === "record"
         ? "record RPM"
@@ -360,17 +314,21 @@ export default function SpectrumLibraryTab({
             : rpmSource === "manual"
               ? "manual reference RPM"
               : "RPM not recorded";
-  const geometryNote = geometryModel
-    ? `geometry: ${geometryModel}`
-    : assetBearingModel
-      ? `geometry: bearing ${assetBearingModel} not in library`
-      : "geometry: bearing not recorded";
+  const geometryNote = bearingOverlay.referenceLabel
+    ? `reference label: ${bearingOverlay.referenceLabel} · geometry from calculator`
+    : "geometry: enter and save the bearing spec in the calculator";
   const energyNote = hasBearingEnergy
     ? "bearing family energy present (SIM)"
     : "quiet demod band - no bearing fault energy in this record (SIM floor)";
 
   return (
     <div className="space-y-4">
+      <BearingCalculatorPanel
+        componentId={componentId}
+        defaultRpm={effectiveRpm}
+        suggestedLabel={assetBearingModel}
+        onOverlayChange={setBearingOverlay}
+      />
       {selectedAnalysis == null || mode === "empty" ? (
         <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-3">
           <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 px-1">Spectrum Library workspace</h4>
@@ -390,25 +348,13 @@ export default function SpectrumLibraryTab({
         </div>
       ) : (
         <>
-          {/* -- Only control: Bearing harmonics & sidebands -- */}
-          <label className={`flex items-center gap-2 ${demodBearing ? "cursor-pointer" : "opacity-50"}`} title={demodBearing ? undefined : hasRpm ? "requires bearing geometry" : "requires RPM"}>
-            <input
-              type="checkbox"
-              checked={showBearingHarmonics}
-              onChange={() => setShowBearingHarmonics((v) => !v)}
-              disabled={!demodBearing}
-              className="h-4 w-4 rounded border-slate-700 focus:ring-cyan-500"
-            />
-            <span className="text-sm text-slate-300">Bearing harmonics & sidebands</span>
-          </label>
-
           {/* -- Chart 1: Demod envelope -- */}
           {(() => {
             const hasEnvelope = envelopeRows.length > 0;
             const title = (
               <div className="flex items-center justify-between gap-2 px-1 mb-3">
                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                  ENVELOPE / DEMOD - {geometryModel ?? (assetBearingModel ? `${assetBearingModel} - not in library` : "bearing not recorded")}
+                  ENVELOPE / DEMOD - {bearingOverlay.referenceLabel ?? "bearing geometry from calculator"}
                   <span className="text-[9px] border rounded px-1 border-amber-500/60 text-amber-400 normal-case tracking-normal">SIM</span>
                 </h4>
                 <span className="text-[10px] text-slate-500 font-mono flex items-center gap-1">
@@ -464,7 +410,7 @@ export default function SpectrumLibraryTab({
                         return hiddenNearby ? `${freq} Hz (${hiddenNearby})` : `${freq} Hz`;
                       }} />
                       <Line type="monotone" dataKey="amplitude" stroke="#38bdf8" strokeWidth={1} dot={false} isAnimationActive={false} name="Demod" />
-                      {demodBearing && (
+                      {bearingOverlay.enabled && demodBearing && (
                         <>
                           {demodCursorDefs.map((def) => (
                             <ReferenceLine
@@ -475,8 +421,8 @@ export default function SpectrumLibraryTab({
                               label={hiddenDemodLabels.has(def.key) ? undefined : { value: `${def.key} ${def.hz.toFixed(1)} Hz`, fill: def.stroke, position: "top", fontSize: 10 }}
                             />
                           ))}
-                          {showBearingHarmonics && demodHarmonicLines.map((l) => (
-                            <ReferenceLine key={l.label} x={l.x} stroke={l.sideband ? "#7c3aed" : "#a78bfa"} strokeDasharray="2 4" strokeWidth={l.sideband ? 0.75 : 1} opacity={l.sideband ? 0.3 : 0.45} label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: l.sideband ? 8 : 9 }} />
+                          {bearingOverlay.showHarmonics && demodHarmonicLines.map((l) => (
+                            <ReferenceLine key={l.label} x={l.x} stroke="#a78bfa" strokeDasharray="2 4" strokeWidth={1} opacity={0.45} label={{ value: l.label, fill: "#8b5cf6", position: "top", fontSize: 9 }} />
                           ))}
                         </>
                       )}

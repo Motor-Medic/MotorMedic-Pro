@@ -6335,6 +6335,19 @@ export default function AnalysisReport({
     return match?.components ?? [];
   }, [selectedRoute, selectedAsset, flatEquipment]);
 
+  /**
+   * Real server component id for the open component. Bearing specs are
+   * component-scoped, so only a persisted hierarchy node can auto-load/save.
+   */
+  const loadedComponentServerId = useMemo((): number | null => {
+    if (!selectedAsset) return null;
+    const match = flatEquipment.find(
+      (a) => a.tag === selectedAsset && (!selectedRoute || a.routeName === selectedRoute)
+    );
+    const targetName = loadedComponent ?? selectedComponent;
+    return match?.components.find((c) => c.name === targetName)?.serverId ?? null;
+  }, [flatEquipment, selectedRoute, selectedAsset, selectedComponent, loadedComponent]);
+
   /** Equipment-selection asset ID — present before any Load Report click. */
   const equipmentAssetId = useMemo(() => {
     if (!selectedAsset) return null;
@@ -7297,6 +7310,7 @@ export default function AnalysisReport({
                   reportVibrationRecord={reportVibrationRecord}
                   allAnalyses={loadedAnalyses}
                   onSelectAnalysis={selectAnalysisWithModality}
+                  componentId={loadedComponentServerId}
                 />
               )}
 

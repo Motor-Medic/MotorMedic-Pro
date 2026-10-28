@@ -145,6 +145,14 @@ import {
   type GoodCatchRow
 } from "./src/lib/goodCatches";
 import {
+  calculateBearingFrequencies,
+  validateBearingCalcInput,
+  validateBearingGeometry,
+  type BearingCalcInput,
+  type BearingFaultFrequencies,
+  type BearingValidationErrors
+} from "./src/lib/bearingCalc";
+import {
   provisionTenantFromCheckout,
   type PendingCheckoutRecord
 } from "./src/lib/tenantProvisioning";
@@ -7803,6 +7811,9 @@ let memoryAlertPreferences: any[] = [];
 let memoryAlertHistory: any[] = [];
 // GOOD-CATCHES - session-tenant rows in DATABASE_URL-less mode.
 let memoryGoodCatches: any[] = [];
+// BEARING-CALC - session-tenant geometry rows in DATABASE_URL-less mode.
+// There is deliberately no manufacturer catalog here: only user-entered data.
+let memoryBearingSpecs: any[] = [];
 
 let memoryPlants: any[] = [
   { id: 1, company_id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
@@ -10055,6 +10066,425 @@ app.delete("/api/good-catches/:id", async (req, res) => {
     console.error("[good-catches] DELETE error:", error);
     return res.status(500).json({
       error: error?.message || "Failed to delete the good catch."
+    });
+  }
+});
+
+// --------------------------------------------------------
+// BEARING-CALC - user-entered geometry only; NO part-number catalog.
+// Every bearing_specs read/write derives the tenant from the verified
+// session (requestTenantId). A cross-tenant component is treated exactly
+// like a missing component: 404, never a leak.
+// --------------------------------------------------------
+
+const BEARING_SPEC_COLUMNS =
+  "id, tenant_id, component_id, z, bd, pd, contact_angle, unit, reference_label, created_at, updated_at";
+
+function bearingSpecPayload(row: any) {
+  return {
+    id: row.id,
+    tenant_id: row.tenant_id,
+    component_id: row.component_id,
+    z: Number(row.z),
+    bd: Number(row.bd),
+    pd: Number(row.pd),
+    contact_angle: Number(row.contact_angle),
+    unit: row.unit,
+    reference_label: row.reference_label ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+function bearingGeometryFromBody(body: any) {
+  return {
+    z: body?.z,
+    bd: body?.bd,
+    pd: body?.pd,
+    contactAngle: body?.contact_angle ?? body?.contactAngle
+  };
+}
+
+function firstBearingValidationError(
+  errors: BearingValidationErrors
+): string {
+  return Object.values(errors).find((message) => !!message) ?? "Invalid bearing geometry.";
+}
+
+function parseBearingComponentId(raw: unknown): number | null {
+  if (raw == null || String(raw).trim() === "") return null;
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function parseBearingUnit(raw: unknown): "mm" | "in" {
+  return String(raw).trim().toLowerCase() === "in" ? "in" : "mm";
+}
+
+/** Stored verbatim: no trimming, normalization, or manufacturer lookup. */
+function parseBearingReferenceLabel(raw: unknown): string | null {
+  if (raw == null) return null;
+  return typeof raw === "string" ? raw : String(raw);
+}
+
+async function bearingComponentOwnedByTenant(
+  componentId: number,
+  tenantId: number
+): Promise<boolean> {
+  if (pool) return tenantOwnsRow(pool, "components", componentId, tenantId);
+  return memoryTenantComponentIds(tenantId).includes(componentId);
+}
+
+// GET /api/bearing-specs - session-tenant list (never a tenant query param).
+app.get("/api/bearing-specs", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.json({ success: true, specs: [], spec: null });
+    }
+    const rows = pool
+      ? (
+          await pool.query(
+            `SELECT ${BEARING_SPEC_COLUMNS} FROM bearing_specs
+              WHERE tenant_id = $1
+              ORDER BY id ASC`,
+            [tenantId]
+          )
+        ).rows
+      : memoryBearingSpecs
+          .filter((row) => Number(row.tenant_id) === tenantId)
+          .slice()
+          .sort((a, b) => Number(a.id) - Number(b.id));
+    const specs = rows.map(bearingSpecPayload);
+    return res.json({ success: true, specs, spec: specs[0] ?? null });
+  } catch (error: any) {
+    console.error("[bearing-specs] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load bearing specs."
+    });
+  }
+});
+
+// GET /api/bearing-specs/component/:componentId - component-scoped; 404 when
+// the component does not belong to the session tenant.
+app.get("/api/bearing-specs/component/:componentId", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const componentId = parseBearingComponentId(req.params.componentId);
+    if (componentId == null) {
+      return res.status(400).json({ error: "Invalid component id." });
+    }
+    if (!(await bearingComponentOwnedByTenant(componentId, tenantId))) {
+      return res.status(404).json({ error: "Component not found." });
+    }
+    const rows = pool
+      ? (
+          await pool.query(
+            `SELECT ${BEARING_SPEC_COLUMNS} FROM bearing_specs
+              WHERE tenant_id = $1 AND component_id = $2
+              ORDER BY updated_at DESC, id DESC`,
+            [tenantId, componentId]
+          )
+        ).rows
+      : memoryBearingSpecs
+          .filter(
+            (row) =>
+              Number(row.tenant_id) === tenantId &&
+              Number(row.component_id) === componentId
+          )
+          .slice()
+          .sort((a, b) => {
+            const aTime = new Date(a.updated_at ?? a.created_at ?? 0).getTime();
+            const bTime = new Date(b.updated_at ?? b.created_at ?? 0).getTime();
+            if (aTime !== bTime) return bTime - aTime;
+            return Number(b.id) - Number(a.id);
+          });
+    const specs = rows.map(bearingSpecPayload);
+    return res.json({ success: true, specs, spec: specs[0] ?? null });
+  } catch (error: any) {
+    console.error("[bearing-specs] component GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load the component bearing spec."
+    });
+  }
+});
+
+// POST /api/bearing-specs - save user-entered geometry for an owned component.
+app.post("/api/bearing-specs", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const body = req.body || {};
+    const componentId = parseBearingComponentId(body.component_id);
+    if (componentId == null) {
+      return res.status(400).json({ error: "A valid component_id is required." });
+    }
+    if (!(await bearingComponentOwnedByTenant(componentId, tenantId))) {
+      return res.status(404).json({ error: "Component not found." });
+    }
+    const geometry = validateBearingGeometry(bearingGeometryFromBody(body));
+    if (!geometry.ok) {
+      return res.status(400).json({
+        error: firstBearingValidationError(geometry.errors),
+        errors: geometry.errors
+      });
+    }
+    const unit = parseBearingUnit(body.unit);
+    const referenceLabel = parseBearingReferenceLabel(body.reference_label);
+
+    if (pool) {
+      const result = await pool.query(
+        `INSERT INTO bearing_specs (
+           tenant_id, component_id, z, bd, pd, contact_angle, unit,
+           reference_label, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+         RETURNING ${BEARING_SPEC_COLUMNS}`,
+        [
+          tenantId,
+          componentId,
+          geometry.value.z,
+          geometry.value.bd,
+          geometry.value.pd,
+          geometry.value.contactAngle,
+          unit,
+          referenceLabel
+        ]
+      );
+      return res.status(201).json({
+        success: true,
+        spec: bearingSpecPayload(result.rows[0])
+      });
+    }
+
+    const now = new Date().toISOString();
+    const row = {
+      id: getNextId(),
+      tenant_id: tenantId,
+      component_id: componentId,
+      z: geometry.value.z,
+      bd: geometry.value.bd,
+      pd: geometry.value.pd,
+      contact_angle: geometry.value.contactAngle,
+      unit,
+      reference_label: referenceLabel,
+      created_at: now,
+      updated_at: now
+    };
+    memoryBearingSpecs.push(row);
+    return res.status(201).json({ success: true, spec: bearingSpecPayload(row) });
+  } catch (error: any) {
+    console.error("[bearing-specs] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to save the bearing spec."
+    });
+  }
+});
+
+// PATCH /api/bearing-specs/:id - id is never a tenant key; tenant comes from
+// the session and the component link is re-validated when supplied.
+app.patch("/api/bearing-specs/:id", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid bearing spec id." });
+    }
+    const body = req.body || {};
+
+    let existing: any;
+    if (pool) {
+      const current = await pool.query(
+        `SELECT ${BEARING_SPEC_COLUMNS} FROM bearing_specs
+          WHERE id = $1 AND tenant_id = $2`,
+        [id, tenantId]
+      );
+      if (!current.rows.length) {
+        return res.status(404).json({ error: "Bearing spec not found." });
+      }
+      existing = current.rows[0];
+    } else {
+      existing = memoryBearingSpecs.find(
+        (row) => Number(row.id) === id && Number(row.tenant_id) === tenantId
+      );
+      if (!existing) {
+        return res.status(404).json({ error: "Bearing spec not found." });
+      }
+    }
+
+    let componentId = Number(existing.component_id);
+    if ("component_id" in body) {
+      const parsed = parseBearingComponentId(body.component_id);
+      if (parsed == null) {
+        return res.status(400).json({ error: "A valid component_id is required." });
+      }
+      componentId = parsed;
+    }
+    if (!(await bearingComponentOwnedByTenant(componentId, tenantId))) {
+      return res.status(404).json({ error: "Component not found." });
+    }
+
+    const geometry = validateBearingGeometry({
+      z: body.z !== undefined ? body.z : existing.z,
+      bd: body.bd !== undefined ? body.bd : existing.bd,
+      pd: body.pd !== undefined ? body.pd : existing.pd,
+      contactAngle:
+        body.contact_angle !== undefined
+          ? body.contact_angle
+          : body.contactAngle !== undefined
+            ? body.contactAngle
+            : existing.contact_angle
+    });
+    if (!geometry.ok) {
+      return res.status(400).json({
+        error: firstBearingValidationError(geometry.errors),
+        errors: geometry.errors
+      });
+    }
+
+    const unit = "unit" in body ? parseBearingUnit(body.unit) : existing.unit;
+    const referenceLabel =
+      "reference_label" in body
+        ? parseBearingReferenceLabel(body.reference_label)
+        : (existing.reference_label ?? null);
+
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE bearing_specs
+            SET component_id = $1,
+                z = $2,
+                bd = $3,
+                pd = $4,
+                contact_angle = $5,
+                unit = $6,
+                reference_label = $7,
+                updated_at = NOW()
+          WHERE id = $8 AND tenant_id = $9
+          RETURNING ${BEARING_SPEC_COLUMNS}`,
+        [
+          componentId,
+          geometry.value.z,
+          geometry.value.bd,
+          geometry.value.pd,
+          geometry.value.contactAngle,
+          unit,
+          referenceLabel,
+          id,
+          tenantId
+        ]
+      );
+      return res.json({
+        success: true,
+        spec: bearingSpecPayload(result.rows[0])
+      });
+    }
+
+    Object.assign(existing, {
+      component_id: componentId,
+      z: geometry.value.z,
+      bd: geometry.value.bd,
+      pd: geometry.value.pd,
+      contact_angle: geometry.value.contactAngle,
+      unit,
+      reference_label: referenceLabel,
+      updated_at: new Date().toISOString()
+    });
+    return res.json({ success: true, spec: bearingSpecPayload(existing) });
+  } catch (error: any) {
+    console.error("[bearing-specs] PATCH error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to update the bearing spec."
+    });
+  }
+});
+
+// DELETE /api/bearing-specs/:id - session-tenant only.
+app.delete("/api/bearing-specs/:id", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid bearing spec id." });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        "DELETE FROM bearing_specs WHERE id = $1 AND tenant_id = $2 RETURNING id",
+        [id, tenantId]
+      );
+      if (!result.rows.length) {
+        return res.status(404).json({ error: "Bearing spec not found." });
+      }
+      return res.json({ success: true, id: result.rows[0].id });
+    }
+
+    const index = memoryBearingSpecs.findIndex(
+      (row) => Number(row.id) === id && Number(row.tenant_id) === tenantId
+    );
+    if (index === -1) {
+      return res.status(404).json({ error: "Bearing spec not found." });
+    }
+    const deleted = memoryBearingSpecs.splice(index, 1)[0];
+    return res.json({ success: true, id: deleted.id });
+  } catch (error: any) {
+    console.error("[bearing-specs] DELETE error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to delete the bearing spec."
+    });
+  }
+});
+
+// POST /api/bearing-calc - PURE calculation from supplied numbers.
+// Deliberately stores nothing: no INSERT/UPDATE/DELETE and no tenant row.
+app.post("/api/bearing-calc", (req, res) => {
+  try {
+    const body = req.body || {};
+    const validation = validateBearingCalcInput({
+      z: body.z,
+      bd: body.bd,
+      pd: body.pd,
+      contactAngle: body.contact_angle ?? body.contactAngle,
+      rpm: body.rpm
+    });
+    if (!validation.ok) {
+      return res.status(400).json({
+        error: firstBearingValidationError(validation.errors),
+        errors: validation.errors
+      });
+    }
+    const frequencies: BearingFaultFrequencies = calculateBearingFrequencies(
+      validation.value
+    );
+    const input: BearingCalcInput = validation.value;
+    return res.json({
+      success: true,
+      shaft_hz: frequencies.shaftHz,
+      bpfo: frequencies.bpfo,
+      bpfi: frequencies.bpfi,
+      bsf: frequencies.bsf,
+      ftf: frequencies.ftf,
+      input: {
+        rpm: input.rpm,
+        z: input.z,
+        bd: input.bd,
+        pd: input.pd,
+        contact_angle: input.contactAngle
+      }
+    });
+  } catch (error: any) {
+    console.error("[bearing-calc] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to calculate bearing frequencies."
     });
   }
 });
@@ -14949,6 +15379,29 @@ async function initializeDatabase() {
     );
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_good_catches_tenant_work_order ON good_catches (tenant_id, work_order_id);"
+    );
+    // migrations/023 - BEARING-CALC. User-entered geometry only; there is NO
+    // manufacturer part-number table. Same DDL as the file so a fresh boot and
+    // a migrated boot converge; IF NOT EXISTS keeps every boot idempotent.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bearing_specs (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+        z INTEGER NOT NULL CHECK (z >= 3),
+        bd NUMERIC(12, 4) NOT NULL CHECK (bd > 0),
+        pd NUMERIC(12, 4) NOT NULL CHECK (pd > 0),
+        contact_angle NUMERIC(6, 2) NOT NULL DEFAULT 0
+          CHECK (contact_angle >= 0 AND contact_angle <= 45),
+        unit TEXT NOT NULL DEFAULT 'mm',
+        reference_label TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (bd < pd)
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_bearing_specs_tenant_component ON bearing_specs (tenant_id, component_id);"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).
