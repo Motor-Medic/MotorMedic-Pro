@@ -12,7 +12,7 @@ import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigati
 import { isTabEntitled } from "./lib/moduleNav";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
-  Sun, Moon, Sparkles, FileText, Target, Calendar, Layers, BarChart3
+  Sun, Moon, Sparkles, FileText, Target, Calendar, Layers, BarChart3, ClipboardList
 } from "lucide-react";
 
 /*
@@ -51,6 +51,8 @@ const loadAlertsControl = () => import("./components/AlertsControl");
 const AlertsControl = lazy(loadAlertsControl);
 const loadAnomalyBoard = () => import("./components/AnomalyBoard");
 const AnomalyBoard = lazy(loadAnomalyBoard);
+const loadWorkQueue = () => import("./components/WorkQueue");
+const WorkQueue = lazy(loadWorkQueue);
 const loadAIDataMigration = () => import("./components/AIDataMigration");
 const AIDataMigration = lazy(loadAIDataMigration);
 const loadAnalysisReport = () => import("./components/AnalysisReport");
@@ -81,6 +83,7 @@ const ROUTE_LOADERS: Partial<Record<AppTab, () => Promise<unknown>>> = {
   calendar: loadMaintenanceCalendar,
   alerts: loadAlertsControl,
   "anomaly-board": loadAnomalyBoard,
+  "work-queue": loadWorkQueue,
   history: loadHistory,
   admin: loadAdminPanel,
   "multi-tech": loadMultiTechPage,
@@ -1195,6 +1198,19 @@ const updated = [newReport, ...reports];
             </AppLink>
 
             <AppLink
+              href={TAB_TO_PATH["work-queue"]}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "work-queue" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-work-queue-btn"
+            >
+              <ClipboardList className="w-4.5 h-4.5" />
+              <span>Work Queue</span>
+            </AppLink>
+
+            <AppLink
               href={TAB_TO_PATH.history}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
                 activeTab === "history" && !selectedReport
@@ -1388,6 +1404,8 @@ const updated = [newReport, ...reports];
             <AlertsControl userId={user?.id || 3} />
           ) : activeTab === "anomaly-board" ? (
             <AnomalyBoard />
+          ) : activeTab === "work-queue" ? (
+            <WorkQueue />
           ) : activeTab === "sensors" ? (
             <MountingPlanner />
           ) : activeTab === "multi-tech" ? (
@@ -1749,6 +1767,20 @@ const updated = [newReport, ...reports];
                 >
                   <BellRing className="w-5 h-5 shrink-0" />
                   <span>Anomaly Board</span>
+                </AppLink>
+
+                <AppLink
+                  href={TAB_TO_PATH["work-queue"]}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "work-queue" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-work-queue-btn"
+                >
+                  <ClipboardList className="w-5 h-5 shrink-0" />
+                  <span>Work Queue</span>
                 </AppLink>
 
                 <AppLink

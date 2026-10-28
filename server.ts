@@ -112,6 +112,14 @@ import {
   resolveSimpleModeHierarchy
 } from "./src/lib/hierarchyFlex";
 import {
+  buildRouteQueue,
+  canCheckInAssignment,
+  canCloseAssignment,
+  canManageRouteAssignment,
+  type RouteAssignmentRow,
+  type RouteQueueRouteRow
+} from "./src/lib/routeCheckout";
+import {
   MODULE_CATALOG,
   getEntitlements,
   getModuleCatalog,
@@ -156,6 +164,12 @@ import {
   provisionTenantFromCheckout,
   type PendingCheckoutRecord
 } from "./src/lib/tenantProvisioning";
+import {
+  validateAssessmentDraft,
+  validateAssessmentLinks,
+  type AssessmentLinkRefs,
+  type AssessmentOwnedLinks
+} from "./src/lib/assessmentWizard";
 
 dotenv.config();
 
@@ -7814,6 +7828,10 @@ let memoryGoodCatches: any[] = [];
 // BEARING-CALC - session-tenant geometry rows in DATABASE_URL-less mode.
 // There is deliberately no manufacturer catalog here: only user-entered data.
 let memoryBearingSpecs: any[] = [];
+// ROUTE-CHECKOUT - session-tenant collection-pass rows in memory mode.
+let memoryRouteAssignments: any[] = [];
+// ASSESSMENT-WIZARD - session-tenant component assessment rows in memory mode.
+let memoryComponentAssessments: any[] = [];
 
 let memoryPlants: any[] = [
   { id: 1, company_id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
@@ -7958,16 +7976,17 @@ const memoryProcessedWebhookEvents = new Set<string>();
 // tenant collection starts honestly empty; tenants come only from signup.
 if (!memoryDemoSeedEnabled) {
   memoryCompanies = [];
-  memoryPlants = [];
-  memoryUnits = [];
-  memoryRoutes = [];
-  memoryEquipment = [];
-  memoryAssets = memoryEquipment;
-  memoryComponents = [];
-  memoryCollectionPoints = [];
-  memoryMeasurementPoints = [];
-  memoryAnalysisHistory = [];
-}
+    memoryPlants = [];
+    memoryUnits = [];
+    memoryRoutes = [];
+    memoryEquipment = [];
+    memoryAssets = memoryEquipment;
+    memoryComponents = [];
+    memoryCollectionPoints = [];
+    memoryMeasurementPoints = [];
+    memoryAnalysisHistory = [];
+    memoryRouteAssignments = [];
+  }
 
 // Tenant is derived exclusively from the verified session. Query params are
 // never an authority for which tenant's data a request may read or mutate.
@@ -10444,6 +10463,291 @@ app.delete("/api/bearing-specs/:id", async (req, res) => {
   }
 });
 
+// --------------------------------------------------------
+// ASSESSMENT-WIZARD - guided component evaluation records.
+// Every read/write derives the tenant from the verified session
+// (requestTenantId). A cross-tenant component or alert link is treated
+// exactly like a missing one: 404, never a leak.
+// --------------------------------------------------------
+
+const ASSESSMENT_COLUMNS =
+  "id, tenant_id, component_id, alert_id, failure_mode_key, disposition, notes, metadata_missing_at_assessment, assessed_by, assessed_at, created_at, updated_at";
+
+function assessmentPayload(row: any) {
+  const missing = Array.isArray(row.metadata_missing_at_assessment)
+    ? row.metadata_missing_at_assessment.map((item: unknown) => String(item))
+    : [];
+  return {
+    id: row.id,
+    tenant_id: row.tenant_id,
+    component_id: row.component_id,
+    alert_id: row.alert_id ?? null,
+    failure_mode_key: row.failure_mode_key ?? null,
+    disposition: row.disposition,
+    notes: row.notes ?? null,
+    metadata_missing_at_assessment: missing,
+    assessed_by: row.assessed_by ?? null,
+    assessed_at: row.assessed_at ?? null,
+    created_at: row.created_at ?? null,
+    updated_at: row.updated_at ?? null
+  };
+}
+
+function parseOptionalAssessmentInteger(value: unknown): number | null {
+  if (value == null || String(value).trim() === "") return null;
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : NaN;
+}
+
+function parseOptionalAssessmentAlert(value: unknown): string | null {
+  if (value == null || String(value).trim() === "") return null;
+  return String(value).trim();
+}
+
+async function collectAssessmentOwnedLinks(
+  db: any,
+  tenantId: number,
+  refs: AssessmentLinkRefs
+): Promise<AssessmentOwnedLinks> {
+  const components = new Set<number>();
+  const alerts = new Set<string>();
+  if (refs.component_id != null) {
+    if (
+      await tenantOwnsRow(db, "components", Number(refs.component_id), tenantId)
+    ) {
+      components.add(Number(refs.component_id));
+    }
+  }
+  if (refs.alert_id != null) {
+    const result = await db.query(
+      "SELECT 1 FROM alerts WHERE id::text = $1 AND tenant_id = $2 LIMIT 1",
+      [String(refs.alert_id), tenantId]
+    );
+    if (result.rows.length > 0) alerts.add(String(refs.alert_id));
+  }
+  return { components, alerts };
+}
+
+function memoryAssessmentOwnedLinks(
+  tenantId: number | null
+): AssessmentOwnedLinks {
+  return {
+    components: new Set<number>(memoryTenantComponentIds(tenantId)),
+    alerts: new Set<string>()
+  };
+}
+
+// POST /api/component-assessments - create a session-tenant assessment.
+app.post("/api/component-assessments", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const body = req.body || {};
+    const componentId = parseOptionalAssessmentInteger(body.component_id);
+    if (componentId == null || Number.isNaN(componentId)) {
+      return res
+        .status(400)
+        .json({ error: "A valid component_id is required.", field: "component_id" });
+    }
+    const alertId = parseOptionalAssessmentAlert(body.alert_id);
+
+    const draft = validateAssessmentDraft({
+      disposition: body.disposition,
+      failure_mode_key: body.failure_mode_key,
+      metadata_missing_at_assessment: body.metadata_missing_at_assessment,
+      notes: body.notes
+    });
+    if ("error" in draft) {
+      return res.status(400).json({ error: draft.error, field: draft.field });
+    }
+
+    const links: AssessmentLinkRefs = {
+      component_id: componentId,
+      alert_id: alertId
+    };
+    const owned = pool
+      ? await collectAssessmentOwnedLinks(pool, tenantId, links)
+      : memoryAssessmentOwnedLinks(tenantId);
+    const linkCheck = validateAssessmentLinks(links, owned);
+    if ("error" in linkCheck) {
+      return res
+        .status(linkCheck.status)
+        .json({ error: linkCheck.error, field: linkCheck.field });
+    }
+
+    const assessedBy =
+      req.auth?.user?.id != null ? Number(req.auth.user.id) : null;
+
+    if (pool) {
+      const result = await pool.query(
+        `INSERT INTO component_assessments (
+           tenant_id, component_id, alert_id, failure_mode_key, disposition,
+           notes, metadata_missing_at_assessment, assessed_by
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7::text[], $8)
+         RETURNING ${ASSESSMENT_COLUMNS}`,
+        [
+          tenantId,
+          componentId,
+          alertId,
+          draft.failureModeKey,
+          draft.disposition,
+          draft.notes,
+          draft.metadataMissing,
+          assessedBy
+        ]
+      );
+      return res.status(201).json({
+        success: true,
+        assessment: assessmentPayload(result.rows[0])
+      });
+    }
+
+    const now = new Date().toISOString();
+    const row = {
+      id: getNextId(),
+      tenant_id: tenantId,
+      component_id: componentId,
+      alert_id: alertId,
+      failure_mode_key: draft.failureModeKey,
+      disposition: draft.disposition,
+      notes: draft.notes,
+      metadata_missing_at_assessment: draft.metadataMissing,
+      assessed_by: assessedBy,
+      assessed_at: now,
+      created_at: now,
+      updated_at: now
+    };
+    memoryComponentAssessments.push(row);
+    return res.status(201).json({
+      success: true,
+      assessment: assessmentPayload(row)
+    });
+  } catch (error: any) {
+    console.error("[component-assessments] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to save the component assessment."
+    });
+  }
+});
+
+// GET /api/components/:id/assessments - latest first, session tenant only.
+app.get("/api/components/:id/assessments", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const componentId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(componentId) || componentId <= 0) {
+      return res.status(400).json({ error: "Invalid component id." });
+    }
+
+    const owned = pool
+      ? await tenantOwnsRow(pool, "components", componentId, tenantId)
+      : memoryTenantComponentIds(tenantId).includes(componentId);
+    if (!owned) {
+      return res.status(404).json({ error: "Component not found." });
+    }
+
+    let rows: any[] = [];
+    if (pool) {
+      const result = await pool.query(
+        `SELECT ${ASSESSMENT_COLUMNS}
+           FROM component_assessments
+          WHERE tenant_id = $1 AND component_id = $2
+          ORDER BY assessed_at DESC, id DESC`,
+        [tenantId, componentId]
+      );
+      rows = result.rows;
+    } else {
+      rows = memoryComponentAssessments
+        .filter(
+          (row) =>
+            Number(row.tenant_id) === tenantId &&
+            Number(row.component_id) === componentId
+        )
+        .slice()
+        .sort((a, b) => {
+          const aTime = String(a.assessed_at ?? "");
+          const bTime = String(b.assessed_at ?? "");
+          if (aTime !== bTime) return aTime < bTime ? 1 : -1;
+          return Number(b.id) - Number(a.id);
+        });
+    }
+
+    return res.json({
+      success: true,
+      assessments: rows.map(assessmentPayload)
+    });
+  } catch (error: any) {
+    console.error("[component-assessments] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load component assessments."
+    });
+  }
+});
+
+// GET /api/components/:id/assessment-latest - badge for the detail view.
+app.get("/api/components/:id/assessment-latest", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const componentId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(componentId) || componentId <= 0) {
+      return res.status(400).json({ error: "Invalid component id." });
+    }
+
+    const owned = pool
+      ? await tenantOwnsRow(pool, "components", componentId, tenantId)
+      : memoryTenantComponentIds(tenantId).includes(componentId);
+    if (!owned) {
+      return res.status(404).json({ error: "Component not found." });
+    }
+
+    let latest: any = null;
+    if (pool) {
+      const result = await pool.query(
+        `SELECT ${ASSESSMENT_COLUMNS}
+           FROM component_assessments
+          WHERE tenant_id = $1 AND component_id = $2
+          ORDER BY assessed_at DESC, id DESC
+          LIMIT 1`,
+        [tenantId, componentId]
+      );
+      latest = result.rows[0] ?? null;
+    } else {
+      latest =
+        memoryComponentAssessments
+          .filter(
+            (row) =>
+              Number(row.tenant_id) === tenantId &&
+              Number(row.component_id) === componentId
+          )
+          .slice()
+          .sort((a, b) => {
+            const aTime = String(a.assessed_at ?? "");
+            const bTime = String(b.assessed_at ?? "");
+            if (aTime !== bTime) return aTime < bTime ? 1 : -1;
+            return Number(b.id) - Number(a.id);
+          })[0] ?? null;
+    }
+
+    return res.json({
+      success: true,
+      assessment: latest ? assessmentPayload(latest) : null
+    });
+  } catch (error: any) {
+    console.error("[component-assessments] latest GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load the latest component assessment."
+    });
+  }
+});
+
 // POST /api/bearing-calc - PURE calculation from supplied numbers.
 // Deliberately stores nothing: no INSERT/UPDATE/DELETE and no tenant row.
 app.post("/api/bearing-calc", (req, res) => {
@@ -11766,6 +12070,7 @@ app.post("/api/wipe-equipment", async (req, res) => {
     memoryCollectionPoints = [];
     memoryMeasurementPoints = [];
     memoryAnalysisHistory = [];
+    memoryRouteAssignments = [];
     
     if (pool) {
       // Execute in strict cascading constraint order
@@ -11989,6 +12294,9 @@ app.delete("/api/routes/:id", async (req, res) => {
       memoryComponents = memoryComponents.filter(c => !assetIds.includes(c.asset_id));
       memoryEquipment = memoryEquipment.filter(e => e.route_id !== id);
       memoryAssets = memoryEquipment;
+      memoryRouteAssignments = memoryRouteAssignments.filter(
+        (assignment) => Number(assignment.route_id) !== id
+      );
       
       memoryRoutes.splice(index, 1);
       return res.json({ message: "Route deleted successfully", deleted: deletedRoute });
@@ -11996,6 +12304,473 @@ app.delete("/api/routes/:id", async (req, res) => {
   } catch (error: any) {
     console.error("DELETE /api/routes failed:", error);
     return res.status(500).json({ error: error.message || "Failed to delete route" });
+  }
+});
+
+// --------------------------------------------------------
+// ROUTE-CHECKOUT - work queue. Every read/write derives the tenant from
+// the verified session (requestTenantId); req.query is never authority.
+// The partial UNIQUE index route_assignments_active_unique is the
+// database-level double-checkout lock (SQLSTATE 23505).
+// --------------------------------------------------------
+
+function sessionUserId(req: any): number | null {
+  const raw = req?.auth?.user?.id;
+  if (raw == null || String(raw).trim() === "") return null;
+  const id = Number(raw);
+  return Number.isInteger(id) && id > 0 ? id : null;
+}
+
+function routeQueuePayload(queue: ReturnType<typeof buildRouteQueue>) {
+  return {
+    tenant_id: queue.tenantId,
+    active: queue.active,
+    awaiting_review: queue.awaitingReview,
+    closed: queue.closed,
+    unassigned: queue.unassigned,
+    counts: {
+      active: queue.counts.active,
+      awaiting_review: queue.counts.awaitingReview,
+      closed: queue.counts.closed,
+      unassigned: queue.counts.unassigned
+    },
+    empty: queue.empty
+  };
+}
+
+function memoryRouteQueueInput(tenantId: number): {
+  routes: RouteQueueRouteRow[];
+  assignments: RouteAssignmentRow[];
+} {
+  const routeIds = memoryTenantRouteIds(tenantId);
+  const routes: RouteQueueRouteRow[] = memoryRoutes
+    .filter((route) => routeIds.includes(route.id))
+    .map((route) => {
+      const plant = memoryPlants.find((p) => p.id === route.plant_id);
+      return {
+        id: route.id,
+        name: route.name,
+        plant_id: route.plant_id ?? null,
+        plant_name: plant ? String(plant.name) : null,
+        is_system: route.is_system === true
+      };
+    });
+  const assignments: RouteAssignmentRow[] = memoryRouteAssignments
+    .filter((assignment) => Number(assignment.tenant_id) === tenantId)
+    .map((assignment) => {
+      const analyst = memoryUsers.find((u) => u.id === assignment.assigned_to);
+      return {
+        ...assignment,
+        assigned_analyst_name: analyst ? String(analyst.username) : null
+      };
+    });
+  return { routes, assignments };
+}
+
+// GET /api/route-queue - four session-tenant tabs: active / awaiting review /
+// closed / unassigned. Analyst name and timestamps travel with each row.
+app.get("/api/route-queue", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.json({
+        success: true,
+        queue: routeQueuePayload(
+          buildRouteQueue({ tenantId: -1, routes: [], assignments: [] })
+        )
+      });
+    }
+
+    let input: {
+      routes: RouteQueueRouteRow[];
+      assignments: RouteAssignmentRow[];
+    };
+    if (pool) {
+      const routesResult = await pool.query(
+        `SELECT r.id, r.name, r.plant_id, r.is_system, pl.name AS plant_name
+           FROM routes r
+           JOIN plants pl ON pl.id = r.plant_id
+          WHERE pl.company_id = $1
+          ORDER BY r.name ASC`,
+        [tenantId]
+      );
+      const assignmentsResult = await pool.query(
+        `SELECT ra.*, u.username AS assigned_analyst_name
+           FROM route_assignments ra
+           LEFT JOIN users u
+             ON u.id = ra.assigned_to AND u.company_id = ra.tenant_id
+          WHERE ra.tenant_id = $1
+          ORDER BY ra.id DESC`,
+        [tenantId]
+      );
+      input = {
+        routes: routesResult.rows as RouteQueueRouteRow[],
+        assignments: assignmentsResult.rows as RouteAssignmentRow[]
+      };
+    } else {
+      input = memoryRouteQueueInput(tenantId);
+    }
+
+    const queue = buildRouteQueue({ tenantId, ...input });
+    return res.json({ success: true, queue: routeQueuePayload(queue) });
+  } catch (error: any) {
+    console.error("[route-checkout] GET queue error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load the work queue."
+    });
+  }
+});
+
+// POST /api/routes/:id/checkout - assign the route to the SESSION user.
+// A cross-tenant route is indistinguishable from a missing route (404).
+app.post("/api/routes/:id/checkout", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const userId = sessionUserId(req);
+    if (userId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const routeId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(routeId) || routeId <= 0) {
+      return res.status(400).json({ error: "Invalid route id." });
+    }
+
+    if (pool) {
+      const routeRes = await pool.query(
+        `SELECT r.id, r.name
+           FROM routes r
+           JOIN plants pl ON pl.id = r.plant_id
+          WHERE r.id = $1 AND pl.company_id = $2
+          LIMIT 1`,
+        [routeId, tenantId]
+      );
+      if (!routeRes.rows.length) {
+        return res.status(404).json({ error: "Route not found." });
+      }
+
+      const openRes = await pool.query(
+        `SELECT ra.id, ra.status, u.username AS assigned_analyst_name
+           FROM route_assignments ra
+           LEFT JOIN users u
+             ON u.id = ra.assigned_to AND u.company_id = ra.tenant_id
+          WHERE ra.route_id = $1 AND ra.tenant_id = $2
+            AND ra.status IN ('checked_out', 'checked_in')
+          ORDER BY ra.id DESC
+          LIMIT 1`,
+        [routeId, tenantId]
+      );
+      if (openRes.rows.length) {
+        const open = openRes.rows[0];
+        if (open.status === "checked_out") {
+          return res.status(409).json({
+            error: `Route is already checked out${
+              open.assigned_analyst_name
+                ? ` by ${open.assigned_analyst_name}`
+                : ""
+            }.`
+          });
+        }
+        return res.status(409).json({
+          error:
+            "Route is awaiting review. Close the current pass before checking it out again."
+        });
+      }
+
+      try {
+        const inserted = await pool.query(
+          `INSERT INTO route_assignments
+             (tenant_id, route_id, assigned_to, status, checked_out_at)
+           VALUES ($1, $2, $3, 'checked_out', NOW())
+           RETURNING *`,
+          [tenantId, routeId, userId]
+        );
+        return res.status(201).json({
+          success: true,
+          assignment: inserted.rows[0]
+        });
+      } catch (err: any) {
+        if (err?.code === "23505") {
+          return res.status(409).json({
+            error:
+              "Route is already checked out. Another analyst holds the active assignment."
+          });
+        }
+        throw err;
+      }
+    }
+
+    if (!memoryTenantRouteIds(tenantId).includes(routeId)) {
+      return res.status(404).json({ error: "Route not found." });
+    }
+    const open = memoryRouteAssignments.find(
+      (assignment) =>
+        Number(assignment.tenant_id) === tenantId &&
+        Number(assignment.route_id) === routeId &&
+        (assignment.status === "checked_out" ||
+          assignment.status === "checked_in")
+    );
+    if (open) {
+      if (open.status === "checked_out") {
+        const analyst = memoryUsers.find((u) => u.id === open.assigned_to);
+        return res.status(409).json({
+          error: `Route is already checked out${
+            analyst ? ` by ${analyst.username}` : ""
+          }.`
+        });
+      }
+      return res.status(409).json({
+        error:
+          "Route is awaiting review. Close the current pass before checking it out again."
+      });
+    }
+
+    const assignment = {
+      id: getNextId(),
+      tenant_id: tenantId,
+      route_id: routeId,
+      assigned_to: userId,
+      status: "checked_out",
+      checked_out_at: new Date().toISOString(),
+      checked_in_at: null,
+      closed_at: null,
+      notes: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    memoryRouteAssignments.push(assignment);
+    return res.status(201).json({ success: true, assignment });
+  } catch (error: any) {
+    console.error("[route-checkout] POST checkout error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to check out the route."
+    });
+  }
+});
+
+// POST /api/route-assignments/:id/check-in - the analyst who checked it out,
+// or a tenant admin (existing RBAC ladder), records checked_in_at + notes.
+app.post("/api/route-assignments/:id/check-in", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const userId = sessionUserId(req);
+    if (userId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const assignmentId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(assignmentId) || assignmentId <= 0) {
+      return res.status(400).json({ error: "Invalid route assignment id." });
+    }
+    const notes =
+      typeof req.body?.notes === "string" && req.body.notes.trim()
+        ? req.body.notes.trim()
+        : null;
+
+    if (pool) {
+      const found = await pool.query(
+        `SELECT ra.*, u.username AS assigned_analyst_name
+           FROM route_assignments ra
+           LEFT JOIN users u
+             ON u.id = ra.assigned_to AND u.company_id = ra.tenant_id
+          WHERE ra.id = $1 AND ra.tenant_id = $2
+          LIMIT 1`,
+        [assignmentId, tenantId]
+      );
+      if (!found.rows.length) {
+        return res.status(404).json({ error: "Route assignment not found." });
+      }
+      const assignment = found.rows[0];
+      if (
+        !canManageRouteAssignment({
+          assignedTo: assignment.assigned_to,
+          userId,
+          role: req.auth?.user?.role
+        })
+      ) {
+        return res.status(403).json({
+          error:
+            "Only the analyst who checked this route out, or a tenant admin, may check it in."
+        });
+      }
+      if (!canCheckInAssignment(assignment.status)) {
+        return res.status(409).json({
+          error: "Only a checked-out assignment can be checked in."
+        });
+      }
+      const updated = await pool.query(
+        `UPDATE route_assignments
+            SET status = 'checked_in',
+                checked_in_at = NOW(),
+                notes = $1,
+                updated_at = NOW()
+          WHERE id = $2 AND tenant_id = $3
+          RETURNING *`,
+        [notes, assignmentId, tenantId]
+      );
+      return res.json({
+        success: true,
+        assignment: {
+          ...updated.rows[0],
+          assigned_analyst_name: assignment.assigned_analyst_name ?? null
+        }
+      });
+    }
+
+    const assignment = memoryRouteAssignments.find(
+      (row) =>
+        Number(row.id) === assignmentId && Number(row.tenant_id) === tenantId
+    );
+    if (!assignment) {
+      return res.status(404).json({ error: "Route assignment not found." });
+    }
+    if (
+      !canManageRouteAssignment({
+        assignedTo: assignment.assigned_to,
+        userId,
+        role: req.auth?.user?.role
+      })
+    ) {
+      return res.status(403).json({
+        error:
+          "Only the analyst who checked this route out, or a tenant admin, may check it in."
+      });
+    }
+    if (!canCheckInAssignment(assignment.status)) {
+      return res.status(409).json({
+        error: "Only a checked-out assignment can be checked in."
+      });
+    }
+    assignment.status = "checked_in";
+    assignment.checked_in_at = new Date().toISOString();
+    assignment.notes = notes;
+    assignment.updated_at = new Date().toISOString();
+    const analyst = memoryUsers.find((u) => u.id === assignment.assigned_to);
+    return res.json({
+      success: true,
+      assignment: {
+        ...assignment,
+        assigned_analyst_name: analyst ? String(analyst.username) : null
+      }
+    });
+  } catch (error: any) {
+    console.error("[route-checkout] POST check-in error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to check in the route."
+    });
+  }
+});
+
+// POST /api/route-assignments/:id/close - same owner-or-admin rule; only
+// valid from checked_in.
+app.post("/api/route-assignments/:id/close", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const userId = sessionUserId(req);
+    if (userId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const assignmentId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(assignmentId) || assignmentId <= 0) {
+      return res.status(400).json({ error: "Invalid route assignment id." });
+    }
+
+    if (pool) {
+      const found = await pool.query(
+        `SELECT ra.*, u.username AS assigned_analyst_name
+           FROM route_assignments ra
+           LEFT JOIN users u
+             ON u.id = ra.assigned_to AND u.company_id = ra.tenant_id
+          WHERE ra.id = $1 AND ra.tenant_id = $2
+          LIMIT 1`,
+        [assignmentId, tenantId]
+      );
+      if (!found.rows.length) {
+        return res.status(404).json({ error: "Route assignment not found." });
+      }
+      const assignment = found.rows[0];
+      if (
+        !canManageRouteAssignment({
+          assignedTo: assignment.assigned_to,
+          userId,
+          role: req.auth?.user?.role
+        })
+      ) {
+        return res.status(403).json({
+          error:
+            "Only the analyst who checked this route out, or a tenant admin, may close it."
+        });
+      }
+      if (!canCloseAssignment(assignment.status)) {
+        return res.status(409).json({
+          error: "Only a checked-in assignment can be closed."
+        });
+      }
+      const updated = await pool.query(
+        `UPDATE route_assignments
+            SET status = 'closed',
+                closed_at = NOW(),
+                updated_at = NOW()
+          WHERE id = $1 AND tenant_id = $2
+          RETURNING *`,
+        [assignmentId, tenantId]
+      );
+      return res.json({
+        success: true,
+        assignment: {
+          ...updated.rows[0],
+          assigned_analyst_name: assignment.assigned_analyst_name ?? null
+        }
+      });
+    }
+
+    const assignment = memoryRouteAssignments.find(
+      (row) =>
+        Number(row.id) === assignmentId && Number(row.tenant_id) === tenantId
+    );
+    if (!assignment) {
+      return res.status(404).json({ error: "Route assignment not found." });
+    }
+    if (
+      !canManageRouteAssignment({
+        assignedTo: assignment.assigned_to,
+        userId,
+        role: req.auth?.user?.role
+      })
+    ) {
+      return res.status(403).json({
+        error:
+          "Only the analyst who checked this route out, or a tenant admin, may close it."
+      });
+    }
+    if (!canCloseAssignment(assignment.status)) {
+      return res.status(409).json({
+        error: "Only a checked-in assignment can be closed."
+      });
+    }
+    assignment.status = "closed";
+    assignment.closed_at = new Date().toISOString();
+    assignment.updated_at = new Date().toISOString();
+    const analyst = memoryUsers.find((u) => u.id === assignment.assigned_to);
+    return res.json({
+      success: true,
+      assignment: {
+        ...assignment,
+        assigned_analyst_name: analyst ? String(analyst.username) : null
+      }
+    });
+  } catch (error: any) {
+    console.error("[route-checkout] POST close error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to close the route assignment."
+    });
   }
 });
 
@@ -15402,6 +16177,60 @@ async function initializeDatabase() {
     `);
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_bearing_specs_tenant_component ON bearing_specs (tenant_id, component_id);"
+    );
+    // migrations/024 - ROUTE-CHECKOUT. Same DDL as the file so a fresh boot and
+    // a migrated boot converge. The partial UNIQUE index is the DB-level
+    // double-checkout lock; IF NOT EXISTS keeps repeated boots idempotent.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS route_assignments (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+        assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        status TEXT NOT NULL
+          CHECK (status IN ('checked_out', 'checked_in', 'closed')),
+        checked_out_at TIMESTAMPTZ,
+        checked_in_at TIMESTAMPTZ,
+        closed_at TIMESTAMPTZ,
+        notes TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_route_assignments_tenant_status ON route_assignments (tenant_id, status, id DESC);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_route_assignments_tenant_route ON route_assignments (tenant_id, route_id);"
+    );
+    await pool.query(
+      "CREATE UNIQUE INDEX IF NOT EXISTS route_assignments_active_unique ON route_assignments (route_id) WHERE status = 'checked_out';"
+    );
+    // migrations/025 - ASSESSMENT-WIZARD. Same DDL as the file so a fresh boot
+    // and a migrated boot converge. The disposition CHECK is the database-level
+    // mirror of src/lib/assessmentWizard.ts ASSESSMENT_DISPOSITIONS.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS component_assessments (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+        alert_id UUID REFERENCES alerts(id) ON DELETE SET NULL,
+        failure_mode_key TEXT,
+        disposition TEXT NOT NULL
+          CHECK (disposition IN ('none', 'anomaly', 'defect', 'unable')),
+        notes TEXT,
+        metadata_missing_at_assessment TEXT[],
+        assessed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        assessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_component_assessments_tenant_component ON component_assessments (tenant_id, component_id, assessed_at DESC, id DESC);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_component_assessments_tenant_alert ON component_assessments (tenant_id, alert_id);"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).

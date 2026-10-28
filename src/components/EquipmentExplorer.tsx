@@ -57,6 +57,14 @@ import ComponentKinematicsSpecsForm, {
 import CreateComponentModal, {
   type CreateComponentResult
 } from "./CreateComponentModal";
+import AssessmentWizard, {
+  type AssessmentMetadataValues
+} from "./AssessmentWizard";
+import {
+  dispositionLabel,
+  type ComponentAssessmentRow
+} from "../lib/assessmentWizard";
+import { failureModeLabel } from "../lib/failureModes";
 import {
   createAsset,
   createCollectionPoint,
@@ -1924,6 +1932,10 @@ export default function EquipmentExplorer({
     lastAssessment: string;
     severity: "normal" | "warning" | "critical";
   } | null>(null);
+  const [assessmentWizardOpen, setAssessmentWizardOpen] = useState(false);
+  const [latestComponentAssessment, setLatestComponentAssessment] =
+    useState<ComponentAssessmentRow | null>(null);
+  const [assessmentLoading, setAssessmentLoading] = useState(false);
 
   const [exceptions, setExceptions] = useState<CbmExceptionRow[]>([]);
   const [showAddException, setShowAddException] = useState(false);
@@ -1944,6 +1956,122 @@ export default function EquipmentExplorer({
   const selectedNode = findNode(tree, selectedNodeId) ?? siteRoot;
   const parentNode = findNode(tree, parentNodeId) ?? siteRoot;
   const effectiveSelectedNodeId = selectedNode?.id ?? SITE_PLANT_ID;
+
+  const selectedComponentEntity = useMemo(() => {
+    if (!selectedNode || selectedNode.kind !== "component") return null;
+    return lookupEditableEntity(store, selectedNode).component ?? null;
+  }, [store, selectedNode]);
+  const selectedComponentAsset = useMemo(() => {
+    if (!selectedComponentEntity) return null;
+    for (const route of store.routes) {
+      for (const asset of route.assets) {
+        if (asset.components.some((c) => c.id === selectedComponentEntity.id)) {
+          return asset;
+        }
+      }
+    }
+    return null;
+  }, [store, selectedComponentEntity]);
+  const selectedComponentServerId = selectedComponentEntity?.serverId ?? null;
+  const assessmentMetadata = useMemo<AssessmentMetadataValues>(() => {
+    const kin = (selectedComponentEntity?.kinematics ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const text = (value: unknown) =>
+      typeof value === "string" ? value.trim() : "";
+    return {
+      bearing_type:
+        text(kin.bearingDe) ||
+        text(kin.bearingNde) ||
+        text(selectedComponentEntity?.bearingType),
+      coupling_type: text(kin.couplingType),
+      baseplate:
+        text(kin.baseplate) ||
+        text(kin.mountingType) ||
+        text(kin.machineMountingType),
+      criticality: text(selectedComponentAsset?.criticality)
+    };
+  }, [selectedComponentEntity, selectedComponentAsset]);
+
+  useEffect(() => {
+    if (selectedComponentServerId == null) {
+      setLatestComponentAssessment(null);
+      setAssessmentLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAssessmentLoading(true);
+    fetch(`/api/components/${selectedComponentServerId}/assessment-latest`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (!cancelled) {
+          setLatestComponentAssessment(
+            (payload?.assessment as ComponentAssessmentRow | null) ?? null
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLatestComponentAssessment(null);
+      })
+      .finally(() => {
+        if (!cancelled) setAssessmentLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedComponentServerId]);
+
+  const saveAssessmentMetadata = useCallback(
+    async (changes: AssessmentMetadataValues) => {
+      try {
+        if (selectedComponentEntity?.serverId) {
+          const existingKin = {
+            ...((selectedComponentEntity.kinematics ?? {}) as Record<
+              string,
+              unknown
+            >)
+          };
+          if ("bearing_type" in changes) {
+            existingKin.bearingDe = changes.bearing_type;
+          }
+          if ("coupling_type" in changes) {
+            existingKin.couplingType = changes.coupling_type;
+          }
+          if ("baseplate" in changes) {
+            existingKin.baseplate = changes.baseplate;
+          }
+          await updateComponent(selectedComponentEntity.serverId, {
+            name: selectedComponentEntity.name,
+            type: selectedComponentEntity.componentType,
+            specifications: { kinematics: existingKin }
+          });
+        }
+        if (
+          "criticality" in changes &&
+          selectedComponentAsset?.serverId
+        ) {
+          await updateAsset({
+            serverId: selectedComponentAsset.serverId,
+            name: selectedComponentAsset.name,
+            tagNumber: selectedComponentAsset.tag,
+            type: selectedComponentAsset.machineType,
+            criticality: changes.criticality
+          });
+        }
+        await refreshFromServer();
+      } catch (err) {
+        toast(
+          err instanceof Error
+            ? err.message
+            : "Failed to save component metadata.",
+          "error"
+        );
+        throw err;
+      }
+    },
+    [selectedComponentEntity, selectedComponentAsset, refreshFromServer, toast]
+  );
   const applySelection = useCallback((action: ExplorerSelectionAction) => {
     setSelectedNodeId((prev) => reduceExplorerSelection(prev, action));
   }, []);
@@ -3522,6 +3650,40 @@ export default function EquipmentExplorer({
                   : "Hierarchy location summary"}
             </span>
           </div>
+          {isComponent ? (
+            <div className="mt-3">
+              {assessmentLoading ? (
+                <p className="text-[11px] text-slate-500">
+                  Loading latest assessment…
+                </p>
+              ) : latestComponentAssessment ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    Latest assessment
+                  </span>
+                  <span className="inline-flex items-center rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#FFC700]">
+                    {dispositionLabel(latestComponentAssessment.disposition)}
+                  </span>
+                  <span className="text-[11px] font-semibold text-slate-200">
+                    {latestComponentAssessment.failure_mode_key
+                      ? failureModeLabel(latestComponentAssessment.failure_mode_key)
+                      : "No failure mode"}
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    {latestComponentAssessment.assessed_at
+                      ? new Date(
+                          latestComponentAssessment.assessed_at
+                        ).toLocaleString()
+                      : "—"}
+                  </span>
+                </div>
+              ) : (
+                <p className="text-[11px] text-slate-500">
+                  No guided assessment recorded for this component yet.
+                </p>
+              )}
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {kind === "plant" ? (
@@ -3532,6 +3694,16 @@ export default function EquipmentExplorer({
             >
               <Pencil className="h-4 w-4" />
               Rename Plant
+            </button>
+          ) : null}
+          {isComponent && selectedComponentServerId != null ? (
+            <button
+              type="button"
+              onClick={() => setAssessmentWizardOpen(true)}
+              className={`${BTN_PRIMARY} inline-flex items-center gap-1.5`}
+            >
+              <ClipboardCheck className="h-4 w-4" />
+              Assess
             </button>
           ) : null}
           {isAsset && summaryEntity.asset ? (
@@ -4693,6 +4865,21 @@ export default function EquipmentExplorer({
             onClick={(e) => e.stopPropagation()}
           />
         </div>
+      ) : null}
+
+      {assessmentWizardOpen && selectedComponentServerId != null ? (
+        <AssessmentWizard
+          componentId={selectedComponentServerId}
+          componentName={selectedComponentEntity?.name ?? selectedNode.label}
+          metadata={assessmentMetadata}
+          onClose={() => setAssessmentWizardOpen(false)}
+          onSaved={(assessment) => {
+            setLatestComponentAssessment(assessment);
+            setAssessmentWizardOpen(false);
+            toast("Component assessment saved.", "success");
+          }}
+          onMetadataSave={saveAssessmentMetadata}
+        />
       ) : null}
 
       {renderQuickAddModal()}
