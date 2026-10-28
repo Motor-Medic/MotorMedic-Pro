@@ -16,7 +16,7 @@ import {
   normalizeEmail,
   type NotificationInsert
 } from "./notifications";
-import { normalizeRole, roleAtLeast } from "./auth/rbac";
+import { isTenantAdminRole as isTenantAdminPermissionRole } from "./roles";
 
 export const INVITE_TOKEN_BYTES = 32;
 export const INVITE_TTL_DAYS = 7;
@@ -115,7 +115,7 @@ export interface DisableUserEvaluation {
 }
 
 export function isTenantAdmin(role: unknown): boolean {
-  return roleAtLeast(normalizeRole(role), "reliability-manager");
+  return isTenantAdminPermissionRole(role);
 }
 
 /**

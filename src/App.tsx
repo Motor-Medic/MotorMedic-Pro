@@ -10,6 +10,7 @@ import AppLink from "./components/AppLink";
 import RouteSkeleton from "./components/suspense/RouteSkeleton";
 import { type AppTab, TAB_TO_PATH, tabFromPath, navigateToTab } from "./navigation";
 import { isTabEntitled } from "./lib/moduleNav";
+import { can, effectiveModuleKeys } from "./lib/roles";
 import { 
   Activity, Wrench, Clock, Database, ShieldAlert, CheckCircle2, LineChart, Compass, Key, Eye, EyeOff, ShieldCheck, Bell, BellRing, Folder, LogOut, Menu, X, Settings,
   Sun, Moon, Sparkles, FileText, Target, Calendar, Layers, BarChart3, ClipboardList
@@ -223,15 +224,20 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<AppTab>(() => tabFromPath(window.location.pathname) ?? "dashboard");
 
+  // ROLES-1 - effective module access is entitlement INTERSECT role view
+  // permission. Entitlements alone are not enough to show a module the role
+  // cannot view, and a role permission cannot add an unpaid module.
+  const roleModules = effectiveModuleKeys(activeModules ?? [], user);
+
   useEffect(() => {
     if (!user || activeModules === null) return;
-    if (!isTabEntitled(activeTab, activeModules)) {
+    if (!isTabEntitled(activeTab, roleModules)) {
       navigateToTab("dashboard");
     }
-  }, [user, activeModules, activeTab]);
+  }, [user, activeModules, activeTab, roleModules]);
 
   const canSeeTab = (tab: AppTab): boolean =>
-    isTabEntitled(tab, activeModules ?? []);
+    isTabEntitled(tab, roleModules);
 
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem("motormedic_theme") || "dark";
@@ -1369,8 +1375,8 @@ const updated = [newReport, ...reports];
             </AppLink>
           </div>
 
-          {/* ADMINISTRATION */}
-          {user?.role !== 'mechanic' && (
+          {/* ADMINISTRATION - ROLES-1: only roles with users.manage */}
+          {can(user, "users.manage") && (
             <>
               <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-3">Administration</p>
               <div className="space-y-1">
@@ -1539,11 +1545,12 @@ const updated = [newReport, ...reports];
               selectedAssetId={trendsAssetId}
             />
           ) : activeTab === "admin" ? (
-            <RouteGuard user={user} permission="tenants:manage">
+            <RouteGuard user={user} permission="users.manage">
               <AdminPanel
                 companies={companies}
                 onSubscriptionChange={fetchCompanies}
                 selectedCompanyId={selectedCompanyId}
+                user={user}
               />
             </RouteGuard>
           ) : activeTab === "alerts" ? (
@@ -1551,13 +1558,16 @@ const updated = [newReport, ...reports];
           ) : activeTab === "anomaly-board" ? (
             <AnomalyBoard />
           ) : activeTab === "work-queue" ? (
-            <WorkQueue />
+            <WorkQueue user={user} />
           ) : activeTab === "sensors" ? (
             <MountingPlanner />
           ) : activeTab === "multi-tech" ? (
             <MultiTechPage selectedCompanyId={selectedCompanyId} />
           ) : activeTab === "reliability-scorecard" ? (
-            <ReliabilityScorecard selectedCompanyId={selectedCompanyId} />
+            <ReliabilityScorecard
+              selectedCompanyId={selectedCompanyId}
+              user={user}
+            />
           ) : (
             <History
               reports={reports}
@@ -1943,7 +1953,7 @@ const updated = [newReport, ...reports];
                 </AppLink>
               </div>
 
-              {user?.role !== 'mechanic' && (
+              {can(user, "users.manage") && (
                 <>
                   <p className="text-[10px] font-bold text-amber-400/70 uppercase tracking-wider mb-2 mt-6 px-2">Administration</p>
                   <div className="space-y-1.5">

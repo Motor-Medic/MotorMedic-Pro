@@ -45,6 +45,7 @@ import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import { RunHistoryTrigger, RunHistoryPopover, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
+import { canCurrent } from "../lib/roles";
 import {
   ARTIFACT_DISCLAIMER,
   confirmArtifactExport
@@ -5951,6 +5952,7 @@ export default function AnalysisReport({
   const [runHistoryOpen, setRunHistoryOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement | null>(null);
+  const mayExport = canCurrent("reports.export");
   const [equipTick, setEquipTick] = useState(0);
   const [loadedAnalyses, setLoadedAnalyses] = useState<SavedAnalysisResult[]>([]);
   const [selectedAnalysis, setSelectedAnalysis] = useState<SavedAnalysisResult | null>(null);
@@ -6860,25 +6862,27 @@ export default function AnalysisReport({
           <Wrench className="h-4 w-4" /><span>Create Work Order</span>
         </button>
 
-        <div className="relative shrink-0" ref={exportRef}>
-          <button type="button" onClick={() => setExportOpen((p) => !p)} aria-haspopup="menu" aria-expanded={exportOpen}
-            className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-sm font-medium rounded-lg cursor-pointer transition-colors">
-            <Download className="h-4 w-4" /><span>Export Report</span>
-            <ChevronDown className={`h-4 w-4 transition-transform ${exportOpen ? "rotate-180" : ""}`} />
-          </button>
-          {exportOpen && (
-            <div role="menu" className="absolute right-0 top-full mt-1.5 w-52 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl p-1.5 z-30">
-              {EXPORT_FORMATS.map((format) => (
-                <button key={format.id} type="button" role="menuitem" onClick={() => handleExport(format.id)}
-                  data-prefetch={format.id === "pdf" ? "jspdf" : format.id === "excel" ? "xlsx" : undefined}
-                  className="w-full text-left px-2.5 py-2 rounded-md hover:bg-slate-950 cursor-pointer transition-colors group">
-                  <span className="text-sm font-semibold text-slate-200 group-hover:text-yellow-400 block">{format.label}</span>
-                  <span className="text-xs text-slate-500 block">{format.hint}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {mayExport && (
+          <div className="relative shrink-0" ref={exportRef}>
+            <button type="button" onClick={() => setExportOpen((p) => !p)} aria-haspopup="menu" aria-expanded={exportOpen}
+              className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-sm font-medium rounded-lg cursor-pointer transition-colors">
+              <Download className="h-4 w-4" /><span>Export Report</span>
+              <ChevronDown className={`h-4 w-4 transition-transform ${exportOpen ? "rotate-180" : ""}`} />
+            </button>
+            {exportOpen && (
+              <div role="menu" className="absolute right-0 top-full mt-1.5 w-52 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl p-1.5 z-30">
+                {EXPORT_FORMATS.map((format) => (
+                  <button key={format.id} type="button" role="menuitem" onClick={() => handleExport(format.id)}
+                    data-prefetch={format.id === "pdf" ? "jspdf" : format.id === "excel" ? "xlsx" : undefined}
+                    className="w-full text-left px-2.5 py-2 rounded-md hover:bg-slate-950 cursor-pointer transition-colors group">
+                    <span className="text-sm font-semibold text-slate-200 group-hover:text-yellow-400 block">{format.label}</span>
+                    <span className="text-xs text-slate-500 block">{format.hint}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <button type="button" onClick={() => setShowInventory(true)}
           className="flex items-center gap-1.5 h-9 px-3 bg-slate-950 border border-slate-800 hover:border-slate-700 hover:text-white text-slate-300 text-sm font-medium rounded-lg cursor-pointer transition-colors shrink-0">

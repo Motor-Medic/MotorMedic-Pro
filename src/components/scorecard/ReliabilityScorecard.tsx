@@ -6,6 +6,7 @@ import CoverageBadActorsTab from "./CoverageBadActorsTab";
 
 interface ReliabilityScorecardProps {
   selectedCompanyId: number;
+  user?: { role?: unknown } | null;
 }
 
 const TABS = ["1. Risk & ROI", "2. Backlog & Execution Velocity", "3. Coverage & Bad Actors"] as const;

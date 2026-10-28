@@ -12,6 +12,7 @@ import {
   formatCents,
   type GoodCatchRow
 } from "../../lib/goodCatches";
+import { canCurrent } from "../../lib/roles";
 
 interface GoodCatchSummaryPayload {
   tenant_id: number;
@@ -199,6 +200,9 @@ export default function GoodCatchesSection({
   };
 
   const hasRows = useMemo(() => catches.length > 0, [catches.length]);
+  // ROLES-1 UI mirror only; the server still 403s a hidden tool request.
+  const mayWrite = canCurrent("goodcatch.write");
+  const mayExport = canCurrent("reports.export");
 
   return (
     <section>
@@ -212,26 +216,30 @@ export default function GoodCatchesSection({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={exportCsv}
-            disabled={!hasRows}
-            className="min-h-[36px] px-3 rounded-xl border border-slate-700 bg-slate-900/60 text-slate-300 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer hover:border-slate-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Export CSV
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setEditing(null);
-              setModalOpen(true);
-            }}
-            className="min-h-[36px] px-3 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors shadow-lg shadow-[#FFC700]/20"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Log good catch
-          </button>
+          {mayExport && (
+            <button
+              type="button"
+              onClick={exportCsv}
+              disabled={!hasRows}
+              className="min-h-[36px] px-3 rounded-xl border border-slate-700 bg-slate-900/60 text-slate-300 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer hover:border-slate-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export CSV
+            </button>
+          )}
+          {mayWrite && (
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(null);
+                setModalOpen(true);
+              }}
+              className="min-h-[36px] px-3 rounded-xl bg-[#FFC700] hover:bg-[#e6b400] text-slate-950 text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors shadow-lg shadow-[#FFC700]/20"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Log good catch
+            </button>
+          )}
         </div>
       </div>
 
@@ -349,25 +357,31 @@ export default function GoodCatchesSection({
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-right whitespace-nowrap">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditing(row);
-                        setModalOpen(true);
-                      }}
-                      className="h-7 w-7 rounded-lg inline-flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700/60 cursor-pointer transition-colors"
-                      aria-label={`Edit ${row.title}`}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void deleteCatch(row)}
-                      className="h-7 w-7 rounded-lg inline-flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 cursor-pointer transition-colors"
-                      aria-label={`Delete ${row.title}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {mayWrite ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditing(row);
+                            setModalOpen(true);
+                          }}
+                          className="h-7 w-7 rounded-lg inline-flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-700/60 cursor-pointer transition-colors"
+                          aria-label={`Edit ${row.title}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteCatch(row)}
+                          className="h-7 w-7 rounded-lg inline-flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 cursor-pointer transition-colors"
+                          aria-label={`Delete ${row.title}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-slate-600 text-[10px]">View only</span>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -265,6 +265,38 @@ async function login(username: string): Promise<string> {
   return cookieFrom(res);
 }
 
+/**
+ * ROLES-1 - route.checkout requires the analyst role. Registration creates a
+ * plant-engineer viewer, so the queue suite runs as the owner-assigned
+ * reliability-manager analyst while the invited second user stays a viewer.
+ */
+async function promoteToAnalyst(tenant: Tenant): Promise<Tenant> {
+  const adminUsername = `${tenant.username}_admin`;
+  const invited = await callApi("POST", "/api/company/users/invite", {
+    cookie: tenant.cookie,
+    body: {
+      company_id: tenant.companyId,
+      email: `${adminUsername}@example.com`,
+      role: "reliability-manager",
+      username: adminUsername
+    }
+  });
+  expect(invited.statusCode).toBe(200);
+  const adminCookie = await login(adminUsername);
+  const promoted = await callApi(
+    "POST",
+    `/api/tenant-users/${tenant.userId}/role`,
+    { cookie: adminCookie, body: { role: "reliability-manager" } }
+  );
+  expect(promoted.statusCode).toBe(200);
+  const relogin = await callApi("POST", "/api/auth/login", {
+    body: { username: tenant.username, password: "audit-password-123" }
+  });
+  expect(relogin.statusCode).toBe(200);
+  tenant.cookie = cookieFrom(relogin);
+  return tenant;
+}
+
 let tenantA: Tenant;
 let tenantB: Tenant;
 let aRouteId: number;
@@ -279,8 +311,8 @@ beforeAll(async () => {
 
   await import("../../server.ts");
 
-  tenantA = await registerTenant("a");
-  tenantB = await registerTenant("b");
+  tenantA = await promoteToAnalyst(await registerTenant("a"));
+  tenantB = await promoteToAnalyst(await registerTenant("b"));
 
   aRouteId = await createRoute(tenantA, `A collection route ${run}`);
   bRouteId = await createRoute(tenantB, `B collection route ${run}`);

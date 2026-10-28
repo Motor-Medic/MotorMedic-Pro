@@ -224,15 +224,17 @@ interface Tenant {
   companyId: number;
   userId: number;
   plantId: number | null;
+  username: string;
   cookie: string;
 }
 
 const run = Date.now().toString(36);
 
 async function registerTenant(label: string): Promise<Tenant> {
+  const username = `aw_${label}_${run}`;
   const res = await callApi("POST", "/api/auth/register", {
     body: {
-      username: `aw_${label}_${run}`,
+      username,
       password: "audit-password-123",
       plantCompanyName: `Assessment ${label} ${run}`,
       termsAccepted: true
@@ -243,8 +245,47 @@ async function registerTenant(label: string): Promise<Tenant> {
     companyId: res.body.company_id,
     userId: res.body.id,
     plantId: res.body.plant_id,
+    username,
     cookie: cookieFrom(res)
   };
+}
+
+/**
+ * ROLES-1 - assessment.save requires the analyst role. Registration creates a
+ * plant-engineer viewer, so the isolation suite runs as the owner-assigned
+ * reliability-manager analyst.
+ */
+async function promoteToAnalyst(tenant: Tenant): Promise<Tenant> {
+  const adminUsername = `${tenant.username}_admin`;
+  const invited = await callApi("POST", "/api/company/users/invite", {
+    cookie: tenant.cookie,
+    body: {
+      company_id: tenant.companyId,
+      email: `${adminUsername}@example.com`,
+      role: "reliability-manager",
+      username: adminUsername
+    }
+  });
+  expect(invited.statusCode).toBe(200);
+  const adminLogin = await callApi("POST", "/api/auth/login", {
+    body: { username: adminUsername, password: "password123" }
+  });
+  expect(adminLogin.statusCode).toBe(200);
+  const promoted = await callApi(
+    "POST",
+    `/api/tenant-users/${tenant.userId}/role`,
+    {
+      cookie: cookieFrom(adminLogin),
+      body: { role: "reliability-manager" }
+    }
+  );
+  expect(promoted.statusCode).toBe(200);
+  const relogin = await callApi("POST", "/api/auth/login", {
+    body: { username: tenant.username, password: "audit-password-123" }
+  });
+  expect(relogin.statusCode).toBe(200);
+  tenant.cookie = cookieFrom(relogin);
+  return tenant;
 }
 
 async function createComponentFor(
@@ -279,9 +320,9 @@ beforeAll(async () => {
 
   await import("../../server.ts");
 
-  tenantA = await registerTenant("a");
-  tenantB = await registerTenant("b");
-  tenantC = await registerTenant("c");
+  tenantA = await promoteToAnalyst(await registerTenant("a"));
+  tenantB = await promoteToAnalyst(await registerTenant("b"));
+  tenantC = await promoteToAnalyst(await registerTenant("c"));
 
   aComponentId = (await createComponentFor(tenantA, "A")).componentId;
   bComponentId = (await createComponentFor(tenantB, "B")).componentId;

@@ -6,15 +6,16 @@
  */
 import React from "react";
 import type { UserSession } from "../Login";
-import { normalizeRole, roleHasPermission } from "../../lib/auth/rbac";
+import { normalizeRole } from "../../lib/auth/rbac";
+import { can, type Permission } from "../../lib/roles";
 import { ShieldAlert } from "lucide-react";
 
 interface RouteGuardProps {
   user: UserSession | null;
   /** Require any one of these structured roles. */
   roles?: readonly string[];
-  /** Require a specific RBAC permission (see ROLE_PERMISSIONS). */
-  permission?: string;
+  /** Require a specific RBAC permission (see src/lib/roles.ts). */
+  permission?: Permission;
   /** Rendered instead of children when access is denied (or null → fallback). */
   denied?: React.ReactNode;
   children: React.ReactNode;
@@ -47,7 +48,7 @@ export default function RouteGuard({
 
   const role = normalizeRole(user.role);
   const roleOk = roles ? roles.map((r) => normalizeRole(r)).includes(role) : true;
-  const permOk = permission ? roleHasPermission(role, permission) : true;
+  const permOk = permission ? can({ role }, permission) : true;
 
   if (!roleOk || !permOk) return denied ?? <AccessDenied />;
   return <>{children}</>;

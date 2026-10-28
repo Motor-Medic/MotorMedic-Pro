@@ -65,6 +65,7 @@ import {
   type ComponentAssessmentRow
 } from "../lib/assessmentWizard";
 import { failureModeLabel } from "../lib/failureModes";
+import { canCurrent } from "../lib/roles";
 import {
   createAsset,
   createCollectionPoint,
@@ -1839,6 +1840,7 @@ export default function EquipmentExplorer({
   userPlantName?: string;
 }) {
   const { toast } = useToast();
+  const mayAssess = canCurrent("assessment.save");
   const saveGuard = useSingleFlight();
   const deleteGuard = useSingleFlight();
   const renameGuard = useSingleFlight();
@@ -3696,7 +3698,7 @@ export default function EquipmentExplorer({
               Rename Plant
             </button>
           ) : null}
-          {isComponent && selectedComponentServerId != null ? (
+          {isComponent && selectedComponentServerId != null && mayAssess ? (
             <button
               type="button"
               onClick={() => setAssessmentWizardOpen(true)}

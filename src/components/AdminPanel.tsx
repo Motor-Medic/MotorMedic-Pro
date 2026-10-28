@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useToast } from "./Toast";
 import CustomerPortal from "./CustomerPortal";
+import { assignableRoles, can } from "../lib/roles";
 
 interface Company {
   id: number;
@@ -19,9 +20,15 @@ interface AdminPanelProps {
   companies: Company[];
   onSubscriptionChange: () => void;
   selectedCompanyId: number;
+  user?: { role?: unknown } | null;
 }
 
-export default function AdminPanel({ companies, onSubscriptionChange, selectedCompanyId }: AdminPanelProps) {
+export default function AdminPanel({
+  companies,
+  onSubscriptionChange,
+  selectedCompanyId,
+  user
+}: AdminPanelProps) {
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<"settings" | "billing" | "notifications">("settings");
   const [selectedCompId, setSelectedCompId] = useState<number>(selectedCompanyId);
@@ -44,6 +51,9 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
   const [inviteEmail, setInviteEmail] = useState("");
   const [isInviting, setIsInviting] = useState(false);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [roleUpdatingId, setRoleUpdatingId] = useState<number | null>(null);
+  const mayManageUsers = can(user, "users.manage");
+  const roleOptions = assignableRoles(user?.role);
 
   const fetchUsers = async () => {
     setIsLoadingUsers(true);
@@ -269,6 +279,27 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
       await fetchUsers();
     } catch (err: any) {
       showToast(err.message || `Failed to ${action.toLowerCase()} user`, "error");
+    }
+  };
+
+  const handleRoleChange = async (targetUser: any, newRole: string) => {
+    if (!mayManageUsers || String(targetUser.role) === newRole) return;
+    setRoleUpdatingId(Number(targetUser.id));
+    try {
+      const res = await fetch(`/api/tenant-users/${targetUser.id}/role`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ role: newRole })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to update role");
+      showToast("Role updated. The new permissions apply on their next request.", "success");
+      await fetchUsers();
+    } catch (err: any) {
+      showToast(err.message || "Failed to update role", "error");
+    } finally {
+      setRoleUpdatingId(null);
     }
   };
 
@@ -588,9 +619,27 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                               <div className="text-[10px] text-slate-500">{u.username}</div>
                             </td>
                             <td className="py-3">
-                              <span className="text-[11px] font-semibold text-slate-200 capitalize">
-                                {String(u.role || "").replace(/-/g, " ")}
-                              </span>
+                              {mayManageUsers ? (
+                                <select
+                                  value={String(u.role || "plant-engineer")}
+                                  disabled={roleUpdatingId === Number(u.id)}
+                                  onChange={(e) =>
+                                    void handleRoleChange(u, e.target.value)
+                                  }
+                                  className="bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-200 text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer disabled:opacity-50"
+                                  id={`tenant-user-role-${u.id}`}
+                                >
+                                  {roleOptions.map((role) => (
+                                    <option key={role} value={role}>
+                                      {role.replace(/-/g, " ")}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-slate-200 capitalize">
+                                  {String(u.role || "").replace(/-/g, " ")}
+                                </span>
+                              )}
                             </td>
                             <td className="py-3">
                               <span

@@ -15,7 +15,7 @@
  * tenant; the grouping helpers re-check tenant_id so a future read regression
  * cannot merge another tenant's queue into this one.
  */
-import { normalizeRole, roleAtLeast } from "./auth/rbac";
+import { isTenantAdminRole as isTenantAdminPermissionRole } from "./roles";
 
 export const ROUTE_ASSIGNMENT_STATUSES = [
   "checked_out",
@@ -235,9 +235,9 @@ export function buildRouteQueue(input: {
   };
 }
 
-/** Tenant admin = the existing reliability-manager bar in the RBAC ladder. */
+/** Tenant admin = the existing reliability-manager bar, now via roles.ts. */
 export function isTenantAdminRole(role: unknown): boolean {
-  return roleAtLeast(normalizeRole(role), "reliability-manager");
+  return isTenantAdminPermissionRole(role);
 }
 
 /**

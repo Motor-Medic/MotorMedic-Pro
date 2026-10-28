@@ -132,6 +132,11 @@ import {
   requireModule
 } from "./src/lib/entitlements";
 import {
+  evaluateRoleChange,
+  parseAssignableRole,
+  requirePermission
+} from "./src/lib/roles";
+import {
   assertProductionSquareMode,
   assertSquareEnvironmentCoherence,
   createMockCheckoutSession,
@@ -433,23 +438,30 @@ async function handleAnalyzeVibrationExpress(
 app.post(
   ANALYZE_VIBRATION_API_PATH,
   requireModule("vibration"),
+  requirePermission("view_module:vibration"),
   asyncJsonHandler(handleAnalyzeVibrationExpress)
 );
 app.post(
   ANALYZE_VIBRATION_API_ALIAS,
   requireModule("vibration"),
+  requirePermission("view_module:vibration"),
   asyncJsonHandler(handleAnalyzeVibrationExpress)
 );
-app.get(ANALYZE_VIBRATION_API_PATH, (_req, res) => {
-  res.json({
-    ok: true,
-    method: "POST",
-    path: ANALYZE_VIBRATION_API_PATH,
-    alias: ANALYZE_VIBRATION_API_ALIAS,
-    service: "3-Stage Multi-Model Consensus Engine (AR-25 provider cascade: Gemini -> Groq -> Mistral -> OpenAI -> OpenRouter last)",
-    errors: ["SIGNAL_UNREADABLE", "CONSENSUS_DIVERGENCE", "GATEWAY_TIMEOUT", "PROVIDER_FAILURE"]
-  });
-});
+app.get(
+  ANALYZE_VIBRATION_API_PATH,
+  requireModule("vibration"),
+  requirePermission("view_module:vibration"),
+  (_req, res) => {
+    res.json({
+      ok: true,
+      method: "POST",
+      path: ANALYZE_VIBRATION_API_PATH,
+      alias: ANALYZE_VIBRATION_API_ALIAS,
+      service: "3-Stage Multi-Model Consensus Engine (AR-25 provider cascade: Gemini -> Groq -> Mistral -> OpenAI -> OpenRouter last)",
+      errors: ["SIGNAL_UNREADABLE", "CONSENSUS_DIVERGENCE", "GATEWAY_TIMEOUT", "PROVIDER_FAILURE"]
+    });
+  }
+);
 
 /**
  * POST /api/extract-vibration-image
@@ -866,16 +878,22 @@ async function handleAnalyzeThermographyExpress(
 app.post(
   ANALYZE_THERMOGRAPHY_API_PATH,
   requireModule("thermography"),
+  requirePermission("view_module:thermography"),
   handleAnalyzeThermographyExpress
 );
-app.get(ANALYZE_THERMOGRAPHY_API_PATH, (_req, res) => {
-  res.json({
-    ok: true,
-    method: "POST",
-    path: ANALYZE_THERMOGRAPHY_API_PATH,
-    service: "OpenAI GPT-4o Vision — Thermography Analysis Engine"
-  });
-});
+app.get(
+  ANALYZE_THERMOGRAPHY_API_PATH,
+  requireModule("thermography"),
+  requirePermission("view_module:thermography"),
+  (_req, res) => {
+    res.json({
+      ok: true,
+      method: "POST",
+      path: ANALYZE_THERMOGRAPHY_API_PATH,
+      service: "OpenAI GPT-4o Vision — Thermography Analysis Engine"
+    });
+  }
+);
 
 /**
  * POST /api/extract-thermal-metadata
@@ -996,16 +1014,22 @@ async function handleAnalyzeUltrasoundExpress(
 app.post(
   ANALYZE_ULTRASOUND_API_PATH,
   requireModule("ultrasound"),
+  requirePermission("view_module:ultrasound"),
   handleAnalyzeUltrasoundExpress
 );
-app.get(ANALYZE_ULTRASOUND_API_PATH, (_req, res) => {
-  res.json({
-    ok: true,
-    method: "POST",
-    path: ANALYZE_ULTRASOUND_API_PATH,
-    service: "Ultrasound Analysis Engine (placeholder — Master AI prompt pending)"
-  });
-});
+app.get(
+  ANALYZE_ULTRASOUND_API_PATH,
+  requireModule("ultrasound"),
+  requirePermission("view_module:ultrasound"),
+  (_req, res) => {
+    res.json({
+      ok: true,
+      method: "POST",
+      path: ANALYZE_ULTRASOUND_API_PATH,
+      service: "Ultrasound Analysis Engine (placeholder — Master AI prompt pending)"
+    });
+  }
+);
 
 /* -------------------------------------------------------------------------- */
 /* Run Diagnostics persistence — analysis_results / alerts / diagnosis_logs   */
@@ -1955,7 +1979,7 @@ app.get(
   }
 );
 
-app.get("/api/analysis-results", async (req, res) => {
+app.get("/api/analysis-results", requirePermission("reports.export"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -2051,7 +2075,7 @@ app.get("/api/analysis-results", async (req, res) => {
   }
 });
 
-app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), async (req, res) => {
+app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_module:oil"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -2072,7 +2096,7 @@ app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), async (req, res) => {
   }
 });
 
-app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), async (req, res) => {
+app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_module:oil"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -2096,7 +2120,7 @@ app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), async (req, res) => {
   }
 });
 
-app.post(OIL_VISION_API_PATH, requireModule("oil"), async (req, res) => {
+app.post(OIL_VISION_API_PATH, requireModule("oil"), requirePermission("view_module:oil"), async (req, res) => {
   req.setTimeout(180_000);
   res.setTimeout(180_000);
   try {
@@ -2185,7 +2209,7 @@ app.post(OIL_VISION_API_PATH, requireModule("oil"), async (req, res) => {
   }
 });
 
-app.get("/api/analysis-results/:id", async (req, res) => {
+app.get("/api/analysis-results/:id", requirePermission("reports.export"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -2342,7 +2366,7 @@ function isReportId(raw: string): boolean {
   return UUID_RE.test(raw.trim());
 }
 
-app.get("/api/reports", async (req, res) => {
+app.get("/api/reports", requirePermission("reports.export"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -2383,7 +2407,7 @@ app.get("/api/reports", async (req, res) => {
   }
 });
 
-app.get("/api/reports/:id", async (req, res) => {
+app.get("/api/reports/:id", requirePermission("reports.export"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
@@ -2561,7 +2585,7 @@ app.get("/api/alerts", async (req, res) => {
  * never request another company by query param. There is no schema change
  * here beyond migrations/021's composite index.
  */
-app.get("/api/anomaly-board", async (req, res) => {
+app.get("/api/anomaly-board", requirePermission("anomaly.view"), async (req, res) => {
   const tenantId = Number(req.tenantId ?? -1);
   try {
     // No database / no tenant -> honest empty board (never fabricated counts).
@@ -2859,7 +2883,7 @@ app.post("/api/notifications/:id/read", async (req, res) => {
 // GET /api/admin/notifications - admin audit trail (owner/admin only).
 // Reuses the existing tenant-admin bar (isTenantAdminRole ->
 // roleAtLeast(..., 'reliability-manager')); see src/lib/routeCheckout.ts.
-app.get("/api/admin/notifications", async (req, res) => {
+app.get("/api/admin/notifications", requirePermission("recipients.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -2905,7 +2929,7 @@ app.get("/api/admin/notifications", async (req, res) => {
 });
 
 // GET /api/alert-recipients - tenant alert-recipient defaults (owner/admin).
-app.get("/api/alert-recipients", async (req, res) => {
+app.get("/api/alert-recipients", requirePermission("recipients.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -2931,7 +2955,7 @@ app.get("/api/alert-recipients", async (req, res) => {
 // A client-supplied company_id/tenant_id that names a different tenant is
 // rejected as 404, matching the cross-tenant resource convention used by
 // goodCatches/routeCheckout (never a silent write into the foreign tenant).
-app.post("/api/alert-recipients", async (req, res) => {
+app.post("/api/alert-recipients", requirePermission("recipients.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -3007,7 +3031,7 @@ app.post("/api/alert-recipients", async (req, res) => {
 });
 
 // DELETE /api/alert-recipients/:id - remove one recipient in the session tenant.
-app.delete("/api/alert-recipients/:id", async (req, res) => {
+app.delete("/api/alert-recipients/:id", requirePermission("recipients.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -10377,7 +10401,7 @@ function goodCatchTotalsPayload(summary: ReturnType<typeof buildGoodCatchSummary
 }
 
 // GET /api/good-catches - session-tenant list + additive ROI totals.
-app.get("/api/good-catches", async (req, res) => {
+app.get("/api/good-catches", requirePermission("reports.export"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -10448,7 +10472,7 @@ app.get("/api/good-catches", async (req, res) => {
 });
 
 // POST /api/good-catches - create a session-tenant catch.
-app.post("/api/good-catches", async (req, res) => {
+app.post("/api/good-catches", requirePermission("goodcatch.write"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -10575,7 +10599,7 @@ app.post("/api/good-catches", async (req, res) => {
 });
 
 // PATCH /api/good-catches/:id - session-tenant only; id is never a tenant key.
-app.patch("/api/good-catches/:id", async (req, res) => {
+app.patch("/api/good-catches/:id", requirePermission("goodcatch.write"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -10714,7 +10738,7 @@ app.patch("/api/good-catches/:id", async (req, res) => {
 });
 
 // DELETE /api/good-catches/:id - session-tenant only.
-app.delete("/api/good-catches/:id", async (req, res) => {
+app.delete("/api/good-catches/:id", requirePermission("goodcatch.write"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -10895,7 +10919,7 @@ app.get("/api/bearing-specs/component/:componentId", async (req, res) => {
 });
 
 // POST /api/bearing-specs - save user-entered geometry for an owned component.
-app.post("/api/bearing-specs", async (req, res) => {
+app.post("/api/bearing-specs", requirePermission("bearing.write"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -10969,7 +10993,7 @@ app.post("/api/bearing-specs", async (req, res) => {
 
 // PATCH /api/bearing-specs/:id - id is never a tenant key; tenant comes from
 // the session and the component link is re-validated when supplied.
-app.patch("/api/bearing-specs/:id", async (req, res) => {
+app.patch("/api/bearing-specs/:id", requirePermission("bearing.write"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -11088,7 +11112,7 @@ app.patch("/api/bearing-specs/:id", async (req, res) => {
 });
 
 // DELETE /api/bearing-specs/:id - session-tenant only.
-app.delete("/api/bearing-specs/:id", async (req, res) => {
+app.delete("/api/bearing-specs/:id", requirePermission("bearing.write"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -11201,7 +11225,7 @@ function memoryAssessmentOwnedLinks(
 }
 
 // POST /api/component-assessments - create a session-tenant assessment.
-app.post("/api/component-assessments", async (req, res) => {
+app.post("/api/component-assessments", requirePermission("assessment.save"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -12423,7 +12447,7 @@ function isActiveInviteRow(row: any, now: Date = new Date()): boolean {
 }
 
 // POST /api/tenant-invites - owner/admin of the SESSION tenant invites a worker.
-app.post("/api/tenant-invites", async (req, res) => {
+app.post("/api/tenant-invites", requirePermission("users.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -12530,7 +12554,7 @@ app.post("/api/tenant-invites", async (req, res) => {
 });
 
 // GET /api/tenant-invites - pending invites for the SESSION tenant only.
-app.get("/api/tenant-invites", async (req, res) => {
+app.get("/api/tenant-invites", requirePermission("users.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -12582,7 +12606,7 @@ app.get("/api/tenant-invites", async (req, res) => {
 });
 
 // POST /api/tenant-invites/:id/resend - rotate the token and re-email it.
-app.post("/api/tenant-invites/:id/resend", async (req, res) => {
+app.post("/api/tenant-invites/:id/resend", requirePermission("users.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -12690,7 +12714,7 @@ app.post("/api/tenant-invites/:id/resend", async (req, res) => {
 });
 
 // POST /api/tenant-invites/:id/revoke - kill the token for this tenant.
-app.post("/api/tenant-invites/:id/revoke", async (req, res) => {
+app.post("/api/tenant-invites/:id/revoke", requirePermission("users.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -12992,7 +13016,7 @@ app.post("/api/invite/:token/accept", async (req, res) => {
 });
 
 // GET /api/tenant-users - users of the SESSION tenant only (owner/admin).
-app.get("/api/tenant-users", async (req, res) => {
+app.get("/api/tenant-users", requirePermission("users.manage"), async (req, res) => {
   const tenantId = requestTenantId(req);
   if (tenantId == null) {
     return res.status(401).json({ error: "Authentication required." });
@@ -13031,6 +13055,115 @@ app.get("/api/tenant-users", async (req, res) => {
     });
   }
 });
+
+// POST /api/tenant-users/:id/role - owner/admin assigns one of the EXISTING
+// canonical roles to a user in the SESSION tenant only. The role is read from
+// the session on every request (middleware.ts loadSessionUser), so the change
+// takes effect on the user's next request without deleting their session.
+app.post(
+  "/api/tenant-users/:id/role",
+  requirePermission("users.manage"),
+  async (req, res) => {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const userId = parseInt(String(req.params.id), 10);
+    if (!Number.isInteger(userId) || userId <= 0) {
+      return res.status(400).json({ error: "Invalid user id." });
+    }
+    const newRole = parseAssignableRole(req.body?.role);
+    if (!newRole) {
+      return res.status(400).json({
+        error:
+          "Role must be one of the existing canonical values: plant-engineer, reliability-manager, system-admin.",
+        code: "INVALID_ROLE"
+      });
+    }
+    const actorRole = req.auth!.user.role;
+    if (newRole === "system-admin" && actorRole !== "system-admin") {
+      return res.status(403).json({
+        error: "Only a system-admin may assign the system-admin role.",
+        code: "FORBIDDEN"
+      });
+    }
+
+    try {
+      let tenantUsers: any[];
+      let target: any;
+      if (pool) {
+        const result = await pool.query(
+          `SELECT id, username, email, role, is_disabled, created_at
+             FROM users
+            WHERE company_id = $1
+            ORDER BY id ASC`,
+          [tenantId]
+        );
+        tenantUsers = result.rows;
+        target = tenantUsers.find((user) => Number(user.id) === userId);
+      } else {
+        tenantUsers = memoryUsers.filter(
+          (user) => Number(user.company_id) === tenantId
+        );
+        target = tenantUsers.find((user) => Number(user.id) === userId);
+      }
+      // A user from another tenant is indistinguishable from a missing user.
+      if (!target) {
+        return res.status(404).json({ error: "User not found." });
+      }
+      if (
+        normalizeRole(target.role) === "system-admin" &&
+        actorRole !== "system-admin"
+      ) {
+        return res.status(403).json({
+          error: "Only a system-admin may change a system-admin role.",
+          code: "FORBIDDEN"
+        });
+      }
+
+      const evaluation = evaluateRoleChange({
+        targetId: userId,
+        currentUserId: Number(req.auth!.user.id),
+        targetRole: target.role,
+        newRole,
+        tenantUsers
+      });
+      if (!evaluation.ok) {
+        return res.status(409).json({
+          error: evaluation.message,
+          code: evaluation.reason
+        });
+      }
+
+      if (pool) {
+        const updated = await pool.query(
+          `UPDATE users SET role = $1
+            WHERE id = $2 AND company_id = $3
+            RETURNING id, username, email, role, is_disabled, created_at`,
+          [newRole, userId, tenantId]
+        );
+        if (!updated.rows.length) {
+          return res.status(404).json({ error: "User not found." });
+        }
+        return res.json({
+          success: true,
+          user: tenantUserPayload(updated.rows[0])
+        });
+      }
+
+      target.role = newRole;
+      return res.json({
+        success: true,
+        user: tenantUserPayload(target)
+      });
+    } catch (error: any) {
+      console.error("[tenant-users] role error:", error);
+      return res.status(500).json({
+        error: error?.message || "Failed to update user role."
+      });
+    }
+  }
+);
 
 async function handleTenantUserDisableToggle(
   req: any,
@@ -13117,11 +13250,15 @@ async function handleTenantUserDisableToggle(
   }
 }
 
-app.post("/api/tenant-users/:id/disable", (req, res) =>
-  handleTenantUserDisableToggle(req, res, true)
+app.post(
+  "/api/tenant-users/:id/disable",
+  requirePermission("users.manage"),
+  (req, res) => handleTenantUserDisableToggle(req, res, true)
 );
-app.post("/api/tenant-users/:id/enable", (req, res) =>
-  handleTenantUserDisableToggle(req, res, false)
+app.post(
+  "/api/tenant-users/:id/enable",
+  requirePermission("users.manage"),
+  (req, res) => handleTenantUserDisableToggle(req, res, false)
 );
 
 // --------------------------------------------------------
@@ -13946,7 +14083,7 @@ app.get("/api/route-queue", async (req, res) => {
 
 // POST /api/routes/:id/checkout - assign the route to the SESSION user.
 // A cross-tenant route is indistinguishable from a missing route (404).
-app.post("/api/routes/:id/checkout", async (req, res) => {
+app.post("/api/routes/:id/checkout", requirePermission("route.checkout"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -14075,7 +14212,7 @@ app.post("/api/routes/:id/checkout", async (req, res) => {
 
 // POST /api/route-assignments/:id/check-in - the analyst who checked it out,
 // or a tenant admin (existing RBAC ladder), records checked_in_at + notes.
-app.post("/api/route-assignments/:id/check-in", async (req, res) => {
+app.post("/api/route-assignments/:id/check-in", requirePermission("route.checkin"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {
@@ -14190,7 +14327,7 @@ app.post("/api/route-assignments/:id/check-in", async (req, res) => {
 
 // POST /api/route-assignments/:id/close - same owner-or-admin rule; only
 // valid from checked_in.
-app.post("/api/route-assignments/:id/close", async (req, res) => {
+app.post("/api/route-assignments/:id/close", requirePermission("route.checkin"), async (req, res) => {
   try {
     const tenantId = requestTenantId(req);
     if (tenantId == null) {

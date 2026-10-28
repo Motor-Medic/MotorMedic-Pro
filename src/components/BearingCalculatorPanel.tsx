@@ -6,6 +6,7 @@ import {
   validateBearingGeometry,
   type BearingFaultFrequencies
 } from "../lib/bearingCalc";
+import { canCurrent } from "../lib/roles";
 
 /**
  * UI-only shape handed to the existing spectrum chart. Frequencies are null
@@ -68,6 +69,7 @@ export default function BearingCalculatorPanel({
   const [error, setError] = useState<string | null>(null);
   const [overlayEnabled, setOverlayEnabled] = useState(false);
   const [showHarmonics, setShowHarmonics] = useState(false);
+  const maySaveSpec = canCurrent("bearing.write");
 
   const geometryValidation = useMemo(
     () => validateBearingGeometry({ z, bd, pd, contactAngle: angle }),
@@ -435,18 +437,24 @@ export default function BearingCalculatorPanel({
           />
           2x / 3x harmonics
         </label>
-        <button
-          type="button"
-          onClick={saveSpec}
-          disabled={saving || componentId == null || !geometryValidation.ok}
-          className="ml-auto px-3 py-1.5 rounded-lg text-sm font-semibold bg-[#FFC700] text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {saving
-            ? "Saving..."
-            : savedSpecId == null
-              ? "Save spec to component"
-              : "Update saved spec"}
-        </button>
+        {maySaveSpec ? (
+          <button
+            type="button"
+            onClick={saveSpec}
+            disabled={saving || componentId == null || !geometryValidation.ok}
+            className="ml-auto px-3 py-1.5 rounded-lg text-sm font-semibold bg-[#FFC700] text-slate-950 hover:bg-amber-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {saving
+              ? "Saving..."
+              : savedSpecId == null
+                ? "Save spec to component"
+                : "Update saved spec"}
+          </button>
+        ) : (
+          <span className="ml-auto text-[11px] text-slate-500">
+            Read-only bearing calculator for your role.
+          </span>
+        )}
       </div>
 
       <div className="mt-4 overflow-hidden rounded-lg border border-slate-700/80">

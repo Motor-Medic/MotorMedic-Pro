@@ -1,83 +1,20 @@
 /**
- * AR-29 rule 8 — RBAC. The session carries a structured role; the server
+ * AR-29 rule 8 - RBAC. The session carries a structured role; the server
  * enforces per-route permissions from it. Legacy DB values ("engineer",
  * "manager", "admin") are mapped onto the structured role set at session
  * load so no route ever compares free-form strings.
+ *
+ * ROLES-1 moved the ROLE_PERMISSIONS matrix and normalizeRole into
+ * src/lib/roles.ts. This file keeps the original public API as thin delegates
+ * so existing imports and the role ladder keep working unchanged.
  */
 import type { AppRole } from "./types";
+import { hasPermission, type Permission } from "../roles";
 
-const STRUCTURED_ROLES: readonly AppRole[] = [
-  "plant-engineer",
-  "reliability-manager",
-  "system-admin",
-];
-
-/** Map legacy/free-form role strings from the users table to AppRole. */
-export function normalizeRole(raw: unknown): AppRole {
-  if (typeof raw === "string") {
-    const value = raw.trim().toLowerCase();
-    if (value === "system-admin" || value === "admin" || value === "sysadmin") {
-      return "system-admin";
-    }
-    if (
-      value === "reliability-manager" ||
-      value === "manager" ||
-      value === "reliability"
-    ) {
-      return "reliability-manager";
-    }
-    if (value === "plant-engineer" || value === "engineer") {
-      return "plant-engineer";
-    }
-    if ((STRUCTURED_ROLES as readonly string[]).includes(value)) {
-      return value as AppRole;
-    }
-  }
-  // Unknown/legacy default: least privilege.
-  return "plant-engineer";
-}
-
-export const ROLE_PERMISSIONS: Readonly<Record<AppRole, readonly string[]>> = {
-  "plant-engineer": [
-    "diagnostics:run",
-    "diagnostics:read",
-    "assets:read",
-    "assets:write",
-    "notes:write",
-    "spectrum:capture",
-    "reports:read",
-  ],
-  "reliability-manager": [
-    "diagnostics:run",
-    "diagnostics:read",
-    "assets:read",
-    "assets:write",
-    "notes:write",
-    "spectrum:capture",
-    "reports:read",
-    "reports:write",
-    "workorders:write",
-    "users:invite",
-  ],
-  "system-admin": [
-    "diagnostics:run",
-    "diagnostics:read",
-    "assets:read",
-    "assets:write",
-    "notes:write",
-    "spectrum:capture",
-    "reports:read",
-    "reports:write",
-    "workorders:write",
-    "users:invite",
-    "users:manage",
-    "tenants:manage",
-    "system:admin",
-  ],
-};
+export { normalizeRole } from "../roles";
 
 export function roleHasPermission(role: AppRole, permission: string): boolean {
-  return ROLE_PERMISSIONS[role]?.includes(permission) ?? false;
+  return hasPermission(role, permission as Permission);
 }
 
 export function roleAtLeast(role: AppRole, minimum: AppRole): boolean {

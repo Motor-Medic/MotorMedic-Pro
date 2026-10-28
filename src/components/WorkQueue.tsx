@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ClipboardList, RefreshCw } from "lucide-react";
 import { navigateToTab } from "../navigation";
+import { can } from "../lib/roles";
 
 interface QueueItem {
   assignment_id: number | null;
@@ -86,7 +87,13 @@ function AnalystPill({ item }: { item: QueueItem }) {
   );
 }
 
-export default function WorkQueue() {
+export default function WorkQueue({
+  user
+}: {
+  user?: { role?: unknown } | null;
+} = {}) {
+  const mayCheckout = can(user, "route.checkout");
+  const mayCheckIn = can(user, "route.checkin");
   const [queue, setQueue] = useState<QueuePayload | null>(null);
   const [tab, setTab] = useState<QueueTab>("active");
   const [loading, setLoading] = useState(true);
@@ -333,36 +340,48 @@ export default function WorkQueue() {
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
                     {tab === "unassigned" ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void checkout(item)}
-                        className="min-h-[32px] px-3 rounded-lg border border-[#FFC700]/45 bg-[#FFC700]/10 text-[#FFC700] text-[11px] font-bold hover:bg-[#FFC700]/20 transition-colors disabled:opacity-50"
-                      >
-                        Check out
-                      </button>
+                      mayCheckout ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void checkout(item)}
+                          className="min-h-[32px] px-3 rounded-lg border border-[#FFC700]/45 bg-[#FFC700]/10 text-[#FFC700] text-[11px] font-bold hover:bg-[#FFC700]/20 transition-colors disabled:opacity-50"
+                        >
+                          Check out
+                        </button>
+                      ) : (
+                        <span className="text-slate-500">View only</span>
+                      )
                     ) : tab === "active" ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => {
-                          setCheckInTarget(item);
-                          setNotes("");
-                          setActionError("");
-                        }}
-                        className="min-h-[32px] px-3 rounded-lg border border-[#FFC700]/45 bg-[#FFC700]/10 text-[#FFC700] text-[11px] font-bold hover:bg-[#FFC700]/20 transition-colors disabled:opacity-50"
-                      >
-                        Check in
-                      </button>
+                      mayCheckIn ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setCheckInTarget(item);
+                            setNotes("");
+                            setActionError("");
+                          }}
+                          className="min-h-[32px] px-3 rounded-lg border border-[#FFC700]/45 bg-[#FFC700]/10 text-[#FFC700] text-[11px] font-bold hover:bg-[#FFC700]/20 transition-colors disabled:opacity-50"
+                        >
+                          Check in
+                        </button>
+                      ) : (
+                        <span className="text-slate-500">View only</span>
+                      )
                     ) : tab === "awaiting_review" ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void closeAssignment(item)}
-                        className="min-h-[32px] px-3 rounded-lg border border-slate-700 bg-slate-900 text-slate-200 text-[11px] font-bold hover:border-[#FFC700]/50 hover:text-[#FFC700] transition-colors disabled:opacity-50"
-                      >
-                        Close
-                      </button>
+                      mayCheckIn ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void closeAssignment(item)}
+                          className="min-h-[32px] px-3 rounded-lg border border-slate-700 bg-slate-900 text-slate-200 text-[11px] font-bold hover:border-[#FFC700]/50 hover:text-[#FFC700] transition-colors disabled:opacity-50"
+                        >
+                          Close
+                        </button>
+                      ) : (
+                        <span className="text-slate-500">View only</span>
+                      )
                     ) : (
                       <span className="text-slate-500">Closed</span>
                     )}
