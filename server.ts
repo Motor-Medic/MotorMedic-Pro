@@ -135,6 +135,16 @@ import {
   type AnomalyBoardSourceRow
 } from "./src/lib/anomalyBoard";
 import {
+  buildGoodCatchSummary,
+  parseAvoidedCostCents,
+  parseDowntimeHours,
+  validateGoodCatchLinks,
+  type GoodCatchLinkField,
+  type GoodCatchLinkRefs,
+  type GoodCatchOwnedLinks,
+  type GoodCatchRow
+} from "./src/lib/goodCatches";
+import {
   provisionTenantFromCheckout,
   type PendingCheckoutRecord
 } from "./src/lib/tenantProvisioning";
@@ -7791,6 +7801,8 @@ let memoryCompanies: any[] = [
 
 let memoryAlertPreferences: any[] = [];
 let memoryAlertHistory: any[] = [];
+// GOOD-CATCHES - session-tenant rows in DATABASE_URL-less mode.
+let memoryGoodCatches: any[] = [];
 
 let memoryPlants: any[] = [
   { id: 1, company_id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
@@ -8065,6 +8077,163 @@ async function tenantOwnsRow(
   };
   const result = await db.query(sql[table], [id, tenantId]);
   return result.rows.length > 0;
+}
+
+// GOOD-CATCHES - every supplied lineage / alert / work-order link must be
+// proven to belong to the session tenant before the row is written. A
+// cross-tenant id is treated exactly like a missing id (404, never a leak).
+function parseOptionalGoodCatchInteger(value: unknown): number | null {
+  if (value == null || String(value).trim() === "") return null;
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : NaN;
+}
+
+function parseOptionalGoodCatchAlert(value: unknown): string | null {
+  if (value == null || String(value).trim() === "") return null;
+  return String(value).trim();
+}
+
+function goodCatchLinksHaveInvalidId(links: GoodCatchLinkRefs): boolean {
+  return (
+    Number.isNaN(links.plant_id as number) ||
+    Number.isNaN(links.route_id as number) ||
+    Number.isNaN(links.asset_id as number) ||
+    Number.isNaN(links.component_id as number) ||
+    Number.isNaN(links.work_order_id as number)
+  );
+}
+
+async function goodCatchLinkOwnedByTenant(
+  db: any,
+  field: GoodCatchLinkField,
+  id: number | string,
+  tenantId: number
+): Promise<boolean> {
+  switch (field) {
+    case "plant_id":
+      return tenantOwnsRow(db, "plants", Number(id), tenantId);
+    case "route_id":
+      return tenantOwnsRow(db, "routes", Number(id), tenantId);
+    case "asset_id":
+      return tenantOwnsRow(db, "assets", Number(id), tenantId);
+    case "component_id":
+      return tenantOwnsRow(db, "components", Number(id), tenantId);
+    case "alert_id": {
+      const result = await db.query(
+        "SELECT 1 FROM alerts WHERE id::text = $1 AND tenant_id = $2 LIMIT 1",
+        [String(id), tenantId]
+      );
+      return result.rows.length > 0;
+    }
+    case "work_order_id": {
+      const result = await db.query(
+        "SELECT 1 FROM work_orders WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+        [Number(id), tenantId]
+      );
+      return result.rows.length > 0;
+    }
+  }
+  return false;
+}
+
+async function collectGoodCatchOwnedLinks(
+  db: any,
+  tenantId: number,
+  refs: GoodCatchLinkRefs
+): Promise<GoodCatchOwnedLinks> {
+  const owned = {
+    plants: new Set<number>(),
+    routes: new Set<number>(),
+    assets: new Set<number>(),
+    components: new Set<number>(),
+    alerts: new Set<string>(),
+    workOrders: new Set<number>()
+  };
+  if (refs.plant_id != null) {
+    if (await goodCatchLinkOwnedByTenant(db, "plant_id", refs.plant_id, tenantId)) {
+      owned.plants.add(Number(refs.plant_id));
+    }
+  }
+  if (refs.route_id != null) {
+    if (await goodCatchLinkOwnedByTenant(db, "route_id", refs.route_id, tenantId)) {
+      owned.routes.add(Number(refs.route_id));
+    }
+  }
+  if (refs.asset_id != null) {
+    if (await goodCatchLinkOwnedByTenant(db, "asset_id", refs.asset_id, tenantId)) {
+      owned.assets.add(Number(refs.asset_id));
+    }
+  }
+  if (refs.component_id != null) {
+    if (
+      await goodCatchLinkOwnedByTenant(db, "component_id", refs.component_id, tenantId)
+    ) {
+      owned.components.add(Number(refs.component_id));
+    }
+  }
+  if (refs.alert_id != null) {
+    if (await goodCatchLinkOwnedByTenant(db, "alert_id", refs.alert_id, tenantId)) {
+      owned.alerts.add(String(refs.alert_id));
+    }
+  }
+  if (refs.work_order_id != null) {
+    if (
+      await goodCatchLinkOwnedByTenant(
+        db,
+        "work_order_id",
+        refs.work_order_id,
+        tenantId
+      )
+    ) {
+      owned.workOrders.add(Number(refs.work_order_id));
+    }
+  }
+  return owned;
+}
+
+function memoryGoodCatchOwnedLinks(
+  tenantId: number | null
+): GoodCatchOwnedLinks {
+  const owned: GoodCatchOwnedLinks = {
+    plants: new Set<number>(memoryTenantPlantIds(tenantId)),
+    routes: new Set<number>(memoryTenantRouteIds(tenantId)),
+    assets: new Set<number>(memoryTenantAssetIds(tenantId)),
+    components: new Set<number>(memoryTenantComponentIds(tenantId)),
+    alerts: new Set<string>(),
+    workOrders: new Set<number>()
+  };
+  return owned;
+}
+
+function memoryGoodCatchWithLineage(row: any): GoodCatchRow {
+  const plant =
+    row.plant_id != null
+      ? memoryPlants.find(
+          (p) => p.id === Number(row.plant_id) && p.company_id === row.tenant_id
+        )
+      : null;
+  const route =
+    row.route_id != null
+      ? memoryRoutes.find((r) => r.id === Number(row.route_id))
+      : null;
+  const asset =
+    row.asset_id != null
+      ? memoryAssets.find((a) => a.id === Number(row.asset_id))
+      : null;
+  const component =
+    row.component_id != null
+      ? memoryComponents.find((c) => c.id === Number(row.component_id))
+      : null;
+  return {
+    ...row,
+    plant_name: plant ? String(plant.name) : null,
+    route_name: route ? String(route.name) : null,
+    asset_name: asset ? String(asset.name) : null,
+    asset_tag: asset?.tag_number ? String(asset.tag_number) : null,
+    component_name: component ? String(component.name) : null,
+    work_order_status: null,
+    alert_title: null
+  };
 }
 
 // Helper to generate a unique sequential ID for memory fallback
@@ -9486,7 +9655,412 @@ app.get("/api/dashboard/roi-calculation", async (req, res) => {
 });
 
 // --------------------------------------------------------
-// USER AUTHENTICATION ENDPOINTS (AR-29 — real server sessions)
+// GOOD-CATCHES - core ROI extension (no module key / entitlement change).
+// Every read/write derives the tenant from the verified session only.
+// --------------------------------------------------------
+
+function normalizeGoodCatchDate(
+  raw: unknown
+): { ok: true; date: string } | { ok: false; error: string } {
+  if (raw == null || String(raw).trim() === "") {
+    return { ok: true, date: new Date().toISOString().slice(0, 10) };
+  }
+  const date = String(raw).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(`${date}T00:00:00Z`))) {
+    return { ok: false, error: "catch_date must be a valid YYYY-MM-DD date." };
+  }
+  return { ok: true, date };
+}
+
+function goodCatchTotalsPayload(summary: ReturnType<typeof buildGoodCatchSummary>) {
+  return {
+    tenant_id: summary.tenantId,
+    catch_count: summary.catchCount,
+    total_avoided_cost_cents: summary.totalAvoidedCostCents,
+    total_downtime_hours_avoided: summary.totalDowntimeHoursAvoided,
+    safety_catch_count: summary.safetyCatchCount,
+    empty: summary.empty
+  };
+}
+
+// GET /api/good-catches - session-tenant list + additive ROI totals.
+app.get("/api/good-catches", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.json({
+        success: true,
+        catches: [],
+        summary: {
+          tenant_id: -1,
+          catch_count: 0,
+          total_avoided_cost_cents: 0,
+          total_downtime_hours_avoided: 0,
+          safety_catch_count: 0,
+          empty: true
+        }
+      });
+    }
+
+    let rows: GoodCatchRow[] = [];
+    if (pool) {
+      const result = await pool.query(
+        `
+        SELECT
+          gc.*,
+          pl.name AS plant_name,
+          CASE WHEN rtpl.id IS NOT NULL THEN rt.name END AS route_name,
+          CASE WHEN ast.company_id = gc.tenant_id THEN ast.name END AS asset_name,
+          CASE WHEN ast.company_id = gc.tenant_id THEN ast.tag_number END AS asset_tag,
+          CASE WHEN ca.company_id = gc.tenant_id THEN comp.name END AS component_name,
+          CASE WHEN wo.tenant_id = gc.tenant_id THEN wo.status END AS work_order_status,
+          CASE WHEN al.tenant_id = gc.tenant_id THEN al.title END AS alert_title
+        FROM good_catches gc
+        LEFT JOIN plants pl
+          ON pl.id = gc.plant_id AND pl.company_id = gc.tenant_id
+        LEFT JOIN routes rt ON rt.id = gc.route_id
+        LEFT JOIN plants rtpl
+          ON rtpl.id = rt.plant_id AND rtpl.company_id = gc.tenant_id
+        LEFT JOIN assets ast ON ast.id = gc.asset_id
+        LEFT JOIN components comp ON comp.id = gc.component_id
+        LEFT JOIN assets ca ON ca.id = comp.asset_id
+        LEFT JOIN work_orders wo
+          ON wo.id = gc.work_order_id AND wo.tenant_id = gc.tenant_id
+        LEFT JOIN alerts al
+          ON al.id = gc.alert_id AND al.tenant_id = gc.tenant_id
+        WHERE gc.tenant_id = $1
+        ORDER BY gc.catch_date DESC, gc.id DESC
+        `,
+        [tenantId]
+      );
+      rows = result.rows as GoodCatchRow[];
+    } else {
+      rows = memoryGoodCatches
+        .filter((row) => Number(row.tenant_id) === tenantId)
+        .map(memoryGoodCatchWithLineage);
+    }
+
+    const summary = buildGoodCatchSummary({ tenantId, rows });
+    return res.json({
+      success: true,
+      catches: summary.catches,
+      summary: goodCatchTotalsPayload(summary)
+    });
+  } catch (error: any) {
+    console.error("[good-catches] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load good catches."
+    });
+  }
+});
+
+// POST /api/good-catches - create a session-tenant catch.
+app.post("/api/good-catches", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const body = req.body || {};
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    if (!title) {
+      return res.status(400).json({ error: "Title is required." });
+    }
+    const catchDate = normalizeGoodCatchDate(body.catch_date);
+    if ("error" in catchDate) {
+      return res.status(400).json({ error: catchDate.error });
+    }
+    const avoided = parseAvoidedCostCents(body.avoided_cost_cents);
+    if ("error" in avoided) {
+      return res.status(400).json({ error: avoided.error });
+    }
+    const downtime = parseDowntimeHours(body.downtime_hours_avoided);
+    if ("error" in downtime) {
+      return res.status(400).json({ error: downtime.error });
+    }
+    const links: GoodCatchLinkRefs = {
+      plant_id: parseOptionalGoodCatchInteger(body.plant_id),
+      route_id: parseOptionalGoodCatchInteger(body.route_id),
+      asset_id: parseOptionalGoodCatchInteger(body.asset_id),
+      component_id: parseOptionalGoodCatchInteger(body.component_id),
+      alert_id: parseOptionalGoodCatchAlert(body.alert_id),
+      work_order_id: parseOptionalGoodCatchInteger(body.work_order_id)
+    };
+    if (goodCatchLinksHaveInvalidId(links)) {
+      return res.status(400).json({ error: "One or more linked ids are invalid." });
+    }
+    const owned = pool
+      ? await collectGoodCatchOwnedLinks(pool, tenantId, links)
+      : memoryGoodCatchOwnedLinks(tenantId);
+    const linkCheck = validateGoodCatchLinks(links, owned);
+    if ("error" in linkCheck) {
+      return res.status(linkCheck.status).json({
+        error: linkCheck.error,
+        field: linkCheck.field
+      });
+    }
+
+    const description =
+      typeof body.description === "string" && body.description.trim()
+        ? body.description.trim()
+        : null;
+    const safetyNote =
+      typeof body.safety_note === "string" && body.safety_note.trim()
+        ? body.safety_note.trim()
+        : null;
+    const safetyHazard = body.safety_hazard === true || body.safety_hazard === "true";
+    const recordedBy =
+      req.auth?.user?.id != null ? Number(req.auth.user.id) : null;
+
+    if (pool) {
+      const result = await pool.query(
+        `
+        INSERT INTO good_catches (
+          tenant_id, plant_id, route_id, asset_id, component_id,
+          alert_id, work_order_id, title, description, catch_date,
+          avoided_cost_cents, downtime_hours_avoided, safety_hazard,
+          safety_note, recorded_by
+        ) VALUES (
+          $1, $2, $3, $4, $5,
+          $6, $7, $8, $9, $10,
+          $11, $12, $13,
+          $14, $15
+        )
+        RETURNING *
+        `,
+        [
+          tenantId,
+          links.plant_id,
+          links.route_id,
+          links.asset_id,
+          links.component_id,
+          links.alert_id,
+          links.work_order_id,
+          title,
+          description,
+          catchDate.date,
+          avoided.cents,
+          downtime.hours,
+          safetyHazard,
+          safetyNote,
+          recordedBy
+        ]
+      );
+      return res.status(201).json({ success: true, catch: result.rows[0] });
+    }
+
+    const row = {
+      id: getNextId(),
+      tenant_id: tenantId,
+      plant_id: links.plant_id ?? null,
+      route_id: links.route_id ?? null,
+      asset_id: links.asset_id ?? null,
+      component_id: links.component_id ?? null,
+      alert_id: links.alert_id ?? null,
+      work_order_id: links.work_order_id ?? null,
+      title,
+      description,
+      catch_date: catchDate.date,
+      avoided_cost_cents: avoided.cents,
+      downtime_hours_avoided: downtime.hours,
+      safety_hazard: safetyHazard,
+      safety_note: safetyNote,
+      recorded_by: recordedBy,
+      created_at: new Date().toISOString()
+    };
+    memoryGoodCatches.push(row);
+    return res.status(201).json({
+      success: true,
+      catch: memoryGoodCatchWithLineage(row)
+    });
+  } catch (error: any) {
+    console.error("[good-catches] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to save the good catch."
+    });
+  }
+});
+
+// PATCH /api/good-catches/:id - session-tenant only; id is never a tenant key.
+app.patch("/api/good-catches/:id", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid good catch id." });
+    }
+    const body = req.body || {};
+    const updates: Record<string, unknown> = {};
+
+    if ("title" in body) {
+      const title = typeof body.title === "string" ? body.title.trim() : "";
+      if (!title) return res.status(400).json({ error: "Title is required." });
+      updates.title = title;
+    }
+    if ("description" in body) {
+      updates.description =
+        typeof body.description === "string" && body.description.trim()
+          ? body.description.trim()
+          : null;
+    }
+    if ("catch_date" in body) {
+      const catchDate = normalizeGoodCatchDate(body.catch_date);
+      if ("error" in catchDate) {
+        return res.status(400).json({ error: catchDate.error });
+      }
+      updates.catch_date = catchDate.date;
+    }
+    if ("avoided_cost_cents" in body) {
+      const avoided = parseAvoidedCostCents(body.avoided_cost_cents);
+      if ("error" in avoided) {
+        return res.status(400).json({ error: avoided.error });
+      }
+      updates.avoided_cost_cents = avoided.cents;
+    }
+    if ("downtime_hours_avoided" in body) {
+      const downtime = parseDowntimeHours(body.downtime_hours_avoided);
+      if ("error" in downtime) {
+        return res.status(400).json({ error: downtime.error });
+      }
+      updates.downtime_hours_avoided = downtime.hours;
+    }
+    if ("safety_hazard" in body) {
+      updates.safety_hazard =
+        body.safety_hazard === true || body.safety_hazard === "true";
+    }
+    if ("safety_note" in body) {
+      updates.safety_note =
+        typeof body.safety_note === "string" && body.safety_note.trim()
+          ? body.safety_note.trim()
+          : null;
+    }
+
+    const links: GoodCatchLinkRefs = {};
+    let hasLinkUpdates = false;
+    if ("plant_id" in body) {
+      hasLinkUpdates = true;
+      links.plant_id = parseOptionalGoodCatchInteger(body.plant_id);
+    }
+    if ("route_id" in body) {
+      hasLinkUpdates = true;
+      links.route_id = parseOptionalGoodCatchInteger(body.route_id);
+    }
+    if ("asset_id" in body) {
+      hasLinkUpdates = true;
+      links.asset_id = parseOptionalGoodCatchInteger(body.asset_id);
+    }
+    if ("component_id" in body) {
+      hasLinkUpdates = true;
+      links.component_id = parseOptionalGoodCatchInteger(body.component_id);
+    }
+    if ("alert_id" in body) {
+      hasLinkUpdates = true;
+      links.alert_id = parseOptionalGoodCatchAlert(body.alert_id);
+    }
+    if ("work_order_id" in body) {
+      hasLinkUpdates = true;
+      links.work_order_id = parseOptionalGoodCatchInteger(body.work_order_id);
+    }
+    if (goodCatchLinksHaveInvalidId(links)) {
+      return res.status(400).json({ error: "One or more linked ids are invalid." });
+    }
+    if (hasLinkUpdates) {
+      const owned = pool
+        ? await collectGoodCatchOwnedLinks(pool, tenantId, links)
+        : memoryGoodCatchOwnedLinks(tenantId);
+      const linkCheck = validateGoodCatchLinks(links, owned);
+      if ("error" in linkCheck) {
+        return res.status(linkCheck.status).json({
+          error: linkCheck.error,
+          field: linkCheck.field
+        });
+      }
+      Object.assign(updates, links);
+    }
+
+    const keys = Object.keys(updates);
+    if (keys.length === 0) {
+      return res.status(400).json({ error: "No supported fields to update." });
+    }
+
+    if (pool) {
+      const values = keys.map((key) => updates[key]);
+      values.push(id, tenantId);
+      const setClause = keys
+        .map((key, index) => `${key} = $${index + 1}`)
+        .join(", ");
+      const result = await pool.query(
+        `UPDATE good_catches SET ${setClause}
+          WHERE id = $${keys.length + 1} AND tenant_id = $${keys.length + 2}
+          RETURNING *`,
+        values
+      );
+      if (!result.rows.length) {
+        return res.status(404).json({ error: "Good catch not found." });
+      }
+      return res.json({ success: true, catch: result.rows[0] });
+    }
+
+    const row = memoryGoodCatches.find(
+      (item) => Number(item.id) === id && Number(item.tenant_id) === tenantId
+    );
+    if (!row) {
+      return res.status(404).json({ error: "Good catch not found." });
+    }
+    Object.assign(row, updates);
+    return res.json({ success: true, catch: memoryGoodCatchWithLineage(row) });
+  } catch (error: any) {
+    console.error("[good-catches] PATCH error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to update the good catch."
+    });
+  }
+});
+
+// DELETE /api/good-catches/:id - session-tenant only.
+app.delete("/api/good-catches/:id", async (req, res) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid good catch id." });
+    }
+
+    if (pool) {
+      const result = await pool.query(
+        "DELETE FROM good_catches WHERE id = $1 AND tenant_id = $2 RETURNING id",
+        [id, tenantId]
+      );
+      if (!result.rows.length) {
+        return res.status(404).json({ error: "Good catch not found." });
+      }
+      return res.json({ success: true, id: result.rows[0].id });
+    }
+
+    const index = memoryGoodCatches.findIndex(
+      (item) => Number(item.id) === id && Number(item.tenant_id) === tenantId
+    );
+    if (index === -1) {
+      return res.status(404).json({ error: "Good catch not found." });
+    }
+    const deleted = memoryGoodCatches.splice(index, 1)[0];
+    return res.json({ success: true, id: deleted.id });
+  } catch (error: any) {
+    console.error("[good-catches] DELETE error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to delete the good catch."
+    });
+  }
+});
+
+// --------------------------------------------------------
+// USER AUTHENTICATION ENDPOINTS (AR-29 - real server sessions)
 // --------------------------------------------------------
 
 /** Public user shape returned to clients (never includes password_hash). */
@@ -14340,6 +14914,41 @@ async function initializeDatabase() {
     // idempotent across repeated boots (DEP-1 style).
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_alerts_tenant_ack_severity ON alerts (tenant_id, acknowledged, severity);"
+    );
+    // migrations/022 - GOOD-CATCHES. Same DDL as the file so a fresh boot and
+    // a migrated boot converge; IF NOT EXISTS keeps every boot idempotent.
+    // MONEY RULE: avoided_cost_cents is INTEGER cents (see migration header).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS good_catches (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        plant_id INTEGER REFERENCES plants(id) ON DELETE SET NULL,
+        route_id INTEGER REFERENCES routes(id) ON DELETE SET NULL,
+        asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,
+        component_id INTEGER REFERENCES components(id) ON DELETE SET NULL,
+        alert_id UUID REFERENCES alerts(id) ON DELETE SET NULL,
+        work_order_id INTEGER REFERENCES work_orders(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        catch_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        avoided_cost_cents INTEGER NOT NULL DEFAULT 0
+          CHECK (avoided_cost_cents >= 0),
+        downtime_hours_avoided NUMERIC(10, 2) NOT NULL DEFAULT 0
+          CHECK (downtime_hours_avoided >= 0),
+        safety_hazard BOOLEAN NOT NULL DEFAULT FALSE,
+        safety_note TEXT,
+        recorded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_good_catches_tenant ON good_catches (tenant_id, catch_date DESC, id DESC);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_good_catches_tenant_asset ON good_catches (tenant_id, asset_id);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_good_catches_tenant_work_order ON good_catches (tenant_id, work_order_id);"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).

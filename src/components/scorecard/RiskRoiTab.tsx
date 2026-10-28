@@ -4,6 +4,7 @@ import {
   COST_MODEL_EVENT,
   type CostModel,
 } from "./CostDock";
+import GoodCatchesSection from "./GoodCatchesSection";
 
 const FAULTS_KEY = "spectra_reliability_faults_v1";
 
@@ -184,6 +185,9 @@ export default function RiskRoiTab({ selectedCompanyId }: RiskRoiTabProps) {
           </div>
         )}
       </section>
+
+      {/* GOOD-CATCH VALUE - additive block, never folded into S1/S2. */}
+      <GoodCatchesSection selectedCompanyId={selectedCompanyId} />
 
       {/* S2 SAVINGS & GOOD CATCHES */}
       <section>
