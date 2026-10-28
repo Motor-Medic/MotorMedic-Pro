@@ -6,7 +6,6 @@ import {
   Users, UserPlus, Trash
 } from "lucide-react";
 import { useToast } from "./Toast";
-import PricingPage from "./PricingPage";
 import CustomerPortal from "./CustomerPortal";
 
 interface Company {
@@ -249,7 +248,7 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
             Tenant Administration Center
           </h2>
           <p className="text-xs text-slate-400 mt-1">
-            Configure tenant organizations, manage technology permissions, and view subscription pricing models.
+            Configure tenant organizations, manage technology permissions, and manage subscription billing.
           </p>
         </div>
       </div>
@@ -526,7 +525,7 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                         ? "bg-rose-500/10 border border-rose-500/20 text-rose-400"
                         : "bg-slate-800 text-slate-400 border border-slate-700"
                     }`}>
-                      {companyBillingData?.subscription_status ? companyBillingData.subscription_status.toUpperCase() : "FREE TIER"}
+                      {companyBillingData?.subscription_status ? companyBillingData.subscription_status.toUpperCase() : "NO ACTIVE SUBSCRIPTION"}
                     </span>
                   </div>
                   <p className="text-[10px] text-slate-500 font-medium">Billed through Square</p>
@@ -542,7 +541,7 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                           month: "short",
                           day: "numeric"
                         })
-                      : "No renewal set (Free Tier)"
+                      : "No renewal scheduled"
                     }
                   </p>
                   <p className="text-[10px] text-slate-500 font-medium">Auto-renew active</p>
@@ -553,15 +552,6 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
               <CustomerPortal 
                 companyId={selectedCompId} 
                 squareCustomerId={companyBillingData?.square_customer_id} 
-              />
-            </div>
-
-            {/* Pricing Tiers Section */}
-            <div className="border-t border-slate-900/60 pt-6">
-              <PricingPage 
-                companyId={selectedCompId} 
-                currentPlan={companyBillingData?.subscription_plan} 
-                onSuccess={fetchCompanyBilling} 
               />
             </div>
           </motion.div>

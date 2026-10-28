@@ -4873,7 +4873,7 @@ export default function EquipmentExplorer({
                   {(
                     [
                       ["Analyst Name", "Jordan Hale, CAT III"],
-                      ["Analyst Email", "jordan.hale@smartcbm.io"],
+                      ["Analyst Role", "Site Analyst"],
                       [
                         "Technology",
                         selectedAssessmentReport.technology === "Thermography"

@@ -14,7 +14,7 @@ export default function CustomerPortal({ companyId, squareCustomerId, className 
 
   const handleOpenPortal = async () => {
     if (!squareCustomerId) {
-      showToast("No active subscription/Square profile found. Please subscribe to a tier first.", "error");
+      showToast("No active subscription/Square profile found. Please activate a module first.", "error");
       return;
     }
 

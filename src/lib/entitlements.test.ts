@@ -490,6 +490,22 @@ describe("E3 — checkout/webhook do not read a client company id", () => {
     expect(end).toBeGreaterThan(start);
   });
 
+  it("retired tier checkout/env reads are gone; the module parity guard remains", () => {
+    expect(serverSource).not.toMatch(
+      /SQUARE_PLAN_(STARTER|PROFESSIONAL|ENTERPRISE)/
+    );
+    expect(serverSource).not.toContain('"/api/create-checkout-session"');
+    expect(serverSource).not.toContain('app.post("/api/webhook"');
+    expect(storefrontSlice).toContain("assertSquareCatalogPriceParity(");
+    expect(storefrontSlice).toContain('app.post("/api/checkout/create"');
+    expect(getModuleCatalog({}).map((entry) => entry.key)).toEqual([
+      "vibration",
+      "thermography",
+      "ultrasound",
+      "oil"
+    ]);
+  });
+
   it("checkout/webhook/entitlement code never reads company_id from req/body/query", () => {
     expect(storefrontSlice).not.toMatch(/req\.query\.company_id/);
     expect(storefrontSlice).not.toMatch(/req\.body\.company_id/);

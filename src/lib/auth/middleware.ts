@@ -27,7 +27,6 @@ const PUBLIC_API_PATHS: ReadonlySet<string> = new Set([
   "/auth/register",
   "/auth/session",
   "/auth/demo-login", // handler itself hard-blocks production + unseeded envs
-  "/webhook", // Square signature-verified webhooks
   "/catalog", // STOREFRONT — static module list + prices
   "/checkout/create", // STOREFRONT — auth-less, rate-limited, no client company_id
   "/square/webhook", // STOREFRONT - signature-verified (test bypass gated)

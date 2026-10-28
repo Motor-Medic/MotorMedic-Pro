@@ -272,6 +272,14 @@ export default function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  // Pre-launch bookmarks to the retired tier page land on the Storefront.
+  useEffect(() => {
+    if (currentPath === "/pricing") {
+      window.history.replaceState(null, "", "/storefront");
+      setCurrentPath("/storefront");
+    }
+  }, [currentPath]);
+
   // AR-28 rule 7 — targeted prefetch only. A dynamic chunk is fetched when the
   // engineer hovers or keyboard-focuses the control that would load it: nav
   // links resolve to their route chunk from the link href, export controls opt
