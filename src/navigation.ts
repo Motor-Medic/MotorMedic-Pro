@@ -12,6 +12,7 @@ export type AppTab =
   | "fmea"
   | "calendar"
   | "alerts"
+  | "anomaly-board"
   | "history"
   | "admin"
   | "multi-tech"
@@ -29,6 +30,7 @@ export const TAB_TO_PATH: Record<AppTab, string> = {
   fmea: "/fmea-analysis",
   calendar: "/maintenance-calendar",
   alerts: "/alerts-control",
+  "anomaly-board": "/anomaly-board",
   history: "/diagnosis-logs",
   admin: "/tenant-settings",
   "multi-tech": "/multi-tech",
@@ -47,6 +49,7 @@ const PATH_TO_TAB: Record<string, AppTab> = {
   "/fmea-analysis": "fmea",
   "/maintenance-calendar": "calendar",
   "/alerts-control": "alerts",
+  "/anomaly-board": "anomaly-board",
   "/diagnosis-logs": "history",
   "/tenant-settings": "admin",
   "/multi-tech": "multi-tech",

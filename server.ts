@@ -131,6 +131,10 @@ import {
 } from "./src/lib/squareMode";
 import { createInMemoryRateLimiter } from "./src/lib/checkoutRateLimit";
 import {
+  buildAnomalyBoard,
+  type AnomalyBoardSourceRow
+} from "./src/lib/anomalyBoard";
+import {
   provisionTenantFromCheckout,
   type PendingCheckoutRecord
 } from "./src/lib/tenantProvisioning";
@@ -2435,6 +2439,106 @@ app.get("/api/alerts", async (req, res) => {
   } catch (error: any) {
     console.error("[alerts] GET error:", error);
     return res.status(500).json({ error: error?.message || "Failed to fetch alerts." });
+  }
+});
+
+/**
+ * GET /api/anomaly-board - cross-module open anomaly/fault board.
+ *
+ * READ-ONLY aggregation over the existing diagnostics ledger:
+ *   alerts (severity CHECK HIGH/MEDIUM/LOW, acknowledged = open/closed status)
+ *   LEFT JOIN analysis_results (module + first-detected timestamp)
+ *   same-tenant work_orders (linked repair number)
+ *   same-tenant asset -> route -> plant lineage for click-through.
+ *
+ * Tenant comes from the verified session only (req.tenantId). The client can
+ * never request another company by query param. There is no schema change
+ * here beyond migrations/021's composite index.
+ */
+app.get("/api/anomaly-board", async (req, res) => {
+  const tenantId = Number(req.tenantId ?? -1);
+  try {
+    // No database / no tenant -> honest empty board (never fabricated counts).
+    if (!pool || !Number.isFinite(tenantId) || tenantId < 0) {
+      return res.json({
+        success: true,
+        board: buildAnomalyBoard({ tenantId, rows: [] })
+      });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        al.id,
+        al.tenant_id,
+        al.asset_id,
+        al.severity,
+        al.title,
+        al.description,
+        al.created_at,
+        al.acknowledged,
+        al.analysis_result_id,
+        ar.analysis_type,
+        COALESCE(ar.timestamp, al.created_at) AS first_detected_at,
+        wo.id AS work_order_number,
+        wo.status AS work_order_status,
+        wo.tenant_id AS work_order_tenant_id,
+        lineage.asset_name,
+        lineage.asset_tag,
+        lineage.route_id,
+        lineage.route_name,
+        lineage.plant_id,
+        lineage.plant_name
+      FROM alerts al
+      LEFT JOIN analysis_results ar
+        ON ar.id = al.analysis_result_id
+       AND ar.tenant_id = al.tenant_id
+      LEFT JOIN LATERAL (
+        SELECT w.id, w.status, w.tenant_id
+        FROM work_orders w
+        WHERE w.tenant_id = al.tenant_id
+          AND w.asset_id = al.asset_id
+        ORDER BY w.id DESC
+        LIMIT 1
+      ) wo ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          a.name AS asset_name,
+          a.tag_number AS asset_tag,
+          r.id AS route_id,
+          r.name AS route_name,
+          p.id AS plant_id,
+          p.name AS plant_name
+        FROM assets a
+        JOIN routes r ON r.id = a.route_id
+        JOIN plants p ON p.id = r.plant_id
+        WHERE p.company_id = al.tenant_id
+          AND (
+            a.id::text = al.asset_id
+            OR a.tag_number = al.asset_id
+            OR a.name = al.asset_id
+          )
+        LIMIT 1
+      ) lineage ON TRUE
+      WHERE al.tenant_id = $1
+        AND al.acknowledged IS NOT TRUE
+      ORDER BY COALESCE(ar.timestamp, al.created_at) ASC NULLS LAST, al.id ASC
+      `,
+      [tenantId]
+    );
+
+    return res.json({
+      success: true,
+      board: buildAnomalyBoard({
+        tenantId,
+        rows: result.rows as AnomalyBoardSourceRow[]
+      })
+    });
+  } catch (error: any) {
+    console.error("[anomaly-board] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load the anomaly board."
+    });
   }
 });
 
@@ -14230,6 +14334,12 @@ async function initializeDatabase() {
     );
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_alerts_tenant ON alerts (tenant_id);"
+    );
+    // migrations/021 - ANOMALY-BOARD composite index. Mirrored here so a
+    // fresh boot and a migrated boot converge; IF NOT EXISTS keeps it
+    // idempotent across repeated boots (DEP-1 style).
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_alerts_tenant_ack_severity ON alerts (tenant_id, acknowledged, severity);"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).

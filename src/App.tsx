@@ -49,6 +49,8 @@ const loadPrivacy = () => import("./components/Privacy");
 const Privacy = lazy(loadPrivacy);
 const loadAlertsControl = () => import("./components/AlertsControl");
 const AlertsControl = lazy(loadAlertsControl);
+const loadAnomalyBoard = () => import("./components/AnomalyBoard");
+const AnomalyBoard = lazy(loadAnomalyBoard);
 const loadAIDataMigration = () => import("./components/AIDataMigration");
 const AIDataMigration = lazy(loadAIDataMigration);
 const loadAnalysisReport = () => import("./components/AnalysisReport");
@@ -78,6 +80,7 @@ const ROUTE_LOADERS: Partial<Record<AppTab, () => Promise<unknown>>> = {
   fmea: loadFMEA,
   calendar: loadMaintenanceCalendar,
   alerts: loadAlertsControl,
+  "anomaly-board": loadAnomalyBoard,
   history: loadHistory,
   admin: loadAdminPanel,
   "multi-tech": loadMultiTechPage,
@@ -1179,6 +1182,19 @@ const updated = [newReport, ...reports];
             )}
 
             <AppLink
+              href={TAB_TO_PATH["anomaly-board"]}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
+                activeTab === "anomaly-board" && !selectedReport
+                  ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/60"
+              }`}
+              id="sidebar-anomaly-board-btn"
+            >
+              <BellRing className="w-4.5 h-4.5" />
+              <span>Anomaly Board</span>
+            </AppLink>
+
+            <AppLink
               href={TAB_TO_PATH.history}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all ${
                 activeTab === "history" && !selectedReport
@@ -1370,6 +1386,8 @@ const updated = [newReport, ...reports];
             </RouteGuard>
           ) : activeTab === "alerts" ? (
             <AlertsControl userId={user?.id || 3} />
+          ) : activeTab === "anomaly-board" ? (
+            <AnomalyBoard />
           ) : activeTab === "sensors" ? (
             <MountingPlanner />
           ) : activeTab === "multi-tech" ? (
@@ -1718,6 +1736,20 @@ const updated = [newReport, ...reports];
                     <span>Alerts Control</span>
                   </AppLink>
                 )}
+
+                <AppLink
+                  href={TAB_TO_PATH["anomaly-board"]}
+                  onClick={() => setIsHamburgerOpen(false)}
+                  className={`w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-semibold transition-all ${
+                    activeTab === "anomaly-board" && !selectedReport
+                      ? "bg-yellow-400 text-slate-950 shadow font-bold"
+                      : "text-slate-300 hover:text-white active:bg-slate-900"
+                  }`}
+                  id="drawer-anomaly-board-btn"
+                >
+                  <BellRing className="w-5 h-5 shrink-0" />
+                  <span>Anomaly Board</span>
+                </AppLink>
 
                 <AppLink
                   href={TAB_TO_PATH.history}

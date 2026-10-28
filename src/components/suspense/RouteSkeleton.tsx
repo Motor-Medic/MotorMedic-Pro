@@ -40,6 +40,7 @@ const BOX_HEIGHT: Record<RouteSkeletonRoute, number | "100vh"> = {
   fmea: 660,
   calendar: 780,
   alerts: 700,
+  "anomaly-board": 760,
   history: 620,
   admin: 680,
   "multi-tech": 720,
