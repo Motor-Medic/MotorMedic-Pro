@@ -69,6 +69,8 @@ const loadReliabilityScorecard = () => import("./components/scorecard/Reliabilit
 const ReliabilityScorecard = lazy(loadReliabilityScorecard);
 const loadStorefront = () => import("./components/Storefront");
 const Storefront = lazy(loadStorefront);
+const loadInviteAccept = () => import("./components/InviteAccept");
+const InviteAccept = lazy(loadInviteAccept);
 
 /** Route chunks eligible for targeted prefetch — every route but the eager core flow. */
 const ROUTE_LOADERS: Partial<Record<AppTab, () => Promise<unknown>>> = {
@@ -818,6 +820,31 @@ const updated = [newReport, ...reports];
       >
         <div className="h-9 w-9 rounded-full border-2 border-emerald-500/30 border-t-emerald-400 animate-spin" />
       </div>
+    );
+  }
+
+  if (currentPath.startsWith("/invite/")) {
+    const inviteToken = decodeURIComponent(
+      currentPath.slice("/invite/".length).split("?")[0]
+    );
+    return (
+      <>
+        <ScrollToTop routeKey={scrollRouteKey} />
+        <Suspense fallback={<RouteSkeleton route="dashboard" />}>
+          <InviteAccept
+            token={inviteToken}
+            onAccepted={(acceptedUser) => {
+              localStorage.setItem(
+                "motormedic_user_session",
+                JSON.stringify(acceptedUser)
+              );
+              setUser(acceptedUser);
+              window.history.pushState(null, "", "/");
+              setCurrentPath("/");
+            }}
+          />
+        </Suspense>
+      </>
     );
   }
 

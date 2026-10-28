@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { 
   Settings, CreditCard, Building, CheckCircle2, XCircle, 
   Save, Info, Sliders, Activity, ShieldCheck, Check, Sparkles,
-  Users, UserPlus, Trash, Mail, Bell
+  Users, UserPlus, Ban, Power, RotateCw, Mail, Bell
 } from "lucide-react";
 import { useToast } from "./Toast";
 import CustomerPortal from "./CustomerPortal";
@@ -37,28 +37,48 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
   const [isAddingRecipient, setIsAddingRecipient] = useState(false);
 
-  // User Management State
+  // USERS-1 - users + pending invites for the SESSION tenant only.
   const [users, setUsers] = useState<any[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<any[]>([]);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("engineer");
-  const [inviteUsername, setInviteUsername] = useState("");
   const [isInviting, setIsInviting] = useState(false);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
 
   const fetchUsers = async () => {
+    setIsLoadingUsers(true);
     try {
-      const res = await fetch(`/api/company/users?company_id=${selectedCompId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setUsers(data);
-      }
+      const res = await fetch("/api/tenant-users", {
+        credentials: "same-origin"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load users");
+      setUsers(Array.isArray(data.users) ? data.users : []);
     } catch (error) {
-      console.error("Failed to fetch company users:", error);
+      console.error("Failed to fetch tenant users:", error);
+      setUsers([]);
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  };
+
+  const fetchPendingInvites = async () => {
+    try {
+      const res = await fetch("/api/tenant-invites", {
+        credentials: "same-origin"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load invites");
+      setPendingInvites(Array.isArray(data.invites) ? data.invites : []);
+    } catch (error) {
+      console.error("Failed to fetch pending invites:", error);
+      setPendingInvites([]);
     }
   };
 
   useEffect(() => {
-    fetchUsers();
+    void fetchUsers();
+    void fetchPendingInvites();
   }, [selectedCompId]);
 
   const fetchAlertRecipients = async () => {
@@ -142,70 +162,113 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
 
   const handleInviteUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmail) {
+    if (!inviteEmail.trim()) {
       showToast("Email is required", "error");
       return;
     }
     setIsInviting(true);
     try {
-      const res = await fetch("/api/company/users/invite", {
+      const res = await fetch("/api/tenant-invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          company_id: selectedCompId,
-          email: inviteEmail.trim(),
-          role: inviteRole,
-          username: inviteUsername.trim() || undefined
-        })
+        credentials: "same-origin",
+        body: JSON.stringify({ email: inviteEmail.trim() })
       });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "Failed to invite user");
+        throw new Error(data.error || "Failed to send invite");
       }
-      showToast("User invited successfully!", "success");
+      const failed = data.invite?.status === "failed";
+      showToast(
+        failed
+          ? "Invite saved, but the email could not be sent. Use Resend."
+          : "Invite sent. The worker sets their own password from the email.",
+        failed ? "error" : "success"
+      );
       setIsInviteModalOpen(false);
       setInviteEmail("");
-      setInviteUsername("");
-      setInviteRole("engineer");
-      fetchUsers();
+      await Promise.all([fetchUsers(), fetchPendingInvites()]);
     } catch (err: any) {
-      showToast(err.message || "Failed to invite user", "error");
+      showToast(err.message || "Failed to send invite", "error");
     } finally {
       setIsInviting(false);
     }
   };
 
-  const handleRoleChange = async (userId: number, newRole: string) => {
+  const handleResendInvite = async (invite: any) => {
+    if (
+      !window.confirm(
+        `Resend the invite to ${invite.email}? This rotates the link and the previous link stops working.`
+      )
+    ) {
+      return;
+    }
     try {
-      const res = await fetch(`/api/company/users/${userId}/role`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: newRole })
+      const res = await fetch(`/api/tenant-invites/${invite.id}/resend`, {
+        method: "POST",
+        credentials: "same-origin"
       });
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to update role");
-      }
-      showToast("Role updated successfully!", "success");
-      fetchUsers();
+      if (!res.ok) throw new Error(data.error || "Failed to resend invite");
+      showToast(
+        data.invite?.status === "failed"
+          ? "New invite link created, but the email could not be sent."
+          : "Invite resent with a new link.",
+        data.invite?.status === "failed" ? "error" : "success"
+      );
+      await fetchPendingInvites();
     } catch (err: any) {
-      showToast(err.message || "Failed to update role", "error");
+      showToast(err.message || "Failed to resend invite", "error");
     }
   };
 
-  const handleRemoveUser = async (userId: number) => {
+  const handleRevokeInvite = async (invite: any) => {
+    if (
+      !window.confirm(
+        `Revoke the invite for ${invite.email}? The link will stop working immediately.`
+      )
+    ) {
+      return;
+    }
     try {
-      const res = await fetch(`/api/company/users/${userId}`, {
-        method: "DELETE"
+      const res = await fetch(`/api/tenant-invites/${invite.id}/revoke`, {
+        method: "POST",
+        credentials: "same-origin"
       });
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Failed to remove user");
-      }
-      showToast("User removed successfully!", "success");
-      fetchUsers();
+      if (!res.ok) throw new Error(data.error || "Failed to revoke invite");
+      showToast("Invite revoked.", "success");
+      await fetchPendingInvites();
     } catch (err: any) {
-      showToast(err.message || "Failed to remove user", "error");
+      showToast(err.message || "Failed to revoke invite", "error");
+    }
+  };
+
+  const handleToggleUser = async (user: any) => {
+    const disabling = !user.is_disabled;
+    const action = disabling ? "Disable" : "Enable";
+    if (
+      !window.confirm(
+        `${action} ${user.email || user.username}? ${
+          disabling
+            ? "They will be signed out and cannot log in until re-enabled."
+            : "They will be able to log in again."
+        }`
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch(
+        `/api/tenant-users/${user.id}/${disabling ? "disable" : "enable"}`,
+        { method: "POST", credentials: "same-origin" }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Failed to ${action.toLowerCase()} user`);
+      showToast(`User ${disabling ? "disabled" : "enabled"}.`, "success");
+      await fetchUsers();
+    } catch (err: any) {
+      showToast(err.message || `Failed to ${action.toLowerCase()} user`, "error");
     }
   };
 
@@ -467,16 +530,25 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                 </div>
               </div>
 
-              {/* User Management Section */}
-              <div className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-5">
+              {/* USERS-1 - Users & Invites */}
+              <div
+                className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-5"
+                id="admin-users-invites-section"
+              >
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest flex items-center gap-2">
-                    <Users className="w-4.5 h-4.5 text-yellow-400" />
-                    User Management
-                  </h3>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest flex items-center gap-2">
+                      <Users className="w-4.5 h-4.5 text-yellow-400" />
+                      Users &amp; Invites
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Everyone here belongs to the signed-in tenant only.
+                    </p>
+                  </div>
                   <button
                     onClick={() => setIsInviteModalOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-xs font-bold transition-all duration-200 cursor-pointer shadow-lg shadow-emerald-550/10"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FFC700] hover:bg-yellow-300 text-slate-950 text-xs font-bold transition-all duration-200 cursor-pointer shadow-lg shadow-yellow-400/10"
+                    id="admin-invite-user-btn"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
                     <span>Invite User</span>
@@ -487,48 +559,67 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
                       <tr className="border-b border-slate-800 text-slate-400 font-bold font-mono text-[10px] uppercase tracking-wider">
-                        <th className="pb-3 pt-1 pl-2">Name</th>
-                        <th className="pb-3 pt-1">Email</th>
+                        <th className="pb-3 pt-1 pl-2">Email</th>
                         <th className="pb-3 pt-1">Role</th>
                         <th className="pb-3 pt-1">Status</th>
                         <th className="pb-3 pt-1 pr-2 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-850/40">
-                      {users.length === 0 ? (
+                      {isLoadingUsers ? (
                         <tr>
-                          <td colSpan={5} className="py-6 text-center text-slate-500 font-mono text-[11px]">
-                            No registered users found.
+                          <td colSpan={4} className="py-6 text-center text-slate-500 font-mono text-[11px]">
+                            Loading users...
+                          </td>
+                        </tr>
+                      ) : users.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="py-6 text-center text-slate-500 font-mono text-[11px]">
+                            No workers have accepted an invite yet. Invite one by email to get started.
                           </td>
                         </tr>
                       ) : (
                         users.map((u) => (
                           <tr key={u.id} className="text-slate-300 hover:bg-slate-900/10">
-                            <td className="py-3 pl-2 font-semibold text-slate-200">{u.username}</td>
-                            <td className="py-3 font-mono text-[11px] text-slate-400">{u.email || "N/A"}</td>
-                            <td className="py-3">
-                              <select
-                                value={u.role || "engineer"}
-                                onChange={(e) => handleRoleChange(u.id, e.target.value)}
-                                className="bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-200 text-[11px] font-semibold rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer"
-                              >
-                                <option value="admin">Admin</option>
-                                <option value="engineer">Engineer</option>
-                                <option value="mechanic">Mechanic</option>
-                              </select>
+                            <td className="py-3 pl-2">
+                              <div className="font-mono text-[11px] text-slate-200">
+                                {u.email || "No email on file"}
+                              </div>
+                              <div className="text-[10px] text-slate-500">{u.username}</div>
                             </td>
                             <td className="py-3">
-                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase tracking-wider">
-                                {u.status || "Active"}
+                              <span className="text-[11px] font-semibold text-slate-200 capitalize">
+                                {String(u.role || "").replace(/-/g, " ")}
+                              </span>
+                            </td>
+                            <td className="py-3">
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[9px] font-bold border uppercase tracking-wider ${
+                                  u.is_disabled
+                                    ? "bg-red-500/10 text-red-400 border-red-500/20"
+                                    : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                }`}
+                              >
+                                {u.status || (u.is_disabled ? "Disabled" : "Active")}
                               </span>
                             </td>
                             <td className="py-3 pr-2 text-right">
                               <button
-                                onClick={() => handleRemoveUser(u.id)}
-                                className="p-1 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-all cursor-pointer"
-                                title="Remove User"
+                                onClick={() => void handleToggleUser(u)}
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                                  u.is_disabled
+                                    ? "text-emerald-300 bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20"
+                                    : "text-red-300 bg-red-500/10 border-red-500/20 hover:bg-red-500/20"
+                                }`}
+                                title={u.is_disabled ? "Enable user" : "Disable user"}
+                                id={`tenant-user-toggle-${u.id}`}
                               >
-                                <Trash className="w-3.5 h-3.5" />
+                                {u.is_disabled ? (
+                                  <Power className="w-3.5 h-3.5" />
+                                ) : (
+                                  <Ban className="w-3.5 h-3.5" />
+                                )}
+                                {u.is_disabled ? "Enable" : "Disable"}
                               </button>
                             </td>
                           </tr>
@@ -536,6 +627,87 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                <div className="pt-2 border-t border-slate-900 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <Mail className="w-3.5 h-3.5 text-yellow-400" />
+                      Pending Invites
+                    </h4>
+                    <button
+                      onClick={() => void fetchPendingInvites()}
+                      className="px-2.5 py-1 bg-slate-950 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-lg text-[10px] font-semibold"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {pendingInvites.length === 0 ? (
+                    <p className="text-[11px] text-slate-500 font-mono" id="admin-pending-invites-empty">
+                      No pending invites. Invite a worker by email to get started.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-[11px] border-collapse">
+                        <thead>
+                          <tr className="border-b border-slate-800 text-slate-500 font-bold font-mono text-[9px] uppercase tracking-wider">
+                            <th className="pb-2 pl-2">Email</th>
+                            <th className="pb-2">Sent</th>
+                            <th className="pb-2">Expires</th>
+                            <th className="pb-2">Status</th>
+                            <th className="pb-2 pr-2 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-900">
+                          {pendingInvites.map((invite) => (
+                            <tr key={invite.id} className="text-slate-300">
+                              <td className="py-2.5 pl-2 font-mono text-slate-200">
+                                {invite.email}
+                              </td>
+                              <td className="py-2.5 text-slate-400 font-mono whitespace-nowrap">
+                                {invite.sent_at
+                                  ? new Date(invite.sent_at).toLocaleString()
+                                  : "-"}
+                              </td>
+                              <td className="py-2.5 text-slate-400 font-mono whitespace-nowrap">
+                                {invite.expires_at
+                                  ? new Date(invite.expires_at).toLocaleString()
+                                  : "-"}
+                              </td>
+                              <td className="py-2.5">
+                                <span
+                                  className={`px-2 py-0.5 rounded-full text-[9px] font-bold border uppercase tracking-wider ${
+                                    invite.status === "failed"
+                                      ? "bg-red-500/10 text-red-400 border-red-500/20"
+                                      : "bg-yellow-400/10 text-yellow-300 border-yellow-400/20"
+                                  }`}
+                                >
+                                  {invite.status || "pending"}
+                                </span>
+                              </td>
+                              <td className="py-2.5 pr-2 text-right whitespace-nowrap">
+                                <button
+                                  onClick={() => void handleResendInvite(invite)}
+                                  className="inline-flex items-center gap-1 px-2 py-1 mr-1 rounded-lg text-[10px] font-bold text-yellow-300 bg-yellow-400/10 border border-yellow-400/20 hover:bg-yellow-400/20"
+                                  id={`tenant-invite-resend-${invite.id}`}
+                                >
+                                  <RotateCw className="w-3 h-3" />
+                                  Resend
+                                </button>
+                                <button
+                                  onClick={() => void handleRevokeInvite(invite)}
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold text-red-300 bg-red-500/10 border border-red-500/20 hover:bg-red-500/20"
+                                  id={`tenant-invite-revoke-${invite.id}`}
+                                >
+                                  Revoke
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -823,7 +995,7 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
             <div className="flex items-center justify-between pb-2 border-b border-slate-850">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <UserPlus className="w-4 h-4 text-yellow-400" />
-                Invite New User
+                Invite a Worker
               </h3>
               <button
                 onClick={() => setIsInviteModalOpen(false)}
@@ -836,59 +1008,36 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
             <form onSubmit={handleInviteUser} className="space-y-4">
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Username / Display Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. jdoe"
-                  value={inviteUsername}
-                  onChange={(e) => setInviteUsername(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 focus:outline-none rounded-xl px-3.5 py-2 text-xs text-slate-200 font-semibold"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Email Address
+                  Worker Email Address
                 </label>
                 <input
                   type="email"
                   required
-                  placeholder="jdoe@company.com"
+                  placeholder="worker@company.com"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 focus:outline-none rounded-xl px-3.5 py-2 text-xs text-slate-200 font-mono"
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-[#FFC700] focus:outline-none rounded-xl px-3.5 py-2.5 text-xs text-slate-200 font-mono"
+                  id="tenant-invite-email-input"
                 />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Role
-                </label>
-                <select
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 focus:border-yellow-400 focus:outline-none rounded-xl px-3.5 py-2 text-xs text-slate-200 font-semibold cursor-pointer"
-                >
-                  <option value="admin">Admin</option>
-                  <option value="engineer">Engineer</option>
-                  <option value="mechanic">Mechanic</option>
-                </select>
+                <p className="text-[10px] text-slate-500 leading-relaxed">
+                  The worker receives a one-time link, sets their own password,
+                  and lands in the existing default engineer role.
+                </p>
               </div>
 
               <div className="pt-3 flex gap-2 justify-end">
                 <button
                   type="button"
                   onClick={() => setIsInviteModalOpen(false)}
-                  className="px-4 py-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-semibold"
+                  className="px-4 py-2 bg-transparent border border-slate-700 hover:border-slate-500 text-slate-300 rounded-lg text-xs font-semibold"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isInviting}
-                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-lg text-xs font-bold disabled:opacity-50"
+                  className="px-4 py-2 bg-[#FFC700] hover:bg-yellow-300 text-slate-950 rounded-lg text-xs font-bold disabled:opacity-50"
+                  id="tenant-invite-send-btn"
                 >
                   {isInviting ? "Sending..." : "Send Invite"}
                 </button>

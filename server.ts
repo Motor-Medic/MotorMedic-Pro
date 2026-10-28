@@ -84,6 +84,7 @@ import {
   createApiAuthGuard,
   createMemorySession,
   destroyMemorySession,
+  destroyMemorySessionsForUser,
   requireRole,
   registerMemoryUserLoader,
   authCookieName,
@@ -91,6 +92,7 @@ import {
   buildClearSessionCookie,
   createSession,
   deleteSession,
+  deleteSessionsForUser,
   findSessionByToken,
   generateSessionToken,
   hashSessionToken,
@@ -185,6 +187,17 @@ import {
   type TenantAlertRecipient,
   type TenantNotificationUser
 } from "./src/lib/notifications";
+import {
+  DEFAULT_INVITED_ROLE,
+  buildInviteAcceptUrl,
+  buildInviteNotification,
+  evaluateDisableUser,
+  generateInviteToken,
+  hashInviteToken,
+  isInviteExpired,
+  isInviteUsable,
+  resolveAppBaseUrl
+} from "./src/lib/tenantInvites";
 
 dotenv.config();
 
@@ -240,7 +253,7 @@ app.use(express.json({
 // server's in-memory store (used only when DATABASE_URL-less).
 registerMemoryUserLoader((userId: number) => {
   const u = memoryUsers.find((m) => m.id === userId);
-  if (!u) return null;
+  if (!u || u.is_disabled) return null;
   const company = memoryCompanies.find((c) => c.id === u.company_id);
   const plant = memoryPlants.find((p) => p.company_id === u.company_id);
   return {
@@ -8287,6 +8300,9 @@ let memoryComponentAssessments: any[] = [];
 // NOTIFICATIONS-1 - session-tenant notification ledger + tenant alert recipients.
 let memoryNotifications: any[] = [];
 let memoryAlertRecipients: any[] = [];
+// USERS-1 - tenant-scoped invites in DATABASE_URL-less dev/test boots. The
+// table mirrors auth_invites plus the 027 additions (status/revoked_at/sent_at).
+let memoryAuthInvites: any[] = [];
 // Alert insert stand-in for DATABASE_URL-less boots (the production ledger is
 // the real alerts table). Only used by the notification wiring/tests.
 let memoryAlerts: any[] = [];
@@ -11501,6 +11517,14 @@ app.post("/api/auth/login", async (req, res) => {
       }
 
       const user = result.rows[0];
+      // USERS-1 - disabled accounts are refused with clear copy.
+      if (user.is_disabled) {
+        return res.status(403).json({
+          error:
+            "This account has been disabled. Contact your tenant administrator.",
+          code: "ACCOUNT_DISABLED"
+        });
+      }
       const { valid, legacyUpgradeNeeded } = await verifyPassword(
         password,
         user.password_hash
@@ -11550,6 +11574,13 @@ app.post("/api/auth/login", async (req, res) => {
         res.status(401).json({ error: "Invalid username or password" });
       if (!user) {
         return invalid();
+      }
+      if (user.is_disabled) {
+        return res.status(403).json({
+          error:
+            "This account has been disabled. Contact your tenant administrator.",
+          code: "ACCOUNT_DISABLED"
+        });
       }
       const { valid } = await verifyPassword(password, user.password_hash);
       if (!valid) {
@@ -12247,6 +12278,851 @@ app.delete('/api/company/users/:userId', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+/* -------------------------------------------------------------------------- */
+/* USERS-1 - tenant owner/admin invites, invite acceptance, user disable       */
+/* Every tenant id below comes from the verified session (requestTenantId);   */
+/* the public accept path derives tenancy ONLY from the invite row token.      */
+/* -------------------------------------------------------------------------- */
+
+function tenantInvitePayload(row: any) {
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    status: row.status || "pending",
+    created_at: row.created_at,
+    sent_at: row.sent_at ?? null,
+    expires_at: row.expires_at,
+    used_at: row.used_at ?? null,
+    revoked_at: row.revoked_at ?? null
+  };
+}
+
+function tenantUserPayload(row: any) {
+  const disabled = !!row.is_disabled;
+  return {
+    id: row.id,
+    username: row.username,
+    email: row.email ?? null,
+    role: normalizeRole(row.role),
+    status: disabled ? "Disabled" : "Active",
+    is_disabled: disabled,
+    created_at: row.created_at ?? null
+  };
+}
+
+async function tenantDisplayName(tenantId: number): Promise<string | null> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT name FROM companies WHERE id = $1 LIMIT 1",
+      [tenantId]
+    );
+    return result.rows.length ? String(result.rows[0].name) : null;
+  }
+  const company = memoryCompanies.find((c) => Number(c.id) === tenantId);
+  return company ? String(company.name) : null;
+}
+
+async function latestInviteNotificationStatus(
+  tenantId: number,
+  email: string
+): Promise<string | null> {
+  const normalized = normalizeEmail(email);
+  if (pool) {
+    const result = await pool.query(
+      `SELECT status FROM notifications
+        WHERE tenant_id = $1 AND kind = 'invite'
+          AND LOWER(recipient_email) = LOWER($2)
+        ORDER BY id DESC
+        LIMIT 1`,
+      [tenantId, normalized]
+    );
+    return result.rows.length ? String(result.rows[0].status) : null;
+  }
+  for (let i = memoryNotifications.length - 1; i >= 0; i -= 1) {
+    const row = memoryNotifications[i];
+    if (
+      Number(row.tenant_id) === tenantId &&
+      row.kind === "invite" &&
+      normalizeEmail(row.recipient_email) === normalized
+    ) {
+      return String(row.status);
+    }
+  }
+  return null;
+}
+
+async function setTenantInviteStatus(
+  tenantId: number,
+  inviteId: string | number,
+  status: string
+): Promise<void> {
+  if (pool) {
+    await pool.query(
+      `UPDATE auth_invites SET status = $1
+        WHERE id::text = $2 AND company_id = $3`,
+      [status, String(inviteId), tenantId]
+    );
+    return;
+  }
+  const invite = memoryAuthInvites.find(
+    (row) =>
+      String(row.id) === String(inviteId) &&
+      Number(row.company_id) === tenantId
+  );
+  if (invite) invite.status = status;
+}
+
+/**
+ * Queue the invite email through the NOTIFICATIONS-1 ledger. A provider
+ * failure is recorded on both the notification row and the invite row; it
+ * never fails invite creation, so the invite stays resendable.
+ */
+async function deliverTenantInvite(input: {
+  tenantId: number;
+  invite: any;
+  rawToken: string;
+  tenantName: string | null;
+}): Promise<any> {
+  const acceptUrl = buildInviteAcceptUrl(
+    resolveAppBaseUrl(process.env),
+    input.rawToken
+  );
+  const notification = buildInviteNotification({
+    tenantId: input.tenantId,
+    to: input.invite.email,
+    tenantName: input.tenantName,
+    acceptUrl
+  });
+  let status = "pending";
+  try {
+    await queueEmailNotification(notification);
+    const providerStatus = await latestInviteNotificationStatus(
+      input.tenantId,
+      input.invite.email
+    );
+    if (providerStatus === "failed") status = "failed";
+    else if (providerStatus === "skipped") status = "skipped";
+    else if (providerStatus === "sent") status = "sent";
+  } catch (err) {
+    console.error("[tenant-invites] email dispatch error:", err);
+    status = "failed";
+  }
+  await setTenantInviteStatus(input.tenantId, input.invite.id, status);
+  input.invite.status = status;
+  return input.invite;
+}
+
+function isActiveInviteRow(row: any, now: Date = new Date()): boolean {
+  return (
+    !row.used_at &&
+    !row.revoked_at &&
+    !isInviteExpired({ expires_at: row.expires_at }, now)
+  );
+}
+
+// POST /api/tenant-invites - owner/admin of the SESSION tenant invites a worker.
+app.post("/api/tenant-invites", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may invite users.",
+      code: "FORBIDDEN"
+    });
+  }
+  const email = normalizeEmail(req.body?.email);
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: "Enter a valid email address." });
+  }
+
+  try {
+    const rawToken = generateInviteToken();
+    const tokenHash = hashInviteToken(rawToken);
+    let invite: any;
+
+    if (pool) {
+      const duplicate = await pool.query(
+        `SELECT id FROM auth_invites
+          WHERE company_id = $1
+            AND LOWER(email) = LOWER($2)
+            AND used_at IS NULL
+            AND revoked_at IS NULL
+            AND expires_at > NOW()
+          LIMIT 1`,
+        [tenantId, email]
+      );
+      if (duplicate.rows.length > 0) {
+        return res.status(409).json({
+          error: "An active invite already exists for this email.",
+          code: "INVITE_EXISTS"
+        });
+      }
+      const inserted = await pool.query(
+        `INSERT INTO auth_invites
+           (token_hash, company_id, role, email, username, created_by,
+            expires_at, status, sent_at)
+         VALUES ($1, $2, $3, $4, $5, $6,
+                 NOW() + ($7 || ' days')::interval, 'pending', NOW())
+         RETURNING *`,
+        [
+          tokenHash,
+          tenantId,
+          DEFAULT_INVITED_ROLE,
+          email,
+          email.split("@")[0] || null,
+          req.auth!.user.id,
+          "7"
+        ]
+      );
+      invite = inserted.rows[0];
+    } else {
+      const duplicate = memoryAuthInvites.find(
+        (row) =>
+          Number(row.company_id) === tenantId &&
+          normalizeEmail(row.email) === email &&
+          isActiveInviteRow(row)
+      );
+      if (duplicate) {
+        return res.status(409).json({
+          error: "An active invite already exists for this email.",
+          code: "INVITE_EXISTS"
+        });
+      }
+      invite = {
+        id: getNextId(),
+        token_hash: tokenHash,
+        company_id: tenantId,
+        role: DEFAULT_INVITED_ROLE,
+        email,
+        username: email.split("@")[0] || null,
+        created_by: req.auth!.user.id,
+        created_at: new Date(),
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        used_at: null,
+        revoked_at: null,
+        status: "pending",
+        sent_at: new Date()
+      };
+      memoryAuthInvites.push(invite);
+    }
+
+    const tenantName = await tenantDisplayName(tenantId);
+    const saved = await deliverTenantInvite({
+      tenantId,
+      invite,
+      rawToken,
+      tenantName
+    });
+    return res.status(201).json({
+      success: true,
+      invite: tenantInvitePayload(saved)
+    });
+  } catch (error: any) {
+    console.error("[tenant-invites] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to create invite."
+    });
+  }
+});
+
+// GET /api/tenant-invites - pending invites for the SESSION tenant only.
+app.get("/api/tenant-invites", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may view invites.",
+      code: "FORBIDDEN"
+    });
+  }
+  try {
+    let rows: any[];
+    if (pool) {
+      const result = await pool.query(
+        `SELECT * FROM auth_invites
+          WHERE company_id = $1
+            AND used_at IS NULL
+            AND revoked_at IS NULL
+          ORDER BY created_at DESC, id DESC`,
+        [tenantId]
+      );
+      rows = result.rows;
+    } else {
+      rows = memoryAuthInvites
+        .filter(
+          (row) =>
+            Number(row.company_id) === tenantId &&
+            !row.used_at &&
+            !row.revoked_at
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() -
+              new Date(a.created_at).getTime() ||
+            Number(b.id) - Number(a.id)
+        );
+    }
+    return res.json({
+      success: true,
+      tenant_id: tenantId,
+      invites: rows.map(tenantInvitePayload)
+    });
+  } catch (error: any) {
+    console.error("[tenant-invites] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load invites."
+    });
+  }
+});
+
+// POST /api/tenant-invites/:id/resend - rotate the token and re-email it.
+app.post("/api/tenant-invites/:id/resend", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may resend invites.",
+      code: "FORBIDDEN"
+    });
+  }
+  const inviteId = String(req.params.id || "");
+  try {
+    let invite: any;
+    if (pool) {
+      const found = await pool.query(
+        `SELECT * FROM auth_invites
+          WHERE id::text = $1 AND company_id = $2
+          LIMIT 1`,
+        [inviteId, tenantId]
+      );
+      if (found.rows.length === 0) {
+        return res.status(404).json({ error: "Invite not found." });
+      }
+      invite = found.rows[0];
+      if (invite.used_at) {
+        return res.status(409).json({
+          error: "This invite was already accepted and cannot be resent.",
+          code: "INVITE_USED"
+        });
+      }
+      if (invite.revoked_at) {
+        return res.status(409).json({
+          error: "This invite was revoked. Create a new invite instead.",
+          code: "INVITE_REVOKED"
+        });
+      }
+      const rawToken = generateInviteToken();
+      const rotated = await pool.query(
+        `UPDATE auth_invites
+            SET token_hash = $1,
+                expires_at = NOW() + ($2 || ' days')::interval,
+                used_at = NULL,
+                status = 'pending',
+                sent_at = NOW()
+          WHERE id::text = $3 AND company_id = $4
+          RETURNING *`,
+        [hashInviteToken(rawToken), "7", inviteId, tenantId]
+      );
+      invite = rotated.rows[0];
+      const tenantName = await tenantDisplayName(tenantId);
+      const saved = await deliverTenantInvite({
+        tenantId,
+        invite,
+        rawToken,
+        tenantName
+      });
+      return res.json({
+        success: true,
+        invite: tenantInvitePayload(saved)
+      });
+    }
+
+    invite = memoryAuthInvites.find(
+      (row) =>
+        String(row.id) === inviteId && Number(row.company_id) === tenantId
+    );
+    if (!invite) {
+      return res.status(404).json({ error: "Invite not found." });
+    }
+    if (invite.used_at) {
+      return res.status(409).json({
+        error: "This invite was already accepted and cannot be resent.",
+        code: "INVITE_USED"
+      });
+    }
+    if (invite.revoked_at) {
+      return res.status(409).json({
+        error: "This invite was revoked. Create a new invite instead.",
+        code: "INVITE_REVOKED"
+      });
+    }
+    const rawToken = generateInviteToken();
+    invite.token_hash = hashInviteToken(rawToken);
+    invite.expires_at = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    invite.used_at = null;
+    invite.status = "pending";
+    invite.sent_at = new Date();
+    const tenantName = await tenantDisplayName(tenantId);
+    const saved = await deliverTenantInvite({
+      tenantId,
+      invite,
+      rawToken,
+      tenantName
+    });
+    return res.json({
+      success: true,
+      invite: tenantInvitePayload(saved)
+    });
+  } catch (error: any) {
+    console.error("[tenant-invites] resend error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to resend invite."
+    });
+  }
+});
+
+// POST /api/tenant-invites/:id/revoke - kill the token for this tenant.
+app.post("/api/tenant-invites/:id/revoke", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may revoke invites.",
+      code: "FORBIDDEN"
+    });
+  }
+  const inviteId = String(req.params.id || "");
+  try {
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE auth_invites
+            SET revoked_at = COALESCE(revoked_at, NOW()),
+                status = 'revoked'
+          WHERE id::text = $1 AND company_id = $2
+          RETURNING *`,
+        [inviteId, tenantId]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Invite not found." });
+      }
+      return res.json({
+        success: true,
+        invite: tenantInvitePayload(result.rows[0])
+      });
+    }
+    const invite = memoryAuthInvites.find(
+      (row) =>
+        String(row.id) === inviteId && Number(row.company_id) === tenantId
+    );
+    if (!invite) {
+      return res.status(404).json({ error: "Invite not found." });
+    }
+    invite.revoked_at = invite.revoked_at ?? new Date();
+    invite.status = "revoked";
+    return res.json({
+      success: true,
+      invite: tenantInvitePayload(invite)
+    });
+  } catch (error: any) {
+    console.error("[tenant-invites] revoke error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to revoke invite."
+    });
+  }
+});
+
+// GET /api/invite/:token - PUBLIC. Tenant name + invited email only.
+app.get("/api/invite/:token", async (req, res) => {
+  const token = String(req.params.token || "").trim();
+  const tokenHash = hashInviteToken(token);
+  const genericMiss = () =>
+    res.status(404).json({
+      error: "This invite link is not valid or has expired."
+    });
+  if (!token) return genericMiss();
+  try {
+    if (pool) {
+      const result = await pool.query(
+        `SELECT i.email, i.expires_at, i.used_at, i.revoked_at,
+                c.name AS tenant_name
+           FROM auth_invites i
+           LEFT JOIN companies c ON c.id = i.company_id
+          WHERE i.token_hash = $1
+          LIMIT 1`,
+        [tokenHash]
+      );
+      if (result.rows.length === 0) return genericMiss();
+      const invite = result.rows[0];
+      if (!isInviteUsable(invite)) return genericMiss();
+      return res.json({
+        tenant_name: invite.tenant_name ?? null,
+        email: invite.email ?? null
+      });
+    }
+    const invite = memoryAuthInvites.find(
+      (row) => String(row.token_hash) === tokenHash
+    );
+    if (!invite || !isInviteUsable(invite)) return genericMiss();
+    const company = memoryCompanies.find(
+      (c) => Number(c.id) === Number(invite.company_id)
+    );
+    return res.json({
+      tenant_name: company ? company.name : null,
+      email: invite.email ?? null
+    });
+  } catch (error: any) {
+    console.error("[invite] GET error:", error);
+    return genericMiss();
+  }
+});
+
+// POST /api/invite/:token/accept - PUBLIC. Creates the worker in the invite's
+// tenant; any client-supplied tenant/company id is ignored by construction.
+app.post("/api/invite/:token/accept", async (req, res) => {
+  const token = String(req.params.token || "").trim();
+  const tokenHash = hashInviteToken(token);
+  const password = req.body?.password;
+  if (!token) {
+    return res.status(404).json({ error: "This invite link is not valid." });
+  }
+  if (typeof password !== "string" || password.length < 8) {
+    return res.status(400).json({
+      error: "Password must be at least 8 characters."
+    });
+  }
+
+  try {
+    if (pool) {
+      const found = await pool.query(
+        `SELECT i.*, c.name AS tenant_name
+           FROM auth_invites i
+           LEFT JOIN companies c ON c.id = i.company_id
+          WHERE i.token_hash = $1
+          LIMIT 1`,
+        [tokenHash]
+      );
+      if (found.rows.length === 0) {
+        return res.status(404).json({ error: "This invite link is not valid." });
+      }
+      const invite = found.rows[0];
+      if (invite.used_at) {
+        return res.status(409).json({
+          error: "This invite has already been used.",
+          code: "INVITE_USED"
+        });
+      }
+      if (invite.revoked_at) {
+        return res.status(404).json({ error: "This invite link is not valid." });
+      }
+      if (isInviteExpired({ expires_at: invite.expires_at })) {
+        return res.status(410).json({
+          error: "This invite has expired. Ask your administrator for a new one.",
+          code: "INVITE_EXPIRED"
+        });
+      }
+
+      const email = normalizeEmail(invite.email);
+      const username = String(
+        req.body?.username || email.split("@")[0] || ""
+      )
+        .trim()
+        .toLowerCase();
+      if (!username) {
+        return res.status(400).json({ error: "A username is required." });
+      }
+      const existing = await pool.query(
+        `SELECT id FROM users
+          WHERE LOWER(username) = $1
+             OR (email IS NOT NULL AND LOWER(email) = LOWER($2))
+          LIMIT 1`,
+        [username, email]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(409).json({
+          error: "An account already exists for this invite.",
+          code: "ACCOUNT_EXISTS"
+        });
+      }
+
+      const hashed = await bcryptHashPassword(password);
+      // Single statement: consume the invite and create the user atomically.
+      // company_id comes from the invite row, never from the request body.
+      const consumed = await pool.query(
+        `WITH consumed AS (
+           UPDATE auth_invites
+              SET used_at = NOW(), status = 'accepted'
+            WHERE token_hash = $1
+              AND used_at IS NULL
+              AND revoked_at IS NULL
+              AND expires_at > NOW()
+            RETURNING id, company_id, email
+         )
+         INSERT INTO users
+           (company_id, username, password_hash, role, email,
+            is_temp_password, terms_accepted_at, is_disabled)
+         SELECT company_id, $2, $3, $4, email, FALSE, NOW(), FALSE
+           FROM consumed
+         RETURNING *`,
+        [tokenHash, username, hashed, DEFAULT_INVITED_ROLE]
+      );
+      if (consumed.rows.length === 0) {
+        return res.status(409).json({
+          error: "This invite has already been used.",
+          code: "INVITE_USED"
+        });
+      }
+      const user = consumed.rows[0];
+      const [plantRes, companyRes] = await Promise.all([
+        pool.query(
+          "SELECT id, name FROM plants WHERE company_id = $1 ORDER BY id ASC LIMIT 1",
+          [user.company_id]
+        ),
+        pool.query("SELECT name FROM companies WHERE id = $1 LIMIT 1", [
+          user.company_id
+        ])
+      ]);
+      const plant = plantRes.rows[0] ?? null;
+      const companyName = companyRes.rows[0]?.name ?? invite.tenant_name ?? null;
+      const { token: sessionToken } = await createSession(pool, user.id);
+      res.setHeader("Set-Cookie", buildSessionCookie(sessionToken));
+      return res.status(201).json({
+        success: true,
+        user: publicUserPayload({
+          ...user,
+          plant_id: plant?.id ?? null,
+          plant_name: plant?.name ?? null,
+          company_name: companyName
+        })
+      });
+    }
+
+    const invite = memoryAuthInvites.find(
+      (row) => String(row.token_hash) === tokenHash
+    );
+    if (!invite) {
+      return res.status(404).json({ error: "This invite link is not valid." });
+    }
+    if (invite.used_at) {
+      return res.status(409).json({
+        error: "This invite has already been used.",
+        code: "INVITE_USED"
+      });
+    }
+    if (invite.revoked_at) {
+      return res.status(404).json({ error: "This invite link is not valid." });
+    }
+    if (!isInviteUsable(invite)) {
+      return res.status(410).json({
+        error: "This invite has expired. Ask your administrator for a new one.",
+        code: "INVITE_EXPIRED"
+      });
+    }
+    const email = normalizeEmail(invite.email);
+    const username = String(req.body?.username || email.split("@")[0] || "")
+      .trim()
+      .toLowerCase();
+    if (!username) {
+      return res.status(400).json({ error: "A username is required." });
+    }
+    const existing = memoryUsers.find(
+      (user) =>
+        String(user.username).toLowerCase() === username ||
+        (user.email && normalizeEmail(user.email) === email)
+    );
+    if (existing) {
+      return res.status(409).json({
+        error: "An account already exists for this invite.",
+        code: "ACCOUNT_EXISTS"
+      });
+    }
+    const hashed = await bcryptHashPassword(password);
+    const newUser = {
+      id: getNextId(),
+      // Bound to the INVITE's tenant only. The request body cannot influence it.
+      company_id: invite.company_id,
+      username,
+      password_hash: hashed,
+      role: DEFAULT_INVITED_ROLE,
+      email,
+      is_temp_password: false,
+      is_disabled: false,
+      terms_accepted_at: new Date(),
+      created_at: new Date()
+    };
+    memoryUsers.push(newUser);
+    invite.used_at = new Date();
+    invite.status = "accepted";
+
+    const plant = memoryPlants.find(
+      (p) => Number(p.company_id) === Number(invite.company_id)
+    );
+    const company = memoryCompanies.find(
+      (c) => Number(c.id) === Number(invite.company_id)
+    );
+    const { token: sessionToken } = createMemorySession(
+      newUser.id,
+      sessionTtlHours()
+    );
+    res.setHeader("Set-Cookie", buildSessionCookie(sessionToken));
+    return res.status(201).json({
+      success: true,
+      user: publicUserPayload({
+        ...newUser,
+        plant_id: plant ? plant.id : null,
+        plant_name: plant ? plant.name : null,
+        company_name: company ? company.name : null
+      })
+    });
+  } catch (error: any) {
+    console.error("[invite] accept error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to accept the invite."
+    });
+  }
+});
+
+// GET /api/tenant-users - users of the SESSION tenant only (owner/admin).
+app.get("/api/tenant-users", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may view tenant users.",
+      code: "FORBIDDEN"
+    });
+  }
+  try {
+    let rows: any[];
+    if (pool) {
+      const result = await pool.query(
+        `SELECT id, username, email, role, is_disabled, created_at
+           FROM users
+          WHERE company_id = $1
+          ORDER BY id ASC`,
+        [tenantId]
+      );
+      rows = result.rows;
+    } else {
+      rows = memoryUsers.filter(
+        (user) => Number(user.company_id) === tenantId
+      );
+    }
+    return res.json({
+      success: true,
+      tenant_id: tenantId,
+      users: rows.map(tenantUserPayload)
+    });
+  } catch (error: any) {
+    console.error("[tenant-users] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load tenant users."
+    });
+  }
+});
+
+async function handleTenantUserDisableToggle(
+  req: any,
+  res: any,
+  disable: boolean
+): Promise<any> {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may change user status.",
+      code: "FORBIDDEN"
+    });
+  }
+  const userId = parseInt(String(req.params.id), 10);
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: "Invalid user id." });
+  }
+  try {
+    let tenantUsers: any[];
+    let target: any;
+    if (pool) {
+      const result = await pool.query(
+        `SELECT id, username, email, role, is_disabled, created_at
+           FROM users
+          WHERE company_id = $1
+          ORDER BY id ASC`,
+        [tenantId]
+      );
+      tenantUsers = result.rows;
+      target = tenantUsers.find((user) => Number(user.id) === userId);
+    } else {
+      tenantUsers = memoryUsers.filter(
+        (user) => Number(user.company_id) === tenantId
+      );
+      target = tenantUsers.find((user) => Number(user.id) === userId);
+    }
+    if (!target) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (disable) {
+      const evaluation = evaluateDisableUser({
+        targetId: userId,
+        currentUserId: Number(req.auth!.user.id),
+        targetRole: target.role,
+        tenantUsers
+      });
+      if (!evaluation.ok) {
+        return res.status(409).json({
+          error: evaluation.message,
+          code: evaluation.reason
+        });
+      }
+    }
+
+    if (pool) {
+      const updated = await pool.query(
+        `UPDATE users SET is_disabled = $1
+          WHERE id = $2 AND company_id = $3
+          RETURNING id, username, email, role, is_disabled, created_at`,
+        [disable, userId, tenantId]
+      );
+      if (disable) await deleteSessionsForUser(pool, userId);
+      return res.json({
+        success: true,
+        user: tenantUserPayload(updated.rows[0])
+      });
+    }
+
+    target.is_disabled = disable;
+    if (disable) destroyMemorySessionsForUser(userId);
+    return res.json({
+      success: true,
+      user: tenantUserPayload(target)
+    });
+  } catch (error: any) {
+    console.error("[tenant-users] status error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to update user status."
+    });
+  }
+}
+
+app.post("/api/tenant-users/:id/disable", (req, res) =>
+  handleTenantUserDisableToggle(req, res, true)
+);
+app.post("/api/tenant-users/:id/enable", (req, res) =>
+  handleTenantUserDisableToggle(req, res, false)
+);
 
 // --------------------------------------------------------
 // PLANTS ENDPOINTS
@@ -16917,6 +17793,25 @@ async function initializeDatabase() {
     `);
     await pool.query(
       "CREATE UNIQUE INDEX IF NOT EXISTS tenant_alert_recipients_tenant_email ON tenant_alert_recipients (tenant_id, LOWER(email));"
+    );
+    // migrations/027 - USERS-1. auth_invites already carried company_id
+    // (tenant binding), created_by (invited_by), token_hash, expires_at and
+    // used_at from migrations/008; only the delivery/revocation state and the
+    // users disabled flag are new. Every statement is idempotent (DEP-1).
+    await pool.query(
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_disabled BOOLEAN NOT NULL DEFAULT FALSE;"
+    );
+    await pool.query(
+      "ALTER TABLE auth_invites ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed', 'skipped', 'revoked', 'accepted'));"
+    );
+    await pool.query(
+      "ALTER TABLE auth_invites ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;"
+    );
+    await pool.query(
+      "ALTER TABLE auth_invites ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_auth_invites_company_status ON auth_invites (company_id, status, created_at DESC);"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).

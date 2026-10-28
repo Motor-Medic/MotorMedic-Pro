@@ -60,6 +60,13 @@ export function destroyMemorySession(token: string): void {
   memorySessions.delete(token);
 }
 
+/** Used by admin disable: kill every in-memory session for one user. */
+export function destroyMemorySessionsForUser(userId: number): void {
+  for (const [token, session] of memorySessions) {
+    if (session.userId === userId) memorySessions.delete(token);
+  }
+}
+
 function loadMemorySession(token: string): MemorySession | null {
   const s = memorySessions.get(token);
   if (!s) return null;
@@ -86,7 +93,7 @@ async function loadSessionUser(
   if (pool) {
     const result = await pool.query(
       `SELECT u.id, u.username, u.company_id, u.role, u.is_temp_password,
-              u.terms_accepted_at,
+              u.is_disabled, u.terms_accepted_at,
               p.id AS plant_id, p.name AS plant_name,
               c.name AS company_name
          FROM users u
@@ -99,6 +106,8 @@ async function loadSessionUser(
     );
     if (result.rows.length === 0) return null;
     const row = result.rows[0];
+    // USERS-1 - a disabled account can never resolve a live session.
+    if (row.is_disabled) return null;
     return {
       id: row.id,
       username: row.username,
@@ -140,7 +149,10 @@ export function stripClientTenancyFields(req: Request): void {
 export function createApiAuthGuard(pool: () => Pool | null) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const path = req.path.replace(/\/+$/, "") || "/";
-    const isPublic = PUBLIC_API_PATHS.has(path);
+    // USERS-1 - both invite landing endpoints are public by token only. The
+    // token itself is the authority; no session or client tenant is accepted.
+    const isPublic =
+      PUBLIC_API_PATHS.has(path) || path.startsWith("/invite/");
     if (req.method !== "GET") stripClientTenancyFields(req);
 
     try {
