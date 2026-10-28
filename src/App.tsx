@@ -112,6 +112,21 @@ export interface Notification {
   equipmentName: string;
 }
 
+/** NOTIFICATIONS-1 - server-backed in_app row for the session tenant/user. */
+export interface ServerNotification {
+  id: number;
+  channel: string;
+  kind: string;
+  recipient_email: string | null;
+  subject: string;
+  body_text: string;
+  status: string;
+  error: string | null;
+  read_at: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
 export default function App() {
   const [user, setUser] = useState<UserSession | null>(() => {
     const stored = localStorage.getItem("motormedic_user_session");
@@ -346,6 +361,7 @@ export default function App() {
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
   const [isHamburgerOpen, setIsHamburgerOpen] = useState<boolean>(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [inAppNotifications, setInAppNotifications] = useState<ServerNotification[]>([]);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
   const [targetContext, setTargetContext] = useState<TargetContext | null>(null);
   const [trendsAssetId, setTrendsAssetId] = useState<string | undefined>(undefined);
@@ -448,6 +464,70 @@ export default function App() {
     setNotifications(updated);
     localStorage.setItem("reliability_notifications_v6", JSON.stringify(updated));
   };
+
+  // NOTIFICATIONS-1 - the bell reads the server ledger for the session tenant.
+  // The server scopes rows by the verified session; no tenant id is sent.
+  const fetchInAppNotifications = async () => {
+    try {
+      const res = await fetch("/api/notifications", {
+        credentials: "same-origin"
+      });
+      if (!res.ok) return;
+      const payload = await res.json();
+      setInAppNotifications(
+        Array.isArray(payload?.notifications) ? payload.notifications : []
+      );
+    } catch (err) {
+      console.error("Failed to load in-app notifications:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (user) {
+      fetchInAppNotifications();
+    } else {
+      setInAppNotifications([]);
+    }
+  }, [user]);
+
+  const markInAppNotificationRead = async (id: number) => {
+    setInAppNotifications((prev) =>
+      prev.map((row) =>
+        row.id === id && !row.read_at
+          ? { ...row, read_at: new Date().toISOString() }
+          : row
+      )
+    );
+    try {
+      await fetch(`/api/notifications/${id}/read`, {
+        method: "POST",
+        credentials: "same-origin"
+      });
+    } catch (err) {
+      console.error("Failed to mark notification read:", err);
+    }
+  };
+
+  const markAllInAppNotificationsRead = async () => {
+    const unread = inAppNotifications.filter((row) => !row.read_at);
+    setInAppNotifications((prev) =>
+      prev.map((row) =>
+        row.read_at ? row : { ...row, read_at: new Date().toISOString() }
+      )
+    );
+    await Promise.all(
+      unread.map((row) =>
+        fetch(`/api/notifications/${row.id}/read`, {
+          method: "POST",
+          credentials: "same-origin"
+        }).catch(() => undefined)
+      )
+    );
+  };
+
+  const unreadNotificationCount =
+    notifications.filter((n) => !n.read).length +
+    inAppNotifications.filter((n) => !n.read_at).length;
 
   useEffect(() => {
     localStorage.setItem("reliability_custom_gemini_key", customApiKey);
@@ -885,11 +965,11 @@ const updated = [newReport, ...reports];
                 }`}
                 id="notificationBell"
               >
-                {notifications.filter(n => !n.read).length > 0 ? (
+                {unreadNotificationCount > 0 ? (
                   <>
                     <BellRing className="w-4 h-4 text-yellow-400 animate-bounce" />
                     <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white ring-2 ring-slate-950 animate-pulse">
-                      {notifications.filter(n => !n.read).length}
+                      {unreadNotificationCount}
                     </span>
                   </>
                 ) : (
@@ -909,6 +989,7 @@ const updated = [newReport, ...reports];
                         onClick={() => {
                           const marked = notifications.map(n => ({ ...n, read: true }));
                           saveNotifications(marked);
+                          void markAllInAppNotificationsRead();
                         }}
                         className="text-[10px] text-yellow-400 hover:underline font-semibold"
                       >
@@ -925,7 +1006,45 @@ const updated = [newReport, ...reports];
                   </div>
 
                   <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
-                    {notifications.length === 0 ? (
+                    {inAppNotifications.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-[9px] font-mono font-bold uppercase tracking-wider text-cyan-400/80">In-app notifications</p>
+                        {inAppNotifications.map((notif) => (
+                          <div
+                            key={`server-${notif.id}`}
+                            className={`p-2.5 rounded-lg border text-[11px] leading-relaxed transition-all ${
+                              notif.read_at
+                                ? "bg-slate-950/40 border-slate-900/60 text-slate-400"
+                                : "bg-cyan-500/5 border-cyan-500/20 text-slate-200"
+                            }`}
+                            id={`in-app-notification-${notif.id}`}
+                          >
+                            <div className="flex justify-between items-start gap-1">
+                              <span className="font-bold text-white block">{notif.subject}</span>
+                              <span className="text-[9px] text-slate-500 shrink-0 font-mono">
+                                {new Date(notif.created_at).toLocaleString()}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-slate-300 text-[10px] whitespace-pre-line">{notif.body_text}</p>
+                            <div className="mt-1.5 flex items-center justify-between text-[9px]">
+                              <span className="px-1.5 py-0.5 rounded font-mono font-bold bg-cyan-500/20 text-cyan-400">
+                                {String(notif.kind).toUpperCase()}
+                              </span>
+                              {!notif.read_at && (
+                                <button
+                                  onClick={() => void markInAppNotificationRead(notif.id)}
+                                  className="text-yellow-400 hover:text-yellow-500 font-bold"
+                                >
+                                  Mark Read
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {notifications.length === 0 && inAppNotifications.length === 0 ? (
                       <p className="text-center py-6 text-slate-500 font-mono text-[11px]">No active critical notifications.</p>
                     ) : (
                       notifications.map(notif => (

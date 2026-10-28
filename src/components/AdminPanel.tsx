@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { 
   Settings, CreditCard, Building, CheckCircle2, XCircle, 
   Save, Info, Sliders, Activity, ShieldCheck, Check, Sparkles,
-  Users, UserPlus, Trash
+  Users, UserPlus, Trash, Mail, Bell
 } from "lucide-react";
 import { useToast } from "./Toast";
 import CustomerPortal from "./CustomerPortal";
@@ -23,10 +23,19 @@ interface AdminPanelProps {
 
 export default function AdminPanel({ companies, onSubscriptionChange, selectedCompanyId }: AdminPanelProps) {
   const { showToast } = useToast();
-  const [activeTab, setActiveTab] = useState<"settings" | "billing">("settings");
+  const [activeTab, setActiveTab] = useState<"settings" | "billing" | "notifications">("settings");
   const [selectedCompId, setSelectedCompId] = useState<number>(selectedCompanyId);
   const [selectedPlan, setSelectedPlan] = useState<string>("vibration_only");
   const [isSaving, setIsSaving] = useState(false);
+
+  // NOTIFICATIONS-1 - tenant alert recipients + visible send audit trail.
+  const [alertRecipients, setAlertRecipients] = useState<
+    Array<{ id: number; email: string; created_at?: string }>
+  >([]);
+  const [newRecipientEmail, setNewRecipientEmail] = useState("");
+  const [notificationRows, setNotificationRows] = useState<any[]>([]);
+  const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
+  const [isAddingRecipient, setIsAddingRecipient] = useState(false);
 
   // User Management State
   const [users, setUsers] = useState<any[]>([]);
@@ -51,6 +60,85 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
   useEffect(() => {
     fetchUsers();
   }, [selectedCompId]);
+
+  const fetchAlertRecipients = async () => {
+    try {
+      const res = await fetch("/api/alert-recipients", {
+        credentials: "same-origin"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load recipients");
+      setAlertRecipients(Array.isArray(data.recipients) ? data.recipients : []);
+    } catch (err: any) {
+      console.error("Failed to fetch alert recipients:", err);
+    }
+  };
+
+  const fetchNotificationAudit = async () => {
+    setIsLoadingNotifications(true);
+    try {
+      const res = await fetch("/api/admin/notifications", {
+        credentials: "same-origin"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load notifications");
+      setNotificationRows(
+        Array.isArray(data.notifications) ? data.notifications : []
+      );
+    } catch (err: any) {
+      console.error("Failed to fetch notification audit:", err);
+    } finally {
+      setIsLoadingNotifications(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== "notifications") return;
+    void fetchAlertRecipients();
+    void fetchNotificationAudit();
+  }, [activeTab, selectedCompId]);
+
+  const handleAddAlertRecipient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = newRecipientEmail.trim();
+    if (!email) {
+      showToast("Email is required", "error");
+      return;
+    }
+    setIsAddingRecipient(true);
+    try {
+      const res = await fetch("/api/alert-recipients", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add recipient");
+      showToast("Alert recipient added.", "success");
+      setNewRecipientEmail("");
+      await fetchAlertRecipients();
+    } catch (err: any) {
+      showToast(err.message || "Failed to add recipient", "error");
+    } finally {
+      setIsAddingRecipient(false);
+    }
+  };
+
+  const handleRemoveAlertRecipient = async (id: number) => {
+    try {
+      const res = await fetch(`/api/alert-recipients/${id}`, {
+        method: "DELETE",
+        credentials: "same-origin"
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to remove recipient");
+      showToast("Alert recipient removed.", "success");
+      await fetchAlertRecipients();
+    } catch (err: any) {
+      showToast(err.message || "Failed to remove recipient", "error");
+    }
+  };
 
   const handleInviteUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -283,6 +371,20 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
             Billing & Tiers
           </span>
         </button>
+        <button
+          onClick={() => setActiveTab("notifications")}
+          className={`px-4 py-2 text-xs font-bold transition-all relative ${
+            activeTab === "notifications"
+              ? "text-yellow-400 border-b-2 border-yellow-400 font-extrabold"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+          id="admin-tab-notifications"
+        >
+          <span className="flex items-center gap-2">
+            <Bell className="w-4 h-4" />
+            Email & Notifications
+          </span>
+        </button>
       </div>
 
       <AnimatePresence mode="wait">
@@ -473,6 +575,158 @@ export default function AdminPanel({ companies, onSubscriptionChange, selectedCo
                   </div>
                 ))}
               </div>
+            </div>
+          </motion.div>
+        ) : activeTab === "notifications" ? (
+          <motion.div
+            key="notifications"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.15 }}
+            className="space-y-6"
+            id="admin-notifications-section"
+          >
+            <div className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest flex items-center gap-2">
+                  <Mail className="w-4.5 h-4.5 text-yellow-400" />
+                  Alert Recipients
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Every high-severity alert sends one email to each address in
+                  this tenant. Recipients are tenant-scoped from the session.
+                </p>
+              </div>
+
+              <form
+                onSubmit={handleAddAlertRecipient}
+                className="flex flex-col sm:flex-row gap-2"
+              >
+                <input
+                  type="email"
+                  value={newRecipientEmail}
+                  onChange={(e) => setNewRecipientEmail(e.target.value)}
+                  placeholder="reliability-lead@example.com"
+                  className="flex-1 bg-slate-950 border border-slate-800 text-slate-100 text-xs rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-1 focus:ring-yellow-400/30"
+                  id="alert-recipient-email-input"
+                />
+                <button
+                  type="submit"
+                  disabled={isAddingRecipient}
+                  className="px-4 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-slate-950 rounded-xl text-xs font-bold disabled:opacity-50"
+                  id="alert-recipient-add-btn"
+                >
+                  {isAddingRecipient ? "Adding..." : "Add Recipient"}
+                </button>
+              </form>
+
+              {alertRecipients.length === 0 ? (
+                <p className="text-[11px] text-slate-500 font-mono">
+                  No alert recipients configured for this tenant.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-900 rounded-xl border border-slate-900 overflow-hidden">
+                  {alertRecipients.map((recipient) => (
+                    <li
+                      key={recipient.id}
+                      className="flex items-center justify-between gap-3 px-4 py-3 bg-slate-950/40 text-xs"
+                    >
+                      <span className="font-mono text-slate-200">
+                        {recipient.email}
+                      </span>
+                      <button
+                        onClick={() =>
+                          void handleRemoveAlertRecipient(recipient.id)
+                        }
+                        className="text-red-400 hover:text-red-300 font-semibold"
+                        id={`alert-recipient-remove-${recipient.id}`}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest flex items-center gap-2">
+                    <Bell className="w-4.5 h-4.5 text-yellow-400" />
+                    Notification Audit Trail
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Failed and skipped sends are shown explicitly - never silent.
+                  </p>
+                </div>
+                <button
+                  onClick={() => void fetchNotificationAudit()}
+                  className="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-lg text-[10px] font-semibold"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {isLoadingNotifications ? (
+                <p className="text-[11px] text-slate-500 font-mono">Loading...</p>
+              ) : notificationRows.length === 0 ? (
+                <p className="text-[11px] text-slate-500 font-mono">
+                  No notification rows yet.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[11px]" id="notification-audit-table">
+                    <thead className="text-[9px] uppercase tracking-wider text-slate-500 font-mono">
+                      <tr>
+                        <th className="py-2 pr-3">Created</th>
+                        <th className="py-2 pr-3">Channel</th>
+                        <th className="py-2 pr-3">Kind</th>
+                        <th className="py-2 pr-3">Recipient</th>
+                        <th className="py-2 pr-3">Status</th>
+                        <th className="py-2">Error</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-900">
+                      {notificationRows.map((row) => (
+                        <tr key={row.id} className="align-top">
+                          <td className="py-2 pr-3 text-slate-400 font-mono whitespace-nowrap">
+                            {row.created_at
+                              ? new Date(row.created_at).toLocaleString()
+                              : "-"}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-300 font-mono">
+                            {row.channel}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-300 font-mono">
+                            {row.kind}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-400 font-mono">
+                            {row.recipient_email || "-"}
+                          </td>
+                          <td className="py-2 pr-3">
+                            <span
+                              className={`px-1.5 py-0.5 rounded font-mono font-bold ${
+                                row.status === "sent"
+                                  ? "bg-emerald-500/20 text-emerald-400"
+                                  : row.status === "failed"
+                                    ? "bg-red-500/20 text-red-400"
+                                    : "bg-amber-500/20 text-amber-400"
+                              }`}
+                            >
+                              {String(row.status).toUpperCase()}
+                            </span>
+                          </td>
+                          <td className="py-2 text-red-400/90">
+                            {row.error || ""}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </motion.div>
         ) : (

@@ -116,6 +116,7 @@ import {
   canCheckInAssignment,
   canCloseAssignment,
   canManageRouteAssignment,
+  isTenantAdminRole,
   type RouteAssignmentRow,
   type RouteQueueRouteRow
 } from "./src/lib/routeCheckout";
@@ -170,13 +171,32 @@ import {
   type AssessmentLinkRefs,
   type AssessmentOwnedLinks
 } from "./src/lib/assessmentWizard";
+import { assertProductionEmailEnv } from "./src/lib/email";
+import {
+  buildAlertEmailRows,
+  buildAlertInAppRows,
+  buildReceiptEmail,
+  buildWelcomeEmail,
+  dispatchEmailNotification,
+  failedNotificationRow,
+  isValidEmail,
+  normalizeEmail,
+  type NotificationInsert,
+  type TenantAlertRecipient,
+  type TenantNotificationUser
+} from "./src/lib/notifications";
 
 dotenv.config();
 
-// AR-29 rule 10 — production boot fails fast on missing/placeholder
+// AR-29 rule 10 �?" production boot fails fast on missing/placeholder
 // SESSION_SECRET or DATABASE_URL (including CI-mock values). CI only
 // builds, never boots, so this is safe there.
 assertProductionAuthEnv(process.env);
+// NOTIFICATIONS-1 �?" production also refuses to boot without the email
+// provider key. Same fail-loud family as the DATABASE_URL/SESSION_SECRET
+// guard above; safe today because nothing deploys until launch, when the key
+// ships in the production bundle/env.
+assertProductionEmailEnv(process.env);
 // STOREFRONT — production must also refuse the Square test bypass outright,
 // and the Square environment must agree with the access token at boot.
 assertProductionSquareMode(process.env);
@@ -1479,6 +1499,13 @@ app.post("/api/save-analysis-result", async (req, res) => {
 
     const analysis = insert.rows[0];
     let alertsCreated = 0;
+    const createdAlerts: Array<{
+      id?: string | number | null;
+      title: string;
+      description: string | null;
+      severity: string;
+      asset_id?: string | number | null;
+    }> = [];
 
     if (createAlerts && faultList.length > 0) {
       for (const fault of faultList) {
@@ -1487,24 +1514,36 @@ app.post("/api/save-analysis-result", async (req, res) => {
         );
         // Auto-create alerts for HIGH (and CRITICAL-mapped) faults
         if (alertSev !== "HIGH") continue;
-        await pool.query(
+        const alertTitle = String(
+          fault?.title || primaryFault || "Critical fault detected"
+        );
+        const alertDescription = String(
+          fault?.detail ||
+            fault?.description ||
+            summary ||
+            `High-severity finding on ${component || assetId || "asset"}`
+        );
+        const alertInsert = await pool.query(
           `INSERT INTO alerts (
              analysis_result_id, asset_id, severity, title, description, tenant_id
-           ) VALUES ($1,$2,$3,$4,$5,$6)`,
+           ) VALUES ($1,$2,$3,$4,$5,$6)
+           RETURNING id, title, description, severity, asset_id`,
           [
             analysis.id,
             assetId,
             alertSev,
-            String(fault?.title || primaryFault || "Critical fault detected"),
-            String(
-              fault?.detail ||
-                fault?.description ||
-                summary ||
-                `High-severity finding on ${component || assetId || "asset"}`
-            ),
+            alertTitle,
+            alertDescription,
             tenantId
           ]
         );
+        createdAlerts.push({
+          id: alertInsert.rows[0]?.id ?? null,
+          title: alertTitle,
+          description: alertDescription,
+          severity: alertSev,
+          asset_id: assetId
+        });
         alertsCreated += 1;
       }
 
@@ -1514,19 +1553,41 @@ app.post("/api/save-analysis-result", async (req, res) => {
         mapUiSeverityToAlert(severity) === "HIGH" &&
         primaryFault
       ) {
-        await pool.query(
+        const alertDescription =
+          summary || `Critical diagnosis for ${component || assetId || "asset"}`;
+        const alertInsert = await pool.query(
           `INSERT INTO alerts (
              analysis_result_id, asset_id, severity, title, description, tenant_id
-           ) VALUES ($1,$2,'HIGH',$3,$4,$5)`,
+           ) VALUES ($1,$2,'HIGH',$3,$4,$5)
+           RETURNING id, title, description, severity, asset_id`,
           [
             analysis.id,
             assetId,
             primaryFault,
-            summary || `Critical diagnosis for ${component || assetId || "asset"}`,
+            alertDescription,
             tenantId
           ]
         );
+        createdAlerts.push({
+          id: alertInsert.rows[0]?.id ?? null,
+          title: primaryFault,
+          description: alertDescription,
+          severity: "HIGH",
+          asset_id: assetId
+        });
         alertsCreated = 1;
+      }
+    }
+
+    // NOTIFICATIONS-1: alert insert path fan-out. In-app rows are written
+    // before the response; email sends are queued fire-and-forget with an
+    // internal .catch() -> 'failed' ledger row. Any notification failure is
+    // swallowed here so the alert save request still succeeds.
+    if (createdAlerts.length > 0) {
+      try {
+        await recordAlertNotifications(tenantId, createdAlerts);
+      } catch (notifErr) {
+        console.error("[notifications] save-analysis fan-out failed:", notifErr);
       }
     }
 
@@ -2611,6 +2672,372 @@ app.post("/api/alerts/:id/acknowledge", async (req, res) => {
   }
 });
 
+/* -------------------------------------------------------------------------- */
+/* NOTIFICATIONS-1 - alert insert, bell, mark-read, recipient defaults, audit  */
+/* Every tenant id below comes from the verified session (requestTenantId);   */
+/* no handler reads a tenant/company id from the query.                       */
+/* -------------------------------------------------------------------------- */
+
+// POST /api/alerts - alert insert path. Creates the alert row and fans out one
+// in_app notification per same-tenant user + one email row per same-tenant
+// alert recipient. Provider sends are queued and NEVER fail this request.
+app.post("/api/alerts", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  const title = String(req.body?.title || "").trim();
+  if (!title) {
+    return res.status(400).json({ error: "Alert title is required." });
+  }
+  const description =
+    req.body?.description == null ? null : String(req.body.description);
+  const severity = mapUiSeverityToAlert(req.body?.severity);
+  const assetId =
+    req.body?.asset_id == null ? null : String(req.body.asset_id);
+
+  try {
+    let alert: any;
+    if (pool) {
+      const inserted = await pool.query(
+        `INSERT INTO alerts (asset_id, severity, title, description, tenant_id)
+         VALUES ($1,$2,$3,$4,$5)
+         RETURNING *`,
+        [assetId, severity, title, description, tenantId]
+      );
+      alert = inserted.rows[0];
+    } else {
+      alert = {
+        id: getNextId(),
+        analysis_result_id: null,
+        asset_id: assetId,
+        severity,
+        title,
+        description,
+        tenant_id: tenantId,
+        acknowledged: false,
+        created_at: new Date()
+      };
+      memoryAlerts.push(alert);
+    }
+
+    try {
+      await recordAlertNotifications(tenantId, [
+        {
+          id: alert.id,
+          title: alert.title,
+          description: alert.description,
+          severity: alert.severity,
+          asset_id: alert.asset_id
+        }
+      ]);
+    } catch (notifErr) {
+      // A notification problem never fails the alert insert.
+      console.error("[notifications] alert fan-out failed:", notifErr);
+    }
+
+    return res.status(201).json({ success: true, alert });
+  } catch (error: any) {
+    console.error("[alerts] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to create alert."
+    });
+  }
+});
+
+// GET /api/notifications - bell list for the session user in the session
+// tenant. In-app rows are per user (user_id), tenant-wide rows have NULL.
+app.get("/api/notifications", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  const userId = sessionUserId(req);
+  if (tenantId == null || userId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  try {
+    let rows: any[];
+    if (pool) {
+      const result = await pool.query(
+        `SELECT * FROM notifications
+          WHERE tenant_id = $1
+            AND channel = 'in_app'
+            AND (user_id = $2 OR user_id IS NULL)
+          ORDER BY created_at DESC, id DESC
+          LIMIT 100`,
+        [tenantId, userId]
+      );
+      rows = result.rows;
+    } else {
+      rows = memoryNotifications
+        .filter(
+          (row) =>
+            Number(row.tenant_id) === tenantId &&
+            row.channel === "in_app" &&
+            (row.user_id == null || Number(row.user_id) === userId)
+        )
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() -
+              new Date(a.created_at).getTime() || Number(b.id) - Number(a.id)
+        )
+        .slice(0, 100);
+    }
+    const unreadCount = rows.filter((row) => row.read_at == null).length;
+    return res.json({
+      success: true,
+      tenant_id: tenantId,
+      notifications: rows,
+      unread_count: unreadCount
+    });
+  } catch (error: any) {
+    console.error("[notifications] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load notifications."
+    });
+  }
+});
+
+// POST /api/notifications/:id/read - mark one bell row read for this user.
+app.post("/api/notifications/:id/read", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  const userId = sessionUserId(req);
+  if (tenantId == null || userId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Invalid notification id." });
+  }
+  try {
+    if (pool) {
+      const result = await pool.query(
+        `UPDATE notifications
+            SET read_at = COALESCE(read_at, NOW())
+          WHERE id = $1 AND tenant_id = $2
+            AND channel = 'in_app'
+            AND (user_id = $3 OR user_id IS NULL)
+          RETURNING *`,
+        [id, tenantId, userId]
+      );
+      if (!result.rows.length) {
+        return res.status(404).json({ error: "Notification not found." });
+      }
+      return res.json({ success: true, notification: result.rows[0] });
+    }
+    const row = memoryNotifications.find(
+      (entry) =>
+        Number(entry.id) === id &&
+        Number(entry.tenant_id) === tenantId &&
+        entry.channel === "in_app" &&
+        (entry.user_id == null || Number(entry.user_id) === userId)
+    );
+    if (!row) {
+      return res.status(404).json({ error: "Notification not found." });
+    }
+    row.read_at = row.read_at ?? new Date();
+    return res.json({ success: true, notification: row });
+  } catch (error: any) {
+    console.error("[notifications] mark-read error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to mark the notification read."
+    });
+  }
+});
+
+// GET /api/admin/notifications - admin audit trail (owner/admin only).
+// Reuses the existing tenant-admin bar (isTenantAdminRole ->
+// roleAtLeast(..., 'reliability-manager')); see src/lib/routeCheckout.ts.
+app.get("/api/admin/notifications", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may view the notification audit trail.",
+      code: "FORBIDDEN"
+    });
+  }
+  try {
+    let rows: any[];
+    if (pool) {
+      const result = await pool.query(
+        `SELECT * FROM notifications
+          WHERE tenant_id = $1
+          ORDER BY created_at DESC, id DESC
+          LIMIT 200`,
+        [tenantId]
+      );
+      rows = result.rows;
+    } else {
+      rows = memoryNotifications
+        .filter((row) => Number(row.tenant_id) === tenantId)
+        .sort(
+          (a, b) =>
+            new Date(b.created_at).getTime() -
+              new Date(a.created_at).getTime() || Number(b.id) - Number(a.id)
+        )
+        .slice(0, 200);
+    }
+    return res.json({
+      success: true,
+      tenant_id: tenantId,
+      notifications: rows
+    });
+  } catch (error: any) {
+    console.error("[notifications] audit GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load the notification audit trail."
+    });
+  }
+});
+
+// GET /api/alert-recipients - tenant alert-recipient defaults (owner/admin).
+app.get("/api/alert-recipients", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may manage alert recipients.",
+      code: "FORBIDDEN"
+    });
+  }
+  try {
+    const recipients = await tenantAlertRecipients(tenantId);
+    return res.json({ success: true, tenant_id: tenantId, recipients });
+  } catch (error: any) {
+    console.error("[alert-recipients] GET error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to load alert recipients."
+    });
+  }
+});
+
+// POST /api/alert-recipients - add one recipient to the SESSION tenant.
+// A client-supplied company_id/tenant_id that names a different tenant is
+// rejected as 404, matching the cross-tenant resource convention used by
+// goodCatches/routeCheckout (never a silent write into the foreign tenant).
+app.post("/api/alert-recipients", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may manage alert recipients.",
+      code: "FORBIDDEN"
+    });
+  }
+  const suppliedTenant =
+    req.body?.company_id != null
+      ? Number(req.body.company_id)
+      : req.body?.tenant_id != null
+        ? Number(req.body.tenant_id)
+        : null;
+  if (
+    suppliedTenant != null &&
+    Number.isFinite(suppliedTenant) &&
+    suppliedTenant !== tenantId
+  ) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
+  const email = normalizeEmail(req.body?.email);
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ error: "A valid email address is required." });
+  }
+  try {
+    if (pool) {
+      const existing = await pool.query(
+        `SELECT id, tenant_id, email FROM tenant_alert_recipients
+          WHERE tenant_id = $1 AND LOWER(email) = $2 LIMIT 1`,
+        [tenantId, email]
+      );
+      if (existing.rows.length > 0) {
+        return res.status(409).json({ error: "Recipient already exists." });
+      }
+      const inserted = await pool.query(
+        `INSERT INTO tenant_alert_recipients (tenant_id, email)
+         VALUES ($1, $2) RETURNING id, tenant_id, email, created_at`,
+        [tenantId, email]
+      );
+      return res.status(201).json({
+        success: true,
+        recipient: inserted.rows[0]
+      });
+    }
+    const existing = memoryAlertRecipients.find(
+      (row) =>
+        Number(row.tenant_id) === tenantId &&
+        normalizeEmail(row.email) === email
+    );
+    if (existing) {
+      return res.status(409).json({ error: "Recipient already exists." });
+    }
+    const recipient = {
+      id: getNextId(),
+      tenant_id: tenantId,
+      email,
+      created_at: new Date()
+    };
+    memoryAlertRecipients.push(recipient);
+    return res.status(201).json({ success: true, recipient });
+  } catch (error: any) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ error: "Recipient already exists." });
+    }
+    console.error("[alert-recipients] POST error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to add the alert recipient."
+    });
+  }
+});
+
+// DELETE /api/alert-recipients/:id - remove one recipient in the session tenant.
+app.delete("/api/alert-recipients/:id", async (req, res) => {
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Authentication required." });
+  }
+  if (!isTenantAdminRole(req.auth?.user?.role)) {
+    return res.status(403).json({
+      error: "Only an owner/admin may manage alert recipients.",
+      code: "FORBIDDEN"
+    });
+  }
+  const id = parseInt(String(req.params.id), 10);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Invalid recipient id." });
+  }
+  try {
+    if (pool) {
+      const result = await pool.query(
+        `DELETE FROM tenant_alert_recipients
+          WHERE id = $1 AND tenant_id = $2
+          RETURNING id`,
+        [id, tenantId]
+      );
+      if (!result.rows.length) {
+        return res.status(404).json({ error: "Recipient not found." });
+      }
+      return res.json({ success: true, deleted: result.rows[0].id });
+    }
+    const index = memoryAlertRecipients.findIndex(
+      (row) => Number(row.id) === id && Number(row.tenant_id) === tenantId
+    );
+    if (index < 0) {
+      return res.status(404).json({ error: "Recipient not found." });
+    }
+    const [deleted] = memoryAlertRecipients.splice(index, 1);
+    return res.json({ success: true, deleted: deleted.id });
+  } catch (error: any) {
+    console.error("[alert-recipients] DELETE error:", error);
+    return res.status(500).json({
+      error: error?.message || "Failed to remove the alert recipient."
+    });
+  }
+});
+
 app.get("/api/diagnosis-logs", async (req, res) => {
   // Legacy plant-scoped diagnosis_history (older clients pass plant_id / location_id)
   const plantRaw = req.query.plant_id ?? req.query.location_id;
@@ -3656,9 +4083,11 @@ This alert was generated automatically based on ISO 18436 standards.
 
   sendResendEmail({
     to: "shanedufrene1989@gmail.com",
-    subject: `🚨 ${severity.toUpperCase()} ALERT: ${equipmentName} - ${fault}`,
+    subject: `dYs" ${severity.toUpperCase()} ALERT: ${equipmentName} - ${fault}`,
     htmlContent: html
-  });
+  }).catch((err) =>
+    console.error("[email] fire-and-forget alert dispatch failed:", err)
+  );
 }
 
 async function dispatchAutomatedAlerts(
@@ -7237,6 +7666,25 @@ app.post("/api/square/webhook", async (req: any, res) => {
             subscriptionId,
             customerId
           );
+          if (!provisioned.alreadyProvisioned) {
+            // NOTIFICATIONS-1: welcome email on tenant provisioning.
+            queueWelcomeNotification(pending, provisioned.companyId);
+          }
+          if (paymentStatus === "COMPLETED") {
+            // NOTIFICATIONS-1: receipt email on checkout webhook COMPLETED.
+            const rawAmount = payment?.totalMoney?.amount;
+            const amountCents =
+              rawAmount == null ? null : Number(rawAmount);
+            queueReceiptNotification({
+              pending,
+              tenantId: provisioned.companyId,
+              modules: provisioned.moduleKeys,
+              amountCents:
+                amountCents != null && Number.isFinite(amountCents)
+                  ? amountCents
+                  : null
+            });
+          }
         }
       }
     } else if (
@@ -7261,6 +7709,10 @@ app.post("/api/square/webhook", async (req: any, res) => {
             subscriptionId,
             subscriptionCustomerId
           );
+          if (!provisioned.alreadyProvisioned) {
+            // NOTIFICATIONS-1: welcome email on tenant provisioning.
+            queueWelcomeNotification(pending, provisioned.companyId);
+          }
         }
         await applySquareSubscriptionStatus(
           subscriptionId,
@@ -7832,6 +8284,201 @@ let memoryBearingSpecs: any[] = [];
 let memoryRouteAssignments: any[] = [];
 // ASSESSMENT-WIZARD - session-tenant component assessment rows in memory mode.
 let memoryComponentAssessments: any[] = [];
+// NOTIFICATIONS-1 - session-tenant notification ledger + tenant alert recipients.
+let memoryNotifications: any[] = [];
+let memoryAlertRecipients: any[] = [];
+// Alert insert stand-in for DATABASE_URL-less boots (the production ledger is
+// the real alerts table). Only used by the notification wiring/tests.
+let memoryAlerts: any[] = [];
+
+const notificationRepository = {
+  async insert(row: NotificationInsert): Promise<any> {
+    if (pool) {
+      const result = await pool.query(
+        `INSERT INTO notifications
+           (tenant_id, user_id, channel, kind, recipient_email, subject,
+            body_text, status, error, read_at, sent_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         RETURNING *`,
+        [
+          row.tenant_id,
+          row.user_id,
+          row.channel,
+          row.kind,
+          row.recipient_email,
+          row.subject,
+          row.body_text,
+          row.status,
+          row.error ?? null,
+          row.read_at ?? null,
+          row.sent_at ?? null
+        ]
+      );
+      return result.rows[0];
+    }
+    const saved = {
+      id: getNextId(),
+      tenant_id: row.tenant_id,
+      user_id: row.user_id,
+      channel: row.channel,
+      kind: row.kind,
+      recipient_email: row.recipient_email,
+      subject: row.subject,
+      body_text: row.body_text,
+      status: row.status,
+      error: row.error ?? null,
+      read_at: row.read_at ?? null,
+      created_at: new Date(),
+      sent_at: row.sent_at ?? null
+    };
+    memoryNotifications.push(saved);
+    return saved;
+  }
+};
+
+function notificationErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message;
+  return String(err ?? "Unknown notification error");
+}
+
+/**
+ * Fire-and-forget email dispatch. The internal .catch() records a final
+ * 'failed' row, which is why an unhandled provider rejection can never crash
+ * the alert/checkout path (Node >=15 would terminate the process).
+ */
+function queueEmailNotification(row: NotificationInsert): Promise<void> {
+  return dispatchEmailNotification(notificationRepository, row).catch(
+    async (err) => {
+      console.error("[notifications] email dispatch failed:", err);
+      try {
+        await notificationRepository.insert(failedNotificationRow(row, err));
+      } catch (recordErr) {
+        console.error(
+          "[notifications] failed to record failed notification:",
+          recordErr
+        );
+      }
+    }
+  );
+}
+
+async function tenantNotificationUsers(
+  tenantId: number
+): Promise<TenantNotificationUser[]> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT id, company_id AS tenant_id, email FROM users WHERE company_id = $1 ORDER BY id ASC",
+      [tenantId]
+    );
+    return result.rows.map((row: any) => ({
+      id: Number(row.id),
+      tenant_id: Number(row.tenant_id),
+      email: row.email == null ? null : String(row.email)
+    }));
+  }
+  return memoryUsers
+    .filter((user) => Number(user.company_id) === tenantId)
+    .map((user) => ({
+      id: Number(user.id),
+      tenant_id: Number(user.company_id),
+      email: user.email == null ? null : String(user.email)
+    }));
+}
+
+async function tenantAlertRecipients(
+  tenantId: number
+): Promise<TenantAlertRecipient[]> {
+  if (pool) {
+    const result = await pool.query(
+      "SELECT id, tenant_id, email FROM tenant_alert_recipients WHERE tenant_id = $1 ORDER BY id ASC",
+      [tenantId]
+    );
+    return result.rows.map((row: any) => ({
+      id: Number(row.id),
+      tenant_id: Number(row.tenant_id),
+      email: String(row.email)
+    }));
+  }
+  return memoryAlertRecipients
+    .filter((row) => Number(row.tenant_id) === tenantId)
+    .map((row) => ({
+      id: Number(row.id),
+      tenant_id: Number(row.tenant_id),
+      email: String(row.email)
+    }));
+}
+
+/**
+ * Alert fan-out: one in_app row per same-tenant user + one email row per
+ * same-tenant alert recipient. In-app rows are written before the response;
+ * email sends are queued (never awaited by the request) with a rejecting
+ * guard so a provider failure becomes a visible 'failed' ledger row.
+ */
+async function recordAlertNotifications(
+  tenantId: number,
+  alerts: Array<{
+    id?: string | number | null;
+    title: string;
+    description?: string | null;
+    severity?: string | null;
+    asset_id?: string | number | null;
+  }>
+): Promise<void> {
+  const [users, recipients] = await Promise.all([
+    tenantNotificationUsers(tenantId),
+    tenantAlertRecipients(tenantId)
+  ]);
+
+  for (const alert of alerts) {
+    const inAppRows = buildAlertInAppRows({ tenantId, alert, users });
+    for (const row of inAppRows) {
+      try {
+        await notificationRepository.insert(row);
+      } catch (err) {
+        console.error("[notifications] in-app insert failed:", err);
+      }
+    }
+    for (const row of buildAlertEmailRows({ tenantId, alert, recipients })) {
+      queueEmailNotification(row).catch((err) =>
+        console.error("[notifications] queued alert email rejected:", err)
+      );
+    }
+  }
+}
+
+function queueWelcomeNotification(
+  pending: PendingCheckoutRecord,
+  tenantId: number
+): void {
+  const row = buildWelcomeEmail({
+    tenantId,
+    to: pending.admin_email,
+    companyName: pending.company_name
+  });
+  queueEmailNotification(row).catch((err) =>
+    console.error("[notifications] welcome email rejected:", err)
+  );
+}
+
+function queueReceiptNotification(input: {
+  pending: PendingCheckoutRecord;
+  tenantId: number;
+  modules: readonly string[];
+  amountCents?: number | null;
+}): void {
+  const row = buildReceiptEmail({
+    tenantId: input.tenantId,
+    to: input.pending.admin_email,
+    companyName: input.pending.company_name,
+    modules: input.modules,
+    amountCents: input.amountCents ?? null,
+    checkoutRef: input.pending.checkout_ref
+  });
+  queueEmailNotification(row).catch((err) =>
+    console.error("[notifications] receipt email rejected:", err)
+  );
+}
+
 
 let memoryPlants: any[] = [
   { id: 1, company_id: 1, name: "Houston Refining Plant", location: "9701 Manchester St, Houston, TX", created_at: new Date() },
@@ -16231,6 +16878,45 @@ async function initializeDatabase() {
     );
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_component_assessments_tenant_alert ON component_assessments (tenant_id, alert_id);"
+    );
+    // migrations/026 - NOTIFICATIONS-1. Same DDL as the file so a fresh boot
+    // and a migrated boot converge; IF NOT EXISTS keeps every boot idempotent.
+    // The tenant alert-recipient list is added here because the pre-migration
+    // grep found only per-user alert_preferences, no tenant-level defaults.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        channel TEXT NOT NULL CHECK (channel IN ('email', 'in_app')),
+        kind TEXT NOT NULL CHECK (kind IN ('alert', 'receipt', 'welcome', 'invite', 'digest')),
+        recipient_email TEXT,
+        subject TEXT,
+        body_text TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'sent', 'failed', 'skipped')),
+        error TEXT,
+        read_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        sent_at TIMESTAMPTZ
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_notifications_tenant_created ON notifications (tenant_id, created_at DESC);"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_notifications_tenant_user ON notifications (tenant_id, user_id, created_at DESC);"
+    );
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tenant_alert_recipients (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        email TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await pool.query(
+      "CREATE UNIQUE INDEX IF NOT EXISTS tenant_alert_recipients_tenant_email ON tenant_alert_recipients (tenant_id, LOWER(email));"
     );
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).
