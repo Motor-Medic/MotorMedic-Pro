@@ -8959,7 +8959,15 @@ function memoryGoodCatchWithLineage(row: any): GoodCatchRow {
 // Helper to generate a unique sequential ID for memory fallback
 let nextId = 100;
 function getNextId() {
-  return nextId++;
+  while (true) {
+    const id = nextId++;
+    const inUse =
+      memoryPlants.some((item) => item.id === id) ||
+      memoryRoutes.some((item) => item.id === id) ||
+      memoryAssets.some((item) => item.id === id) ||
+      memoryComponents.some((item) => item.id === id);
+    if (!inUse) return id;
+  }
 }
 
 /**
@@ -15297,12 +15305,26 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       );
       return res.status(201).json({ ...result.rows[0], simpleMode });
     } else {
+      const nextTag = tag_number ? tag_number.trim() : null;
+      const tenantId = requestTenantId(req);
+      if (
+        nextTag &&
+        memoryAssets.some(
+          (asset) =>
+            asset.company_id === tenantId && asset.tag_number === nextTag
+        )
+      ) {
+        return res.status(409).json({
+          error: "duplicate_tag",
+          message: "An asset with this tag already exists in this company."
+        });
+      }
       const newAsset = {
         id: getNextId(),
         route_id: rId,
-        company_id: requestTenantId(req),
+        company_id: tenantId,
         name: name.trim(),
-        tag_number: tag_number ? tag_number.trim() : null,
+        tag_number: nextTag,
         type: type ? type.trim() : null,
         manufacturer: manufacturer ? manufacturer.trim() : null,
         model: model ? model.trim() : null,
@@ -15317,6 +15339,12 @@ app.post(["/api/assets", "/api/equipment"], async (req, res) => {
       return res.status(201).json(newAsset);
     }
   } catch (error: any) {
+    if (error?.code === "23505" && error?.constraint === "assets_company_tag_number_key") {
+      return res.status(409).json({
+        error: "duplicate_tag",
+        message: "An asset with this tag already exists in this company."
+      });
+    }
     console.error("POST create asset failed:", error);
     return res.status(500).json({ error: error.message || "Failed to create equipment" });
   }
@@ -15345,6 +15373,22 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
     }
 
     if (pool) {
+      const tenantId = requestTenantId(req) ?? -1;
+      const nextTag = tag_number ? tag_number.trim() : null;
+      if (nextTag) {
+        const duplicate = await pool.query(
+          `SELECT id FROM assets
+            WHERE company_id = $1 AND tag_number = $2 AND id != $3
+            LIMIT 1`,
+          [tenantId, nextTag, id]
+        );
+        if (duplicate.rows.length > 0) {
+          return res.status(409).json({
+            error: "duplicate_tag",
+            message: "An asset with this tag already exists in this company."
+          });
+        }
+      }
       const result = await pool.query(
         `UPDATE assets a SET
          name = $1, tag_number = $2, type = $3, manufacturer = $4, model = $5, serial_number = $6, install_date = $7, criticality = $8, status = $9, description = $10
@@ -15353,7 +15397,7 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
          WHERE a.id = $11 AND a.route_id = r.id AND pl.company_id = $12 RETURNING a.*`,
         [
           name.trim(),
-          tag_number ? tag_number.trim() : null,
+          nextTag,
           type ? type.trim() : null,
           manufacturer ? manufacturer.trim() : null,
           model ? model.trim() : null,
@@ -15363,18 +15407,34 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
           status || 'Active',
           description ? description.trim() : null,
           id,
-          requestTenantId(req) ?? -1
+          tenantId
         ]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: "Equipment not found" });
       return res.json(result.rows[0]);
     } else {
+      const tenantId = requestTenantId(req);
+      const nextTag = tag_number ? tag_number.trim() : null;
       const asset = memoryAssets.find(
-        e => e.id === id && memoryTenantAssetIds(requestTenantId(req)).includes(e.id)
+        e => e.id === id && memoryTenantAssetIds(tenantId).includes(e.id)
       );
       if (!asset) return res.status(404).json({ error: "Equipment not found" });
+      if (
+        nextTag &&
+        memoryAssets.some(
+          (other) =>
+            other.id !== id &&
+            other.company_id === tenantId &&
+            other.tag_number === nextTag
+        )
+      ) {
+        return res.status(409).json({
+          error: "duplicate_tag",
+          message: "An asset with this tag already exists in this company."
+        });
+      }
       asset.name = name.trim();
-      asset.tag_number = tag_number ? tag_number.trim() : null;
+      asset.tag_number = nextTag;
       asset.type = type ? type.trim() : null;
       asset.manufacturer = manufacturer ? manufacturer.trim() : null;
       asset.model = model ? model.trim() : null;
@@ -15386,6 +15446,12 @@ app.put(["/api/assets/:id", "/api/equipment/:id", "/api/equipments/:id"], async 
       return res.json(asset);
     }
   } catch (error: any) {
+    if (error?.code === "23505" && error?.constraint === "assets_company_tag_number_key") {
+      return res.status(409).json({
+        error: "duplicate_tag",
+        message: "An asset with this tag already exists in this company."
+      });
+    }
     console.error("PUT update asset failed:", error);
     return res.status(500).json({ error: error.message || "Failed to update equipment" });
   }

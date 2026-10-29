@@ -611,6 +611,155 @@ describe("SLICE-B - tag-keyed idempotent upsert", () => {
   });
 });
 
+describe("SLICE-C - manual asset tag collisions map to 409", () => {
+  async function postAsset(tenant: Tenant, body: Record<string, unknown>) {
+    return callApi("POST", "/api/assets", { cookie: tenant.cookie, body });
+  }
+
+  async function putAsset(
+    tenant: Tenant,
+    id: number,
+    body: Record<string, unknown>
+  ) {
+    return callApi("PUT", `/api/assets/${id}`, { cookie: tenant.cookie, body });
+  }
+
+  const duplicate = {
+    error: "duplicate_tag",
+    message: "An asset with this tag already exists in this company."
+  };
+
+  it("POST duplicate tag in the same company returns 409 and persists no new row", async () => {
+    const tag = `MAN-DUP-${run}`;
+    const first = await postAsset(tenantA, {
+      name: `Manual duplicate first ${run}`,
+      tag_number: tag
+    });
+    expect(first.statusCode).toBe(201);
+
+    const before = await hierarchy(tenantA);
+    const second = await postAsset(tenantA, {
+      name: `Manual duplicate second ${run}`,
+      tag_number: tag
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.body).toEqual(duplicate);
+
+    const after = await hierarchy(tenantA);
+    expect(after.assets).toHaveLength(before.assets.length);
+    expect(after.assets.filter((a) => a.tag_number === tag)).toHaveLength(1);
+  });
+
+  it("POST the same tag in a different company succeeds", async () => {
+    const tag = `MAN-XT-${run}`;
+    const a = await postAsset(tenantA, { name: `Manual cross A ${run}`, tag_number: tag });
+    const b = await postAsset(tenantB, { name: `Manual cross B ${run}`, tag_number: tag });
+    expect(a.statusCode).toBe(201);
+    expect(b.statusCode).toBe(201);
+
+    const treeA = await hierarchy(tenantA);
+    const treeB = await hierarchy(tenantB);
+    expect(treeA.assets.filter((x) => x.tag_number === tag)).toHaveLength(1);
+    expect(treeB.assets.filter((x) => x.tag_number === tag)).toHaveLength(1);
+  });
+
+  it("POST untagged assets succeeds for every NULL row", async () => {
+    const firstName = `Manual untagged one ${run}`;
+    const secondName = `Manual untagged two ${run}`;
+    const first = await postAsset(tenantA, { name: firstName });
+    const second = await postAsset(tenantA, { name: secondName });
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+
+    const tree = await hierarchy(tenantA);
+    const untagged = tree.assets.filter(
+      (a) =>
+        (a.name === firstName || a.name === secondName) && a.tag_number == null
+    );
+    expect(untagged).toHaveLength(2);
+  });
+
+  it("PUT re-saving an asset with its unchanged tag returns 200", async () => {
+    const tag = `MAN-PUT-SAME-${run}`;
+    const name = `Manual unchanged ${run}`;
+    const created = await postAsset(tenantA, { name, tag_number: tag });
+    expect(created.statusCode).toBe(201);
+
+    const updated = await putAsset(tenantA, created.body.id, {
+      name: `${name} v2`,
+      tag_number: tag
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.body.id).toBe(created.body.id);
+    expect(updated.body.tag_number).toBe(tag);
+    expect(updated.body.name).toBe(`${name} v2`);
+  });
+
+  it("PUT retagging onto another same-company asset's tag returns 409", async () => {
+    const tagA = `MAN-PUT-A-${run}`;
+    const tagB = `MAN-PUT-B-${run}`;
+    const first = await postAsset(tenantA, { name: `Manual put A ${run}`, tag_number: tagA });
+    const second = await postAsset(tenantA, { name: `Manual put B ${run}`, tag_number: tagB });
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(201);
+
+    const conflict = await putAsset(tenantA, second.body.id, {
+      name: `Manual put B changed ${run}`,
+      tag_number: tagA
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.body).toEqual(duplicate);
+
+    const tree = await hierarchy(tenantA);
+    const row = tree.assets.find((a) => a.id === second.body.id);
+    expect(row?.tag_number).toBe(tagB);
+  });
+
+  it("PUT retagging onto another company's tag succeeds", async () => {
+    const tagA = `MAN-PUT-XA-${run}`;
+    const tagB = `MAN-PUT-XB-${run}`;
+    const a = await postAsset(tenantA, { name: `Manual retag A ${run}`, tag_number: tagA });
+    const b = await postAsset(tenantB, { name: `Manual retag B ${run}`, tag_number: tagB });
+    expect(a.statusCode).toBe(201);
+    expect(b.statusCode).toBe(201);
+
+    const retagged = await putAsset(tenantA, a.body.id, {
+      name: `Manual retag A v2 ${run}`,
+      tag_number: tagB
+    });
+    expect(retagged.statusCode).toBe(200);
+    expect(retagged.body.tag_number).toBe(tagB);
+
+    const treeB = await hierarchy(tenantB);
+    const untouched = treeB.assets.find((x) => x.id === b.body.id);
+    expect(untouched?.tag_number).toBe(tagB);
+  });
+});
+
+describe("SLICE-C - source contracts", () => {
+  const serverSource = readFileSync(
+    fileURLToPath(new URL("../../server.ts", import.meta.url)),
+    "utf8"
+  );
+
+  it("manual asset writes translate only the exact assets tag constraint", () => {
+    const start = serverSource.indexOf('app.post(["/api/assets", "/api/equipment"]');
+    const end = serverSource.indexOf("// GET planning_config", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = serverSource.slice(start, end);
+
+    const exactGuards =
+      body.match(
+        /error\?\.code === "23505" && error\?\.constraint === "assets_company_tag_number_key"/g
+      ) ?? [];
+    expect(exactGuards).toHaveLength(2);
+    expect(body).toContain(
+      "WHERE company_id = $1 AND tag_number = $2 AND id != $3"
+    );
+  });
+});
+
 describe("SLICE-B - source contracts", () => {
   const serverSource = readFileSync(
     fileURLToPath(new URL("../../server.ts", import.meta.url)),
