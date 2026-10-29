@@ -81,12 +81,19 @@ interface ApiErrorBody {
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     credentials: "same-origin",
+    cache: "no-store",
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) }
   });
+  if (res.status === 304) {
+    return null as unknown as T;
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as ApiErrorBody;
     throw new Error(body.error || body.message || `Request failed (${res.status})`);
+  }
+  if (res.status === 204 || res.headers?.get?.("content-length") === "0") {
+    return null as unknown as T;
   }
   return (await res.json()) as T;
 }

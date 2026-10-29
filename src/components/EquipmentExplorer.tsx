@@ -1897,7 +1897,8 @@ export default function EquipmentExplorer({
       return refreshed.plants.find((p) => p.id === SITE_PLANT_ID)?.serverId ?? null;
     } catch (err) {
       console.error("Equipment hierarchy re-sync failed:", err);
-      return null;
+      if (err instanceof TypeError) return null;
+      throw err;
     }
   }, [serverPlantId]);
   const systemRoute = store.routes.find((r) => r.isSystem === true);
