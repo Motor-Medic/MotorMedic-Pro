@@ -8562,6 +8562,9 @@ let memoryCollectionPoints: any[] = [
   { id: 4, component_id: 5, name: "Motor NDE Housing", location_order: 1, notes: "Motor non-drive end location.", created_at: new Date() }
 ];
 
+// SLICE-A - import batch ledger (memory fallback mirror of migrations/028).
+let memoryImports: any[] = [];
+
 let memoryMeasurementPoints: any[] = [
   // Auto-created points for collection_point_id: 1
   { id: 1, collection_point_id: 1, direction: "Horizontal", technology_type: "Vibration", units: "in/Sec", created_at: new Date() },
@@ -14626,8 +14629,8 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
     }
 
     let successCount = 0;
-    let skippedCount = 0;
     const warnings: string[] = [];
+    let importId: number | null = null;
 
     // Helper to get next ID for memory lists
     const getNextMemoryId = (list: any[]) => {
@@ -14635,223 +14638,485 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
       return ids.length > 0 ? Math.max(...ids) + 1 : 1;
     };
 
-    for (let i = 0; i < assets.length; i++) {
-      const row = assets[i];
-      const { plantName, routeName, assetTag, assetName, assetType, componentName } = row;
+    const rowFailure = (index: number, row: any, reason: string): Error => {
+      const identifier = row?.assetTag
+        ? String(row.assetTag)
+        : row?.assetName
+        ? String(row.assetName)
+        : `row ${index + 1}`;
+      const err: any = new Error(`Row ${index + 1} (${identifier}): ${reason}`);
+      err.failingRow = { index: index + 1, identifier, reason };
+      return err;
+    };
 
-      // Basic validation
-      if (!plantName || !routeName || !assetName || !assetType) {
-        skippedCount++;
-        warnings.push(`Row ${i + 1}: Skipped due to missing required fields (Plant, Route, Asset Name, or Asset Type).`);
-        continue;
+    const componentNamesFor = (assetType: string, componentName?: string): string[] => {
+      const finalCompName = componentName ? String(componentName).trim() : "";
+      if (finalCompName) return [finalCompName];
+      const typeLower = assetType.toLowerCase().trim();
+      if (typeLower.includes("motor") || typeLower.includes("pump") || typeLower.includes("fan") || typeLower.includes("blower")) {
+        return ["Drive End Bearing", "Non-Drive End Bearing"];
       }
+      if (typeLower.includes("gearbox") || typeLower.includes("reducer")) {
+        return ["Input Shaft Bearing", "Intermediate Shaft", "Output Shaft Bearing"];
+      }
+      if (typeLower.includes("compressor")) {
+        return ["Cylinder A Valves", "Cylinder B Valves", "Crankshaft Bearing"];
+      }
+      return ["Primary Drive Bearing", "Secondary Support Bearing"];
+    };
 
+    if (pool) {
+      // --- Database Mode: one pinned client, one transaction for the batch ---
+      const client = await pool.connect();
       try {
-        let plantId: number;
-        let routeId: number;
-        let assetId: number;
+        await client.query("BEGIN");
+        const importInsert = await client.query(
+          "INSERT INTO imports (tenant_id, kind, status) VALUES ($1, $2, 'pending') RETURNING id",
+          [finalCompanyId, "hierarchy_bulk_import"]
+        );
+        importId = Number(importInsert.rows[0].id);
 
-        if (pool) {
-          // --- Database Mode ---
-          
-          // Force single location per company
-          const companyRes = await pool.query("SELECT name FROM companies WHERE id = $1 LIMIT 1", [finalCompanyId]);
-          const companyName = companyRes.rows[0]?.name || "Acme Corp";
-          
-          const plantCheck = await pool.query(
-            "SELECT id FROM plants WHERE company_id = $1 LIMIT 1",
-            [finalCompanyId]
-          );
-          if (plantCheck.rows.length > 0) {
-            plantId = plantCheck.rows[0].id;
-          } else {
-            const plantInsert = await pool.query(
-              "INSERT INTO plants (company_id, name, location) VALUES ($1, $2, $3) RETURNING id",
-              [finalCompanyId, `${companyName} - Main Location`, "Default Location"]
-            );
-            plantId = plantInsert.rows[0].id;
+        const companyRes = await client.query(
+          "SELECT name FROM companies WHERE id = $1 LIMIT 1",
+          [finalCompanyId]
+        );
+        const companyName = companyRes.rows[0]?.name || "Acme Corp";
+
+        for (let i = 0; i < assets.length; i++) {
+          const row = assets[i] || {};
+          const { plantName, routeName, assetTag, assetName, assetType, componentName } = row;
+
+          if (!plantName || !routeName || !assetName || !assetType) {
+            throw rowFailure(i, row, "Missing required fields (plantName, routeName, assetName, assetType).");
           }
 
-          // 2. Find or Create Route
-          const routeCheck = await pool.query(
-            "SELECT id FROM routes WHERE LOWER(name) = LOWER($1) AND plant_id = $2 LIMIT 1",
-            [routeName.trim(), plantId]
-          );
-          if (routeCheck.rows.length > 0) {
-            routeId = routeCheck.rows[0].id;
-          } else {
-            const routeInsert = await pool.query(
-              "INSERT INTO routes (plant_id, name, description) VALUES ($1, $2, $3) RETURNING id",
-              [plantId, routeName.trim(), `Auto-created route for ${routeName.trim()}`]
+          try {
+            let plantId: number;
+            let routeId: number;
+            let assetId: number;
+
+            const plantCheck = await client.query(
+              "SELECT id FROM plants WHERE company_id = $1 LIMIT 1",
+              [finalCompanyId]
             );
-            routeId = routeInsert.rows[0].id;
-          }
-
-          // 3. Find or Create Asset
-          const assetCheck = await pool.query(
-            "SELECT id FROM assets WHERE LOWER(name) = LOWER($1) AND route_id = $2 LIMIT 1",
-            [assetName.trim(), routeId]
-          );
-          if (assetCheck.rows.length > 0) {
-            assetId = assetCheck.rows[0].id;
-          } else {
-            const assetInsert = await pool.query(
-              `INSERT INTO assets
-               (route_id, company_id, name, tag_number, type, status, criticality, description)
-               VALUES ($1, $2, $3, $4, $5, 'Active', 'Medium', $6)
-               RETURNING id`,
-              [routeId, finalCompanyId, assetName.trim(), assetTag ? assetTag.trim() : null, assetType.trim(), `Auto-imported ${assetType.trim()}`]
-            );
-            assetId = assetInsert.rows[0].id;
-          }
-
-          // 4. Create Components
-          const finalCompName = componentName ? componentName.trim() : "";
-          const componentsToCreate: string[] = [];
-
-          if (finalCompName) {
-            componentsToCreate.push(finalCompName);
-          } else {
-            // Auto-generate default components based on asset type
-            const typeLower = assetType.toLowerCase().trim();
-            if (typeLower.includes("motor") || typeLower.includes("pump") || typeLower.includes("fan") || typeLower.includes("blower")) {
-              componentsToCreate.push("Drive End Bearing", "Non-Drive End Bearing");
-            } else if (typeLower.includes("gearbox") || typeLower.includes("reducer")) {
-              componentsToCreate.push("Input Shaft Bearing", "Intermediate Shaft", "Output Shaft Bearing");
-            } else if (typeLower.includes("compressor")) {
-              componentsToCreate.push("Cylinder A Valves", "Cylinder B Valves", "Crankshaft Bearing");
+            if (plantCheck.rows.length > 0) {
+              plantId = plantCheck.rows[0].id;
             } else {
-              componentsToCreate.push("Primary Drive Bearing", "Secondary Support Bearing");
-            }
-          }
-
-          for (const compName of componentsToCreate) {
-            // Find or Create Component
-            const compCheck = await pool.query(
-              "SELECT id FROM components WHERE LOWER(name) = LOWER($1) AND asset_id = $2 LIMIT 1",
-              [compName, assetId]
-            );
-            if (compCheck.rows.length === 0) {
-              await pool.query(
-                "INSERT INTO components (asset_id, name, type) VALUES ($1, $2, $3)",
-                [assetId, compName, "Bearing"]
+              const plantInsert = await client.query(
+                "INSERT INTO plants (company_id, name, location, import_id) VALUES ($1, $2, $3, $4) RETURNING id",
+                [finalCompanyId, `${companyName} - Main Location`, "Default Location", importId]
               );
+              plantId = plantInsert.rows[0].id;
             }
-          }
 
-          successCount++;
-
-        } else {
-          // --- In-Memory Fallback Mode ---
-
-          // 1. Find or Create Plant (single location)
-          let plant = memoryPlants.find(p => p.company_id === finalCompanyId);
-          if (!plant) {
-            const company = memoryCompanies.find(c => c.id === finalCompanyId);
-            const compName = company ? company.name : "Acme Corp";
-            plant = {
-              id: getNextMemoryId(memoryPlants),
-              company_id: finalCompanyId,
-              name: `${compName} - Main Location`,
-              location: "Default Location"
-            };
-            memoryPlants.push(plant);
-          }
-          plantId = plant.id;
-
-          // 2. Find or Create Route
-          let route = memoryRoutes.find(r => r.name.toLowerCase() === routeName.toLowerCase().trim() && r.plant_id === plantId);
-          if (!route) {
-            route = {
-              id: getNextMemoryId(memoryRoutes),
-              plant_id: plantId,
-              name: routeName.trim(),
-              description: `Auto-created route for ${routeName.trim()}`
-            };
-            memoryRoutes.push(route);
-          }
-          routeId = route.id;
-
-          // 3. Find or Create Asset
-          let asset = memoryAssets.find(a => a.name.toLowerCase() === assetName.toLowerCase().trim() && a.route_id === routeId);
-          if (!asset) {
-            asset = {
-              id: getNextMemoryId(memoryAssets),
-              route_id: routeId,
-              company_id: finalCompanyId,
-              name: assetName.trim(),
-              tag_number: assetTag ? assetTag.trim() : null,
-              type: assetType.trim(),
-              status: "Active",
-              criticality: "Medium",
-              description: `Auto-imported ${assetType.trim()}`
-            };
-            memoryAssets.push(asset);
-          }
-          assetId = asset.id;
-
-          // 4. Create Components
-          const finalCompName = componentName ? componentName.trim() : "";
-          const componentsToCreate: string[] = [];
-
-          if (finalCompName) {
-            componentsToCreate.push(finalCompName);
-          } else {
-            const typeLower = assetType.toLowerCase().trim();
-            if (typeLower.includes("motor") || typeLower.includes("pump") || typeLower.includes("fan") || typeLower.includes("blower")) {
-              componentsToCreate.push("Drive End Bearing", "Non-Drive End Bearing");
-            } else if (typeLower.includes("gearbox") || typeLower.includes("reducer")) {
-              componentsToCreate.push("Input Shaft Bearing", "Intermediate Shaft", "Output Shaft Bearing");
-            } else if (typeLower.includes("compressor")) {
-              componentsToCreate.push("Cylinder A Valves", "Cylinder B Valves", "Crankshaft Bearing");
+            const routeCheck = await client.query(
+              "SELECT id FROM routes WHERE LOWER(name) = LOWER($1) AND plant_id = $2 LIMIT 1",
+              [String(routeName).trim(), plantId]
+            );
+            if (routeCheck.rows.length > 0) {
+              routeId = routeCheck.rows[0].id;
             } else {
-              componentsToCreate.push("Primary Drive Bearing", "Secondary Support Bearing");
+              const routeInsert = await client.query(
+                "INSERT INTO routes (plant_id, name, description, import_id) VALUES ($1, $2, $3, $4) RETURNING id",
+                [plantId, String(routeName).trim(), `Auto-created route for ${String(routeName).trim()}`, importId]
+              );
+              routeId = routeInsert.rows[0].id;
             }
-          }
 
-          for (const compName of componentsToCreate) {
-            // Find or Create Component in memory
-            const compExists = memoryComponents.some(c => c.name.toLowerCase() === compName.toLowerCase() && (c.asset_id === assetId || c.equipment_id === assetId));
-            if (!compExists) {
-              memoryComponents.push({
-                id: getNextMemoryId(memoryComponents),
-                asset_id: assetId,
-                equipment_id: assetId,
-                name: compName,
-                type: "Bearing",
-                created_at: new Date()
-              });
+            const assetCheck = await client.query(
+              "SELECT id FROM assets WHERE LOWER(name) = LOWER($1) AND route_id = $2 LIMIT 1",
+              [String(assetName).trim(), routeId]
+            );
+            if (assetCheck.rows.length > 0) {
+              assetId = assetCheck.rows[0].id;
+            } else {
+              const assetInsert = await client.query(
+                `INSERT INTO assets
+                 (route_id, company_id, name, tag_number, type, status, criticality, description, import_id)
+                 VALUES ($1, $2, $3, $4, $5, 'Active', 'Medium', $6, $7)
+                 RETURNING id`,
+                [routeId, finalCompanyId, String(assetName).trim(), assetTag ? String(assetTag).trim() : null, String(assetType).trim(), `Auto-imported ${String(assetType).trim()}`, importId]
+              );
+              assetId = assetInsert.rows[0].id;
             }
-          }
 
-          successCount++;
+            for (const compName of componentNamesFor(String(assetType), componentName)) {
+              const compCheck = await client.query(
+                "SELECT id FROM components WHERE LOWER(name) = LOWER($1) AND asset_id = $2 LIMIT 1",
+                [compName, assetId]
+              );
+              if (compCheck.rows.length === 0) {
+                await client.query(
+                  "INSERT INTO components (asset_id, name, type, import_id) VALUES ($1, $2, $3, $4)",
+                  [assetId, compName, "Bearing", importId]
+                );
+              }
+            }
+
+            successCount++;
+          } catch (err: any) {
+            if (err?.failingRow) throw err;
+            throw rowFailure(i, row, err?.message || "Unknown schema constraint.");
+          }
         }
 
-      } catch (err: any) {
-        console.error(`Error processing row ${i + 1}:`, err);
-        skippedCount++;
-        warnings.push(`Row ${i + 1} (${assetName}): Processing error: ${err.message || "Unknown schema constraint."}`);
+        await client.query(
+          "UPDATE imports SET status = 'completed', completed_at = NOW() WHERE id = $1 AND tenant_id = $2",
+          [importId, finalCompanyId]
+        );
+        await client.query("COMMIT");
+      } catch (err) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackErr) {
+          console.error("[bulk-import] ROLLBACK failed:", rollbackErr);
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      // --- In-Memory Fallback Mode: snapshot, then restore on any failure ---
+      const beforePlants = memoryPlants.slice();
+      const beforeRoutes = memoryRoutes.slice();
+      const beforeEquipment = memoryEquipment.slice();
+      const beforeComponents = memoryComponents.slice();
+      const beforeCollectionPoints = memoryCollectionPoints.slice();
+      const beforeMeasurementPoints = memoryMeasurementPoints.slice();
+      const beforeImports = memoryImports.slice();
+
+      try {
+        importId = getNextMemoryId(memoryImports);
+        memoryImports.push({
+          id: importId,
+          tenant_id: finalCompanyId,
+          kind: "hierarchy_bulk_import",
+          created_at: new Date(),
+          completed_at: null,
+          status: "pending"
+        });
+
+        for (let i = 0; i < assets.length; i++) {
+          const row = assets[i] || {};
+          const { plantName, routeName, assetTag, assetName, assetType, componentName } = row;
+
+          if (!plantName || !routeName || !assetName || !assetType) {
+            throw rowFailure(i, row, "Missing required fields (plantName, routeName, assetName, assetType).");
+          }
+
+          try {
+            let plantId: number;
+            let routeId: number;
+            let assetId: number;
+
+            let plant = memoryPlants.find(p => p.company_id === finalCompanyId);
+            if (!plant) {
+              const company = memoryCompanies.find(c => c.id === finalCompanyId);
+              const compName = company ? company.name : "Acme Corp";
+              plant = {
+                id: getNextMemoryId(memoryPlants),
+                company_id: finalCompanyId,
+                name: `${compName} - Main Location`,
+                location: "Default Location",
+                import_id: importId
+              };
+              memoryPlants.push(plant);
+            }
+            plantId = plant.id;
+
+            let route = memoryRoutes.find(r => r.name.toLowerCase() === String(routeName).toLowerCase().trim() && r.plant_id === plantId);
+            if (!route) {
+              route = {
+                id: getNextMemoryId(memoryRoutes),
+                plant_id: plantId,
+                name: String(routeName).trim(),
+                description: `Auto-created route for ${String(routeName).trim()}`,
+                import_id: importId
+              };
+              memoryRoutes.push(route);
+            }
+            routeId = route.id;
+
+            let asset = memoryAssets.find(a => a.name.toLowerCase() === String(assetName).toLowerCase().trim() && a.route_id === routeId);
+            if (!asset) {
+              asset = {
+                id: getNextMemoryId(memoryAssets),
+                route_id: routeId,
+                company_id: finalCompanyId,
+                name: String(assetName).trim(),
+                tag_number: assetTag ? String(assetTag).trim() : null,
+                type: String(assetType).trim(),
+                status: "Active",
+                criticality: "Medium",
+                description: `Auto-imported ${String(assetType).trim()}`,
+                import_id: importId
+              };
+              memoryAssets.push(asset);
+            }
+            assetId = asset.id;
+
+            for (const compName of componentNamesFor(String(assetType), componentName)) {
+              const compExists = memoryComponents.some(c => c.name.toLowerCase() === compName.toLowerCase() && (c.asset_id === assetId || c.equipment_id === assetId));
+              if (!compExists) {
+                memoryComponents.push({
+                  id: getNextMemoryId(memoryComponents),
+                  asset_id: assetId,
+                  equipment_id: assetId,
+                  name: compName,
+                  type: "Bearing",
+                  import_id: importId,
+                  created_at: new Date()
+                });
+              }
+            }
+
+            successCount++;
+          } catch (err: any) {
+            if (err?.failingRow) throw err;
+            throw rowFailure(i, row, err?.message || "Unknown schema constraint.");
+          }
+        }
+
+        const completedImport = memoryImports.find(item => item.id === importId);
+        if (completedImport) {
+          completedImport.status = "completed";
+          completedImport.completed_at = new Date();
+        }
+      } catch (err) {
+        memoryPlants = beforePlants;
+        memoryRoutes = beforeRoutes;
+        memoryEquipment = beforeEquipment;
+        memoryAssets = memoryEquipment;
+        memoryComponents = beforeComponents;
+        memoryCollectionPoints = beforeCollectionPoints;
+        memoryMeasurementPoints = beforeMeasurementPoints;
+        memoryImports = beforeImports;
+        throw err;
       }
     }
 
     res.json({
       success: true,
-      message: `Bulk import processed. Registered ${successCount} equipment/assets successfully.`,
+      import_id: importId,
+      message: `Bulk import committed ${successCount} equipment/assets atomically.`,
       total: assets.length,
       successCount: successCount,
-      skipped: skippedCount,
+      skipped: 0,
       warnings
     });
 
   } catch (error: any) {
     console.error("🔥 Bulk import failed at outer handler:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message || "Bulk import transaction aborted.",
-      message: error.message || "Bulk import transaction aborted." 
+    const failingRow = error?.failingRow;
+    const message = error?.message || "Bulk import transaction aborted.";
+    return res.status(failingRow ? 400 : 500).json({
+      success: false,
+      error: message,
+      message,
+      ...(failingRow ? { failingRow } : {})
     });
   }
 });
+
+// DELETE /api/imports/:id - discard exactly one import batch. Tenant comes
+// from the verified session only; a cross-tenant id is a 404 no-op. Rows whose
+// import_id is NULL are never selected. This is the single reversible undo for
+// a bad promotion - never a database-wide wipe.
+const discardImportBatch = async (req: any, res: any) => {
+  try {
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required." });
+    }
+    const importId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(importId) || importId <= 0) {
+      return res.status(400).json({ error: "Invalid import id." });
+    }
+
+    const deleted = {
+      measurement_points: 0,
+      collection_points: 0,
+      components: 0,
+      assets: 0,
+      routes: 0,
+      plants: 0
+    };
+
+    if (pool) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const found = await client.query(
+          "SELECT id FROM imports WHERE id = $1 AND tenant_id = $2 LIMIT 1",
+          [importId, tenantId]
+        );
+        if (!found.rows.length) {
+          await client.query("ROLLBACK");
+          return res.status(404).json({ error: "Import not found." });
+        }
+
+        const mp = await client.query(
+          `DELETE FROM measurement_points mp
+            USING collection_points cp, components c, assets a, routes r, plants pl
+            WHERE mp.import_id = $1
+              AND mp.collection_point_id = cp.id
+              AND cp.component_id = c.id
+              AND c.asset_id = a.id
+              AND a.route_id = r.id
+              AND r.plant_id = pl.id
+              AND pl.company_id = $2`,
+          [importId, tenantId]
+        );
+        deleted.measurement_points = mp.rowCount ?? 0;
+
+        const cp = await client.query(
+          `DELETE FROM collection_points cp
+            USING components c, assets a, routes r, plants pl
+            WHERE cp.import_id = $1
+              AND cp.component_id = c.id
+              AND c.asset_id = a.id
+              AND a.route_id = r.id
+              AND r.plant_id = pl.id
+              AND pl.company_id = $2`,
+          [importId, tenantId]
+        );
+        deleted.collection_points = cp.rowCount ?? 0;
+
+        const comp = await client.query(
+          `DELETE FROM components c
+            USING assets a, routes r, plants pl
+            WHERE c.import_id = $1
+              AND c.asset_id = a.id
+              AND a.route_id = r.id
+              AND r.plant_id = pl.id
+              AND pl.company_id = $2`,
+          [importId, tenantId]
+        );
+        deleted.components = comp.rowCount ?? 0;
+
+        const asset = await client.query(
+          `DELETE FROM assets a
+            USING routes r, plants pl
+            WHERE a.import_id = $1
+              AND a.route_id = r.id
+              AND r.plant_id = pl.id
+              AND pl.company_id = $2`,
+          [importId, tenantId]
+        );
+        deleted.assets = asset.rowCount ?? 0;
+
+        const route = await client.query(
+          `DELETE FROM routes r
+            USING plants pl
+            WHERE r.import_id = $1
+              AND r.plant_id = pl.id
+              AND pl.company_id = $2`,
+          [importId, tenantId]
+        );
+        deleted.routes = route.rowCount ?? 0;
+
+        const plant = await client.query(
+          "DELETE FROM plants WHERE import_id = $1 AND company_id = $2",
+          [importId, tenantId]
+        );
+        deleted.plants = plant.rowCount ?? 0;
+
+        await client.query(
+          "UPDATE imports SET status = 'discarded', completed_at = NOW() WHERE id = $1 AND tenant_id = $2",
+          [importId, tenantId]
+        );
+        await client.query("COMMIT");
+      } catch (err) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackErr) {
+          console.error("[imports] discard ROLLBACK failed:", rollbackErr);
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+    } else {
+      const importRecord = memoryImports.find(
+        (item) => Number(item.id) === importId && Number(item.tenant_id) === tenantId
+      );
+      if (!importRecord) {
+        return res.status(404).json({ error: "Import not found." });
+      }
+
+      const tenantMeasurementPointIds = new Set(memoryTenantMeasurementPointIds(tenantId));
+      const tenantCollectionPointIds = new Set(memoryTenantCollectionPointIds(tenantId));
+      const tenantComponentIds = new Set(memoryTenantComponentIds(tenantId));
+      const tenantAssetIds = new Set(memoryTenantAssetIds(tenantId));
+      const tenantRouteIds = new Set(memoryTenantRouteIds(tenantId));
+      const tenantPlantIds = new Set(memoryTenantPlantIds(tenantId));
+
+      const mpIds = new Set(
+        memoryMeasurementPoints
+          .filter((mp) => mp.import_id === importId && tenantMeasurementPointIds.has(mp.id))
+          .map((mp) => mp.id)
+      );
+      const cpIds = new Set(
+        memoryCollectionPoints
+          .filter((cp) => cp.import_id === importId && tenantCollectionPointIds.has(cp.id))
+          .map((cp) => cp.id)
+      );
+      const compIds = new Set(
+        memoryComponents
+          .filter((c) => c.import_id === importId && tenantComponentIds.has(c.id))
+          .map((c) => c.id)
+      );
+      const assetIds = new Set(
+        memoryAssets
+          .filter((a) => a.import_id === importId && tenantAssetIds.has(a.id))
+          .map((a) => a.id)
+      );
+      const routeIds = new Set(
+        memoryRoutes
+          .filter((r) => r.import_id === importId && tenantRouteIds.has(r.id))
+          .map((r) => r.id)
+      );
+      const plantIds = new Set(
+        memoryPlants
+          .filter((p) => p.import_id === importId && tenantPlantIds.has(p.id))
+          .map((p) => p.id)
+      );
+
+      deleted.measurement_points = mpIds.size;
+      deleted.collection_points = cpIds.size;
+      deleted.components = compIds.size;
+      deleted.assets = assetIds.size;
+      deleted.routes = routeIds.size;
+      deleted.plants = plantIds.size;
+
+      memoryMeasurementPoints = memoryMeasurementPoints.filter((mp) => !mpIds.has(mp.id));
+      memoryCollectionPoints = memoryCollectionPoints.filter((cp) => !cpIds.has(cp.id));
+      memoryComponents = memoryComponents.filter((c) => !compIds.has(c.id));
+      memoryEquipment = memoryEquipment.filter((a) => !assetIds.has(a.id));
+      memoryAssets = memoryEquipment;
+      memoryRoutes = memoryRoutes.filter((r) => !routeIds.has(r.id));
+      memoryPlants = memoryPlants.filter((p) => !plantIds.has(p.id));
+
+      importRecord.status = "discarded";
+      importRecord.completed_at = new Date();
+    }
+
+    return res.json({
+      success: true,
+      import_id: importId,
+      deleted
+    });
+  } catch (error: any) {
+    console.error("[imports] discard failed:", error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || "Failed to discard the import."
+    });
+  }
+};
+
+app.delete(["/api/imports/:id", "/api/imports/:id/discard"], discardImportBatch);
+app.post(["/api/imports/:id/discard", "/api/imports/:id"], discardImportBatch);
 
 // POST create asset/equipment
 app.post(["/api/assets", "/api/equipment"], async (req, res) => {
@@ -17950,6 +18215,40 @@ async function initializeDatabase() {
     await pool.query(
       "CREATE INDEX IF NOT EXISTS idx_auth_invites_company_status ON auth_invites (company_id, status, created_at DESC);"
     );
+    // migrations/028 - SLICE-A. Same DDL as the file so a fresh boot and a
+    // migrated boot converge (DEP-1). Existing hierarchy rows keep NULL
+    // import_id; only rows written by one batch share the same import_id.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS imports (
+        id SERIAL PRIMARY KEY,
+        tenant_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'hierarchy_bulk_import',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'completed', 'failed', 'discarded'))
+      );
+    `);
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS idx_imports_tenant_created ON imports (tenant_id, created_at DESC);"
+    );
+    for (const table of [
+      "plants",
+      "routes",
+      "assets",
+      "components",
+      "collection_points",
+      "measurement_points"
+    ]) {
+      await pool.query(
+        `ALTER TABLE ${table}
+           ADD COLUMN IF NOT EXISTS import_id INTEGER REFERENCES imports(id) ON DELETE SET NULL;`
+      );
+      await pool.query(
+        `CREATE INDEX IF NOT EXISTS idx_${table}_import_id
+           ON ${table} (import_id) WHERE import_id IS NOT NULL;`
+      );
+    }
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).
     await pool.query(`
