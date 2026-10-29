@@ -422,6 +422,229 @@ describe("SLICE-A - bulk import is atomic and honest", () => {
   });
 });
 
+describe("SLICE-B - tag-keyed idempotent upsert", () => {
+  async function bulkImport(tenant: Tenant, rows: Record<string, unknown>[]) {
+    return callApi("POST", "/api/assets/bulk-import", {
+      cookie: tenant.cookie,
+      body: { assets: rows }
+    });
+  }
+
+  it("re-uploading the SAME tagged payload updates in place and leaves row count unchanged", async () => {
+    const routeName = `Upsert Route ${run}`;
+    const tag = `UPS-${run}`;
+    const name = `Upsert Asset ${run}`;
+
+    const first = await bulkImport(tenantA, [
+      importRow(`${run}-UPS`, { routeName, assetTag: tag, assetName: name })
+    ]);
+    expect(first.body.success).toBe(true);
+
+    const before = await hierarchy(tenantA);
+    const beforeRows = before.assets.filter((a) => a.tag_number === tag);
+    expect(beforeRows).toHaveLength(1);
+    const assetId = beforeRows[0].id;
+
+    const second = await bulkImport(tenantA, [
+      importRow(`${run}-UPS`, {
+        routeName,
+        assetTag: tag,
+        assetName: `${name} v2`,
+        assetType: "Motor"
+      })
+    ]);
+    expect(second.body.success).toBe(true);
+
+    const after = await hierarchy(tenantA);
+    const afterRows = after.assets.filter((a) => a.tag_number === tag);
+    expect(afterRows).toHaveLength(1);
+    expect(afterRows[0].id).toBe(assetId);
+    expect(afterRows[0].name).toBe(`${name} v2`);
+    expect(afterRows[0].type).toBe("Motor");
+    expect(after.assets).toHaveLength(before.assets.length);
+  });
+
+  it("re-uploading with a CORRECTED tag updates the old row in place with no orphan", async () => {
+    const routeName = `Corrected Route ${run}`;
+    const name = `Corrected Asset ${run}`;
+    const oldTag = `COR-${run}-OLD`;
+    const newTag = `COR-${run}-NEW`;
+
+    const first = await bulkImport(tenantA, [
+      importRow(`${run}-COR`, { routeName, assetTag: oldTag, assetName: name })
+    ]);
+    expect(first.body.success).toBe(true);
+
+    const before = await hierarchy(tenantA);
+    const original = before.assets.find((a) => a.tag_number === oldTag);
+    expect(original).toBeTruthy();
+
+    const second = await bulkImport(tenantA, [
+      importRow(`${run}-COR`, { routeName, assetTag: newTag, assetName: name })
+    ]);
+    expect(second.body.success).toBe(true);
+
+    const after = await hierarchy(tenantA);
+    expect(after.assets.filter((a) => a.tag_number === oldTag)).toHaveLength(0);
+    const healed = after.assets.filter((a) => a.tag_number === newTag);
+    expect(healed).toHaveLength(1);
+    expect(healed[0].id).toBe(original.id);
+    expect(healed[0].name).toBe(name);
+    expect(after.assets).toHaveLength(before.assets.length);
+  });
+
+  it("untagged rows insert without colliding twice (NULL-exempt key)", async () => {
+    const routeName = `Untagged Route ${run}`;
+    const name = `Untagged Asset ${run}`;
+    const before = await hierarchy(tenantA);
+
+    const payload = [importRow(`${run}-NULL`, { routeName, assetTag: null, assetName: name })];
+    const first = await bulkImport(tenantA, payload);
+    const second = await bulkImport(tenantA, payload);
+    expect(first.body.success).toBe(true);
+    expect(second.body.success).toBe(true);
+
+    const after = await hierarchy(tenantA);
+    const rows = after.assets.filter((a) => a.name === name && a.tag_number == null);
+    expect(rows).toHaveLength(2);
+    expect(after.assets).toHaveLength(before.assets.length + 2);
+  });
+
+  it("a duplicate non-NULL tag in one payload is handled by the conflict clause", async () => {
+    const routeName = `Duplicate Route ${run}`;
+    const tag = `DUP-${run}`;
+    const before = await hierarchy(tenantA);
+
+    const res = await bulkImport(tenantA, [
+      importRow(`${run}-DUP-A`, { routeName, assetTag: tag, assetName: `Dup first ${run}` }),
+      importRow(`${run}-DUP-B`, { routeName, assetTag: tag, assetName: `Dup second ${run}` })
+    ]);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    const after = await hierarchy(tenantA);
+    const rows = after.assets.filter((a) => a.tag_number === tag);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe(`Dup second ${run}`);
+    expect(after.assets).toHaveLength(before.assets.length + 1);
+  });
+
+  it("cross-tenant rows with the same tag do NOT conflict", async () => {
+    const tag = `XT-${run}`;
+    const routeA = `Cross Tenant A ${run}`;
+    const routeB = `Cross Tenant B ${run}`;
+
+    const a = await bulkImport(tenantA, [
+      importRow(`${run}-XTA`, { routeName: routeA, assetTag: tag, assetName: `Tenant A ${run}` })
+    ]);
+    const b = await bulkImport(tenantB, [
+      importRow(`${run}-XTB`, { routeName: routeB, assetTag: tag, assetName: `Tenant B ${run}` })
+    ]);
+    expect(a.body.success).toBe(true);
+    expect(b.body.success).toBe(true);
+
+    const treeA = await hierarchy(tenantA);
+    const treeB = await hierarchy(tenantB);
+    const rowA = treeA.assets.filter((x) => x.tag_number === tag);
+    const rowB = treeB.assets.filter((x) => x.tag_number === tag);
+    expect(rowA).toHaveLength(1);
+    expect(rowB).toHaveLength(1);
+    expect(rowA[0].name).toBe(`Tenant A ${run}`);
+    expect(rowB[0].name).toBe(`Tenant B ${run}`);
+  });
+
+  it("mid-batch failure still rolls back an upserted existing row (A's atomicity preserved)", async () => {
+    const routeName = `Rollback Upsert Route ${run}`;
+    const tag = `RB-${run}`;
+    const name = `Rollback Asset ${run}`;
+
+    const first = await bulkImport(tenantA, [
+      importRow(`${run}-RB`, { routeName, assetTag: tag, assetName: name })
+    ]);
+    expect(first.body.success).toBe(true);
+    const originalImportId = first.body.import_id;
+
+    const before = await hierarchy(tenantA);
+    const original = before.assets.find((a) => a.tag_number === tag);
+    expect(original?.name).toBe(name);
+
+    const failed = await bulkImport(tenantA, [
+      importRow(`${run}-RB`, { routeName, assetTag: tag, assetName: `Mutated ${run}` }),
+      importRow(`${run}-RBBAD`, { routeName, assetType: "" })
+    ]);
+    expect(failed.statusCode).toBe(400);
+    expect(failed.body.success).toBe(false);
+    expect(failed.body.failingRow.index).toBe(2);
+
+    const after = await hierarchy(tenantA);
+    const rows = after.assets.filter((a) => a.tag_number === tag);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(original?.id);
+    expect(rows[0].name).toBe(name);
+    expect(rows[0].import_id).toBe(originalImportId);
+    expect(after.assets).toHaveLength(before.assets.length);
+  });
+
+  it("discard-by-import_id removes exactly the re-uploaded batch", async () => {
+    const routeName = `Discard Upsert Route ${run}`;
+    const tag = `DU-${run}`;
+    const name = `Discard Upsert Asset ${run}`;
+
+    const first = await bulkImport(tenantA, [
+      importRow(`${run}-DU`, { routeName, assetTag: tag, assetName: name })
+    ]);
+    const second = await bulkImport(tenantA, [
+      importRow(`${run}-DU`, { routeName, assetTag: tag, assetName: `${name} v2` })
+    ]);
+    expect(first.body.success).toBe(true);
+    expect(second.body.success).toBe(true);
+
+    const discarded = await callApi("DELETE", `/api/imports/${second.body.import_id}`, {
+      cookie: tenantA.cookie
+    });
+    expect(discarded.statusCode).toBe(200);
+    expect(discarded.body.deleted.assets).toBe(1);
+
+    const tree = await hierarchy(tenantA);
+    expect(tree.assets.filter((a) => a.tag_number === tag)).toHaveLength(0);
+  });
+});
+
+describe("SLICE-B - source contracts", () => {
+  const serverSource = readFileSync(
+    fileURLToPath(new URL("../../server.ts", import.meta.url)),
+    "utf8"
+  );
+  const migrationSource = readFileSync(
+    fileURLToPath(new URL("../../migrations/029_import_tag_unique.sql", import.meta.url)),
+    "utf8"
+  );
+
+  it("migration 029 uses a plain unique key because no soft-delete column exists", () => {
+    expect(migrationSource).toContain("ADD CONSTRAINT assets_company_tag_number_key");
+    expect(migrationSource).toContain("UNIQUE (company_id, tag_number)");
+    expect(migrationSource).toContain("NULL values as distinct");
+    expect(migrationSource).not.toContain("CREATE UNIQUE INDEX");
+    expect(migrationSource).not.toContain("WHERE tag_number IS NOT NULL;");
+    expect(migrationSource).not.toContain("deleted_at IS NULL");
+    expect(serverSource).toContain("// migrations/029 - SLICE-B");
+    expect(serverSource).toContain("ADD CONSTRAINT assets_company_tag_number_key");
+  });
+
+  it("bulk-import upsert keys on tenant+tag with DO UPDATE and stamps the batch id", () => {
+    const start = serverSource.indexOf('app.post(["/api/assets/bulk-import"');
+    const end = serverSource.indexOf("// DELETE /api/imports/:id", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = serverSource.slice(start, end);
+    expect(body).toContain("ON CONFLICT (company_id, tag_number) DO UPDATE");
+    expect(body).toContain("import_id = EXCLUDED.import_id");
+    expect(body).toContain("const assetTagTrimmed");
+    expect(body).toContain("if (assetTagTrimmed)");
+  });
+});
+
 describe("SLICE-A - source contracts and caller audit", () => {
   const serverSource = readFileSync(
     fileURLToPath(new URL("../../server.ts", import.meta.url)),

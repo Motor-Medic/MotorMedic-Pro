@@ -14723,19 +14723,58 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
               routeId = routeInsert.rows[0].id;
             }
 
-            const assetCheck = await client.query(
-              "SELECT id FROM assets WHERE LOWER(name) = LOWER($1) AND route_id = $2 LIMIT 1",
-              [String(assetName).trim(), routeId]
-            );
-            if (assetCheck.rows.length > 0) {
-              assetId = assetCheck.rows[0].id;
-            } else {
-              const assetInsert = await client.query(
+            const assetNameTrimmed = String(assetName).trim();
+            const assetTagTrimmed = assetTag ? String(assetTag).trim() : "";
+            if (assetTagTrimmed) {
+              // SLICE-B - corrected-tag heal. If the same logical asset
+              // (name + route) already exists under a different tag, retag
+              // that row first so the tag-keyed upsert updates it in place
+              // instead of inserting a second row and orphaning the old one.
+              await client.query(
+                `UPDATE assets
+                    SET tag_number = $1
+                  WHERE company_id = $2
+                    AND route_id = $3
+                    AND LOWER(name) = LOWER($4)
+                    AND (tag_number IS NULL OR tag_number <> $1)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM assets other
+                       WHERE other.company_id = $2
+                         AND other.tag_number = $1
+                         AND other.id <> assets.id
+                    )`,
+                [assetTagTrimmed, finalCompanyId, routeId, assetNameTrimmed]
+              );
+
+              // Tagged rows are idempotent on (company_id, tag_number). The
+              // tenant column is company_id; a re-upload heals in place and a
+              // route move updates route_id rather than duplicating the asset.
+              const assetUpsert = await client.query(
                 `INSERT INTO assets
                  (route_id, company_id, name, tag_number, type, status, criticality, description, import_id)
                  VALUES ($1, $2, $3, $4, $5, 'Active', 'Medium', $6, $7)
+                 ON CONFLICT (company_id, tag_number) DO UPDATE SET
+                   route_id = EXCLUDED.route_id,
+                   name = EXCLUDED.name,
+                   type = EXCLUDED.type,
+                   status = EXCLUDED.status,
+                   criticality = EXCLUDED.criticality,
+                   description = EXCLUDED.description,
+                   import_id = EXCLUDED.import_id
                  RETURNING id`,
-                [routeId, finalCompanyId, String(assetName).trim(), assetTag ? String(assetTag).trim() : null, String(assetType).trim(), `Auto-imported ${String(assetType).trim()}`, importId]
+                [routeId, finalCompanyId, assetNameTrimmed, assetTagTrimmed, String(assetType).trim(), `Auto-imported ${String(assetType).trim()}`, importId]
+              );
+              assetId = assetUpsert.rows[0].id;
+            } else {
+              // Untagged rows insert as-is. Documented limitation: there is no
+              // idempotency for them, but NULL tag_number values are distinct
+              // in the UNIQUE constraint so they can never collide.
+              const assetInsert = await client.query(
+                `INSERT INTO assets
+                 (route_id, company_id, name, tag_number, type, status, criticality, description, import_id)
+                 VALUES ($1, $2, $3, NULL, $4, 'Active', 'Medium', $5, $6)
+                 RETURNING id`,
+                [routeId, finalCompanyId, assetNameTrimmed, String(assetType).trim(), `Auto-imported ${String(assetType).trim()}`, importId]
               );
               assetId = assetInsert.rows[0].id;
             }
@@ -14779,7 +14818,10 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
       // --- In-Memory Fallback Mode: snapshot, then restore on any failure ---
       const beforePlants = memoryPlants.slice();
       const beforeRoutes = memoryRoutes.slice();
-      const beforeEquipment = memoryEquipment.slice();
+      // Clone asset objects: SLICE-B upserts mutate an existing row in place,
+      // so a shallow slice() would let a failed batch leak those mutations
+      // past the rollback.
+      const beforeEquipment = memoryEquipment.map((item) => ({ ...item }));
       const beforeComponents = memoryComponents.slice();
       const beforeCollectionPoints = memoryCollectionPoints.slice();
       const beforeMeasurementPoints = memoryMeasurementPoints.slice();
@@ -14837,14 +14879,41 @@ app.post(["/api/assets/bulk-import", "/api/bulk-import", "/api/assets/upload"], 
             }
             routeId = route.id;
 
-            let asset = memoryAssets.find(a => a.name.toLowerCase() === String(assetName).toLowerCase().trim() && a.route_id === routeId);
-            if (!asset) {
+            const assetNameTrimmed = String(assetName).trim();
+            const assetTagTrimmed = assetTag ? String(assetTag).trim() : "";
+            let asset = assetTagTrimmed
+              ? memoryAssets.find(
+                  (a) =>
+                    a.company_id === finalCompanyId &&
+                    a.tag_number === assetTagTrimmed
+                )
+              : undefined;
+            if (!asset && assetTagTrimmed) {
+              // SLICE-B - corrected-tag heal (memory mirror of the DB retag).
+              asset = memoryAssets.find(
+                (a) =>
+                  a.company_id === finalCompanyId &&
+                  a.route_id === routeId &&
+                  String(a.name).toLowerCase() === assetNameTrimmed.toLowerCase()
+              );
+            }
+            if (asset) {
+              asset.route_id = routeId;
+              asset.company_id = finalCompanyId;
+              asset.name = assetNameTrimmed;
+              asset.tag_number = assetTagTrimmed || null;
+              asset.type = String(assetType).trim();
+              asset.status = "Active";
+              asset.criticality = "Medium";
+              asset.description = `Auto-imported ${String(assetType).trim()}`;
+              asset.import_id = importId;
+            } else {
               asset = {
                 id: getNextMemoryId(memoryAssets),
                 route_id: routeId,
                 company_id: finalCompanyId,
-                name: String(assetName).trim(),
-                tag_number: assetTag ? String(assetTag).trim() : null,
+                name: assetNameTrimmed,
+                tag_number: assetTagTrimmed || null,
                 type: String(assetType).trim(),
                 status: "Active",
                 criticality: "Medium",
@@ -18248,6 +18317,22 @@ async function initializeDatabase() {
         `CREATE INDEX IF NOT EXISTS idx_${table}_import_id
            ON ${table} (import_id) WHERE import_id IS NOT NULL;`
       );
+    }
+    // migrations/029 - SLICE-B. No soft-delete column exists on the hierarchy
+    // tables, so the tag key is a plain table-level UNIQUE. Postgres treats
+    // NULL tag_number values as distinct by default, so untagged rows never
+    // collide. The catch covers only the already-exists family (42P07 backing
+    // index, 42710 duplicate object, 42P06 duplicate schema).
+    try {
+      await pool.query(`
+        ALTER TABLE assets
+          ADD CONSTRAINT assets_company_tag_number_key
+          UNIQUE (company_id, tag_number);
+      `);
+    } catch (err: any) {
+      if (err?.code !== "42710" && err?.code !== "42P06" && err?.code !== "42P07") {
+        throw err;
+      }
     }
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).
