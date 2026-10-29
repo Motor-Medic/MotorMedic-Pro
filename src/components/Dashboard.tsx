@@ -22,6 +22,8 @@ interface DashboardProps {
   onSelectReport?: (report: any) => void;
   onStartQuickAnalysis: () => void;
   onAddAsset: () => void;
+  initialData?: DashboardPayload | null;
+  initialLoading?: boolean;
 }
 
 type AssetFilter = "All" | "Class A" | "Class B/C";
@@ -42,7 +44,7 @@ interface FleetAggregates {
   assetsWithScoresCount: number;
 }
 
-type DashboardPayload = {
+export type DashboardPayload = {
   plantName: string | null;
   assetCount: number;
   fleetHealthScore: number | null;
@@ -166,14 +168,65 @@ function deduplicateBriefingEntries(entries: DashboardPayload["recentAnalyses"])
   return result;
 }
 
+export type DashboardStage = "no-plant" | "no-assets" | "no-readings" | "ready";
+
+interface DashboardEmptyAction {
+  label: string;
+  onClick: () => void;
+}
+
+export function resolveDashboardStage(data: DashboardPayload | null): DashboardStage {
+  if (!data || !data.plantName || !data.plantName.trim()) return "no-plant";
+  if (!Number.isFinite(Number(data.assetCount)) || Number(data.assetCount) <= 0) {
+    return "no-assets";
+  }
+
+  const zones = data.healthZones;
+  const zoneTotal = zones ? zones.A + zones.B + zones.C + zones.D : 0;
+  const scoredAssets =
+    data.fleetAggregates?.assetsWithScoresCount ??
+    (data.assetHealthScores?.filter((asset) => asset.healthScore != null).length ?? 0);
+  const hasReadings =
+    (data.recentAnalyses?.length ?? 0) > 0 ||
+    (data.techCoverage?.length ?? 0) > 0 ||
+    zoneTotal > 0 ||
+    scoredAssets > 0 ||
+    data.financialRisk != null;
+
+  return hasReadings ? "ready" : "no-readings";
+}
+
+function EmptyActionButton({
+  action,
+  testId
+}: {
+  action: DashboardEmptyAction;
+  testId?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={action.onClick}
+      data-testid={testId}
+      className="mt-4 px-3 py-1.5 rounded-lg bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-xs font-bold cursor-pointer transition-colors"
+    >
+      {action.label}
+    </button>
+  );
+}
+
 function EmptyBlock({
   icon: Icon,
   title,
-  message
+  message,
+  action,
+  ctaTestId
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   message: string;
+  action?: DashboardEmptyAction | null;
+  ctaTestId?: string;
 }) {
   return (
     <div className="flex flex-col items-center justify-center text-center py-10 px-4">
@@ -182,6 +235,7 @@ function EmptyBlock({
       </div>
       <p className="text-sm font-semibold text-slate-300">{title}</p>
       <p className="text-xs text-slate-500 mt-1.5 max-w-sm">{message}</p>
+      {action ? <EmptyActionButton action={action} testId={ctaTestId} /> : null}
     </div>
   );
 }
@@ -191,13 +245,15 @@ export default function Dashboard({
   onNavigate,
   onSelectReport,
   onStartQuickAnalysis,
-  onAddAsset
+  onAddAsset,
+  initialData = null,
+  initialLoading = initialData == null
 }: DashboardProps) {
   void onSelectReport;
 
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("All");
-  const [data, setData] = useState<DashboardPayload | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<DashboardPayload | null>(initialData);
+  const [loading, setLoading] = useState(initialLoading);
   const [error, setError] = useState<string | null>(null);
   const [costModel, setCostModel] = useState<CostModel>(loadCostModel);
 
@@ -286,6 +342,16 @@ export default function Dashboard({
             ? "text-orange-400"
             : "text-red-500";
 
+  const stage = resolveDashboardStage(data);
+  const emptyAction: DashboardEmptyAction | null =
+    stage === "no-plant"
+      ? { label: "Set Up Plant", onClick: onAddAsset }
+      : stage === "no-assets"
+        ? { label: "Import Assets", onClick: () => onNavigate("migration") }
+        : stage === "no-readings"
+          ? { label: "Run First Diagnostic", onClick: onStartQuickAnalysis }
+          : null;
+
   if (loading) {
     return (
       <div className="w-full min-w-0 bg-slate-950 text-slate-100">
@@ -349,11 +415,23 @@ export default function Dashboard({
           <p className={`text-4xl font-bold leading-none ${healthTone}`}>
             {fleetHealth != null ? `${fleetHealth}%` : "—"}
           </p>
-          <p className="text-xs text-slate-400 mt-3">
-            {fleetHealth != null
-              ? `Avg of ${data?.fleetAggregates?.assetsWithScoresCount ?? 0} scored assets`
-              : "No data available"}
-          </p>
+          {fleetHealth != null ? (
+            <p className="text-xs text-slate-400 mt-3">
+              {`Avg of ${data?.fleetAggregates?.assetsWithScoresCount ?? 0} scored assets`}
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-slate-400 mt-3">
+                No health readings yet.
+              </p>
+              {emptyAction ? (
+                <EmptyActionButton
+                  action={emptyAction}
+                  testId="dashboard-empty-fleet-health-cta"
+                />
+              ) : null}
+            </>
+          )}
         </div>
 
         <div className={CARD}>
@@ -369,6 +447,12 @@ export default function Dashboard({
               ? ` · ${data.fleetAggregates.assetsWithScoresCount} with health scores`
               : ""}
           </p>
+          {(data?.assetCount ?? 0) === 0 && emptyAction ? (
+            <EmptyActionButton
+              action={emptyAction}
+              testId="dashboard-empty-total-monitored-cta"
+            />
+          ) : null}
         </div>
 
         <div className={CARD}>
@@ -389,6 +473,14 @@ export default function Dashboard({
               <p className="text-[10px] font-bold uppercase tracking-widest text-red-300/80">Critical { "<50" }</p>
             </div>
           </div>
+          {((data?.fleetAggregates?.healthyCount ?? 0) +
+            (data?.fleetAggregates?.warningCount ?? 0) +
+            (data?.fleetAggregates?.criticalCount ?? 0)) === 0 && emptyAction ? (
+            <EmptyActionButton
+              action={emptyAction}
+              testId="dashboard-empty-asset-status-cta"
+            />
+          ) : null}
         </div>
 
         <div className={CARD}>
@@ -507,8 +599,18 @@ export default function Dashboard({
           ) : (
             <EmptyBlock
               icon={TrendingUp}
-              title="No data available"
-              message="Financial risk will appear after diagnostics save cost estimates."
+              title="No risk estimate yet"
+              message={
+                stage === "no-plant"
+                  ? "Set up a plant to start tracking failure exposure."
+                  : stage === "no-assets"
+                    ? "Import assets to start tracking failure exposure."
+                    : stage === "no-readings"
+                      ? "Run a diagnostic to capture failure and repair costs."
+                      : "No cost estimates captured from recent analyses."
+              }
+              action={emptyAction}
+              ctaTestId="dashboard-empty-financial-risk-cta"
             />
           )}
         </div>
@@ -540,8 +642,18 @@ export default function Dashboard({
           ) : (
             <EmptyBlock
               icon={Radio}
-              title="No data available"
-              message="Coverage percentages appear after diagnostics are run across technologies."
+              title="No coverage data yet"
+              message={
+                stage === "no-plant"
+                  ? "Set up a plant to start measuring diagnostic coverage."
+                  : stage === "no-assets"
+                    ? "Import assets to start measuring diagnostic coverage."
+                    : stage === "no-readings"
+                      ? "Run a diagnostic to start measuring technology coverage."
+                      : "Coverage appears after diagnostics are run across technologies."
+              }
+              action={emptyAction}
+              ctaTestId="dashboard-empty-tech-coverage-cta"
             />
           )}
         </div>
@@ -630,8 +742,18 @@ export default function Dashboard({
           ) : (
             <EmptyBlock
               icon={Activity}
-              title="No data available"
-              message="Shift briefing is generated from recent diagnostic analyses."
+              title="No shift briefing yet"
+              message={
+                stage === "no-plant"
+                  ? "Set up a plant to generate your first shift briefing."
+                  : stage === "no-assets"
+                    ? "Import assets to generate your first shift briefing."
+                    : stage === "no-readings"
+                      ? "Run your first diagnostic to generate the shift briefing."
+                      : "No recent diagnostic analyses to brief."
+              }
+              action={emptyAction}
+              ctaTestId="dashboard-empty-ai-briefing-cta"
             />
           )}
         </div>
@@ -680,8 +802,18 @@ export default function Dashboard({
           ) : (
             <EmptyBlock
               icon={AlertTriangle}
-              title="No data available"
-              message="Alarms appear here when diagnostics create HIGH/MEDIUM severity alerts."
+              title={stage === "ready" ? "No active alarms" : "No alarm feed yet"}
+              message={
+                stage === "no-plant"
+                  ? "Set up a plant to start monitoring alarms."
+                  : stage === "no-assets"
+                    ? "Import assets to start monitoring alarms."
+                    : stage === "no-readings"
+                      ? "Run a diagnostic to start feeding alarms."
+                      : "No alarms match the current filter."
+              }
+              action={emptyAction}
+              ctaTestId="dashboard-empty-live-alarms-cta"
             />
           )}
 
@@ -763,8 +895,18 @@ export default function Dashboard({
         ) : (
           <EmptyBlock
             icon={Activity}
-            title="No data available"
-            message="Health zone distribution is calculated from latest analysis health scores."
+            title="No health distribution yet"
+            message={
+              stage === "no-plant"
+                ? "Set up a plant to start tracking ISO 20816 zones."
+                : stage === "no-assets"
+                  ? "Import assets to start tracking ISO 20816 zones."
+                  : stage === "no-readings"
+                    ? "Run a diagnostic to score assets into health zones."
+                    : "Health zones appear after analyses record health scores."
+            }
+            action={emptyAction}
+            ctaTestId="dashboard-empty-health-distribution-cta"
           />
         )}
       </div>
