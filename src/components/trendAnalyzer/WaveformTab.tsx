@@ -128,7 +128,11 @@ export function WaveformTimeChartBody({
   oneXMarkers: number[];
 }) {
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid="chart-body-waveformTime"
+    >
       <LineChart
         data={data}
         margin={{ top: 12, right: 16, bottom: 28, left: 48 }}
@@ -192,14 +196,21 @@ export function CrestFactorTrendChartBody({
 }) {
   if (data.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center px-4 text-center">
+      <div
+        data-testid="chart-body-waveformCrest"
+        className="h-full flex items-center justify-center px-4 text-center"
+      >
         <p className="text-sm text-slate-500">No crest factor history yet.</p>
       </div>
     );
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid="chart-body-waveformCrest"
+    >
       <LineChart
         data={data}
         margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
@@ -254,14 +265,21 @@ export function ImpactCountTrendChartBody({
 }) {
   if (data.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center px-4 text-center">
+      <div
+        data-testid="chart-body-waveformImpact"
+        className="h-full flex items-center justify-center px-4 text-center"
+      >
         <p className="text-sm text-slate-500">No impact count history yet.</p>
       </div>
     );
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid="chart-body-waveformImpact"
+    >
       <LineChart
         data={data}
         margin={{ top: 12, right: 16, bottom: 8, left: 8 }}

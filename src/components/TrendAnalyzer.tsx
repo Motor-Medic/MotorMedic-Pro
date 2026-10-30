@@ -1416,7 +1416,10 @@ function BroadbandTrendChartBody({
 }) {
   if (isEmpty) {
     return (
-      <div className="h-full flex items-center justify-center px-4 text-center">
+      <div
+        data-testid={`chart-body-${variant}`}
+        className="h-full flex items-center justify-center px-4 text-center"
+      >
         <p className="text-sm text-slate-500">
           {variant === "health"
             ? "No analysis data yet - run a diagnostic to populate trends"
@@ -1441,7 +1444,10 @@ function BroadbandTrendChartBody({
             label: `${first?.peak ?? "\u2014"}`
           };
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+      <div
+        data-testid={`chart-body-${variant}`}
+        className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center"
+      >
         <span className={`h-3 w-3 rounded-full ${tone.dot}`} />
         <p className={`text-2xl font-bold font-mono ${tone.value}`}>
           {tone.label}
@@ -1463,7 +1469,11 @@ function BroadbandTrendChartBody({
 
   if (variant === "health") {
     return (
-      <ResponsiveContainer width="100%" height="100%">
+      <ResponsiveContainer
+        width="100%"
+        height="100%"
+        data-testid={`chart-body-${variant}`}
+      >
         <LineChart data={data} margin={chartMargin}>
           <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
           <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
@@ -1505,7 +1515,11 @@ function BroadbandTrendChartBody({
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid={`chart-body-${variant}`}
+    >
       <LineChart data={data} margin={chartMargin}>
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
         <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
@@ -1604,7 +1618,10 @@ function SpectralTrendChartBody({
 }) {
   if (windowEmpty) {
     return (
-      <div className="h-full flex items-center justify-center px-4 text-center">
+      <div
+        data-testid="chart-body-spectral"
+        className="h-full flex items-center justify-center px-4 text-center"
+      >
         <p className="text-sm text-slate-500">
           No spectral readings in the selected {timeRange} window.
         </p>
@@ -1614,7 +1631,10 @@ function SpectralTrendChartBody({
 
   if (isSparse) {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+      <div
+        data-testid="chart-body-spectral"
+        className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center"
+      >
         <span className="h-3 w-3 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" />
         <p className="text-2xl font-bold font-mono text-cyan-400">
           {data[0]?.overall != null
@@ -1631,7 +1651,11 @@ function SpectralTrendChartBody({
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid="chart-body-spectral"
+    >
       <LineChart
         data={data}
         margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
@@ -1731,7 +1755,10 @@ function EnvelopingGeChartBody({
 }) {
   if (data.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center px-4 text-center">
+      <div
+        data-testid="chart-body-envelopingGe"
+        className="h-full flex items-center justify-center px-4 text-center"
+      >
         <p className="text-sm text-slate-500">
           {!hasAnySeries ? (
             <>
@@ -1750,7 +1777,11 @@ function EnvelopingGeChartBody({
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid="chart-body-envelopingGe"
+    >
       <LineChart data={data} margin={chartMargin}>
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
         <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
@@ -1802,7 +1833,10 @@ function EnvelopingKurtosisChartBody({
 }) {
   if (data.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center px-4 text-center">
+      <div
+        data-testid="chart-body-envelopingKurtosis"
+        className="h-full flex items-center justify-center px-4 text-center"
+      >
         <p className="text-sm text-slate-500">
           {!hasAnySeries
             ? "No kurtosis / crest factor recorded yet."
@@ -1813,7 +1847,11 @@ function EnvelopingKurtosisChartBody({
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer
+      width="100%"
+      height="100%"
+      data-testid="chart-body-envelopingKurtosis"
+    >
       <LineChart data={data} margin={chartMargin}>
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
         <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
@@ -1934,6 +1972,7 @@ function TrendChartExpandModal({
       role="dialog"
       aria-modal="true"
       aria-label={title}
+      data-testid="trend-chart-expand-modal"
     >
       <div
         ref={dialogRef}
@@ -4553,90 +4592,6 @@ export default function TrendAnalyzer({
         </>
       )}
 
-      {expandedChart === "spectral" && (
-        <TrendChartExpandModal
-          title="Spectral & Harmonics"
-          subtitle="Time-series amplitude trend · 1X unbalance, 2X misalignment, overall vibration"
-          onClose={closeExpandedChart}
-        >
-          <SpectralTrendChartBody
-            data={spectralTrendDisplayData}
-            windowEmpty={spectralWindowEmpty}
-            isSparse={spectralTrendIsSparse}
-            ordersUnavailable={spectralOrdersUnavailable}
-            velocityUnit={displayUnits.velocity}
-            timeRange={timeRange}
-          />
-        </TrendChartExpandModal>
-      )}
-
-      {expandedChart === "envelopingGe" && (
-        <TrendChartExpandModal
-          title="Peak gE Trend"
-          subtitle="Real demodulation / acceleration envelope from diagnostic history"
-          onClose={closeExpandedChart}
-        >
-          <EnvelopingGeChartBody
-            data={envelopingGeChartData}
-            hasAnySeries={envelopingTrendSeries.length > 0}
-            timeRange={timeRange}
-            baselinePeakGe={envelopeBaseline?.peakGe ?? null}
-          />
-        </TrendChartExpandModal>
-      )}
-
-      {expandedChart === "envelopingKurtosis" && (
-        <TrendChartExpandModal
-          title="Kurtosis Trend"
-          subtitle="Crest / kurtosis from waveform metrics — gaps omitted (no zero fill)"
-          onClose={closeExpandedChart}
-        >
-          <EnvelopingKurtosisChartBody
-            data={envelopingKurtosisChartData}
-            hasAnySeries={envelopingTrendSeries.length > 0}
-            timeRange={timeRange}
-            baselineKurtosis={envelopeBaseline?.kurtosis ?? null}
-          />
-        </TrendChartExpandModal>
-      )}
-
-      {expandedChart === "waveformTime" && (
-        <TrendChartExpandModal
-          title="Time Waveform"
-          subtitle={`Real samples from latest diagnostic${
-            waveformRpm != null && waveformRpm > 0
-              ? ` · 1X markers every ${(60000 / waveformRpm).toFixed(1)} ms (${waveformRpm} RPM)`
-              : ""
-          }`}
-          onClose={closeExpandedChart}
-        >
-          <WaveformTimeChartBody
-            data={waveformChartModel.waveformChartData}
-            oneXMarkers={waveformChartModel.oneXMarkers}
-          />
-        </TrendChartExpandModal>
-      )}
-
-      {expandedChart === "waveformCrest" && (
-        <TrendChartExpandModal
-          title="Crest Factor Trend"
-          subtitle="Early warning — rising crest factor often precedes overall velocity growth"
-          onClose={closeExpandedChart}
-        >
-          <CrestFactorTrendChartBody data={waveformChartModel.crestTrend} />
-        </TrendChartExpandModal>
-      )}
-
-      {expandedChart === "waveformImpact" && (
-        <TrendChartExpandModal
-          title="Impact Count Trend"
-          subtitle="Transient peaks exceeding 3× RMS per measurement window"
-          onClose={closeExpandedChart}
-        >
-          <ImpactCountTrendChartBody data={waveformChartModel.impactTrend} />
-        </TrendChartExpandModal>
-      )}
-
             </>
           )}
 
@@ -5441,6 +5396,90 @@ export default function TrendAnalyzer({
                 />
               )}
             />
+          )}
+
+          {expandedChart === "spectral" && (
+            <TrendChartExpandModal
+              title="Spectral & Harmonics"
+              subtitle="Time-series amplitude trend · 1X unbalance, 2X misalignment, overall vibration"
+              onClose={closeExpandedChart}
+            >
+              <SpectralTrendChartBody
+                data={spectralTrendDisplayData}
+                windowEmpty={spectralWindowEmpty}
+                isSparse={spectralTrendIsSparse}
+                ordersUnavailable={spectralOrdersUnavailable}
+                velocityUnit={displayUnits.velocity}
+                timeRange={timeRange}
+              />
+            </TrendChartExpandModal>
+          )}
+
+          {expandedChart === "envelopingGe" && (
+            <TrendChartExpandModal
+              title="Peak gE Trend"
+              subtitle="Real demodulation / acceleration envelope from diagnostic history"
+              onClose={closeExpandedChart}
+            >
+              <EnvelopingGeChartBody
+                data={envelopingGeChartData}
+                hasAnySeries={envelopingTrendSeries.length > 0}
+                timeRange={timeRange}
+                baselinePeakGe={envelopeBaseline?.peakGe ?? null}
+              />
+            </TrendChartExpandModal>
+          )}
+
+          {expandedChart === "envelopingKurtosis" && (
+            <TrendChartExpandModal
+              title="Kurtosis Trend"
+              subtitle="Crest / kurtosis from waveform metrics — gaps omitted (no zero fill)"
+              onClose={closeExpandedChart}
+            >
+              <EnvelopingKurtosisChartBody
+                data={envelopingKurtosisChartData}
+                hasAnySeries={envelopingTrendSeries.length > 0}
+                timeRange={timeRange}
+                baselineKurtosis={envelopeBaseline?.kurtosis ?? null}
+              />
+            </TrendChartExpandModal>
+          )}
+
+          {expandedChart === "waveformTime" && (
+            <TrendChartExpandModal
+              title="Time Waveform"
+              subtitle={`Real samples from latest diagnostic${
+                waveformRpm != null && waveformRpm > 0
+                  ? ` · 1X markers every ${(60000 / waveformRpm).toFixed(1)} ms (${waveformRpm} RPM)`
+                  : ""
+              }`}
+              onClose={closeExpandedChart}
+            >
+              <WaveformTimeChartBody
+                data={waveformChartModel.waveformChartData}
+                oneXMarkers={waveformChartModel.oneXMarkers}
+              />
+            </TrendChartExpandModal>
+          )}
+
+          {expandedChart === "waveformCrest" && (
+            <TrendChartExpandModal
+              title="Crest Factor Trend"
+              subtitle="Early warning — rising crest factor often precedes overall velocity growth"
+              onClose={closeExpandedChart}
+            >
+              <CrestFactorTrendChartBody data={waveformChartModel.crestTrend} />
+            </TrendChartExpandModal>
+          )}
+
+          {expandedChart === "waveformImpact" && (
+            <TrendChartExpandModal
+              title="Impact Count Trend"
+              subtitle="Transient peaks exceeding 3× RMS per measurement window"
+              onClose={closeExpandedChart}
+            >
+              <ImpactCountTrendChartBody data={waveformChartModel.impactTrend} />
+            </TrendChartExpandModal>
           )}
         </>
       )}
