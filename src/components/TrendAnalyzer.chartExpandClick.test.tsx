@@ -261,3 +261,21 @@ describe("SLICE-R chart expand icons open the shared modal", () => {
     });
   });
 });
+
+describe("SLICE-P broadband tab no longer promises Spectrum A/B", () => {
+  it("renders no click-to-compare copy or dangling comparison display", async () => {
+    await renderAnalyzer();
+    expect(
+      screen.queryByText(/Click any data point to set as Spectrum A or B/i)
+    ).toBeNull();
+    expect(screen.queryByText(/next: Spectrum/i)).toBeNull();
+    expect(screen.queryByText(/Spectrum A/i)).toBeNull();
+    expect(screen.queryByText(/Spectrum B/i)).toBeNull();
+    expect(
+      screen.queryByText(/Historical & Spectrum Comparison Tools/i)
+    ).toBeNull();
+    expect(
+      screen.queryByText(/populate Spectrum A and B/i)
+    ).toBeNull();
+  });
+});

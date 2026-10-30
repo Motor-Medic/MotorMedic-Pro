@@ -147,7 +147,6 @@ import {
   formatVelocityDisplay,
   formatVelocityMmS,
   frequencyDisplayValue,
-  frequencyUnitLabel,
   frequencyValueForDisplay,
   resolveFrequencyDisplayUnit,
   velocityValueForDisplay,
@@ -226,18 +225,6 @@ type ExpandedTrendChartId =
   | "waveformTime"
   | "waveformCrest"
   | "waveformImpact";
-
-interface SpectrumPoint {
-  date: string;
-  vibration: number;
-  peak: number;
-  oneX: number;
-  bpfo: number;
-  bpfi: number;
-  temp: number;
-  mcsa: number;
-  load: number;
-}
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
 
@@ -1105,14 +1092,6 @@ function healthTrendFromAnalyses(rows: SavedAnalysisResult[]) {
     }));
 }
 
-const TREND_SERIES: SpectrumPoint[] = [
-  { date: "Jul 05", vibration: 2.1, peak: 3.2, oneX: 1.4, bpfo: 0.18, bpfi: 0.12, temp: 62, mcsa: 1.1, load: 82 },
-  { date: "Jul 12", vibration: 2.3, peak: 3.5, oneX: 1.55, bpfo: 0.22, bpfi: 0.14, temp: 64, mcsa: 1.2, load: 85 },
-  { date: "Jul 19", vibration: 2.6, peak: 3.9, oneX: 1.8, bpfo: 0.28, bpfi: 0.18, temp: 67, mcsa: 1.35, load: 88 },
-  { date: "Jul 26", vibration: 2.95, peak: 4.4, oneX: 2.1, bpfo: 0.36, bpfi: 0.24, temp: 71, mcsa: 1.5, load: 92 },
-  { date: "Aug 03", vibration: 3.45, peak: 5.2, oneX: 2.55, bpfo: 0.48, bpfi: 0.31, temp: 76, mcsa: 1.75, load: 96 }
-];
-
 const EVENT_MARKERS = [
   { date: "Jul 12", kind: "Maintenance", label: "Maintenance", color: "#eab308" },
   { date: "Jul 19", kind: "Lubrication", label: "Lubrication", color: "#3b82f6" },
@@ -1156,45 +1135,6 @@ const TREND_TECH_CARDS = [
     iconClass: "bg-cyan-500/15 border-cyan-500/40 text-cyan-400"
   }
 ] as const;
-
-const FFT_A = [
-  { hz: 0, amp: 0.2 },
-  { hz: 30, amp: 1.4 },
-  { hz: 60, amp: 2.1 },
-  { hz: 90, amp: 0.8 },
-  { hz: 120, amp: 1.1 },
-  { hz: 150, amp: 0.45 },
-  { hz: 180, amp: 0.7 },
-  { hz: 210, amp: 0.35 },
-  { hz: 240, amp: 0.55 },
-  { hz: 300, amp: 0.25 }
-];
-
-const FFT_B = [
-  { hz: 0, amp: 0.25 },
-  { hz: 30, amp: 2.55 },
-  { hz: 60, amp: 1.9 },
-  { hz: 90, amp: 1.2 },
-  { hz: 120, amp: 1.8 },
-  { hz: 150, amp: 0.9 },
-  { hz: 180, amp: 1.4 },
-  { hz: 210, amp: 0.7 },
-  { hz: 240, amp: 1.1 },
-  { hz: 300, amp: 0.5 }
-];
-
-const FFT_OVERLAY = FFT_A.map((point, i) => ({
-  hz: point.hz,
-  ampA: point.amp,
-  ampB: FFT_B[i]?.amp ?? 0
-}));
-
-const DOMINANT_FREQ_ROWS = [
-  { feature: "1X Running Speed", a: "1.40 mm/s @ 30 Hz", b: "2.55 mm/s @ 30 Hz", fault: "Misalignment rising" },
-  { feature: "2X Harmonic", a: "0.55 mm/s @ 60 Hz", b: "1.10 mm/s @ 60 Hz", fault: "Coupling / soft foot" },
-  { feature: "BPFO", a: "0.18 mm/s @ 124 Hz", b: "0.48 mm/s @ 124 Hz", fault: "Outer race wear" },
-  { feature: "BPFI", a: "0.12 mm/s @ 186 Hz", b: "0.31 mm/s @ 186 Hz", fault: "Inner race early stage" }
-];
 
 type VibMode = "broadband" | "spectral" | "enveloping" | "waveform";
 
@@ -2239,7 +2179,6 @@ export default function TrendAnalyzer({
   const [selectedComponent, setSelectedComponent] = useState("");
   const [trendTech, setTrendTech] = useState<string>("vibration");
   const [vibMode, setVibMode] = useState<VibMode>("broadband");
-  const [spectrumView, setSpectrumView] = useState<"side-by-side" | "overlay">("side-by-side");
   const [irMode, setIrMode] = useState<IrMode>("hotspot");
   const [ueMode, setUeMode] = useState<UeMode>("bearings");
   const [ueLeakSort, setUeLeakSort] = useState<{
@@ -2273,9 +2212,6 @@ export default function TrendAnalyzer({
   const [runningOnly, setRunningOnly] = useState(true);
   const [overlayParam, setOverlayParam] = useState<OverlayParam>(null);
   const [speedFactor, setSpeedFactor] = useState(1.0);
-  const [selectedPointA, setSelectedPointA] = useState<SpectrumPoint | null>(null);
-  const [selectedPointB, setSelectedPointB] = useState<SpectrumPoint | null>(null);
-  const [nextPick, setNextPick] = useState<"A" | "B">("A");
   const [showThresholds, setShowThresholds] = useState(true);
   const [expandedChart, setExpandedChart] =
     useState<ExpandedTrendChartId | null>(null);
@@ -2943,49 +2879,6 @@ export default function TrendAnalyzer({
             : velocityValueForDisplay(point.overall, displayUnits.velocity)
       })),
     [spectralTrendChartData, displayUnits.velocity]
-  );
-
-  // Frequency axes: Hz -> CPM -> orders. Without recorded RPM, orders falls
-  // back to Hz (the selected option stays visible; the header shows the hint).
-  const frequencyAxisUnit = frequencyUnitLabel(
-    displayUnits.frequency,
-    machineSpecs.rpm
-  );
-  const fftADisplay = useMemo(
-    () =>
-      FFT_A.map((point) => ({
-        ...point,
-        hz: frequencyValueForDisplay(
-          point.hz,
-          displayUnits.frequency,
-          machineSpecs.rpm
-        )
-      })),
-    [displayUnits.frequency, machineSpecs.rpm]
-  );
-  const fftBDisplay = useMemo(
-    () =>
-      FFT_B.map((point) => ({
-        ...point,
-        hz: frequencyValueForDisplay(
-          point.hz,
-          displayUnits.frequency,
-          machineSpecs.rpm
-        )
-      })),
-    [displayUnits.frequency, machineSpecs.rpm]
-  );
-  const fftOverlayDisplay = useMemo(
-    () =>
-      FFT_OVERLAY.map((point) => ({
-        ...point,
-        hz: frequencyValueForDisplay(
-          point.hz,
-          displayUnits.frequency,
-          machineSpecs.rpm
-        )
-      })),
-    [displayUnits.frequency, machineSpecs.rpm]
   );
 
   const vibExtractedEnvelopeChart = useMemo(() => {
@@ -3952,19 +3845,6 @@ export default function TrendAnalyzer({
 
   const closeExpandedChart = useCallback(() => setExpandedChart(null), []);
 
-  const handlePointClick = (point: SpectrumPoint) => {
-    if (nextPick === "A") {
-      setSelectedPointA(point);
-      setNextPick("B");
-    } else {
-      setSelectedPointB(point);
-      setNextPick("A");
-    }
-  };
-
-  const spectrumALabel = selectedPointA?.date ?? "Jul 05";
-  const spectrumBLabel = selectedPointB?.date ?? "Aug 03";
-
   return (
     <div className="w-full min-w-0 bg-slate-950 text-slate-100">
       {/* ===== SECTION 1: TOP FILTER (Dropdowns → Tech → Time Range) ===== */}
@@ -4435,16 +4315,6 @@ export default function TrendAnalyzer({
 
       {/* ===== SECTION 3: PRIMARY TREND CHARTS (2x2) ===== */}
       <div className="mb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <p className="text-xs text-slate-400">
-          Click any data point to set as Spectrum A or B for comparison below.
-          {selectedPointA && (
-            <span className="text-yellow-400 ml-2">A: {selectedPointA.date}</span>
-          )}
-          {selectedPointB && (
-            <span className="text-cyan-400 ml-2">B: {selectedPointB.date}</span>
-          )}
-          <span className="text-slate-500 ml-2">(next: Spectrum {nextPick})</span>
-        </p>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Overlay</span>
           {(["Temp", "MCSA", "Load"] as const).map((param) => (
@@ -4862,175 +4732,6 @@ export default function TrendAnalyzer({
         </div>
       </div>
 
-      {/* ===== SECTION 5: HISTORICAL & SPECTRUM COMPARISON ===== */}
-      <div className={`${CARD} mb-6`}>
-        <h3 className="text-lg font-bold text-white mb-1">
-          Historical &amp; Spectrum Comparison Tools
-        </h3>
-        <p className="text-sm text-slate-400 mb-4">
-          Click points on the trend charts above to populate Spectrum A and B.
-        </p>
-
-        <div className="flex flex-wrap gap-2 mb-4">
-          <button
-            type="button"
-            onClick={() => setSpectrumView("side-by-side")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
-              spectrumView === "side-by-side"
-                ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                : "bg-slate-800 border-slate-700 text-slate-400"
-            }`}
-          >
-            👁️ Side-by-Side View
-          </button>
-          <button
-            type="button"
-            onClick={() => setSpectrumView("overlay")}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
-              spectrumView === "overlay"
-                ? "bg-cyan-500/20 border-cyan-500 text-cyan-400"
-                : "bg-slate-800 border-slate-700 text-slate-400"
-            }`}
-          >
-            🔀 Stacked Overlay View
-          </button>
-        </div>
-
-        {spectrumView === "side-by-side" ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-            <div className="rounded-lg border border-white/10 bg-slate-950 p-3">
-              <p className="text-xs font-bold uppercase tracking-widest text-yellow-400 mb-2">
-                Spectrum A ({spectrumALabel})
-              </p>
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={fftADisplay} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis
-                      dataKey="hz"
-                      stroke="#94a3b8"
-                      tick={{ fontSize: 10 }}
-                      label={{ value: frequencyAxisUnit, position: "insideBottom", offset: -4, fill: "#64748b" }}
-                    />
-                    <YAxis stroke="#eab308" tick={{ fontSize: 10 }} />
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      labelFormatter={(label) => `${label} ${frequencyAxisUnit}`}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="amp"
-                      stroke="#eab308"
-                      strokeWidth={2}
-                      name="Amplitude"
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-white/10 bg-slate-950 p-3">
-              <p className="text-xs font-bold uppercase tracking-widest text-cyan-400 mb-2">
-                Spectrum B ({spectrumBLabel})
-              </p>
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={fftBDisplay} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis
-                      dataKey="hz"
-                      stroke="#94a3b8"
-                      tick={{ fontSize: 10 }}
-                      label={{ value: frequencyAxisUnit, position: "insideBottom", offset: -4, fill: "#64748b" }}
-                    />
-                    <YAxis stroke="#22d3ee" tick={{ fontSize: 10 }} />
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      labelFormatter={(label) => `${label} ${frequencyAxisUnit}`}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="amp"
-                      stroke="#22d3ee"
-                      strokeWidth={2}
-                      name="Amplitude"
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-white/10 bg-slate-950 p-3 mb-6">
-            <p className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">
-              Stacked Overlay — A ({spectrumALabel}) vs B ({spectrumBLabel})
-            </p>
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={fftOverlayDisplay} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis
-                    dataKey="hz"
-                    stroke="#94a3b8"
-                    tick={{ fontSize: 10 }}
-                    label={{ value: frequencyAxisUnit, position: "insideBottom", offset: -4, fill: "#64748b" }}
-                  />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    labelFormatter={(label) => `${label} ${frequencyAxisUnit}`}
-                  />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="ampA"
-                    stroke="#22d3ee"
-                    strokeWidth={2}
-                    name={`Spectrum A (${spectrumALabel})`}
-                    dot={false}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="ampB"
-                    stroke="#eab308"
-                    strokeWidth={2}
-                    name={`Spectrum B (${spectrumBLabel})`}
-                    dot={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-
-        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-          Dominant Frequencies &amp; Fault Identification
-        </p>
-        <div className="overflow-x-auto rounded-lg border border-white/10">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
-                <th className="px-3 py-2 font-bold">Feature</th>
-                <th className="px-3 py-2 font-bold">Spectrum A ({spectrumALabel})</th>
-                <th className="px-3 py-2 font-bold">Spectrum B ({spectrumBLabel})</th>
-                <th className="px-3 py-2 font-bold">Fault ID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {DOMINANT_FREQ_ROWS.map((row) => (
-                <tr key={row.feature} className="border-t border-white/10">
-                  <td className="px-3 py-2.5 text-white font-medium">{row.feature}</td>
-                  <td className="px-3 py-2.5 text-slate-300 font-mono text-xs">{row.a}</td>
-                  <td className="px-3 py-2.5 text-slate-300 font-mono text-xs">{row.b}</td>
-                  <td className="px-3 py-2.5 text-yellow-500 text-xs font-semibold">{row.fault}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
             </>
           )}
 

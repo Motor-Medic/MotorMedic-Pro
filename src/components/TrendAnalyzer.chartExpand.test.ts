@@ -308,7 +308,7 @@ describe("SLICE-Q every series chart enlarges through the same bodies", () => {
   it("keeps excluded non-series surfaces icon-free", () => {
     const rul = block(
       "{/* ===== SECTION 4: RUL PROJECTION ===== */}",
-      "{/* ===== SECTION 5: HISTORICAL"
+      '{vibMode === "enveloping"'
     );
     expect(rul).not.toContain("ChartExpandButton");
 
@@ -379,5 +379,26 @@ describe("SLICE-Q every series chart enlarges through the same bodies", () => {
     expect(src).toContain('onClick={() => setExpandedChart("velocity")}');
     const bodies = bodyCalls();
     expect(bodies).toHaveLength(4);
+  });
+});
+
+describe("SLICE-P phantom Spectrum A/B affordance", () => {
+  it("removes the header promise and its dead handler, state and comparison containers", () => {
+    expect(src).not.toContain(
+      "Click any data point to set as Spectrum A or B"
+    );
+    expect(src).not.toContain("next: Spectrum");
+    expect(src).not.toContain("handlePointClick");
+    expect(src).not.toContain("selectedPointA");
+    expect(src).not.toContain("selectedPointB");
+    expect(src).not.toContain("nextPick");
+    expect(src).not.toContain("spectrumView");
+    expect(src).not.toContain("spectrumALabel");
+    expect(src).not.toContain("spectrumBLabel");
+    expect(src).not.toContain("fftADisplay");
+    expect(src).not.toContain("fftBDisplay");
+    expect(src).not.toContain("fftOverlayDisplay");
+    expect(src).not.toContain("DOMINANT_FREQ_ROWS");
+    expect(src).not.toContain("HISTORICAL & SPECTRUM COMPARISON");
   });
 });
