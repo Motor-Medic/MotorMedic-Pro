@@ -9452,7 +9452,7 @@ app.get("/api/dashboard", async (req, res) => {
     let allAssets: any[] = [];
     try {
       let assetsQuery = `
-        SELECT ast.id, ast.name, ast.tag, ast.tag_number, ast.type, ast.route_id
+        SELECT ast.id, ast.name, ast.tag_number, ast.type, ast.route_id
         FROM assets ast
         LEFT JOIN routes rt ON ast.route_id = rt.id
         LEFT JOIN plants pl ON rt.plant_id = pl.id

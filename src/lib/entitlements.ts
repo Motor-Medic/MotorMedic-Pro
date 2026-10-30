@@ -7,7 +7,6 @@
  * this module never accepts a client-supplied company_id.
  */
 import type { NextFunction, Request, Response } from "express";
-import { query as defaultQuery } from "./db";
 
 export type ModuleKey = "vibration" | "thermography" | "ultrasound" | "oil";
 
@@ -135,7 +134,11 @@ export function getModuleCatalog(
 
 const defaultDb: Queryable = {
   query: async (text, params) => {
-    const result = await defaultQuery(text, params);
+    // Lazy import keeps this module client-safe: moduleNav imports MODULE_KEYS
+    // from here, and a static `pg` import would pull Node's Buffer into the
+    // Vite browser bundle. The adapter is only ever called server-side.
+    const { query } = await import("./db");
+    const result = await query(text, params);
     return { rows: result.rows };
   }
 };
