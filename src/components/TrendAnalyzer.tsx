@@ -1154,7 +1154,7 @@ const VIB_MODE_OPTIONS: {
     inactiveIconClass: "text-cyan-400"
   },
   { id: "enveloping", label: "Enveloping & Bearing", Icon: Cog },
-  { id: "waveform", label: "Waveform & Phase", Icon: AudioWaveform }
+  { id: "waveform", label: "Waveform Metrics", Icon: AudioWaveform }
 ];
 
 const REFERENCE_TREND_DATA = [
@@ -5160,6 +5160,7 @@ export default function TrendAnalyzer({
               <WaveformTimeChartBody
                 data={waveformChartModel.waveformChartData}
                 oneXMarkers={waveformChartModel.oneXMarkers}
+                velocityUnit={displayUnits.velocity}
               />
             </TrendChartExpandModal>
           )}

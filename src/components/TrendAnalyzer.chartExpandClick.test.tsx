@@ -231,30 +231,30 @@ describe("SLICE-R chart expand icons open the shared modal", () => {
     });
   });
 
-  it("opens the time waveform chart from the Waveform & Phase tab", async () => {
+  it("opens the time waveform chart from the Waveform Metrics tab", async () => {
     await renderAnalyzer();
     await openChartAndAssert({
-      modeButton: "Waveform & Phase",
+      modeButton: "Waveform Metrics",
       iconLabel: "Enlarge Time Waveform chart",
       dialogLabel: "Time Waveform",
       bodyId: "waveformTime"
     });
   });
 
-  it("opens the crest factor chart from the Waveform & Phase tab", async () => {
+  it("opens the crest factor chart from the Waveform Metrics tab", async () => {
     await renderAnalyzer();
     await openChartAndAssert({
-      modeButton: "Waveform & Phase",
+      modeButton: "Waveform Metrics",
       iconLabel: "Enlarge Crest Factor Trend chart",
       dialogLabel: "Crest Factor Trend",
       bodyId: "waveformCrest"
     });
   });
 
-  it("opens the impact count chart from the Waveform & Phase tab", async () => {
+  it("opens the impact count chart from the Waveform Metrics tab", async () => {
     await renderAnalyzer();
     await openChartAndAssert({
-      modeButton: "Waveform & Phase",
+      modeButton: "Waveform Metrics",
       iconLabel: "Enlarge Impact Count Trend chart",
       dialogLabel: "Impact Count Trend",
       bodyId: "waveformImpact"

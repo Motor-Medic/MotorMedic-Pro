@@ -1,4 +1,4 @@
--- MotorMedic Pro — Waveform & Phase metrics on analysis_results
+-- MotorMedic Pro — Time-domain waveform metrics on analysis_results
 -- Stores single-channel time-waveform KPIs from vision extraction (no mock fill).
 
 ALTER TABLE analysis_results

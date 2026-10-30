@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
@@ -21,6 +21,7 @@ import {
   type WaveformTrendPoint
 } from "../../lib/vibration/vibrationDiagnosticRecord";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
+import { reportCsvText } from "../../lib/reportExport";
 
 const EMPTY_MODEL: WaveformChartModel = {
   crestTrend: [],
@@ -209,5 +210,134 @@ describe("SLICE-S Impact Count empty-state parity (J2 reuse)", () => {
   it("reuses the J2 sparse guard for the single-reading case", () => {
     expect(isSparseTrendSeries([{ date: "Jan 1" }])).toBe(true);
     expect(isSparseTrendSeries([])).toBe(false);
+  });
+});
+
+describe("SLICE-T Waveform Metrics name and capability branches", () => {
+  const stalePromise = ["Waveform", "&", "Phase"].join(" ");
+  const waveformSource = readFileSync(
+    path.join(process.cwd(), "src/components/trendAnalyzer/WaveformTab.tsx"),
+    "utf8"
+  );
+
+  it("renders no raw waveform plot or phase indicator without stored samples", () => {
+    const history = [point({ crestFactor: 4.2, impactCount: 2 })];
+    const model = buildWaveformChartModel({
+      rpm: 1800,
+      trendPoints: history,
+      waveformSamples: []
+    });
+    render(
+      <WaveformTab
+        {...BASE_PROPS}
+        trendPoints={history}
+        model={model}
+        latestMetrics={LATEST}
+      />
+    );
+    expect(screen.queryByTestId("chart-body-waveformTime")).toBeNull();
+    expect(screen.queryByText("Time Waveform")).toBeNull();
+    expect(screen.queryByText(/Δφ/)).toBeNull();
+    expect(screen.queryByText(/phase angle/i)).toBeNull();
+    expect(screen.getByTestId("waveform-phase-capture-note").textContent).toContain(
+      "Phase/keyphasor capture requires reference-channel acquisition hardware"
+    );
+  });
+
+  it("renders the stored-sample viewer only when samples exist, with a collapse toggle", () => {
+    const samples = [
+      { time: 0, amplitude: 1.2 },
+      { time: 5, amplitude: -0.8 },
+      { time: 10, amplitude: 0.6 }
+    ];
+    const model = buildWaveformChartModel({
+      rpm: 1800,
+      trendPoints: [],
+      waveformSamples: samples
+    });
+    render(
+      <WaveformTab
+        {...BASE_PROPS}
+        model={model}
+        waveformSamples={samples}
+        latestMetrics={null}
+      />
+    );
+    expect(screen.getByTestId("chart-body-waveformTime")).toBeTruthy();
+    const collapse = screen.getByRole("button", {
+      name: "Collapse time waveform"
+    });
+    fireEvent.click(collapse);
+    expect(screen.queryByTestId("chart-body-waveformTime")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Expand time waveform" })
+    ).toBeTruthy();
+  });
+
+  it("never synthesizes a waveform series or a phase polar plot", () => {
+    expect(waveformSource).not.toContain("generateWaveformData");
+    expect(waveformSource).not.toContain("vibrationDataGenerator");
+    expect(waveformSource).not.toContain("RadarChart");
+    expect(waveformSource).not.toContain("PolarAngleAxis");
+    expect(waveformSource).not.toContain("Δφ");
+  });
+
+  it("removes the old tab promise from every screen and export surface", () => {
+    const surfaces = [
+      "src/components/TrendAnalyzer.tsx",
+      "src/components/trendAnalyzer/WaveformTab.tsx",
+      "src/lib/reportExport.ts",
+      "src/lib/reports/technologySummary.ts",
+      "src/components/TrendAnalyzer.chartExpandClick.test.tsx",
+      "migrations/005_analysis_results_waveform_metrics.sql"
+    ];
+    for (const surface of surfaces) {
+      expect(readFileSync(path.join(process.cwd(), surface), "utf8")).not.toContain(
+        stalePromise
+      );
+    }
+    const offenders = sourceFiles(path.join(process.cwd(), "src"))
+      .filter((file) => !/\.test\.(ts|tsx)$/.test(file))
+      .filter((file) => readFileSync(file, "utf8").includes(stalePromise));
+    expect(offenders).toEqual([]);
+    expect(
+      readFileSync(
+        path.join(process.cwd(), "src/components/TrendAnalyzer.tsx"),
+        "utf8"
+      )
+    ).toContain('label: "Waveform Metrics"');
+  });
+
+  it("stamps no old tab promise into a CSV export", () => {
+    const row = {
+      id: "row-t",
+      asset_id: "asset-t",
+      component: "Drive End",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      health_score: 70,
+      primary_fault: "Imbalance",
+      fault_list: [],
+      peaks: [],
+      spectrum_image_url: null,
+      recommendations: [],
+      financial_impact: {},
+      waveform_peak_to_peak: 5,
+      waveform_crest_factor: 4,
+      waveform_impact_count: 3,
+      telemetry_data: {
+        overall_velocity: 5,
+        overall_acceleration: 0.2,
+        rpm: 1800
+      }
+    } as unknown as SavedAnalysisResult;
+    const csv = reportCsvText({
+      assetLabel: "Test Motor",
+      technology: "Vibration",
+      analysis: row
+    });
+    expect(csv).not.toContain(stalePromise);
+    expect(csv).toContain("Waveform Peak-to-Peak");
+    expect(csv).toContain("Waveform Crest Factor");
+    expect(csv).toContain("Waveform Impact Count");
   });
 });

@@ -1,6 +1,7 @@
 /**
- * Waveform & Phase tab — Phase 1 single-channel accelerometer metrics.
- * Recharts (matches Trend Analyzer). ZERO mock data.
+ * Waveform Metrics tab — single-channel time-domain metrics.
+ * Raw samples render only when stored; phase/keyphasor capture is not in the
+ * dataset. Recharts (matches Trend Analyzer). ZERO mock data.
  */
 
 import React from "react";
@@ -29,10 +30,25 @@ import {
 import {
   formatVelocityValue,
   velocityUnitLabel,
+  velocityValueForDisplay,
   type VelocityDisplayUnit
 } from "../../lib/vibration/units";
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
+
+const PHASE_CAPABILITY_NOTE =
+  "Derived time-domain metrics from stored waveform data. Phase/keyphasor capture requires reference-channel acquisition hardware and is not recorded in this dataset.";
+
+function PhaseCapabilityNote() {
+  return (
+    <p
+      data-testid="waveform-phase-capture-note"
+      className="text-xs text-slate-500"
+    >
+      {PHASE_CAPABILITY_NOTE}
+    </p>
+  );
+}
 
 /**
  * Slice-J2 reuse: a series with no readings (or a single reading) has no
@@ -147,11 +163,23 @@ export function buildWaveformChartModel({
 
 export function WaveformTimeChartBody({
   data,
-  oneXMarkers
+  oneXMarkers,
+  velocityUnit = "mm/s"
 }: {
   data: WaveformChartModel["waveformChartData"];
   oneXMarkers: number[];
+  velocityUnit?: VelocityDisplayUnit;
 }) {
+  const unitLabel = velocityUnitLabel(velocityUnit);
+  const displayData = data.map((point) => ({
+    ...point,
+    amplitude: velocityValueForDisplay(point.amplitude, velocityUnit),
+    oneX:
+      point.oneX == null
+        ? null
+        : velocityValueForDisplay(point.oneX, velocityUnit)
+  }));
+
   return (
     <ResponsiveContainer
       width="100%"
@@ -159,7 +187,7 @@ export function WaveformTimeChartBody({
       data-testid="chart-body-waveformTime"
     >
       <LineChart
-        data={data}
+        data={displayData}
         margin={{ top: 12, right: 16, bottom: 28, left: 48 }}
       >
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -179,7 +207,7 @@ export function WaveformTimeChartBody({
           stroke="#10b981"
           tick={{ fontSize: 10 }}
           label={{
-            value: "Amplitude",
+            value: `Amplitude (${unitLabel})`,
             angle: -90,
             position: "insideLeft",
             fill: "#10b981",
@@ -190,6 +218,7 @@ export function WaveformTimeChartBody({
           contentStyle={tooltipStyle}
           allowEscapeViewBox={{ x: true, y: true }}
           wrapperStyle={{ zIndex: 20 }}
+          formatter={(value: number) => [`${value} ${unitLabel}`, "Amplitude"]}
         />
         <Line
           type="monotone"
@@ -376,13 +405,14 @@ export default function WaveformTab({
   velocityUnit = "mm/s",
   renderExpandButton
 }: WaveformTabProps) {
+  const [timeWaveformOpen, setTimeWaveformOpen] = React.useState(true);
   const hasLatest =
-    latestMetrics != null &&
-    (latestMetrics.peakToPeak != null ||
-      latestMetrics.crestFactor != null ||
-      latestMetrics.impactCount != null ||
-      Boolean(latestMetrics.symmetry) ||
-      waveformSamples.length > 0);
+    waveformSamples.length > 0 ||
+    (latestMetrics != null &&
+      (latestMetrics.peakToPeak != null ||
+        latestMetrics.crestFactor != null ||
+        latestMetrics.impactCount != null ||
+        Boolean(latestMetrics.symmetry)));
 
   const { crestTrend, impactTrend, waveformChartData, oneXMarkers } = model;
   const sampleWindowMs = model.sampleWindowMs;
@@ -408,6 +438,9 @@ export default function WaveformTab({
           Saved vibration analyses for this asset have no waveform/acceleration
           metrics yet.
         </p>
+        <div className="mt-3 max-w-lg">
+          <PhaseCapabilityNote />
+        </div>
       </div>
     );
   }
@@ -424,6 +457,7 @@ export default function WaveformTab({
 
   return (
     <div className="space-y-6">
+      <PhaseCapabilityNote />
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className={CARD}>
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -514,14 +548,33 @@ export default function WaveformTab({
                 </p>
               </div>
             </div>
-            {renderExpandButton?.("time", "Enlarge Time Waveform chart")}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setTimeWaveformOpen((open) => !open)}
+                aria-expanded={timeWaveformOpen}
+                aria-controls="waveform-time-panel"
+                className="text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded border border-slate-600 bg-slate-800 text-slate-300 hover:border-emerald-500/50 hover:text-emerald-200 cursor-pointer transition-colors"
+              >
+                {timeWaveformOpen
+                  ? "Collapse time waveform"
+                  : "Expand time waveform"}
+              </button>
+              {renderExpandButton?.("time", "Enlarge Time Waveform chart")}
+            </div>
           </div>
-          <div className="h-[320px] bg-slate-950 rounded-lg border border-white/10 p-2 mt-3">
-            <WaveformTimeChartBody
-              data={waveformChartData}
-              oneXMarkers={oneXMarkers}
-            />
-          </div>
+          {timeWaveformOpen && (
+            <div
+              id="waveform-time-panel"
+              className="h-[320px] bg-slate-950 rounded-lg border border-white/10 p-2 mt-3"
+            >
+              <WaveformTimeChartBody
+                data={waveformChartData}
+                oneXMarkers={oneXMarkers}
+                velocityUnit={velocityUnit}
+              />
+            </div>
+          )}
         </div>
       )}
 
