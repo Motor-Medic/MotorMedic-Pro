@@ -151,6 +151,7 @@ import {
   velocityValueForDisplay,
   type DisplayUnits
 } from "../lib/vibration/units";
+import { resolveVelocityThresholds } from "../lib/vibration/velocityThresholds";
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
@@ -161,8 +162,16 @@ import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
 import {
   VibrationActionCard,
   VibrationIsoMatrix,
-  VibrationKpiSummary
+  VibrationKpiSummary,
+  consensusContradicts
 } from "./trendAnalyzer/VibrationSeverityPanels";
+import {
+  KinematicSpecsEmptyState
+} from "./KinematicSpecsNotice";
+import {
+  SPARSE_TREND_HELPER_TEXT,
+  isSparseTrendSeries
+} from "../lib/vibration/trendSeries";
   import {
     getEquipmentData,
     getFlatEquipment,
@@ -1924,6 +1933,15 @@ export default function TrendAnalyzer({
       .reverse() as { date: string; peak: number; fault: string; timestamp: string }[];
   }, [vibAnalyses]);
 
+  const healthTrendIsSparse = useMemo(
+    () => isSparseTrendSeries(healthTrendSeries),
+    [healthTrendSeries]
+  );
+  const velocityTrendIsSparse = useMemo(
+    () => isSparseTrendSeries(velocityTrendSeries),
+    [velocityTrendSeries]
+  );
+
   const activeAnalyses = useMemo(() => {
     if (trendTech === "thermography") return thermoAnalyses;
     if (trendTech === "ultrasound") return ueAnalyses;
@@ -3095,16 +3113,32 @@ export default function TrendAnalyzer({
     }
     return null;
   }, [latestVibrationRecord, latestDb]);
-  const warningThreshold =
-    selectedAsset?.warningThreshold ??
-    selectedComp?.warningThreshold ??
-    null;
-  const criticalThreshold =
-    selectedAsset?.criticalThreshold ??
-    selectedComp?.criticalThreshold ??
-    null;
+  // Plant values (when set) win; otherwise ISO B/C and C/D zone edges apply.
+  const velocityThresholds = useMemo(
+    () =>
+      resolveVelocityThresholds({
+        machineClass: machineSpecs.isoClass,
+        warningThresholdMmS:
+          selectedAsset?.warningThreshold ??
+          selectedComp?.warningThreshold ??
+          null,
+        criticalThresholdMmS:
+          selectedAsset?.criticalThreshold ??
+          selectedComp?.criticalThreshold ??
+          null,
+        unit: displayUnits.velocity
+      }),
+    [
+      machineSpecs.isoClass,
+      selectedAsset?.warningThreshold,
+      selectedComp?.warningThreshold,
+      selectedAsset?.criticalThreshold,
+      selectedComp?.criticalThreshold,
+      displayUnits.velocity
+    ]
+  );
 
-  // Display-only projections: the saved series/thresholds stay canonical.
+  // Display-only projection: the saved series stays canonical.
   const velocityTrendDisplaySeries = useMemo(
     () =>
       velocityTrendSeries.map((point) => ({
@@ -3113,14 +3147,6 @@ export default function TrendAnalyzer({
       })),
     [velocityTrendSeries, displayUnits.velocity]
   );
-  const warningThresholdDisplay =
-    warningThreshold == null
-      ? null
-      : velocityValueForDisplay(warningThreshold, displayUnits.velocity);
-  const criticalThresholdDisplay =
-    criticalThreshold == null
-      ? null
-      : velocityValueForDisplay(criticalThreshold, displayUnits.velocity);
 
   const triaxialAxes = useMemo(() => {
     const peaks = Array.isArray(latestDb?.peaks) ? latestDb!.peaks : [];
@@ -3515,6 +3541,13 @@ export default function TrendAnalyzer({
             ))}
           </div>
 
+          {selectedAsset &&
+          (machineSpecs.rpm == null ||
+            machineSpecs.isoClass === "Not set" ||
+            machineSpecs.bearing === "Not set") ? (
+            <KinematicSpecsEmptyState className="mb-6" />
+          ) : null}
+
           {vibMode === "broadband" && (
             <>
       {dbTrendLoading ? (
@@ -3635,6 +3668,7 @@ export default function TrendAnalyzer({
               ? String(latestDb.recommendations[0])
               : null
           }
+          consensusConflict={consensusContradicts(latestDb?.consensus_details)}
         />
       </div>
 
@@ -3692,6 +3726,20 @@ export default function TrendAnalyzer({
                   No analysis data yet - run a diagnostic to populate trends
                 </p>
               </div>
+            ) : healthTrendIsSparse ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+                <span className="h-3 w-3 rounded-full bg-yellow-400 shadow-[0_0_10px_rgba(234,179,8,0.8)]" />
+                <p className="text-2xl font-bold font-mono text-yellow-400">
+                  {healthTrendSeries[0].health}
+                </p>
+                <p className="text-xs text-slate-400">
+                  {healthTrendSeries[0].date}
+                  {healthTrendSeries[0].fault && healthTrendSeries[0].fault !== "\u2014"
+                    ? ` \u00b7 ${healthTrendSeries[0].fault}`
+                    : ""}
+                </p>
+                <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
+              </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
@@ -3744,18 +3792,32 @@ export default function TrendAnalyzer({
               <h3 className="text-base font-bold text-white">Peak Velocity</h3>
             </div>
             <p className="text-xs text-slate-400">
-              From analysis peaks
-              {warningThresholdDisplay != null || criticalThresholdDisplay != null
-                ? ` · Warning ${warningThresholdDisplay ?? "—"} / Alarm ${criticalThresholdDisplay ?? "—"} ${displayUnits.velocity}`
-                : " · thresholds not set for this asset"}
+              From analysis peaks · {velocityThresholds.provenance}
             </p>
           </div>
           <div className="h-64 bg-slate-950 rounded-lg border border-white/10 p-2">
             {velocityTrendSeries.length === 0 ? (
               <div className="h-full flex items-center justify-center px-4 text-center">
                 <p className="text-sm text-slate-500">
-                  No velocity readings yet — run a diagnostic with spectrum peaks to populate this chart.
+                  No velocity readings yet \u2014 run a diagnostic with spectrum peaks to populate this chart.
                 </p>
+              </div>
+            ) : velocityTrendIsSparse ? (
+              <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+                <span className="h-3 w-3 rounded-full bg-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.8)]" />
+                <p className="text-2xl font-bold font-mono text-orange-400">
+                  {velocityTrendDisplaySeries[0]?.peak ?? "\u2014"}{" "}
+                  <span className="text-xs font-normal text-slate-400">
+                    {displayUnits.velocity} peak
+                  </span>
+                </p>
+                <p className="text-xs text-slate-400">
+                  {velocityTrendSeries[0].date}
+                  {velocityTrendSeries[0].fault && velocityTrendSeries[0].fault !== "\u2014"
+                    ? ` \u00b7 ${velocityTrendSeries[0].fault}`
+                    : ""}
+                </p>
+                <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
@@ -3784,31 +3846,33 @@ export default function TrendAnalyzer({
                       return fault ? `${label} · ${fault}` : String(label);
                     }}
                   />
-                  {showThresholds && warningThresholdDisplay != null && (
-                      <ReferenceLine
-                        y={warningThresholdDisplay}
-                        stroke="#eab308"
-                        strokeDasharray="4 4"
-                        label={{
-                          value: "Warn",
-                          fill: "#eab308",
-                          fontSize: 10,
-                          position: "insideTopRight"
-                        }}
-                      />
+                  {showThresholds && (
+                    <ReferenceLine
+                      y={velocityThresholds.alertDisplay}
+                      stroke="#eab308"
+                      strokeDasharray="4 4"
+                      ifOverflow="extendDomain"
+                      label={{
+                        value: velocityThresholds.alertLabel,
+                        fill: "#eab308",
+                        fontSize: 10,
+                        position: "insideTopRight"
+                      }}
+                    />
                   )}
-                  {showThresholds && criticalThresholdDisplay != null && (
-                      <ReferenceLine
-                        y={criticalThresholdDisplay}
-                        stroke="#ef4444"
-                        strokeDasharray="4 4"
-                        label={{
-                          value: "Alarm",
-                          fill: "#ef4444",
-                          fontSize: 10,
-                          position: "insideTopRight"
-                        }}
-                      />
+                  {showThresholds && (
+                    <ReferenceLine
+                      y={velocityThresholds.dangerDisplay}
+                      stroke="#ef4444"
+                      strokeDasharray="4 4"
+                      ifOverflow="extendDomain"
+                      label={{
+                        value: velocityThresholds.dangerLabel,
+                        fill: "#ef4444",
+                        fontSize: 10,
+                        position: "insideTopRight"
+                      }}
+                    />
                   )}
                   <Line
                     type="monotone"

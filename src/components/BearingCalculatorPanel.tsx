@@ -7,6 +7,14 @@ import {
   type BearingFaultFrequencies
 } from "../lib/bearingCalc";
 import { canCurrent } from "../lib/roles";
+import {
+  KinematicSpecsEmptyState,
+  KinematicSpecsOutageBanner
+} from "./KinematicSpecsNotice";
+import {
+  classifyOptionalSpecResponse,
+  optionalSpecNetworkFailure
+} from "../lib/vibration/componentSpecs";
 
 /**
  * UI-only shape handed to the existing spectrum chart. Frequencies are null
@@ -67,6 +75,9 @@ export default function BearingCalculatorPanel({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [specRecordState, setSpecRecordState] = useState<
+    "idle" | "empty" | "outage"
+  >("idle");
   const [overlayEnabled, setOverlayEnabled] = useState(false);
   const [showHarmonics, setShowHarmonics] = useState(false);
   const maySaveSpec = canCurrent("bearing.write");
@@ -92,6 +103,7 @@ export default function BearingCalculatorPanel({
     let cancelled = false;
     setError(null);
     setNotice(null);
+    setSpecRecordState("idle");
     setSavedSpecId(null);
     setOverlayEnabled(false);
     setShowHarmonics(false);
@@ -111,53 +123,56 @@ export default function BearingCalculatorPanel({
     }
 
     setLoading(true);
+    const resetGeometry = () => {
+      setZ("");
+      setBd("");
+      setPd("");
+      setAngle("0");
+      setUnit("mm");
+      setReferenceLabel(suggestedLabel ?? "");
+    };
     fetch(`/api/bearing-specs/component/${componentId}`)
       .then(async (response) => {
         const body = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(body?.error || "Failed to load the bearing spec.");
-        }
-        return body as { spec?: BearingSpecRow | null };
+        return { status: response.status, body };
       })
-      .then((body) => {
+      .then(({ status, body }) => {
         if (cancelled) return;
-        const spec = body.spec ?? null;
-        if (spec) {
-          setSavedSpecId(spec.id);
-          setZ(String(spec.z));
-          setBd(String(spec.bd));
-          setPd(String(spec.pd));
-          setAngle(String(spec.contact_angle));
-          setUnit(spec.unit === "in" ? "in" : "mm");
-          setReferenceLabel(
-            typeof spec.reference_label === "string" ? spec.reference_label : ""
-          );
-          setNotice("Loaded the saved bearing spec for this component.");
-        } else {
-          setZ("");
-          setBd("");
-          setPd("");
-          setAngle("0");
-          setUnit("mm");
-          setReferenceLabel(suggestedLabel ?? "");
-          setNotice(
-            "No bearing spec saved for this component yet. Enter its geometry to calculate."
-          );
-        }
-      })
-      .catch((loadError: unknown) => {
-        if (cancelled) return;
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Failed to load the bearing spec."
+        const outcome = classifyOptionalSpecResponse<BearingSpecRow>(
+          status,
+          body
         );
-        setZ("");
-        setBd("");
-        setPd("");
-        setAngle("0");
-        setUnit("mm");
-        setReferenceLabel(suggestedLabel ?? "");
+        if (outcome.kind === "outage") {
+          setSpecRecordState("outage");
+          setError(outcome.message);
+          resetGeometry();
+          return;
+        }
+        if (outcome.kind === "empty") {
+          setSpecRecordState("empty");
+          setNotice(null);
+          resetGeometry();
+          return;
+        }
+        const spec = outcome.spec;
+        setSpecRecordState("idle");
+        setSavedSpecId(spec.id);
+        setZ(String(spec.z));
+        setBd(String(spec.bd));
+        setPd(String(spec.pd));
+        setAngle(String(spec.contact_angle));
+        setUnit(spec.unit === "in" ? "in" : "mm");
+        setReferenceLabel(
+          typeof spec.reference_label === "string" ? spec.reference_label : ""
+        );
+        setNotice("Loaded the saved bearing spec for this component.");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const outcome = optionalSpecNetworkFailure<BearingSpecRow>();
+        setSpecRecordState("outage");
+        setError(outcome.kind === "outage" ? outcome.message : null);
+        resetGeometry();
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -231,6 +246,7 @@ export default function BearingCalculatorPanel({
       }
       const spec = body?.spec as BearingSpecRow | undefined;
       if (spec) setSavedSpecId(spec.id);
+      setSpecRecordState("idle");
       setNotice("Bearing spec saved to this component.");
     } catch (saveError: unknown) {
       setError(
@@ -401,12 +417,18 @@ export default function BearingCalculatorPanel({
         </div>
       </div>
 
-      {error && (
+      {specRecordState === "empty" && !z && !bd && !pd && (
+        <KinematicSpecsEmptyState className="mt-3" />
+      )}
+      {specRecordState === "outage" && (
+        <KinematicSpecsOutageBanner className="mt-3" />
+      )}
+      {error && specRecordState !== "outage" && (
         <p className="mt-3 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
           {error}
         </p>
       )}
-      {notice && !error && (
+      {notice && !error && specRecordState === "idle" && (
         <p className="mt-3 text-xs text-slate-300 bg-slate-950/70 border border-slate-700 rounded-lg px-3 py-2">
           {notice}
         </p>

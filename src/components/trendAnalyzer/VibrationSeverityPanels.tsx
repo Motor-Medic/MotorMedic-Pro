@@ -19,8 +19,54 @@ const ZONE_ACTION: Record<IsoZone, string> = {
   A: "Continue routine condition monitoring.",
   B: "Continue routine condition monitoring.",
   C: "Schedule corrective maintenance and re-check the trend.",
-  D: "Immediate corrective action required — plan intervention now."
+  D: "Immediate corrective action required \u2014 plan intervention now."
 };
+
+/**
+ * Audit-safe copy used when the ISO zone cannot be resolved or the agents
+ * contradict each other. Never recommend a repair on an unresolved diagnosis.
+ */
+export const AUDIT_SAFE_FALLBACK =
+  "Awaiting further multi-tech diagnostic data to confirm failure mode.";
+
+export interface ActionCardCopyInput {
+  zone: IsoZone | null;
+  recommendation: string | null;
+  consensusConflict?: boolean;
+}
+
+export function resolveActionCardAction({
+  zone,
+  recommendation,
+  consensusConflict = false
+}: ActionCardCopyInput): string {
+  if (!zone || consensusConflict) return AUDIT_SAFE_FALLBACK;
+  return recommendation || ZONE_ACTION[zone];
+}
+
+/**
+ * Detect an unresolved multi-agent split from the persisted consensus detail
+ * block. The consensus engine records its disagreement note in
+ * `refereeDebateSummary`; a normal-vs-C/D split is also a contradiction even
+ * when the note is absent.
+ */
+export function consensusContradicts(details: unknown): boolean {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return false;
+  }
+  const record = details as Record<string, unknown>;
+  const debate = String(record.refereeDebateSummary || "");
+  if (/agents?\s+disagree|disagreement|contradict|conflict/i.test(debate)) {
+    return true;
+  }
+  const a = String(record.modelA_Hypothesis || "");
+  const b = String(record.modelB_Hypothesis || "");
+  const aHealthy = /\bnormal\b|healthy/i.test(a);
+  const bHealthy = /\bnormal\b|healthy/i.test(b);
+  const aElevated = /zone\s*[cd]\b/i.test(a);
+  const bElevated = /zone\s*[cd]\b/i.test(b);
+  return (aHealthy && bElevated) || (bHealthy && aElevated);
+}
 
 export interface VibrationSeverityPanelProps {
   /** Overall velocity in canonical mm/s RMS. */
@@ -171,20 +217,23 @@ export function VibrationKpiSummary({
 export interface VibrationActionCardProps extends VibrationSeverityPanelProps {
   summary: string | null;
   recommendation: string | null;
+  /** True when the persisted multi-agent consensus reports a contradiction. */
+  consensusConflict?: boolean;
 }
 
 export function VibrationActionCard({
   valueMmS,
   machineClass,
   summary,
-  recommendation
+  recommendation,
+  consensusConflict = false
 }: VibrationActionCardProps) {
   const zone = classifyZone(valueMmS, machineClass);
-  const action =
-    recommendation ||
-    (zone
-      ? ZONE_ACTION[zone]
-      : "Recommended Action: Complete a diagnostic run to generate recommendations.");
+  const action = resolveActionCardAction({
+    zone,
+    recommendation,
+    consensusConflict
+  });
 
   return (
     <div className={`${CARD} md:col-span-2`}>

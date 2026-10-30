@@ -133,15 +133,33 @@ export function formatVelocityMmS(value: number, digits = 2): string {
   return `${roundTo(value, digits).toFixed(digits)} ${CANONICAL_VELOCITY_UNIT}`;
 }
 
+/** Short unit label for the selected velocity display unit. */
+export function velocityUnitLabel(
+  unit: VelocityDisplayUnit = "mm/s"
+): string {
+  return unit === "in/s" ? "in/s" : "mm/s";
+}
+
+/**
+ * Numeric velocity in the selected display unit, rounded for labels.
+ * The unit stays separate so callers can render "alert 4.50, danger 7.10 mm/s".
+ */
+export function formatVelocityValue(
+  valueMmS: number,
+  unit: VelocityDisplayUnit = "mm/s"
+): string {
+  const display = velocityValueForDisplay(valueMmS, unit);
+  return unit === "in/s"
+    ? roundTo(display, 4).toFixed(4)
+    : roundTo(display, 2).toFixed(2);
+}
+
 /** Format canonical mm/s for a tenant-selected display unit (never re-labelled). */
 export function formatVelocityDisplay(
   valueMmS: number,
   unit: VelocityDisplayUnit = "mm/s"
 ): string {
-  if (unit === "in/s") {
-    return `${roundTo(mmPerSecondToInchPerSecond(valueMmS), 4).toFixed(4)} in/s`;
-  }
-  return `${roundTo(valueMmS, 2).toFixed(2)} mm/s`;
+  return `${formatVelocityValue(valueMmS, unit)} ${velocityUnitLabel(unit)}`;
 }
 
 /** Numeric velocity in the selected display unit (for chart series/axes). */

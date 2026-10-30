@@ -2,9 +2,11 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  AUDIT_SAFE_FALLBACK,
   VibrationActionCard,
   VibrationIsoMatrix,
-  VibrationKpiSummary
+  VibrationKpiSummary,
+  consensusContradicts
 } from "./VibrationSeverityPanels";
 import VibrationComparisonTab from "../reports/VibrationComparisonTab";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
@@ -135,5 +137,68 @@ describe("Trend Analyzer vibration severity panels", () => {
 
     expect(html).toContain("Zone C");
     expect(zoneText(html)).toBe("Zone C");
+  });
+
+  it("suppresses an aggressive repair when the ISO zone is unresolved", () => {
+    const html = renderToStaticMarkup(
+      <VibrationActionCard
+        valueMmS={null}
+        machineClass={machineClass}
+        summary="Early-Stage Bearing Defect Detected"
+        recommendation="Allocate the correct replacement bearing from inventory (match DE/NDE OEM spec)."
+      />
+    );
+    expect(html).toContain(AUDIT_SAFE_FALLBACK);
+    expect(html).not.toContain("Allocate the correct replacement bearing");
+  });
+
+  it("suppresses an aggressive repair when the agents contradict", () => {
+    const html = renderToStaticMarkup(
+      <VibrationActionCard
+        valueMmS={5}
+        machineClass={machineClass}
+        summary="Early-Stage Bearing Defect Detected"
+        recommendation="Allocate the correct replacement bearing from inventory (match DE/NDE OEM spec)."
+        consensusConflict
+      />
+    );
+    expect(html).toContain("Zone C");
+    expect(html).toContain(AUDIT_SAFE_FALLBACK);
+    expect(html).not.toContain("Allocate the correct replacement bearing");
+  });
+
+  it("keeps the repair recommendation when zone and consensus agree", () => {
+    const html = renderToStaticMarkup(
+      <VibrationActionCard
+        valueMmS={5}
+        machineClass={machineClass}
+        summary="Outer-race bearing defect"
+        recommendation="Allocate the correct replacement bearing from inventory (match DE/NDE OEM spec)."
+      />
+    );
+    expect(html).toContain("Allocate the correct replacement bearing");
+    expect(html).not.toContain(AUDIT_SAFE_FALLBACK);
+  });
+
+  it("detects a persisted multi-agent contradiction", () => {
+    expect(
+      consensusContradicts({
+        refereeDebateSummary:
+          'Agents disagreed on fault classification: AgentA="Early-Stage Bearing Defect Detected" vs AgentB="Normal" ISO Zone A.'
+      })
+    ).toBe(true);
+    expect(
+      consensusContradicts({
+        modelA_Hypothesis: "Normal (90%)",
+        modelB_Hypothesis: "Bearing defect ISO Zone D (85%)"
+      })
+    ).toBe(true);
+    expect(
+      consensusContradicts({
+        modelA_Hypothesis: "Bearing defect (90%)",
+        modelB_Hypothesis: "Bearing defect ISO Zone C (88%)"
+      })
+    ).toBe(false);
+    expect(consensusContradicts(null)).toBe(false);
   });
 });
