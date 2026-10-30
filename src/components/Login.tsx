@@ -33,9 +33,8 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
   const [inviteToken, setInviteToken] = useState("");
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // AR-29 — production builds never offer demo login or open self-signup.
+  // AR-29 — production builds never offer open self-signup.
   const isProdBuild = import.meta.env.PROD;
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -110,30 +109,6 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
       setError(err.message || "Registration failed. Please try again.");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleDemoLogin = async () => {
-    setError(null);
-    setDemoLoading(true);
-
-    try {
-      const response = await fetch("/api/auth/demo-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to enter Demo Mode.");
-      }
-
-      onLoginSuccess(data);
-    } catch (err: any) {
-      setError(err.message || "An error occurred starting Demo Mode.");
-    } finally {
-      setDemoLoading(false);
     }
   };
 
@@ -213,7 +188,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                 <input
                   type="text"
                   required
-                  disabled={loading || demoLoading}
+                  disabled={loading}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="e.g., reliability_eng_01"
@@ -233,7 +208,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                 <input
                   type="password"
                   required
-                  disabled={loading || demoLoading}
+                  disabled={loading}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••••••"
@@ -255,7 +230,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                     <input
                       type="text"
                       required
-                      disabled={loading || demoLoading}
+                      disabled={loading}
                       value={plantCompanyName}
                       onChange={(e) => setPlantCompanyName(e.target.value)}
                       placeholder="e.g., Texas Refinery Alpha"
@@ -273,7 +248,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                     </span>
                     <input
                       type="email"
-                      disabled={loading || demoLoading}
+                      disabled={loading}
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="e.g., engineer@refinery.com"
@@ -294,7 +269,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                       <input
                         type="text"
                         required
-                        disabled={loading || demoLoading}
+                        disabled={loading}
                         value={inviteToken}
                         onChange={(e) => setInviteToken(e.target.value)}
                         placeholder="e.g., 9f2c1a…"
@@ -315,7 +290,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
                   type="checkbox"
                   required
                   checked={termsAccepted}
-                  disabled={loading || demoLoading}
+                  disabled={loading}
                   onChange={(e) => setTermsAccepted(e.target.checked)}
                   className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-700 bg-slate-950/60 text-emerald-500 focus:ring-emerald-500/40 cursor-pointer"
                   id="login-terms-checkbox"
@@ -347,7 +322,7 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading || demoLoading}
+              disabled={loading}
               className="w-full mt-2 bg-slate-100 hover:bg-white text-slate-950 font-medium py-2.5 px-4 rounded-lg text-sm transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed font-sans"
               id="login-submit-btn"
             >
@@ -389,34 +364,6 @@ export default function Login({ onLoginSuccess, onShowLegal }: LoginProps) {
               </button>
             )}
           </div>
-
-          {/* Demo Credentials Badge — development only (AR-29: no demo
-              bypass surfaced in production builds). */}
-          {!isRegister && !isProdBuild && (
-            <div className="mt-5 p-3 bg-emerald-950/20 border border-emerald-500/20 rounded-lg text-xs text-slate-300 flex flex-col gap-1.5" id="demo-credentials-badge">
-              <div className="flex items-center justify-between font-medium text-emerald-400">
-                <span>Test Credentials Available:</span>
-                <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-[10px] uppercase font-mono tracking-wider">Demo Mode</span>
-              </div>
-              <div className="flex items-center justify-between font-mono text-[11px] text-slate-400">
-                <div>
-                  <span>Username: </span>
-                  <span className="text-white select-all">demo</span>
-                </div>
-                <div>
-                  <span>Password: </span>
-                  <span className="text-white select-all">demo123</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleDemoLogin}
-                className="mt-1 w-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-[11px] font-medium py-1.5 rounded transition-colors text-center cursor-pointer"
-              >
-                Launch Demo Mode Instantly
-              </button>
-            </div>
-          )}
 
           <p className="text-center text-[11px] text-slate-500 mt-6 font-sans leading-relaxed">
             Please sign in using your authorized organizational credentials to access the diagnostic workbench.
