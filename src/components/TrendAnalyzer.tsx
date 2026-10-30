@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Area,
   AreaChart,
@@ -39,6 +40,7 @@ import {
   FileText,
   Loader2,
   Mail,
+  Maximize2,
   Plus,
   Printer,
   RotateCw,
@@ -151,7 +153,10 @@ import {
   velocityValueForDisplay,
   type DisplayUnits
 } from "../lib/vibration/units";
-import { resolveVelocityThresholds } from "../lib/vibration/velocityThresholds";
+import {
+  resolveVelocityThresholds,
+  type VelocityThresholdResolution
+} from "../lib/vibration/velocityThresholds";
 import {
   MISSING_RPM_ORDER_HELPER_TEXT,
   buildSpectralHarmonicTrend,
@@ -160,7 +165,13 @@ import {
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import { navigateToTab } from "../navigation";
 import { stageWorkOrderPrefill } from "../lib/maintenance/workOrderPrefill";
-import WaveformTab from "./trendAnalyzer/WaveformTab";
+import WaveformTab, {
+  buildWaveformChartModel,
+  CrestFactorTrendChartBody,
+  ImpactCountTrendChartBody,
+  WaveformTimeChartBody,
+  type WaveformChartId
+} from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
 import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
 import OilCleanlinessTab from "./trendAnalyzer/OilCleanlinessTab";
@@ -206,6 +217,15 @@ interface TrendAnalyzerProps {
 
 type TimeRange = TrendTimeRange;
 type OverlayParam = "Temp" | "MCSA" | "Load" | null;
+type ExpandedTrendChartId =
+  | "health"
+  | "velocity"
+  | "spectral"
+  | "envelopingGe"
+  | "envelopingKurtosis"
+  | "waveformTime"
+  | "waveformCrest"
+  | "waveformImpact";
 
 interface SpectrumPoint {
   date: string;
@@ -1362,6 +1382,614 @@ const tooltipStyle = {
   fontSize: 12
 };
 
+interface BroadbandChartPoint {
+  date: string;
+  fault?: string;
+  health?: number;
+  peak?: number;
+  timestamp?: string;
+}
+
+/**
+ * Single renderer for the broadband Health / Peak Velocity chart bodies.
+ *
+ * Both the inline card and the enlarged modal render through this component
+ * with the exact same windowed series, guard booleans, threshold resolution
+ * and display-unit props — there is no second data path or re-derivation.
+ */
+function BroadbandTrendChartBody({
+  variant,
+  data,
+  isEmpty,
+  isSparse,
+  velocityUnit,
+  thresholds,
+  showThresholds
+}: {
+  variant: "health" | "velocity";
+  data: BroadbandChartPoint[];
+  isEmpty: boolean;
+  isSparse: boolean;
+  velocityUnit: string;
+  thresholds: VelocityThresholdResolution;
+  showThresholds: boolean;
+}) {
+  if (isEmpty) {
+    return (
+      <div className="h-full flex items-center justify-center px-4 text-center">
+        <p className="text-sm text-slate-500">
+          {variant === "health"
+            ? "No analysis data yet - run a diagnostic to populate trends"
+            : "No velocity readings yet \u2014 run a diagnostic with spectrum peaks to populate this chart."}
+        </p>
+      </div>
+    );
+  }
+
+  if (isSparse) {
+    const first = data[0];
+    const tone =
+      variant === "health"
+        ? {
+            dot: "bg-yellow-400 shadow-[0_0_10px_rgba(234,179,8,0.8)]",
+            value: "text-yellow-400",
+            label: `${first?.health ?? "\u2014"}`
+          }
+        : {
+            dot: "bg-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.8)]",
+            value: "text-orange-400",
+            label: `${first?.peak ?? "\u2014"}`
+          };
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+        <span className={`h-3 w-3 rounded-full ${tone.dot}`} />
+        <p className={`text-2xl font-bold font-mono ${tone.value}`}>
+          {tone.label}
+          {variant === "velocity" ? (
+            <span className="text-xs font-normal text-slate-400">
+              {" "}
+              {velocityUnit} peak
+            </span>
+          ) : null}
+        </p>
+        <p className="text-xs text-slate-400">
+          {first?.date}
+          {first?.fault && first.fault !== "\u2014" ? ` \u00b7 ${first.fault}` : ""}
+        </p>
+        <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
+      </div>
+    );
+  }
+
+  if (variant === "health") {
+    return (
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={chartMargin}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+          <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+          <YAxis
+            domain={[0, 100]}
+            stroke="#eab308"
+            tick={{ fontSize: 11 }}
+            label={{
+              value: "Health",
+              angle: -90,
+              position: "insideLeft",
+              fill: "#eab308",
+              fontSize: 11
+            }}
+          />
+          <Tooltip
+            contentStyle={tooltipStyle}
+            allowEscapeViewBox={{ x: true, y: true }}
+            wrapperStyle={{ zIndex: 20 }}
+            formatter={(value: number) => [`${value}`, "Health score"]}
+            labelFormatter={(label, payload) => {
+              const fault = payload?.[0]?.payload?.fault;
+              return fault ? `${label} \u00b7 ${fault}` : String(label);
+            }}
+          />
+          <Line
+            type="monotone"
+            dataKey="health"
+            stroke="#eab308"
+            strokeWidth={2}
+            name="Health score"
+            dot={{ r: 4 }}
+            activeDot={{ r: 6 }}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={data} margin={chartMargin}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+        <YAxis
+          stroke="#f97316"
+          tick={{ fontSize: 11 }}
+          label={{
+            value: `Peak amp (${velocityUnit})`,
+            angle: -90,
+            position: "insideLeft",
+            fill: "#f97316",
+            fontSize: 11
+          }}
+        />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+          formatter={(value: number) => [
+            `${value} ${velocityUnit} (peak)`,
+            "Peak amplitude"
+          ]}
+          labelFormatter={(label, payload) => {
+            const fault = payload?.[0]?.payload?.fault;
+            return fault ? `${label} \u00b7 ${fault}` : String(label);
+          }}
+        />
+        {showThresholds && (
+          <ReferenceLine
+            y={thresholds.alertDisplay}
+            stroke="#eab308"
+            strokeDasharray="4 4"
+            ifOverflow="extendDomain"
+            label={{
+              value: thresholds.alertLabel,
+              fill: "#eab308",
+              fontSize: 10,
+              position: "insideTopRight"
+            }}
+          />
+        )}
+        {showThresholds && (
+          <ReferenceLine
+            y={thresholds.dangerDisplay}
+            stroke="#ef4444"
+            strokeDasharray="4 4"
+            ifOverflow="extendDomain"
+            label={{
+              value: thresholds.dangerLabel,
+              fill: "#ef4444",
+              fontSize: 10,
+              position: "insideTopRight"
+            }}
+          />
+        )}
+        <Line
+          type="monotone"
+          dataKey="peak"
+          stroke="#f97316"
+          strokeWidth={2}
+          name="Peak Velocity"
+          dot={{ r: 4 }}
+          activeDot={{ r: 6 }}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+type SpectralTrendChartPoint = {
+  date: string;
+  amp1X: number | null;
+  amp2X: number | null;
+  overall: number | null;
+};
+
+/**
+ * Single renderer for the Spectral & Harmonics 1X/2X/overall series. Inline and
+ * enlarged views share this body so guards and display units never diverge.
+ */
+function SpectralTrendChartBody({
+  data,
+  windowEmpty,
+  isSparse,
+  ordersUnavailable,
+  velocityUnit,
+  timeRange
+}: {
+  data: SpectralTrendChartPoint[];
+  windowEmpty: boolean;
+  isSparse: boolean;
+  ordersUnavailable: boolean;
+  velocityUnit: DisplayUnits["velocity"];
+  timeRange: TimeRange;
+}) {
+  if (windowEmpty) {
+    return (
+      <div className="h-full flex items-center justify-center px-4 text-center">
+        <p className="text-sm text-slate-500">
+          No spectral readings in the selected {timeRange} window.
+        </p>
+      </div>
+    );
+  }
+
+  if (isSparse) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+        <span className="h-3 w-3 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" />
+        <p className="text-2xl font-bold font-mono text-cyan-400">
+          {data[0]?.overall != null
+            ? Number(data[0].overall).toFixed(3)
+            : "\u2014"}{" "}
+          <span className="text-xs font-normal text-slate-400">
+            {velocityUnit} overall
+          </span>
+        </p>
+        <p className="text-xs text-slate-400">{data[0]?.date}</p>
+        <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart
+        data={data}
+        margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis
+          dataKey="date"
+          stroke="#94a3b8"
+          tick={{ fontSize: 11 }}
+          label={{
+            value: "Date",
+            position: "insideBottom",
+            offset: -12,
+            fill: "#64748b",
+            fontSize: 11
+          }}
+        />
+        <YAxis
+          stroke="#38bdf8"
+          tick={{ fontSize: 10 }}
+          label={{
+            value: spectralAmplitudeAxisLabel(velocityUnit),
+            angle: -90,
+            position: "insideLeft",
+            fill: "#38bdf8",
+            fontSize: 11
+          }}
+        />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+          formatter={(value: number, name: string) => [
+            `${value} ${velocityUnit}`,
+            name
+          ]}
+        />
+        <Legend />
+        {!ordersUnavailable && (
+          <>
+            <Line
+              type="monotone"
+              dataKey="amp1X"
+              name="1X Amplitude (Unbalance)"
+              stroke="#38bdf8"
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+            />
+            <Line
+              type="monotone"
+              dataKey="amp2X"
+              name="2X Amplitude (Misalignment)"
+              stroke="#f59e0b"
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              isAnimationActive={false}
+            />
+          </>
+        )}
+        <Line
+          type="monotone"
+          dataKey="overall"
+          name="Overall Vibration"
+          stroke="#94a3b8"
+          strokeWidth={2}
+          strokeDasharray="3 3"
+          dot={{ r: 3 }}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+type EnvelopingGeChartPoint = {
+  date: string;
+  peakGe: number;
+};
+
+type EnvelopingKurtosisChartPoint = {
+  date: string;
+  kurtosis: number;
+};
+
+/** Shared Peak gE body for the inline card and the enlarged modal. */
+function EnvelopingGeChartBody({
+  data,
+  hasAnySeries,
+  timeRange,
+  baselinePeakGe
+}: {
+  data: EnvelopingGeChartPoint[];
+  hasAnySeries: boolean;
+  timeRange: TimeRange;
+  baselinePeakGe: number | null;
+}) {
+  if (data.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center px-4 text-center">
+        <p className="text-sm text-slate-500">
+          {!hasAnySeries ? (
+            <>
+              No recorded g<sub>E</sub> values yet — run a diagnostic with
+              enveloping / acceleration data.
+            </>
+          ) : (
+            <>
+              No recorded g<sub>E</sub> values in the selected {timeRange}{" "}
+              window.
+            </>
+          )}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={data} margin={chartMargin}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+        <YAxis stroke="#eab308" tick={{ fontSize: 11 }} />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+        />
+        {baselinePeakGe != null && baselinePeakGe > 0 && (
+          <ReferenceLine
+            y={baselinePeakGe}
+            stroke="#f59e0b"
+            strokeDasharray="6 4"
+            label={{
+              value: `Baseline ${baselinePeakGe.toFixed(2)} gE`,
+              fill: "#f59e0b",
+              fontSize: 10,
+              position: "insideTopRight"
+            }}
+          />
+        )}
+        <Line
+          type="monotone"
+          dataKey="peakGe"
+          stroke="#eab308"
+          strokeWidth={2.5}
+          name="Peak gE"
+          dot={{ r: 4 }}
+          connectNulls={false}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+/** Shared Kurtosis body for the inline card and the enlarged modal. */
+function EnvelopingKurtosisChartBody({
+  data,
+  hasAnySeries,
+  timeRange,
+  baselineKurtosis
+}: {
+  data: EnvelopingKurtosisChartPoint[];
+  hasAnySeries: boolean;
+  timeRange: TimeRange;
+  baselineKurtosis: number | null;
+}) {
+  if (data.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center px-4 text-center">
+        <p className="text-sm text-slate-500">
+          {!hasAnySeries
+            ? "No kurtosis / crest factor recorded yet."
+            : `No kurtosis / crest factor recorded in the selected ${timeRange} window.`}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={data} margin={chartMargin}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+        <YAxis stroke="#22d3ee" tick={{ fontSize: 11 }} />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+        />
+        {baselineKurtosis != null && baselineKurtosis > 0 && (
+          <ReferenceLine
+            y={baselineKurtosis}
+            stroke="#22d3ee"
+            strokeDasharray="6 4"
+            label={{
+              value: "Baseline",
+              fill: "#22d3ee",
+              fontSize: 10,
+              position: "insideTopRight"
+            }}
+          />
+        )}
+        <Line
+          type="monotone"
+          dataKey="kurtosis"
+          stroke="#22d3ee"
+          strokeWidth={2.5}
+          name="Kurtosis"
+          dot={{ r: 4 }}
+          connectNulls={false}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+/**
+ * Dark-styled enlarge dialog. Focus is trapped while open, body scroll is
+ * locked, and focus returns to the icon button that opened it on unmount.
+ */
+function TrendChartExpandModal({
+  title,
+  subtitle,
+  onClose,
+  children
+}: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const root = dialogRef.current;
+      if (!root) return;
+      const focusables = Array.from(
+        root.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter(
+        (el) =>
+          !el.hasAttribute("disabled") &&
+          el.getAttribute("aria-hidden") !== "true"
+      );
+
+      if (focusables.length === 0) {
+        event.preventDefault();
+        root.focus();
+        return;
+      }
+
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey) {
+        if (active === first || !root.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !root.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus();
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4 sm:p-8"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-bold text-white">{title}</h3>
+            {subtitle ? (
+              <p className="truncate text-xs text-slate-400">{subtitle}</p>
+            ) : null}
+          </div>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-300 transition-colors hover:bg-slate-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 cursor-pointer"
+            aria-label="Close enlarged chart"
+          >
+            ✕
+          </button>
+        </div>
+        <div
+          className="min-h-[450px] overflow-visible bg-slate-950 p-4"
+          style={{ height: "min(70vh, 560px)", minHeight: "450px" }}
+        >
+          {children}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function ChartExpandButton({
+  onClick,
+  label
+}: {
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 cursor-pointer"
+      aria-label={label}
+      title={label}
+    >
+      <Maximize2 className="h-4 w-4" aria-hidden="true" />
+    </button>
+  );
+}
+
 /** Shared maintenance / lubrication / alarm vertical markers for all trend charts */
 function EventBadgeLabel(props: {
   viewBox?: { x?: number; y?: number; width?: number; height?: number };
@@ -1447,6 +2075,28 @@ function peakAmplitudeFromAnalysis(row: SavedAnalysisResult): number | null {
     }
   }
   return found ? Number(max.toFixed(4)) : null;
+}
+
+function toSpectralHarmonicInputs(
+  analyses: readonly SavedAnalysisResult[],
+  fallbackRpm: number | null
+) {
+  return [...analyses].reverse().map((analysis) => {
+    const rec = extractVibrationRecordFromAnalysis(analysis);
+    return {
+      timestamp: rec?.timestamp || analysis.timestamp,
+      rpm:
+        rec?.rpm ??
+        rec?.context?.motorSpeedRPM ??
+        fallbackRpm ??
+        null,
+      peaks: rec?.spectral || [],
+      overall:
+        rec?.broadband?.overallVelocity ||
+        peakAmplitudeFromAnalysis(analysis) ||
+        null
+    };
+  });
 }
 
 function formatRpmHz(
@@ -1588,6 +2238,8 @@ export default function TrendAnalyzer({
   const [selectedPointB, setSelectedPointB] = useState<SpectrumPoint | null>(null);
   const [nextPick, setNextPick] = useState<"A" | "B">("A");
   const [showThresholds, setShowThresholds] = useState(true);
+  const [expandedChart, setExpandedChart] =
+    useState<ExpandedTrendChartId | null>(null);
   const [dbAnalyses, setDbAnalyses] = useState<SavedAnalysisResult[]>([]);
   const [dbTrendError, setDbTrendError] = useState<string | null>(null);
   const [dbTrendLoading, setDbTrendLoading] = useState(false);
@@ -1808,6 +2460,17 @@ export default function TrendAnalyzer({
     [dbAnalyses]
   );
 
+  /**
+   * One shared time window for every vibration trend surface (broadband,
+   * spectral, enveloping charts + table). All four derive from this filtered
+   * array so 7D/30D/90D/1Y can never drift between tabs, and the sparse /
+   * missing-RPM guards below evaluate the windowed rows — not the raw history.
+   */
+  const windowedVibAnalyses = useMemo(
+    () => filterTrendByTimeRange(vibAnalyses, timeRange),
+    [vibAnalyses, timeRange]
+  );
+
   /** Latest unified vibration diagnostic record — prefer rows that include FFT peaks. */
   const latestVibrationRecord = useMemo((): VibrationDiagnosticRecord | null => {
     const fromDb = vibAnalyses
@@ -1897,7 +2560,7 @@ export default function TrendAnalyzer({
   );
 
   const healthTrendSeries = useMemo(() => {
-    return [...vibAnalyses]
+    return [...windowedVibAnalyses]
       .filter((r) => r.health_score != null)
       .reverse()
       .map((r) => ({
@@ -1911,10 +2574,10 @@ export default function TrendAnalyzer({
         fault: r.primary_fault || "—",
         timestamp: r.timestamp
       }));
-  }, [vibAnalyses]);
+  }, [windowedVibAnalyses]);
 
   const velocityTrendSeries = useMemo(() => {
-    return [...vibAnalyses]
+    return [...windowedVibAnalyses]
       .map((r) => {
         const peak = peakAmplitudeFromAnalysis(r);
         if (peak == null) return null;
@@ -1932,7 +2595,7 @@ export default function TrendAnalyzer({
       })
       .filter(Boolean)
       .reverse() as { date: string; peak: number; fault: string; timestamp: string }[];
-  }, [vibAnalyses]);
+  }, [windowedVibAnalyses]);
 
   const healthTrendIsSparse = useMemo(
     () => isSparseTrendSeries(healthTrendSeries),
@@ -2196,30 +2859,26 @@ export default function TrendAnalyzer({
     [surgeData]
   );
 
-  const spectralHarmonicTrend = useMemo(
+  const spectralHarmonicTrendAll = useMemo(
     () =>
       buildSpectralHarmonicTrend(
-        [...vibAnalyses].reverse().map((analysis) => {
-          const rec = extractVibrationRecordFromAnalysis(analysis);
-          return {
-            timestamp: rec?.timestamp || analysis.timestamp,
-            rpm:
-              rec?.rpm ??
-              rec?.context?.motorSpeedRPM ??
-              machineSpecs.rpm ??
-              null,
-            peaks: rec?.spectral || [],
-            overall:
-              rec?.broadband?.overallVelocity ||
-              peakAmplitudeFromAnalysis(analysis) ||
-              null
-          };
-        })
+        toSpectralHarmonicInputs(vibAnalyses, machineSpecs.rpm)
       ),
     [vibAnalyses, machineSpecs.rpm]
   );
 
-  const isUsingReferenceSpectralTrend = spectralHarmonicTrend.rows.length === 0;
+  const spectralHarmonicTrend = useMemo(
+    () =>
+      buildSpectralHarmonicTrend(
+        toSpectralHarmonicInputs(windowedVibAnalyses, machineSpecs.rpm)
+      ),
+    [windowedVibAnalyses, machineSpecs.rpm]
+  );
+
+  const hasAnySpectralTrend = spectralHarmonicTrendAll.rows.length > 0;
+  const isUsingReferenceSpectralTrend = !hasAnySpectralTrend;
+  const spectralWindowEmpty =
+    hasAnySpectralTrend && spectralHarmonicTrend.rows.length === 0;
   const spectralTrendChartData = isUsingReferenceSpectralTrend
     ? REFERENCE_TREND_DATA
     : spectralHarmonicTrend.rows;
@@ -2311,12 +2970,17 @@ export default function TrendAnalyzer({
     return rows;
   }, [vibAnalyses]);
 
-  // One shared window for the charts above and the Enveloping History table —
-  // never a second date filter (Slice-H lesson).
-  const envelopingTrendWindow = useMemo(
-    () => filterTrendByTimeRange(envelopingTrendSeries, timeRange),
-    [envelopingTrendSeries, timeRange]
-  );
+  // Charts and the Enveloping History table share the same windowed analyses as
+  // broadband and spectral — no second date predicate, no drift (Slice-H lesson).
+  const envelopingTrendWindow = useMemo(() => {
+    const rows: EnvelopingTrendPoint[] = [];
+    for (const analysis of [...windowedVibAnalyses].reverse()) {
+      const point = extractEnvelopingTrendPoint(analysis);
+      if (!point) continue;
+      rows.push(point);
+    }
+    return rows;
+  }, [windowedVibAnalyses]);
 
   const envelopingGeChartData = useMemo(
     () =>
@@ -2431,7 +3095,8 @@ export default function TrendAnalyzer({
     vibExtractedEnvelopeChart.length > 0 ||
     calculatedBearingFaults != null;
 
-  const waveformTrendSeries = useMemo(() => {
+  /** Full history for the latest-metrics summary cards (not date-windowed). */
+  const waveformTrendSeriesAll = useMemo(() => {
     const rows = [];
     for (const analysis of [...vibAnalyses].reverse()) {
       const point = extractWaveformTrendPoint(analysis);
@@ -2440,11 +3105,22 @@ export default function TrendAnalyzer({
     return rows;
   }, [vibAnalyses]);
 
+  // Waveform charts share the single windowed analyses array (Slice N intent):
+  // no second date predicate, so 7D/30D/90D/1Y matches every other tab.
+  const waveformTrendSeries = useMemo(() => {
+    const rows = [];
+    for (const analysis of [...windowedVibAnalyses].reverse()) {
+      const point = extractWaveformTrendPoint(analysis);
+      if (point) rows.push(point);
+    }
+    return rows;
+  }, [windowedVibAnalyses]);
+
   const latestWaveformAnalysisMetrics = useMemo(() => {
     const fromRecord = latestVibrationRecord?.waveformAnalysis;
     const fromTrend =
-      waveformTrendSeries.length > 0
-        ? waveformTrendSeries[waveformTrendSeries.length - 1]
+      waveformTrendSeriesAll.length > 0
+        ? waveformTrendSeriesAll[waveformTrendSeriesAll.length - 1]
         : null;
     const peakToPeak =
       fromRecord?.peakToPeak ?? fromTrend?.peakToPeak ?? null;
@@ -2486,7 +3162,7 @@ export default function TrendAnalyzer({
     };
   }, [
     latestVibrationRecord,
-    waveformTrendSeries,
+    waveformTrendSeriesAll,
     machineSpecs.rpm
   ]);
 
@@ -2503,6 +3179,17 @@ export default function TrendAnalyzer({
       amplitude: p.amplitude
     }));
   }, [latestVibrationRecord]);
+
+  // One waveform model feeds the inline cards and every enlarged twin.
+  const waveformChartModel = useMemo(
+    () =>
+      buildWaveformChartModel({
+        rpm: waveformRpm,
+        trendPoints: waveformTrendSeries,
+        waveformSamples: vibExtractedWaveformChart
+      }),
+    [waveformRpm, waveformTrendSeries, vibExtractedWaveformChart]
+  );
 
   const vibrationAwaitingRecordAlert = (
     <div className={`${CARD} mb-6 flex flex-col items-center justify-center text-center py-16 px-6`}>
@@ -3224,6 +3911,8 @@ export default function TrendAnalyzer({
   );
   const projectedRulDays = Math.max(3, Math.round(14 / speedFactor));
 
+  const closeExpandedChart = useCallback(() => setExpandedChart(null), []);
+
   const handlePointClick = (point: SpectrumPoint) => {
     if (nextPick === "A") {
       setSelectedPointA(point);
@@ -3382,20 +4071,34 @@ export default function TrendAnalyzer({
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mr-1">
               Time Range
             </span>
-            {(["7D", "30D", "90D", "1Y", "Custom"] as TimeRange[]).map((range) => (
-              <button
-                key={range}
-                type="button"
-                onClick={() => setTimeRange(range)}
-                className={`px-2.5 py-1 rounded text-xs border transition-colors cursor-pointer ${
-                  timeRange === range
-                    ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30 font-bold"
-                    : "bg-slate-800 border-slate-700 text-slate-400"
-                }`}
-              >
-                {range}
-              </button>
-            ))}
+            {(["7D", "30D", "90D", "1Y", "Custom"] as TimeRange[]).map((range) => {
+              const isCustom = range === "Custom";
+              return (
+                <button
+                  key={range}
+                  type="button"
+                  disabled={isCustom}
+                  aria-disabled={isCustom}
+                  title={
+                    isCustom
+                      ? "Custom range picker is not available yet — choose 7D, 30D, 90D, or 1Y"
+                      : undefined
+                  }
+                  onClick={() => {
+                    if (!isCustom) setTimeRange(range);
+                  }}
+                  className={`px-2.5 py-1 rounded text-xs border transition-colors ${
+                    isCustom
+                      ? "bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed opacity-60"
+                      : timeRange === range
+                        ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30 font-bold cursor-pointer"
+                        : "bg-slate-800 border-slate-700 text-slate-400 cursor-pointer"
+                  }`}
+                >
+                  {range}
+                </button>
+              );
+            })}
 
             <button
               type="button"
@@ -3726,9 +4429,15 @@ export default function TrendAnalyzer({
         {/* Chart 1 — Health score from saved diagnostics */}
         <div className={CARD}>
           <div className="flex flex-col gap-2 mb-3">
-            <div className="flex items-center gap-2">
-              <Activity className="h-4 w-4 text-yellow-500" />
-              <h3 className="text-base font-bold text-white">Health Score Trend</h3>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-yellow-500" />
+                <h3 className="text-base font-bold text-white">Health Score Trend</h3>
+              </div>
+              <ChartExpandButton
+                onClick={() => setExpandedChart("health")}
+                label="Expand Health Score Trend"
+              />
             </div>
             <p className="text-xs text-slate-400">
               From Run Diagnostics (PostgreSQL)
@@ -3739,176 +4448,86 @@ export default function TrendAnalyzer({
             )}
           </div>
           <div className="h-64 bg-slate-950 rounded-lg border border-white/10 p-2">
-                {healthTrendSeries.length === 0 ? (
-              <div className="h-full flex items-center justify-center px-4 text-center">
-                <p className="text-sm text-slate-500">
-                  No analysis data yet - run a diagnostic to populate trends
-                </p>
-              </div>
-            ) : healthTrendIsSparse ? (
-              <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
-                <span className="h-3 w-3 rounded-full bg-yellow-400 shadow-[0_0_10px_rgba(234,179,8,0.8)]" />
-                <p className="text-2xl font-bold font-mono text-yellow-400">
-                  {healthTrendSeries[0].health}
-                </p>
-                <p className="text-xs text-slate-400">
-                  {healthTrendSeries[0].date}
-                  {healthTrendSeries[0].fault && healthTrendSeries[0].fault !== "\u2014"
-                    ? ` \u00b7 ${healthTrendSeries[0].fault}`
-                    : ""}
-                </p>
-                <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={healthTrendSeries}
-                  margin={chartMargin}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    domain={[0, 100]}
-                    stroke="#eab308"
-                    tick={{ fontSize: 11 }}
-                    label={{
-                      value: "Health",
-                      angle: -90,
-                      position: "insideLeft",
-                      fill: "#eab308",
-                      fontSize: 11
-                    }}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    formatter={(value: number) => [`${value}`, "Health score"]}
-                    labelFormatter={(label, payload) => {
-                      const fault = payload?.[0]?.payload?.fault;
-                      return fault ? `${label} · ${fault}` : String(label);
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="health"
-                    stroke="#eab308"
-                    strokeWidth={2}
-                    name="Health score"
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
+            <BroadbandTrendChartBody
+              variant="health"
+              data={healthTrendSeries}
+              isEmpty={healthTrendSeries.length === 0}
+              isSparse={healthTrendIsSparse}
+              velocityUnit={displayUnits.velocity}
+              thresholds={velocityThresholds}
+              showThresholds={showThresholds}
+            />
           </div>
         </div>
 
         {/* Chart 2 — Peak velocity from analysis peaks */}
         <div className={CARD}>
           <div className="flex flex-col gap-1 mb-3">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-orange-400" />
-              <h3 className="text-base font-bold text-white">Peak Velocity</h3>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-orange-400" />
+                <h3 className="text-base font-bold text-white">Peak Velocity</h3>
+              </div>
+              <ChartExpandButton
+                onClick={() => setExpandedChart("velocity")}
+                label="Expand Peak Velocity"
+              />
             </div>
             <p className="text-xs text-slate-400">
               From analysis peaks · {velocityThresholds.provenance}
             </p>
           </div>
           <div className="h-64 bg-slate-950 rounded-lg border border-white/10 p-2">
-            {velocityTrendSeries.length === 0 ? (
-              <div className="h-full flex items-center justify-center px-4 text-center">
-                <p className="text-sm text-slate-500">
-                  No velocity readings yet \u2014 run a diagnostic with spectrum peaks to populate this chart.
-                </p>
-              </div>
-            ) : velocityTrendIsSparse ? (
-              <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
-                <span className="h-3 w-3 rounded-full bg-orange-400 shadow-[0_0_10px_rgba(249,115,22,0.8)]" />
-                <p className="text-2xl font-bold font-mono text-orange-400">
-                  {velocityTrendDisplaySeries[0]?.peak ?? "\u2014"}{" "}
-                  <span className="text-xs font-normal text-slate-400">
-                    {displayUnits.velocity} peak
-                  </span>
-                </p>
-                <p className="text-xs text-slate-400">
-                  {velocityTrendSeries[0].date}
-                  {velocityTrendSeries[0].fault && velocityTrendSeries[0].fault !== "\u2014"
-                    ? ` \u00b7 ${velocityTrendSeries[0].fault}`
-                    : ""}
-                </p>
-                <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={velocityTrendDisplaySeries} margin={chartMargin}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    stroke="#f97316"
-                    tick={{ fontSize: 11 }}
-                    label={{
-                      value: `Peak amp (${displayUnits.velocity})`,
-                      angle: -90,
-                      position: "insideLeft",
-                      fill: "#f97316",
-                      fontSize: 11
-                    }}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    formatter={(value: number) => [
-                      `${value} ${displayUnits.velocity} (peak)`,
-                      "Peak amplitude"
-                    ]}
-                    labelFormatter={(label, payload) => {
-                      const fault = payload?.[0]?.payload?.fault;
-                      return fault ? `${label} · ${fault}` : String(label);
-                    }}
-                  />
-                  {showThresholds && (
-                    <ReferenceLine
-                      y={velocityThresholds.alertDisplay}
-                      stroke="#eab308"
-                      strokeDasharray="4 4"
-                      ifOverflow="extendDomain"
-                      label={{
-                        value: velocityThresholds.alertLabel,
-                        fill: "#eab308",
-                        fontSize: 10,
-                        position: "insideTopRight"
-                      }}
-                    />
-                  )}
-                  {showThresholds && (
-                    <ReferenceLine
-                      y={velocityThresholds.dangerDisplay}
-                      stroke="#ef4444"
-                      strokeDasharray="4 4"
-                      ifOverflow="extendDomain"
-                      label={{
-                        value: velocityThresholds.dangerLabel,
-                        fill: "#ef4444",
-                        fontSize: 10,
-                        position: "insideTopRight"
-                      }}
-                    />
-                  )}
-                  <Line
-                    type="monotone"
-                    dataKey="peak"
-                    stroke="#f97316"
-                    strokeWidth={2}
-                    name="Peak Velocity"
-                    dot={{ r: 4 }}
-                    activeDot={{ r: 6 }}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
+            <BroadbandTrendChartBody
+              variant="velocity"
+              data={velocityTrendDisplaySeries}
+              isEmpty={velocityTrendSeries.length === 0}
+              isSparse={velocityTrendIsSparse}
+              velocityUnit={displayUnits.velocity}
+              thresholds={velocityThresholds}
+              showThresholds={showThresholds}
+            />
           </div>
         </div>
       </div>
+
+      {expandedChart === "health" && (
+        <TrendChartExpandModal
+          title="Health Score Trend"
+          subtitle={`From Run Diagnostics (PostgreSQL)${
+            latestDb?.primary_fault ? ` · latest: ${latestDb.primary_fault}` : ""
+          }`}
+          onClose={closeExpandedChart}
+        >
+          <BroadbandTrendChartBody
+            variant="health"
+            data={healthTrendSeries}
+            isEmpty={healthTrendSeries.length === 0}
+            isSparse={healthTrendIsSparse}
+            velocityUnit={displayUnits.velocity}
+            thresholds={velocityThresholds}
+            showThresholds={showThresholds}
+          />
+        </TrendChartExpandModal>
+      )}
+
+      {expandedChart === "velocity" && (
+        <TrendChartExpandModal
+          title="Peak Velocity"
+          subtitle={`From analysis peaks · ${velocityThresholds.provenance}`}
+          onClose={closeExpandedChart}
+        >
+          <BroadbandTrendChartBody
+            variant="velocity"
+            data={velocityTrendDisplaySeries}
+            isEmpty={velocityTrendSeries.length === 0}
+            isSparse={velocityTrendIsSparse}
+            velocityUnit={displayUnits.velocity}
+            thresholds={velocityThresholds}
+            showThresholds={showThresholds}
+          />
+        </TrendChartExpandModal>
+      )}
 
       {/* ISO 20816 Severity Matrix */}
       <VibrationIsoMatrix
@@ -3933,16 +4552,107 @@ export default function TrendAnalyzer({
       </div>
         </>
       )}
+
+      {expandedChart === "spectral" && (
+        <TrendChartExpandModal
+          title="Spectral & Harmonics"
+          subtitle="Time-series amplitude trend · 1X unbalance, 2X misalignment, overall vibration"
+          onClose={closeExpandedChart}
+        >
+          <SpectralTrendChartBody
+            data={spectralTrendDisplayData}
+            windowEmpty={spectralWindowEmpty}
+            isSparse={spectralTrendIsSparse}
+            ordersUnavailable={spectralOrdersUnavailable}
+            velocityUnit={displayUnits.velocity}
+            timeRange={timeRange}
+          />
+        </TrendChartExpandModal>
+      )}
+
+      {expandedChart === "envelopingGe" && (
+        <TrendChartExpandModal
+          title="Peak gE Trend"
+          subtitle="Real demodulation / acceleration envelope from diagnostic history"
+          onClose={closeExpandedChart}
+        >
+          <EnvelopingGeChartBody
+            data={envelopingGeChartData}
+            hasAnySeries={envelopingTrendSeries.length > 0}
+            timeRange={timeRange}
+            baselinePeakGe={envelopeBaseline?.peakGe ?? null}
+          />
+        </TrendChartExpandModal>
+      )}
+
+      {expandedChart === "envelopingKurtosis" && (
+        <TrendChartExpandModal
+          title="Kurtosis Trend"
+          subtitle="Crest / kurtosis from waveform metrics — gaps omitted (no zero fill)"
+          onClose={closeExpandedChart}
+        >
+          <EnvelopingKurtosisChartBody
+            data={envelopingKurtosisChartData}
+            hasAnySeries={envelopingTrendSeries.length > 0}
+            timeRange={timeRange}
+            baselineKurtosis={envelopeBaseline?.kurtosis ?? null}
+          />
+        </TrendChartExpandModal>
+      )}
+
+      {expandedChart === "waveformTime" && (
+        <TrendChartExpandModal
+          title="Time Waveform"
+          subtitle={`Real samples from latest diagnostic${
+            waveformRpm != null && waveformRpm > 0
+              ? ` · 1X markers every ${(60000 / waveformRpm).toFixed(1)} ms (${waveformRpm} RPM)`
+              : ""
+          }`}
+          onClose={closeExpandedChart}
+        >
+          <WaveformTimeChartBody
+            data={waveformChartModel.waveformChartData}
+            oneXMarkers={waveformChartModel.oneXMarkers}
+          />
+        </TrendChartExpandModal>
+      )}
+
+      {expandedChart === "waveformCrest" && (
+        <TrendChartExpandModal
+          title="Crest Factor Trend"
+          subtitle="Early warning — rising crest factor often precedes overall velocity growth"
+          onClose={closeExpandedChart}
+        >
+          <CrestFactorTrendChartBody data={waveformChartModel.crestTrend} />
+        </TrendChartExpandModal>
+      )}
+
+      {expandedChart === "waveformImpact" && (
+        <TrendChartExpandModal
+          title="Impact Count Trend"
+          subtitle="Transient peaks exceeding 3× RMS per measurement window"
+          onClose={closeExpandedChart}
+        >
+          <ImpactCountTrendChartBody data={waveformChartModel.impactTrend} />
+        </TrendChartExpandModal>
+      )}
+
             </>
           )}
 
           {vibMode === "spectral" && (
             <div className="bg-slate-900/60 border border-slate-700/80 rounded-xl p-6 mb-6">
               <div className="mb-4">
-                <h3 className="text-base font-bold text-white inline-flex items-center gap-2">
-                  <BarChart3 className="h-4 w-4 text-cyan-400" />
-                  Spectral &amp; Harmonics
-                </h3>
+                <div className="flex items-start justify-between gap-2">
+                  <h3 className="text-base font-bold text-white inline-flex items-center gap-2">
+                    <BarChart3 className="h-4 w-4 text-cyan-400" />
+                    Spectral &amp; Harmonics
+                  </h3>
+                  <ChartExpandButton
+                    onClick={() => setExpandedChart("spectral")}
+                    label="Enlarge Spectral & Harmonics chart"
+                  />
+                </div>
                 <p className="text-xs text-slate-500 mt-1">
                   Time-series amplitude trend · 1X unbalance, 2X misalignment, overall vibration
                 </p>
@@ -3962,99 +4672,14 @@ export default function TrendAnalyzer({
               )}
 
               <div className="h-[420px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
-                {spectralTrendIsSparse ? (
-                  <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
-                    <span className="h-3 w-3 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" />
-                    <p className="text-2xl font-bold font-mono text-cyan-400">
-                      {spectralTrendDisplayData[0]?.overall != null
-                        ? Number(spectralTrendDisplayData[0].overall).toFixed(3)
-                        : "\u2014"}{" "}
-                      <span className="text-xs font-normal text-slate-400">
-                        {displayUnits.velocity} overall
-                      </span>
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      {spectralHarmonicTrend.rows[0]?.date}
-                    </p>
-                    <p className="text-xs text-amber-300">
-                      {SPARSE_TREND_HELPER_TEXT}
-                    </p>
-                  </div>
-                ) : (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart
-                      data={spectralTrendDisplayData}
-                      margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                      <XAxis
-                        dataKey="date"
-                        stroke="#94a3b8"
-                        tick={{ fontSize: 11 }}
-                        label={{
-                          value: "Date",
-                          position: "insideBottom",
-                          offset: -12,
-                          fill: "#64748b",
-                          fontSize: 11
-                        }}
-                      />
-                      <YAxis
-                        stroke="#38bdf8"
-                        tick={{ fontSize: 10 }}
-                        label={{
-                          value: spectralAmplitudeAxisLabel(
-                            displayUnits.velocity
-                          ),
-                          angle: -90,
-                          position: "insideLeft",
-                          fill: "#38bdf8",
-                          fontSize: 11
-                        }}
-                      />
-                      <Tooltip
-                        contentStyle={tooltipStyle}
-                        formatter={(value: number, name: string) => [
-                          `${value} ${displayUnits.velocity}`,
-                          name
-                        ]}
-                      />
-                      <Legend />
-                      {!spectralOrdersUnavailable && (
-                        <>
-                          <Line
-                            type="monotone"
-                            dataKey="amp1X"
-                            name="1X Amplitude (Unbalance)"
-                            stroke="#38bdf8"
-                            strokeWidth={2}
-                            dot={{ r: 3 }}
-                            isAnimationActive={false}
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="amp2X"
-                            name="2X Amplitude (Misalignment)"
-                            stroke="#f59e0b"
-                            strokeWidth={2}
-                            dot={{ r: 3 }}
-                            isAnimationActive={false}
-                          />
-                        </>
-                      )}
-                      <Line
-                        type="monotone"
-                        dataKey="overall"
-                        name="Overall Vibration"
-                        stroke="#94a3b8"
-                        strokeWidth={2}
-                        strokeDasharray="3 3"
-                        dot={{ r: 3 }}
-                        isAnimationActive={false}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                )}
+                <SpectralTrendChartBody
+                  data={spectralTrendDisplayData}
+                  windowEmpty={spectralWindowEmpty}
+                  isSparse={spectralTrendIsSparse}
+                  ordersUnavailable={spectralOrdersUnavailable}
+                  velocityUnit={displayUnits.velocity}
+                  timeRange={timeRange}
+                />
               </div>
             </div>
           )}
@@ -4599,128 +5224,48 @@ export default function TrendAnalyzer({
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                     <div className={CARD}>
-                      <h3 className="text-base font-bold text-white mb-1">
-                        Peak g<sub>E</sub> Trend
-                      </h3>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <h3 className="text-base font-bold text-white">
+                          Peak g<sub>E</sub> Trend
+                        </h3>
+                        <ChartExpandButton
+                          onClick={() => setExpandedChart("envelopingGe")}
+                          label="Enlarge Peak gE Trend chart"
+                        />
+                      </div>
                       <p className="text-xs text-slate-500 mb-3">
                         Real demodulation / acceleration envelope from diagnostic history
                       </p>
                       <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                        {envelopingGeChartData.length === 0 ? (
-                          <div className="h-full flex items-center justify-center px-4 text-center">
-                            <p className="text-sm text-slate-500">
-                              {envelopingTrendSeries.length === 0 ? (
-                                <>
-                                  No recorded g<sub>E</sub> values yet — run a diagnostic with enveloping / acceleration data.
-                                </>
-                              ) : (
-                                <>
-                                  No recorded g<sub>E</sub> values in the selected {timeRange} window.
-                                </>
-                              )}
-                            </p>
-                          </div>
-                        ) : (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart
-                              data={envelopingGeChartData}
-                              margin={chartMargin}
-                            >
-                              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                              <XAxis
-                                dataKey="date"
-                                stroke="#94a3b8"
-                                tick={{ fontSize: 11 }}
-                              />
-                              <YAxis stroke="#eab308" tick={{ fontSize: 11 }} />
-                              <Tooltip contentStyle={tooltipStyle} />
-                              {envelopeBaseline?.peakGe != null &&
-                                envelopeBaseline.peakGe > 0 && (
-                                  <ReferenceLine
-                                    y={envelopeBaseline.peakGe}
-                                    stroke="#f59e0b"
-                                    strokeDasharray="6 4"
-                                    label={{
-                                      value: `Baseline ${envelopeBaseline.peakGe.toFixed(2)} gE`,
-                                      fill: "#f59e0b",
-                                      fontSize: 10,
-                                      position: "insideTopRight"
-                                    }}
-                                  />
-                                )}
-                              <Line
-                                type="monotone"
-                                dataKey="peakGe"
-                                stroke="#eab308"
-                                strokeWidth={2.5}
-                                name="Peak gE"
-                                dot={{ r: 4 }}
-                                connectNulls={false}
-                                isAnimationActive={false}
-                              />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        )}
+                        <EnvelopingGeChartBody
+                          data={envelopingGeChartData}
+                          hasAnySeries={envelopingTrendSeries.length > 0}
+                          timeRange={timeRange}
+                          baselinePeakGe={envelopeBaseline?.peakGe ?? null}
+                        />
                       </div>
                     </div>
 
                     <div className={CARD}>
-                      <h3 className="text-base font-bold text-white mb-1">
-                        Kurtosis Trend
-                      </h3>
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <h3 className="text-base font-bold text-white">
+                          Kurtosis Trend
+                        </h3>
+                        <ChartExpandButton
+                          onClick={() => setExpandedChart("envelopingKurtosis")}
+                          label="Enlarge Kurtosis Trend chart"
+                        />
+                      </div>
                       <p className="text-xs text-slate-500 mb-3">
                         Crest / kurtosis from waveform metrics — gaps omitted (no zero fill)
                       </p>
                       <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-                        {envelopingKurtosisChartData.length === 0 ? (
-                          <div className="h-full flex items-center justify-center px-4 text-center">
-                            <p className="text-sm text-slate-500">
-                              {envelopingTrendSeries.length === 0
-                                ? "No kurtosis / crest factor recorded yet."
-                                : `No kurtosis / crest factor recorded in the selected ${timeRange} window.`}
-                            </p>
-                          </div>
-                        ) : (
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart
-                              data={envelopingKurtosisChartData}
-                              margin={chartMargin}
-                            >
-                              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                              <XAxis
-                                dataKey="date"
-                                stroke="#94a3b8"
-                                tick={{ fontSize: 11 }}
-                              />
-                              <YAxis stroke="#22d3ee" tick={{ fontSize: 11 }} />
-                              <Tooltip contentStyle={tooltipStyle} />
-                              {envelopeBaseline?.kurtosis != null &&
-                                envelopeBaseline.kurtosis > 0 && (
-                                  <ReferenceLine
-                                    y={envelopeBaseline.kurtosis}
-                                    stroke="#22d3ee"
-                                    strokeDasharray="6 4"
-                                    label={{
-                                      value: "Baseline",
-                                      fill: "#22d3ee",
-                                      fontSize: 10,
-                                      position: "insideTopRight"
-                                    }}
-                                  />
-                                )}
-                              <Line
-                                type="monotone"
-                                dataKey="kurtosis"
-                                stroke="#22d3ee"
-                                strokeWidth={2.5}
-                                name="Kurtosis"
-                                dot={{ r: 4 }}
-                                connectNulls={false}
-                                isAnimationActive={false}
-                              />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        )}
+                        <EnvelopingKurtosisChartBody
+                          data={envelopingKurtosisChartData}
+                          hasAnySeries={envelopingTrendSeries.length > 0}
+                          timeRange={timeRange}
+                          baselineKurtosis={envelopeBaseline?.kurtosis ?? null}
+                        />
                       </div>
                     </div>
                   </div>
@@ -4876,10 +5421,25 @@ export default function TrendAnalyzer({
             <WaveformTab
               rpm={waveformRpm}
               trendPoints={waveformTrendSeries}
+              model={waveformChartModel}
               latestMetrics={latestWaveformAnalysisMetrics}
               waveformSamples={vibExtractedWaveformChart}
               emptyAlert={vibrationAwaitingRecordAlert}
               analysesCount={vibAnalyses.length}
+              renderExpandButton={(chart: WaveformChartId, label: string) => (
+                <ChartExpandButton
+                  onClick={() =>
+                    setExpandedChart(
+                      chart === "time"
+                        ? "waveformTime"
+                        : chart === "crest"
+                          ? "waveformCrest"
+                          : "waveformImpact"
+                    )
+                  }
+                  label={label}
+                />
+              )}
             />
           )}
         </>

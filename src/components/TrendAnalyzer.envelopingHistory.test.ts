@@ -10,9 +10,7 @@ const src = readFileSync(
 describe("SLICE-L Enveloping History containment + shared window", () => {
   it("uses exactly one chart/table window predicate (no fork)", () => {
     expect(
-      src.includes(
-        "filterTrendByTimeRange(envelopingTrendSeries, timeRange)"
-      )
+      src.includes("filterTrendByTimeRange(vibAnalyses, timeRange)")
     ).toBe(true);
     expect((src.match(/filterTrendByTimeRange\(/g) ?? []).length).toBe(1);
   });

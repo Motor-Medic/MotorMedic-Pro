@@ -3,7 +3,7 @@
  * Recharts (matches Trend Analyzer). ZERO mock data.
  */
 
-import React, { useMemo } from "react";
+import React from "react";
 import {
   CartesianGrid,
   Legend,
@@ -32,9 +32,267 @@ const tooltipStyle = {
   fontSize: 12
 };
 
+export type WaveformChartId = "time" | "crest" | "impact";
+
+export interface WaveformChartModel {
+  crestTrend: Array<{
+    date: string;
+    crestFactor: number;
+    fault: string;
+  }>;
+  impactTrend: Array<{
+    date: string;
+    impactCount: number;
+    fault: string;
+  }>;
+  waveformChartData: Array<{
+    time: number;
+    amplitude: number;
+    oneX: number | null;
+  }>;
+  oneXMarkers: number[];
+  sampleWindowMs: number;
+}
+
+/**
+ * Single data path for the inline cards and their enlarged twins. The parent
+ * computes this once and hands the same model to both surfaces.
+ */
+export function buildWaveformChartModel({
+  rpm,
+  trendPoints,
+  waveformSamples
+}: {
+  rpm: number | null;
+  trendPoints: WaveformTrendPoint[];
+  waveformSamples: Array<{ time: number; amplitude: number }>;
+}): WaveformChartModel {
+  const crestTrend = trendPoints
+    .filter((p) => p.crestFactor != null && p.crestFactor > 0)
+    .map((p) => ({
+      date: p.date,
+      crestFactor: p.crestFactor as number,
+      fault: p.primaryFault
+    }));
+
+  const impactTrend = trendPoints
+    .filter((p) => p.impactCount != null)
+    .map((p) => ({
+      date: p.date,
+      impactCount: p.impactCount as number,
+      fault: p.primaryFault
+    }));
+
+  let sampleWindowMs = 10000;
+  if (waveformSamples.length >= 2) {
+    const times = waveformSamples.map((s) => s.time).filter(Number.isFinite);
+    if (times.length) {
+      const span = Math.max(...times) - Math.min(...times);
+      sampleWindowMs = span > 0 ? span : 10000;
+    }
+  }
+
+  const oneXMarkers =
+    rpm != null && rpm > 0 ? calculate1XMarkers(rpm, sampleWindowMs) : [];
+
+  let waveformChartData: WaveformChartModel["waveformChartData"] = [];
+  if (waveformSamples.length) {
+    const markerSet = new Set(
+      oneXMarkers.map((t) => Math.round(t * 10) / 10)
+    );
+    waveformChartData = waveformSamples.map((s) => ({
+      time: s.time,
+      amplitude: s.amplitude,
+      oneX:
+        markerSet.has(Math.round(s.time * 10) / 10) ||
+        oneXMarkers.some((m) => Math.abs(m - s.time) < sampleWindowMs * 0.002)
+          ? s.amplitude
+          : null
+    }));
+  }
+
+  return {
+    crestTrend,
+    impactTrend,
+    waveformChartData,
+    oneXMarkers,
+    sampleWindowMs
+  };
+}
+
+export function WaveformTimeChartBody({
+  data,
+  oneXMarkers
+}: {
+  data: WaveformChartModel["waveformChartData"];
+  oneXMarkers: number[];
+}) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart
+        data={data}
+        margin={{ top: 12, right: 16, bottom: 28, left: 48 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis
+          dataKey="time"
+          stroke="#94a3b8"
+          tick={{ fontSize: 10 }}
+          label={{
+            value: "Time (ms)",
+            position: "insideBottom",
+            offset: -12,
+            fill: "#64748b",
+            fontSize: 11
+          }}
+        />
+        <YAxis
+          stroke="#10b981"
+          tick={{ fontSize: 10 }}
+          label={{
+            value: "Amplitude",
+            angle: -90,
+            position: "insideLeft",
+            fill: "#10b981",
+            fontSize: 11
+          }}
+        />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+        />
+        <Line
+          type="monotone"
+          dataKey="amplitude"
+          stroke="#10b981"
+          strokeWidth={1.5}
+          name="Amplitude"
+          dot={false}
+          isAnimationActive={false}
+        />
+        {oneXMarkers.slice(0, 40).map((t) => (
+          <ReferenceLine
+            key={`1x-${t}`}
+            x={t}
+            stroke="#eab308"
+            strokeDasharray="3 3"
+            strokeOpacity={0.45}
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+export function CrestFactorTrendChartBody({
+  data
+}: {
+  data: WaveformChartModel["crestTrend"];
+}) {
+  if (data.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center px-4 text-center">
+        <p className="text-sm text-slate-500">No crest factor history yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart
+        data={data}
+        margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+        <YAxis
+          stroke="#22d3ee"
+          tick={{ fontSize: 11 }}
+          domain={[0, "auto"]}
+        />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+          formatter={(value: number) => [
+            `${value.toFixed(2)} — ${interpretCrestFactor(value)}`,
+            "Crest Factor"
+          ]}
+        />
+        <Legend />
+        <ReferenceLine
+          y={5}
+          stroke="#ef4444"
+          strokeDasharray="5 5"
+          label={{
+            value: "CF=5 Warn",
+            fill: "#ef4444",
+            fontSize: 10,
+            position: "insideTopRight"
+          }}
+        />
+        <Line
+          type="monotone"
+          dataKey="crestFactor"
+          stroke="#22d3ee"
+          strokeWidth={2.5}
+          name="Crest Factor"
+          dot={{ r: 4 }}
+          connectNulls={false}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+export function ImpactCountTrendChartBody({
+  data
+}: {
+  data: WaveformChartModel["impactTrend"];
+}) {
+  if (data.length === 0) {
+    return (
+      <div className="h-full flex items-center justify-center px-4 text-center">
+        <p className="text-sm text-slate-500">No impact count history yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart
+        data={data}
+        margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+        <YAxis stroke="#f97316" tick={{ fontSize: 11 }} domain={[0, "auto"]} />
+        <Tooltip
+          contentStyle={tooltipStyle}
+          allowEscapeViewBox={{ x: true, y: true }}
+          wrapperStyle={{ zIndex: 20 }}
+        />
+        <Line
+          type="monotone"
+          dataKey="impactCount"
+          stroke="#f97316"
+          strokeWidth={2.5}
+          name="Impacts"
+          dot={{ r: 4 }}
+          connectNulls={false}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
 export interface WaveformTabProps {
   rpm: number | null;
   trendPoints: WaveformTrendPoint[];
+  model: WaveformChartModel;
   latestMetrics: {
     peakToPeak: number | null;
     crestFactor: number | null;
@@ -46,15 +304,21 @@ export interface WaveformTabProps {
   waveformSamples: Array<{ time: number; amplitude: number }>;
   emptyAlert: React.ReactNode;
   analysesCount: number;
+  renderExpandButton?: (
+    chart: WaveformChartId,
+    label: string
+  ) => React.ReactNode;
 }
 
 export default function WaveformTab({
   rpm,
   trendPoints,
+  model,
   latestMetrics,
   waveformSamples,
   emptyAlert,
-  analysesCount
+  analysesCount,
+  renderExpandButton
 }: WaveformTabProps) {
   const hasLatest =
     latestMetrics != null &&
@@ -64,58 +328,8 @@ export default function WaveformTab({
       Boolean(latestMetrics.symmetry) ||
       waveformSamples.length > 0);
 
-  const crestTrend = useMemo(
-    () =>
-      trendPoints
-        .filter((p) => p.crestFactor != null && p.crestFactor > 0)
-        .map((p) => ({
-          date: p.date,
-          crestFactor: p.crestFactor as number,
-          fault: p.primaryFault
-        })),
-    [trendPoints]
-  );
-
-  const impactTrend = useMemo(
-    () =>
-      trendPoints
-        .filter((p) => p.impactCount != null)
-        .map((p) => ({
-          date: p.date,
-          impactCount: p.impactCount as number,
-          fault: p.primaryFault
-        })),
-    [trendPoints]
-  );
-
-  const sampleWindowMs = useMemo(() => {
-    if (waveformSamples.length < 2) return 10000;
-    const times = waveformSamples.map((s) => s.time).filter(Number.isFinite);
-    if (!times.length) return 10000;
-    const span = Math.max(...times) - Math.min(...times);
-    return span > 0 ? span : 10000;
-  }, [waveformSamples]);
-
-  const oneXMarkers = useMemo(() => {
-    if (!(rpm != null && rpm > 0)) return [];
-    return calculate1XMarkers(rpm, sampleWindowMs);
-  }, [rpm, sampleWindowMs]);
-
-  const waveformChartData = useMemo(() => {
-    if (!waveformSamples.length) return [];
-    const markerSet = new Set(
-      oneXMarkers.map((t) => Math.round(t * 10) / 10)
-    );
-    return waveformSamples.map((s) => ({
-      time: s.time,
-      amplitude: s.amplitude,
-      oneX:
-        markerSet.has(Math.round(s.time * 10) / 10) ||
-        oneXMarkers.some((m) => Math.abs(m - s.time) < sampleWindowMs * 0.002)
-          ? s.amplitude
-          : null
-    }));
-  }, [waveformSamples, oneXMarkers, sampleWindowMs]);
+  const { crestTrend, impactTrend, waveformChartData, oneXMarkers } = model;
+  const sampleWindowMs = model.sampleWindowMs;
 
   if (analysesCount === 0) {
     return <>{emptyAlert}</>;
@@ -225,174 +439,59 @@ export default function WaveformTab({
 
       {waveformChartData.length > 0 && (
         <div className={CARD}>
-          <div className="flex items-start gap-2 mb-1">
-            <Activity className="h-4 w-4 text-emerald-400 mt-0.5" />
-            <div>
-              <h3 className="text-base font-bold text-white">Time Waveform</h3>
-              <p className="text-xs text-slate-500">
-                Real samples from latest diagnostic
-                {rpm != null && rpm > 0
-                  ? ` · 1X markers every ${(60000 / rpm).toFixed(1)} ms (${rpm} RPM)`
-                  : ""}
-              </p>
+          <div className="flex items-start justify-between gap-2 mb-1">
+            <div className="flex items-start gap-2">
+              <Activity className="h-4 w-4 text-emerald-400 mt-0.5" />
+              <div>
+                <h3 className="text-base font-bold text-white">Time Waveform</h3>
+                <p className="text-xs text-slate-500">
+                  Real samples from latest diagnostic
+                  {rpm != null && rpm > 0
+                    ? ` · 1X markers every ${(60000 / rpm).toFixed(1)} ms (${rpm} RPM)`
+                    : ""}
+                </p>
+              </div>
             </div>
+            {renderExpandButton?.("time", "Enlarge Time Waveform chart")}
           </div>
           <div className="h-[320px] bg-slate-950 rounded-lg border border-white/10 p-2 mt-3">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart
-                data={waveformChartData}
-                margin={{ top: 12, right: 16, bottom: 28, left: 48 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis
-                  dataKey="time"
-                  stroke="#94a3b8"
-                  tick={{ fontSize: 10 }}
-                  label={{
-                    value: "Time (ms)",
-                    position: "insideBottom",
-                    offset: -12,
-                    fill: "#64748b",
-                    fontSize: 11
-                  }}
-                />
-                <YAxis
-                  stroke="#10b981"
-                  tick={{ fontSize: 10 }}
-                  label={{
-                    value: "Amplitude",
-                    angle: -90,
-                    position: "insideLeft",
-                    fill: "#10b981",
-                    fontSize: 11
-                  }}
-                />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Line
-                  type="monotone"
-                  dataKey="amplitude"
-                  stroke="#10b981"
-                  strokeWidth={1.5}
-                  name="Amplitude"
-                  dot={false}
-                  isAnimationActive={false}
-                />
-                {oneXMarkers.slice(0, 40).map((t) => (
-                  <ReferenceLine
-                    key={`1x-${t}`}
-                    x={t}
-                    stroke="#eab308"
-                    strokeDasharray="3 3"
-                    strokeOpacity={0.45}
-                  />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
+            <WaveformTimeChartBody
+              data={waveformChartData}
+              oneXMarkers={oneXMarkers}
+            />
           </div>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className={CARD}>
-          <h3 className="text-base font-bold text-white mb-1">
-            Crest Factor Trend
-          </h3>
+          <div className="flex items-start justify-between gap-2 mb-1">
+            <h3 className="text-base font-bold text-white">
+              Crest Factor Trend
+            </h3>
+            {renderExpandButton?.("crest", "Enlarge Crest Factor Trend chart")}
+          </div>
           <p className="text-xs text-slate-500 mb-3">
             Early warning — rising crest factor often precedes overall velocity
             growth
           </p>
           <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-            {crestTrend.length === 0 ? (
-              <div className="h-full flex items-center justify-center px-4 text-center">
-                <p className="text-sm text-slate-500">
-                  No crest factor history yet.
-                </p>
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={crestTrend}
-                  margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    stroke="#22d3ee"
-                    tick={{ fontSize: 11 }}
-                    domain={[0, "auto"]}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    formatter={(value: number) => [
-                      `${value.toFixed(2)} — ${interpretCrestFactor(value)}`,
-                      "Crest Factor"
-                    ]}
-                  />
-                  <Legend />
-                  <ReferenceLine
-                    y={5}
-                    stroke="#ef4444"
-                    strokeDasharray="5 5"
-                    label={{
-                      value: "CF=5 Warn",
-                      fill: "#ef4444",
-                      fontSize: 10,
-                      position: "insideTopRight"
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="crestFactor"
-                    stroke="#22d3ee"
-                    strokeWidth={2.5}
-                    name="Crest Factor"
-                    dot={{ r: 4 }}
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
+            <CrestFactorTrendChartBody data={crestTrend} />
           </div>
         </div>
 
         <div className={CARD}>
-          <h3 className="text-base font-bold text-white mb-1">
-            Impact Count Trend
-          </h3>
+          <div className="flex items-start justify-between gap-2 mb-1">
+            <h3 className="text-base font-bold text-white">
+              Impact Count Trend
+            </h3>
+            {renderExpandButton?.("impact", "Enlarge Impact Count Trend chart")}
+          </div>
           <p className="text-xs text-slate-500 mb-3">
             Transient peaks exceeding 3× RMS per measurement window
           </p>
           <div className="h-56 bg-slate-950 rounded-lg border border-white/10 p-2">
-            {impactTrend.length === 0 ? (
-              <div className="h-full flex items-center justify-center px-4 text-center">
-                <p className="text-sm text-slate-500">
-                  No impact count history yet.
-                </p>
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={impactTrend}
-                  margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#f97316" tick={{ fontSize: 11 }} domain={[0, "auto"]} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Line
-                    type="monotone"
-                    dataKey="impactCount"
-                    stroke="#f97316"
-                    strokeWidth={2.5}
-                    name="Impacts"
-                    dot={{ r: 4 }}
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
+            <ImpactCountTrendChartBody data={impactTrend} />
           </div>
         </div>
       </div>
