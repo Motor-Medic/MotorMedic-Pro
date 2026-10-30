@@ -1011,6 +1011,29 @@ export function getEquipmentStore(): EquipmentStore {
   return readStoreFromStorage();
 }
 
+/**
+ * Broadcast after the localStorage cache is refreshed from the server, so
+ * already-mounted trend surfaces re-read kinematics instead of staying stale.
+ */
+export const EQUIPMENT_STORE_CHANGED_EVENT = "spectra:equipment-store-changed";
+
+export function notifyEquipmentStoreChanged(): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+    return;
+  }
+  window.dispatchEvent(new Event(EQUIPMENT_STORE_CHANGED_EVENT));
+}
+
+export function subscribeEquipmentStoreChanged(
+  listener: () => void
+): () => void {
+  if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+    return () => undefined;
+  }
+  window.addEventListener(EQUIPMENT_STORE_CHANGED_EVENT, listener);
+  return () => window.removeEventListener(EQUIPMENT_STORE_CHANGED_EVENT, listener);
+}
+
 /** Persist full hierarchy store. */
 export function saveEquipmentStore(store: EquipmentStore): EquipmentStore {
   const next: EquipmentStore = {
@@ -1019,6 +1042,7 @@ export function saveEquipmentStore(store: EquipmentStore): EquipmentStore {
     routes: store.routes ?? []
   };
   writeStoreToStorage(next);
+  notifyEquipmentStoreChanged();
   return next;
 }
 

@@ -177,14 +177,17 @@ import {
 } from "./KinematicSpecsNotice";
 import {
   SPARSE_TREND_HELPER_TEXT,
-  isSparseTrendSeries
+  filterTrendByTimeRange,
+  isSparseTrendSeries,
+  type TrendTimeRange
 } from "../lib/vibration/trendSeries";
-  import {
-    getEquipmentData,
-    getFlatEquipment,
-    routeDisplayName,
-    type FlatEquipAsset
-  } from "../data/equipmentDb";
+import {
+  getEquipmentData,
+  getFlatEquipment,
+  routeDisplayName,
+  subscribeEquipmentStoreChanged,
+  type FlatEquipAsset
+} from "../data/equipmentDb";
 import {
   ARTIFACT_DISCLAIMER,
   confirmArtifactExport
@@ -201,7 +204,7 @@ interface TrendAnalyzerProps {
   selectedCompanyId?: number;
 }
 
-type TimeRange = "7D" | "30D" | "90D" | "1Y" | "Custom";
+type TimeRange = TrendTimeRange;
 type OverlayParam = "Temp" | "MCSA" | "Load" | null;
 
 interface SpectrumPoint {
@@ -1528,6 +1531,14 @@ export default function TrendAnalyzer({
     void equipTick;
     return getFlatEquipment();
   }, [equipTick]);
+  // Component-spec saves refresh the localStorage cache through saveEquipmentStore,
+  // but this view only re-read it on its own Refresh button. Subscribe so BPFO /
+  // BPFI / BSF / FTF and the enveloping surfaces recompute without a re-save.
+  useEffect(() => {
+    return subscribeEquipmentStoreChanged(() => {
+      setEquipTick((n) => n + 1);
+    });
+  }, []);
   // H7 - the invisible system route is surfaced here as "Facility (direct)".
   const routeOptions = useMemo(
     () => equipmentRoutes.map((r) => ({ id: r.id, name: routeDisplayName(r) })),
@@ -2300,9 +2311,16 @@ export default function TrendAnalyzer({
     return rows;
   }, [vibAnalyses]);
 
+  // One shared window for the charts above and the Enveloping History table —
+  // never a second date filter (Slice-H lesson).
+  const envelopingTrendWindow = useMemo(
+    () => filterTrendByTimeRange(envelopingTrendSeries, timeRange),
+    [envelopingTrendSeries, timeRange]
+  );
+
   const envelopingGeChartData = useMemo(
     () =>
-      envelopingTrendSeries
+      envelopingTrendWindow
         .filter((p) => p.peakGe != null && p.peakGe > 0)
         .map((p) => ({
           date: p.date,
@@ -2311,12 +2329,12 @@ export default function TrendAnalyzer({
           fault: p.primaryFault,
           timestamp: p.timestamp
         })),
-    [envelopingTrendSeries]
+    [envelopingTrendWindow]
   );
 
   const envelopingKurtosisChartData = useMemo(
     () =>
-      envelopingTrendSeries
+      envelopingTrendWindow
         .filter((p) => p.kurtosis != null && p.kurtosis > 0)
         .map((p) => ({
           date: p.date,
@@ -2324,7 +2342,7 @@ export default function TrendAnalyzer({
           analysisId: p.analysisId,
           fault: p.primaryFault
         })),
-    [envelopingTrendSeries]
+    [envelopingTrendWindow]
   );
 
   const calculatedBearingFaults = useMemo(() => {
@@ -4591,7 +4609,15 @@ export default function TrendAnalyzer({
                         {envelopingGeChartData.length === 0 ? (
                           <div className="h-full flex items-center justify-center px-4 text-center">
                             <p className="text-sm text-slate-500">
-                              No recorded g<sub>E</sub> values yet — run a diagnostic with enveloping / acceleration data.
+                              {envelopingTrendSeries.length === 0 ? (
+                                <>
+                                  No recorded g<sub>E</sub> values yet — run a diagnostic with enveloping / acceleration data.
+                                </>
+                              ) : (
+                                <>
+                                  No recorded g<sub>E</sub> values in the selected {timeRange} window.
+                                </>
+                              )}
                             </p>
                           </div>
                         ) : (
@@ -4649,7 +4675,9 @@ export default function TrendAnalyzer({
                         {envelopingKurtosisChartData.length === 0 ? (
                           <div className="h-full flex items-center justify-center px-4 text-center">
                             <p className="text-sm text-slate-500">
-                              No kurtosis / crest factor recorded yet.
+                              {envelopingTrendSeries.length === 0
+                                ? "No kurtosis / crest factor recorded yet."
+                                : `No kurtosis / crest factor recorded in the selected ${timeRange} window.`}
                             </p>
                           </div>
                         ) : (
@@ -4768,11 +4796,15 @@ export default function TrendAnalyzer({
                       <p className="text-sm text-slate-500 py-8 text-center">
                         No enveloping metrics in saved diagnostics yet.
                       </p>
+                    ) : envelopingTrendWindow.length === 0 ? (
+                      <p className="text-sm text-slate-500 py-8 text-center">
+                        No enveloping history in the selected {timeRange} window.
+                      </p>
                     ) : (
-                      <div className="overflow-x-auto rounded-lg border border-white/10">
+                      <div className="max-h-[420px] overflow-y-auto overflow-x-auto rounded-lg border border-white/10">
                         <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-slate-950/80 text-slate-400 text-left text-[10px] uppercase tracking-widest">
+                          <thead className="sticky top-0 z-10">
+                            <tr className="bg-slate-950 text-slate-400 text-left text-[10px] uppercase tracking-widest">
                               <th className="px-3 py-2 font-bold">Date</th>
                               <th className="px-3 py-2 font-bold">Peak gE</th>
                               <th className="px-3 py-2 font-bold">Kurtosis</th>
@@ -4782,7 +4814,7 @@ export default function TrendAnalyzer({
                             </tr>
                           </thead>
                           <tbody>
-                            {[...envelopingTrendSeries].reverse().map((row) => {
+                            {[...envelopingTrendWindow].reverse().map((row) => {
                               const isBase =
                                 envelopeBaseline?.analysisId === row.analysisId;
                               return (
