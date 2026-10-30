@@ -35,6 +35,8 @@ export interface WorkOrderDraft {
   unit: string;
   verdict: string;
   sentence: string;
+  /** Optional prefill prose carried from the Trend Analyzer (SLICE-K). */
+  description?: string;
   n: number;
   spanDays: number;
   slope: number | null;
@@ -54,6 +56,8 @@ export interface WorkOrderDraftInput {
   unit: string;
   verdict: string;
   sentence: string;
+  /** Optional prefill prose carried from the Trend Analyzer (SLICE-K). */
+  description?: string;
   n: number;
   spanDays: number;
   slope: number | null;
@@ -88,6 +92,8 @@ function sanitizeDrafts(value: unknown): WorkOrderDraft[] {
       unit: typeof o.unit === "string" ? o.unit : "",
       verdict: typeof o.verdict === "string" ? o.verdict : "",
       sentence: typeof o.sentence === "string" ? o.sentence : "",
+      description:
+        typeof o.description === "string" ? o.description : undefined,
       n: numOrNull(o.n) ?? 0,
       spanDays: numOrNull(o.spanDays) ?? 0,
       slope: numOrNull(o.slope),

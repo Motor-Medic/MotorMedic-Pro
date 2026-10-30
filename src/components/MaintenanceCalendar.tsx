@@ -7,9 +7,16 @@ import {
   approveWorkOrderDraft,
   discardWorkOrderDraft,
   getWorkOrderDraftsSnapshot,
+  proposeWorkOrderDraft,
   subscribeWorkOrderDrafts,
   type WorkOrderDraft
 } from "../lib/maintenance/workOrderDrafts";
+import {
+  clearWorkOrderPrefill,
+  getWorkOrderPrefillSnapshot,
+  subscribeWorkOrderPrefill,
+  type WorkOrderPrefill
+} from "../lib/maintenance/workOrderPrefill";
 
 /* ========================================================================== */
 /* Props (unchanged contract for App.tsx)                                     */
@@ -148,6 +155,33 @@ const tabBtn = (active: boolean) =>
 
 function DraftProposalsSection() {
   const drafts = useSyncExternalStore(subscribeWorkOrderDrafts, getWorkOrderDraftsSnapshot);
+  const prefill = useSyncExternalStore(
+    subscribeWorkOrderPrefill,
+    getWorkOrderPrefillSnapshot
+  );
+
+  const createDraftFromPrefill = (value: WorkOrderPrefill) => {
+    proposeWorkOrderDraft({
+      assetId: value.assetTag,
+      component: value.component ?? "",
+      modality: "vibration",
+      modalityLabel: "Vibration",
+      target: value.fault,
+      trackedMetric: "Overall velocity",
+      unit: value.velocityUnit,
+      verdict: value.isoZone ? `Zone ${value.isoZone}` : "Unresolved",
+      sentence: value.description,
+      description: value.description,
+      n: 0,
+      spanDays: 0,
+      slope: null,
+      seOfSlope: null,
+      thresholdProvenance: value.isoZone
+        ? `ISO 20816 Zone ${value.isoZone} band - trend prefill, no regression fit`
+        : "ISO zone unresolved - repair recommendation suppressed"
+    });
+    clearWorkOrderPrefill();
+  };
 
   return (
     <section className={`${CARD} mb-6`}>
@@ -157,6 +191,15 @@ function DraftProposalsSection() {
       <p className="text-xs text-slate-500 mb-3">
         proposals awaiting your approval - generated from prognostic verdicts
       </p>
+      {prefill && (
+        <div className="mb-3">
+          <PrefilledWorkOrderCard
+            prefill={prefill}
+            onCreate={() => createDraftFromPrefill(prefill)}
+            onDiscard={clearWorkOrderPrefill}
+          />
+        </div>
+      )}
       {drafts.length === 0 ? (
         <p className="text-xs italic text-slate-400">
           no draft proposals - no WINDOW or CROSSED verdicts pending
@@ -171,6 +214,115 @@ function DraftProposalsSection() {
         </div>
       )}
     </section>
+  );
+}
+
+export function PrefilledWorkOrderCard({
+  prefill,
+  onCreate,
+  onDiscard
+}: {
+  prefill: WorkOrderPrefill;
+  onCreate: () => void;
+  onDiscard: () => void;
+}) {
+  const subject = [
+    prefill.assetName || prefill.assetTag,
+    prefill.assetTag && prefill.assetName ? `(${prefill.assetTag})` : ""
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <div className="rounded-lg border border-cyan-500/40 bg-slate-950/60 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-300">
+          Prefilled work order from Trend Analyzer
+        </p>
+        <span className="px-1.5 py-0.5 rounded border text-[10px] font-bold uppercase tracking-wider bg-slate-500/15 border-slate-500/40 text-slate-300">
+          {prefill.suppressed ? "Investigative" : "Review"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <PrefillField label="Asset" value={subject || "not recorded"} />
+        <PrefillField
+          label="Component"
+          value={prefill.component || "not recorded"}
+        />
+        <PrefillField
+          label="ISO zone"
+          value={
+            prefill.isoZone
+              ? `Zone ${prefill.isoZone}`
+              : "Unresolved - repair suppressed"
+          }
+        />
+        <PrefillField
+          label="Overall velocity"
+          value={prefill.velocityDisplay || "not recorded"}
+        />
+      </div>
+
+      <label className="block space-y-1 mb-3">
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+          Fault / action (from the resolved action card)
+        </span>
+        <input
+          readOnly
+          value={prefill.fault}
+          className="w-full min-h-[36px] rounded-lg bg-slate-950 border border-slate-700 px-2.5 text-xs text-slate-100 focus:outline-none"
+        />
+      </label>
+
+      <label className="block space-y-1 mb-3">
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+          Description
+        </span>
+        <textarea
+          readOnly
+          rows={5}
+          value={prefill.description}
+          className="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-slate-100 focus:outline-none resize-y"
+        />
+      </label>
+
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onDiscard}
+          className="min-h-[36px] px-3 rounded-xl border border-slate-700 text-slate-300 text-xs font-bold hover:bg-slate-900 transition-colors"
+        >
+          Discard
+        </button>
+        <button
+          type="button"
+          onClick={onCreate}
+          className="min-h-[36px] px-4 rounded-xl bg-[#FFC700] text-slate-950 text-xs font-bold hover:bg-[#e6b400] transition-colors"
+        >
+          Create draft proposal
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-500 mt-2">
+        Review and confirm - nothing is submitted until you create the draft and
+        then approve it.
+      </p>
+    </div>
+  );
+}
+
+function PrefillField({ label, value }: { label: string; value: string }) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+        {label}
+      </span>
+      <input
+        readOnly
+        value={value}
+        className="w-full min-h-[36px] rounded-lg bg-slate-950 border border-slate-700 px-2.5 text-xs text-slate-100 focus:outline-none"
+      />
+    </label>
   );
 }
 
@@ -227,6 +379,9 @@ function DraftProposalCard({ draft: d }: { draft: WorkOrderDraft }) {
         <p>
           verdict: {d.verdict || "not on record"} - {d.sentence || "sentence not on record"}
         </p>
+        {d.description && (
+          <p className="whitespace-pre-line">description: {d.description}</p>
+        )}
         <p>
           N = {d.n} over {d.spanDays.toFixed(1)} days · {slopeTxt}
         </p>

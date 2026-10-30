@@ -180,6 +180,30 @@ describe("Trend Analyzer vibration severity panels", () => {
     expect(html).not.toContain(AUDIT_SAFE_FALLBACK);
   });
 
+  it("enables the work-order button only when a prefill handler is wired", () => {
+    const withoutHandler = renderToStaticMarkup(
+      <VibrationActionCard
+        valueMmS={5}
+        machineClass={machineClass}
+        summary="Outer-race bearing defect"
+        recommendation="Inspect bearing."
+      />
+    );
+    expect(withoutHandler).toContain("disabled");
+
+    const withHandler = renderToStaticMarkup(
+      <VibrationActionCard
+        valueMmS={5}
+        machineClass={machineClass}
+        summary="Outer-race bearing defect"
+        recommendation="Inspect bearing."
+        onCreateWorkOrder={() => {}}
+      />
+    );
+    expect(withHandler).not.toContain("disabled");
+    expect(withHandler).toContain("Prefill a work order from this action");
+  });
+
   it("detects a persisted multi-agent contradiction", () => {
     expect(
       consensusContradicts({

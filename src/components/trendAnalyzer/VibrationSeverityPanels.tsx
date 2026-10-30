@@ -219,6 +219,11 @@ export interface VibrationActionCardProps extends VibrationSeverityPanelProps {
   recommendation: string | null;
   /** True when the persisted multi-agent consensus reports a contradiction. */
   consensusConflict?: boolean;
+  /**
+   * SLICE-K - opens the existing work-order path with this already-resolved
+   * action. Receives the zone too so the caller never re-derives suppression.
+   */
+  onCreateWorkOrder?: (resolvedAction: string, zone: IsoZone | null) => void;
 }
 
 export function VibrationActionCard({
@@ -226,7 +231,8 @@ export function VibrationActionCard({
   machineClass,
   summary,
   recommendation,
-  consensusConflict = false
+  consensusConflict = false,
+  onCreateWorkOrder
 }: VibrationActionCardProps) {
   const zone = classifyZone(valueMmS, machineClass);
   const action = resolveActionCardAction({
@@ -234,6 +240,7 @@ export function VibrationActionCard({
     recommendation,
     consensusConflict
   });
+  const canCreateWorkOrder = Boolean(onCreateWorkOrder);
 
   return (
     <div className={`${CARD} md:col-span-2`}>
@@ -255,9 +262,18 @@ export function VibrationActionCard({
       </div>
       <button
         type="button"
-        disabled
-        title="Work order creation from trend pending — WO creation endpoint not connected"
-        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-sm font-bold cursor-not-allowed hover:bg-slate-700 transition-colors"
+        disabled={!canCreateWorkOrder}
+        onClick={() => onCreateWorkOrder?.(action, zone)}
+        title={
+          canCreateWorkOrder
+            ? "Prefill a work order from this action"
+            : "Work order creation from trend pending — WO creation endpoint not connected"
+        }
+        className={
+          canCreateWorkOrder
+            ? "inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FFC700] text-slate-950 text-sm font-bold cursor-pointer hover:bg-[#e6b400] transition-colors"
+            : "inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-sm font-bold cursor-not-allowed hover:bg-slate-700 transition-colors"
+        }
       >
         <Wrench className="h-4 w-4" />
         + Create Work Order

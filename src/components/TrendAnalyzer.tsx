@@ -153,6 +153,8 @@ import {
 } from "../lib/vibration/units";
 import { resolveVelocityThresholds } from "../lib/vibration/velocityThresholds";
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
+import { navigateToTab } from "../navigation";
+import { stageWorkOrderPrefill } from "../lib/maintenance/workOrderPrefill";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
 import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
@@ -3669,6 +3671,22 @@ export default function TrendAnalyzer({
               : null
           }
           consensusConflict={consensusContradicts(latestDb?.consensus_details)}
+          onCreateWorkOrder={
+            selectedAsset
+              ? (resolvedAction, zone) => {
+                  stageWorkOrderPrefill({
+                    assetTag: selectedAsset.tag || selectedAsset.id,
+                    assetName: selectedAsset.name,
+                    component: selectedComponent,
+                    zone,
+                    action: resolvedAction,
+                    velocityMmS: latestOverallVelocity,
+                    velocityUnit: displayUnits.velocity
+                  });
+                  navigateToTab("calendar");
+                }
+              : undefined
+          }
         />
       </div>
 
