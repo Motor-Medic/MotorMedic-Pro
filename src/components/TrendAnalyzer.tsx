@@ -152,6 +152,11 @@ import {
   type DisplayUnits
 } from "../lib/vibration/units";
 import { resolveVelocityThresholds } from "../lib/vibration/velocityThresholds";
+import {
+  MISSING_RPM_ORDER_HELPER_TEXT,
+  buildSpectralHarmonicTrend,
+  spectralAmplitudeAxisLabel
+} from "../lib/vibration/spectralTrend";
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import { navigateToTab } from "../navigation";
 import { stageWorkOrderPrefill } from "../lib/maintenance/workOrderPrefill";
@@ -1425,23 +1430,6 @@ function EventMarkerLines({
   );
 }
 
-function amplitudeNearHz(
-  peaks: Array<{ frequency: number; amplitude: number }>,
-  targetHz: number
-): number | null {
-  if (!peaks.length || !(targetHz > 0)) return null;
-  let best = peaks[0];
-  let bestD = Math.abs(best.frequency - targetHz);
-  for (const p of peaks) {
-    const d = Math.abs(p.frequency - targetHz);
-    if (d < bestD) {
-      best = p;
-      bestD = d;
-    }
-  }
-  return best.amplitude;
-}
-
 function peakAmplitudeFromAnalysis(row: SavedAnalysisResult): number | null {
   const peaks = Array.isArray(row.peaks) ? row.peaks : [];
   let max = 0;
@@ -2197,58 +2185,53 @@ export default function TrendAnalyzer({
     [surgeData]
   );
 
-  const spectralHarmonicTrend = useMemo(() => {
-    const chronological = [...vibAnalyses].reverse();
-    const rows: Array<{
-      date: string;
-      amp1X: number;
-      amp2X: number;
-      overall: number;
-    }> = [];
-    for (const analysis of chronological) {
-      const rec = extractVibrationRecordFromAnalysis(analysis);
-      const rpm =
-        rec?.rpm ??
-        rec?.context?.motorSpeedRPM ??
-        machineSpecs.rpm ??
-        1780;
-      const h1 = rpm > 0 ? rpm / 60 : 1780 / 60;
-      const peaks = rec?.spectral || [];
-      const amp1X = amplitudeNearHz(peaks, h1) ?? 0;
-      const amp2X = amplitudeNearHz(peaks, h1 * 2) ?? 0;
-      const overall =
-        rec?.broadband?.overallVelocity ||
-        peakAmplitudeFromAnalysis(analysis) ||
-        0;
-      if (!(amp1X > 0 || amp2X > 0 || overall > 0)) continue;
-      const ts = rec?.timestamp || analysis.timestamp;
-      const date = ts
-        ? new Date(ts).toLocaleDateString(undefined, {
-            month: "short",
-            day: "numeric"
-          })
-        : "—";
-      rows.push({
-        date,
-        amp1X: Number(amp1X.toFixed(3)),
-        amp2X: Number(amp2X.toFixed(3)),
-        overall: Number(overall.toFixed(3))
-      });
-    }
-    return rows;
-  }, [vibAnalyses, machineSpecs.rpm]);
+  const spectralHarmonicTrend = useMemo(
+    () =>
+      buildSpectralHarmonicTrend(
+        [...vibAnalyses].reverse().map((analysis) => {
+          const rec = extractVibrationRecordFromAnalysis(analysis);
+          return {
+            timestamp: rec?.timestamp || analysis.timestamp,
+            rpm:
+              rec?.rpm ??
+              rec?.context?.motorSpeedRPM ??
+              machineSpecs.rpm ??
+              null,
+            peaks: rec?.spectral || [],
+            overall:
+              rec?.broadband?.overallVelocity ||
+              peakAmplitudeFromAnalysis(analysis) ||
+              null
+          };
+        })
+      ),
+    [vibAnalyses, machineSpecs.rpm]
+  );
 
-  const isUsingReferenceSpectralTrend = spectralHarmonicTrend.length < 2;
+  const isUsingReferenceSpectralTrend = spectralHarmonicTrend.rows.length === 0;
   const spectralTrendChartData = isUsingReferenceSpectralTrend
     ? REFERENCE_TREND_DATA
-    : spectralHarmonicTrend;
+    : spectralHarmonicTrend.rows;
+  const spectralOrdersUnavailable =
+    !isUsingReferenceSpectralTrend && spectralHarmonicTrend.ordersUnavailable;
+  const spectralTrendIsSparse =
+    !isUsingReferenceSpectralTrend && spectralHarmonicTrend.isSparse;
   const spectralTrendDisplayData = useMemo(
     () =>
       spectralTrendChartData.map((point) => ({
         ...point,
-        amp1X: velocityValueForDisplay(point.amp1X, displayUnits.velocity),
-        amp2X: velocityValueForDisplay(point.amp2X, displayUnits.velocity),
-        overall: velocityValueForDisplay(point.overall, displayUnits.velocity)
+        amp1X:
+          point.amp1X == null
+            ? null
+            : velocityValueForDisplay(point.amp1X, displayUnits.velocity),
+        amp2X:
+          point.amp2X == null
+            ? null
+            : velocityValueForDisplay(point.amp2X, displayUnits.velocity),
+        overall:
+          point.overall == null
+            ? null
+            : velocityValueForDisplay(point.overall, displayUnits.velocity)
       })),
     [spectralTrendChartData, displayUnits.velocity]
   );
@@ -3954,74 +3937,106 @@ export default function TrendAnalyzer({
                 </div>
               )}
 
+              {spectralOrdersUnavailable && (
+                <p className="text-xs text-amber-300 mb-3">
+                  {MISSING_RPM_ORDER_HELPER_TEXT}
+                </p>
+              )}
+
               <div className="h-[420px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart
-                    data={spectralTrendDisplayData}
-                    margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                    <XAxis
-                      dataKey="date"
-                      stroke="#94a3b8"
-                      tick={{ fontSize: 11 }}
-                      label={{
-                        value: "Date",
-                        position: "insideBottom",
-                        offset: -12,
-                        fill: "#64748b",
-                        fontSize: 11
-                      }}
-                    />
-                    <YAxis
-                      stroke="#38bdf8"
-                      tick={{ fontSize: 10 }}
-                      label={{
-                        value: `Peak amplitude (${displayUnits.velocity})`,
-                        angle: -90,
-                        position: "insideLeft",
-                        fill: "#38bdf8",
-                        fontSize: 11
-                      }}
-                    />
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      formatter={(value: number, name: string) => [
-                        `${value} ${displayUnits.velocity}`,
-                        name
-                      ]}
-                    />
-                    <Legend />
-                    <Line
-                      type="monotone"
-                      dataKey="amp1X"
-                      name="1X Amplitude (Unbalance)"
-                      stroke="#38bdf8"
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                      isAnimationActive={false}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="amp2X"
-                      name="2X Amplitude (Misalignment)"
-                      stroke="#f59e0b"
-                      strokeWidth={2}
-                      dot={{ r: 3 }}
-                      isAnimationActive={false}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="overall"
-                      name="Overall Vibration"
-                      stroke="#94a3b8"
-                      strokeWidth={2}
-                      strokeDasharray="3 3"
-                      dot={{ r: 3 }}
-                      isAnimationActive={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                {spectralTrendIsSparse ? (
+                  <div className="h-full flex flex-col items-center justify-center gap-2 px-4 text-center">
+                    <span className="h-3 w-3 rounded-full bg-cyan-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" />
+                    <p className="text-2xl font-bold font-mono text-cyan-400">
+                      {spectralTrendDisplayData[0]?.overall != null
+                        ? Number(spectralTrendDisplayData[0].overall).toFixed(3)
+                        : "\u2014"}{" "}
+                      <span className="text-xs font-normal text-slate-400">
+                        {displayUnits.velocity} overall
+                      </span>
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      {spectralHarmonicTrend.rows[0]?.date}
+                    </p>
+                    <p className="text-xs text-amber-300">
+                      {SPARSE_TREND_HELPER_TEXT}
+                    </p>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={spectralTrendDisplayData}
+                      margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis
+                        dataKey="date"
+                        stroke="#94a3b8"
+                        tick={{ fontSize: 11 }}
+                        label={{
+                          value: "Date",
+                          position: "insideBottom",
+                          offset: -12,
+                          fill: "#64748b",
+                          fontSize: 11
+                        }}
+                      />
+                      <YAxis
+                        stroke="#38bdf8"
+                        tick={{ fontSize: 10 }}
+                        label={{
+                          value: spectralAmplitudeAxisLabel(
+                            displayUnits.velocity
+                          ),
+                          angle: -90,
+                          position: "insideLeft",
+                          fill: "#38bdf8",
+                          fontSize: 11
+                        }}
+                      />
+                      <Tooltip
+                        contentStyle={tooltipStyle}
+                        formatter={(value: number, name: string) => [
+                          `${value} ${displayUnits.velocity}`,
+                          name
+                        ]}
+                      />
+                      <Legend />
+                      {!spectralOrdersUnavailable && (
+                        <>
+                          <Line
+                            type="monotone"
+                            dataKey="amp1X"
+                            name="1X Amplitude (Unbalance)"
+                            stroke="#38bdf8"
+                            strokeWidth={2}
+                            dot={{ r: 3 }}
+                            isAnimationActive={false}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="amp2X"
+                            name="2X Amplitude (Misalignment)"
+                            stroke="#f59e0b"
+                            strokeWidth={2}
+                            dot={{ r: 3 }}
+                            isAnimationActive={false}
+                          />
+                        </>
+                      )}
+                      <Line
+                        type="monotone"
+                        dataKey="overall"
+                        name="Overall Vibration"
+                        stroke="#94a3b8"
+                        strokeWidth={2}
+                        strokeDasharray="3 3"
+                        dot={{ r: 3 }}
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </div>
           )}
