@@ -22,6 +22,12 @@ import {
   buildPoolConfig,
   resolveTlsModeForPool
 } from "../src/lib/dbConnection";
+import {
+  inchPerSecondToMmPerSecond,
+  MM_PER_INCH,
+  CANONICAL_VELOCITY_UNIT
+} from "../src/lib/vibration/units";
+import { classifyZone } from "../src/lib/vibration/isoZone";
 
 dotenv.config();
 
@@ -63,6 +69,7 @@ interface AssetSpec {
   model: string;
   serial: string;
   rpm: number;
+  /** Legacy in/s baseline; converted to canonical mm/s RMS once below. */
   baseVelocity: number;
   trend: TrendMode;
   /** Main component name shown in diagnoses / Trend Analyzer. */
@@ -230,13 +237,9 @@ interface SeedIds {
   componentIdByTag: Map<string, number>;
 }
 
-function zoneForVelocity(velocity: number): "A" | "B" | "C" | "D" {
-  // ISO 20816-3 Class II style bands (in/s RMS), matching the app's
-  // 0.09 / 0.18 / 0.36 zone break points.
-  if (velocity < 0.09) return "A";
-  if (velocity < 0.18) return "B";
-  if (velocity < 0.36) return "C";
-  return "D";
+function zoneForVelocity(velocityMmS: number): "A" | "B" | "C" | "D" {
+  // Canonical ISO 20816 Class II bands (mm/s RMS): 2.3 / 4.5 / 7.1.
+  return classifyZone(velocityMmS, "Class II") ?? "A";
 }
 
 function severityForHealth(health: number): string {
@@ -256,14 +259,20 @@ function daysAgoForDay(dayIndex: number): number {
 
 function velocityFor(spec: AssetSpec, dayIndex: number, assetIndex: number): number {
   const t = dayIndex / (DAYS - 1);
-  const jitter = deterministicNoise(dayIndex + assetIndex * 137) * 0.008;
+  // Legacy curve factors are in in/s; convert the whole result once to the
+  // canonical mm/s RMS so every downstream row and chart shares one unit.
+  const jitter = inchPerSecondToMmPerSecond(
+    deterministicNoise(dayIndex + assetIndex * 137) * 0.008
+  );
   if (spec.trend === "degrade") {
-    return 0.07 + (0.47 - 0.07) * Math.pow(t, 1.35) + jitter;
+    return inchPerSecondToMmPerSecond(
+      0.07 + (0.47 - 0.07) * Math.pow(t, 1.35)
+    ) + jitter;
   }
   if (spec.trend === "watch") {
-    return spec.baseVelocity * (1 + 0.35 * t) + jitter;
+    return inchPerSecondToMmPerSecond(spec.baseVelocity * (1 + 0.35 * t)) + jitter;
   }
-  return spec.baseVelocity + jitter;
+  return inchPerSecondToMmPerSecond(spec.baseVelocity) + jitter;
 }
 
 function healthFor(spec: AssetSpec, dayIndex: number, assetIndex: number): number {
@@ -345,16 +354,18 @@ function buildTelemetry(
     seed_marker: SEED_MARKER,
     rpm: spec.rpm,
     overall_velocity: round(velocity),
-    overall_acceleration: round(velocity * 2.8),
+    // Acceleration stays in g. The legacy seed derived it from in/s, so keep
+    // the same physical value now that velocity is canonical mm/s RMS.
+    overall_acceleration: round(velocity * (2.8 / MM_PER_INCH)),
     vibration_trend_record: {
       assetId: String(assetId),
       timestamp: timestampIso,
       broadband: {
         overallVelocity: round(velocity),
-        overallAcceleration: round(velocity * 2.8),
+        overallAcceleration: round(velocity * (2.8 / MM_PER_INCH)),
         healthScore: health,
         primaryFault: fault,
-        peakGe: round(velocity * 0.6),
+        peakGe: round(velocity * (0.6 / MM_PER_INCH)),
         kurtosis: round(3.1 + (spec.trend === "degrade" ? 0.9 : 0.1))
       },
       spectral: peaks.map((p) => ({
@@ -635,9 +646,9 @@ async function insertHierarchy(
           isoClass: "Class II",
           bearingDe: asset.bearing,
           bearingNde: asset.bearing,
-          warningLimitMms: "2.8",
-          criticalLimitMms: "4.5",
-          vibrationUnit: "in/s pk"
+          warningLimitMms: "4.5",
+          criticalLimitMms: "7.1",
+          vibrationUnit: CANONICAL_VELOCITY_UNIT
         };
         const componentRow = await client.query(
           `INSERT INTO components
@@ -683,8 +694,8 @@ async function insertHierarchy(
             await client.query(
               `INSERT INTO measurement_points
                  (collection_point_id, direction, technology_type, units, import_id)
-               VALUES ($1, $2, 'Vibration', 'in/Sec', $3)`,
-              [cpId, direction, importId]
+               VALUES ($1, $2, 'Vibration', $4, $3)`,
+              [cpId, direction, importId, CANONICAL_VELOCITY_UNIT]
             );
           }
         }
@@ -776,7 +787,7 @@ async function insertAnalysisHistory(
         state: "Data Collected",
         opSpeed: spec.rpm,
         value: round(value, 6),
-        units: "in/sec",
+        units: CANONICAL_VELOCITY_UNIT,
         daysAgo: daysAgoForDay(day),
         notes: `${SEED_MARKER}: ${spec.tag} ${point.collection_point_name} ${point.direction}`,
         alarm: zone === "C" || zone === "D",
@@ -924,7 +935,7 @@ async function insertAnalysisResults(
           cost_to_fix: spec.trend === "degrade" ? 8500 : 1200
         }),
         severity,
-        summary: `ISO 20816 zone ${zone} - overall ${round(velocity, 2)} in/s RMS; ${fault}.`,
+        summary: `ISO 20816 zone ${zone} - overall ${round(velocity, 2)} ${CANONICAL_VELOCITY_UNIT}; ${fault}.`,
         isBaseline: day === 0,
         consensus: JSON.stringify({ model: "seed-local-demo", iso_zone: zone }),
         telemetry: JSON.stringify(telemetry),

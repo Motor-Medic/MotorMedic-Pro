@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import type { SavedAnalysisResult } from "../../lib/analysisPersistence";
 import { extractVibrationRecordFromAnalysis } from "../../lib/vibration/vibrationDiagnosticRecord";
 import { extractTruePeaks, diffSpectra, buildFaultHistory, type Peak, type DiffResult } from "../../lib/diagnostics/spectralDiff";
+import { classifyZone, classifyZoneFromHealth, isoZoneProvenance, type IsoZone } from "../../lib/vibration/isoZone";
 
 interface VibrationComparisonTabProps {
   isActive: boolean;
@@ -43,16 +44,16 @@ function overallMmS(row: SavedAnalysisResult): number | null {
   if (rec?.broadband && typeof rec.broadband.overallVelocity === "number" && Number.isFinite(rec.broadband.overallVelocity) && rec.broadband.overallVelocity > 0)
     return Number(rec.broadband.overallVelocity);
   const td = row.telemetry_data;
-  if (td && typeof td === "object") { const v = (td as Record<string, unknown>).overallVelocity; if (typeof v === "number" && Number.isFinite(v) && v > 0) return v; }
+  if (td && typeof td === "object") {
+    const o = td as Record<string, unknown>;
+    const v = o.overallVelocity ?? o.overall_velocity;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+  }
   return null;
 }
 
-const ISO_ZONES = [{ zone: "A", label: "Good", to: 2.3 }, { zone: "B", label: "Acceptable", to: 4.5 }, { zone: "C", label: "Unsatisfactory", to: 7.1 }, { zone: "D", label: "Unacceptable", to: Infinity }] as const;
-
-function zoneFor(rms: number | null, health: number | null): string {
-  if (rms != null && Number.isFinite(rms) && rms >= 0) return ISO_ZONES.find((z) => rms < z.to)!.zone;
-  if (health != null && Number.isFinite(health)) { if (health >= 85) return "A"; if (health >= 70) return "B"; if (health >= 50) return "C"; return "D"; }
-  return "—";
+function zoneFor(rms: number | null, health: number | null): IsoZone | "—" {
+  return classifyZone(rms) ?? classifyZoneFromHealth(health) ?? "—";
 }
 
 function Sparkline({ points, color }: { points: number[]; color: string }) {
@@ -84,11 +85,8 @@ function Sparkline({ points, color }: { points: number[]; color: string }) {
   );
 }
 
-/* One source of truth for both zone-provenance footers (S2 + S4). The bands are
-   ISO 10816-3 velocity limits, carried into (superseded by) ISO 20816-1 — shown
-   as guidance for a health-score fallback, not as a compliance limit. */
-const ZONE_PROVENANCE =
-  "Zone provenance: guidance only — ISO 10816-3 velocity bands (A < 2.3, B < 4.5, C < 7.1, D ≥ 7.1 mm/s RMS), superseded by ISO 20816-1; health-score fallback when overall velocity is absent.";
+/* One source of truth for both zone-provenance footers (S2 + S4). */
+const ZONE_PROVENANCE = isoZoneProvenance();
 
 interface SpectralTooltipProps {
   active?: boolean;

@@ -34,6 +34,14 @@ import {
 } from "../lib/analysisPersistence";
 import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 import { extractVibrationRecordFromAnalysis } from "../lib/vibration/vibrationDiagnosticRecord";
+import {
+  classifyZone,
+  classifyZoneFromHealth,
+  isoZoneBands,
+  isoZoneScaleMax,
+  ISO_ZONE_LABELS,
+  type IsoZone
+} from "../lib/vibration/isoZone";
 import SpectralFftWorkspace from "./SpectralFftWorkspace";
 import SpectrumLibraryTab from "./SpectrumLibraryTab";
 import VibrationPrognosticsTab from "./reports/VibrationPrognosticsTab";
@@ -368,27 +376,26 @@ const ONE_X_HZ = SHAFT_RPM / 60;
 const SPECTRUM_FMAX = 500;
 const IN_S_TO_MM_S = 25.4;
 
-// ISO 10816-3 Group 2 velocity thresholds (mm/s RMS) — Medium machines 15–300 kW, rigid foundation.
-const ISO_10816_ZONES_MM = [
-  { zone: "A", label: "Good", from: 0, to: 2.3, bg: "bg-emerald-500", text: "text-emerald-400", border: "border-emerald-500/30", bgLight: "bg-emerald-500/10" },
-  { zone: "B", label: "Acceptable", from: 2.3, to: 4.5, bg: "bg-sky-500", text: "text-sky-400", border: "border-sky-500/30", bgLight: "bg-sky-500/10" },
-  { zone: "C", label: "Unsatisfactory", from: 4.5, to: 7.1, bg: "bg-amber-500", text: "text-amber-400", border: "border-amber-500/30", bgLight: "bg-amber-500/10" },
-  { zone: "D", label: "Unacceptable", from: 7.1, to: 12, bg: "bg-red-500", text: "text-red-400", border: "border-red-500/30", bgLight: "bg-red-500/10" },
-] as const;
+// ISO 20816 velocity severity bands (canonical mm/s RMS) — presentation only.
+const ISO_ZONE_STYLES: Record<IsoZone, { bg: string; text: string; border: string; bgLight: string }> = {
+  A: { bg: "bg-emerald-500", text: "text-emerald-400", border: "border-emerald-500/30", bgLight: "bg-emerald-500/10" },
+  B: { bg: "bg-sky-500", text: "text-sky-400", border: "border-sky-500/30", bgLight: "bg-sky-500/10" },
+  C: { bg: "bg-amber-500", text: "text-amber-400", border: "border-amber-500/30", bgLight: "bg-amber-500/10" },
+  D: { bg: "bg-red-500", text: "text-red-400", border: "border-red-500/30", bgLight: "bg-red-500/10" }
+};
 
 function resolveIso10816Zone(
   vibrationRms: number | null | undefined,
   healthScore: number | null | undefined,
+  machineClass?: string | null,
 ): { zone: string; label: string; rmsMmS: number | null; source: "vibration_rms" | "health_score" | "none" } {
-  if (vibrationRms != null && Number.isFinite(vibrationRms) && vibrationRms >= 0) {
-    const match = ISO_10816_ZONES_MM.find((z) => vibrationRms < z.to) ?? ISO_10816_ZONES_MM[3];
-    return { zone: match.zone, label: match.label, rmsMmS: vibrationRms, source: "vibration_rms" };
+  const zone = classifyZone(vibrationRms, machineClass);
+  if (zone && vibrationRms != null) {
+    return { zone, label: ISO_ZONE_LABELS[zone], rmsMmS: vibrationRms, source: "vibration_rms" };
   }
-  if (healthScore != null && Number.isFinite(healthScore)) {
-    if (healthScore >= 85) return { zone: "A", label: "Good", rmsMmS: null, source: "health_score" };
-    if (healthScore >= 70) return { zone: "B", label: "Acceptable", rmsMmS: null, source: "health_score" };
-    if (healthScore >= 50) return { zone: "C", label: "Unsatisfactory", rmsMmS: null, source: "health_score" };
-    return { zone: "D", label: "Unacceptable", rmsMmS: null, source: "health_score" };
+  const healthZone = classifyZoneFromHealth(healthScore);
+  if (healthZone) {
+    return { zone: healthZone, label: ISO_ZONE_LABELS[healthZone], rmsMmS: null, source: "health_score" };
   }
   return { zone: "—", label: "No stored RMS/Health metric available", rmsMmS: null, source: "none" };
 }
@@ -7083,11 +7090,32 @@ export default function AnalysisReport({
                 );
               }
 
+              const telemetry = selectedAnalysis.telemetry_data as Record<string, unknown> | null | undefined;
+              const vibrationRecord = extractVibrationRecordFromAnalysis(selectedAnalysis);
+              const overallVelocityRaw =
+                vibrationRecord?.broadband.overallVelocity ??
+                Number(telemetry?.overallVelocity ?? telemetry?.overall_velocity);
+              const overallVelocity =
+                Number.isFinite(overallVelocityRaw) && overallVelocityRaw > 0
+                  ? overallVelocityRaw
+                  : null;
+              const machineClass =
+                typeof telemetry?.iso_class === "string"
+                  ? telemetry.iso_class
+                  : typeof telemetry?.isoClass === "string"
+                    ? telemetry.isoClass
+                    : null;
               const isoInfo = resolveIso10816Zone(
-                (selectedAnalysis.telemetry_data as Record<string, unknown> | null | undefined)?.overallVelocity as number | undefined,
+                overallVelocity,
                 selectedAnalysis.health_score,
+                machineClass,
               );
-              const isoZoneMeta = ISO_10816_ZONES_MM.find((z) => z.zone === isoInfo.zone);
+              const isoBands = isoZoneBands(machineClass);
+              const isoScaleMax = isoZoneScaleMax(machineClass);
+              const isoZoneMeta =
+                isoInfo.zone === "—"
+                  ? undefined
+                  : ISO_ZONE_STYLES[isoInfo.zone as IsoZone];
 
               return (
                 <div className="space-y-4">
@@ -7123,22 +7151,22 @@ export default function AnalysisReport({
                         {/* 4-zone horizontal bar */}
                         <div className="relative">
                           <div className="flex w-full h-3 rounded-full overflow-hidden border border-slate-800">
-                            {ISO_10816_ZONES_MM.map((z) => (
-                              <div key={z.zone} className={`${z.bg} opacity-80`} style={{ width: `${((z.to - z.from) / 12) * 100}%` }} />
+                            {isoBands.map((z) => (
+                              <div key={z.zone} className={`${ISO_ZONE_STYLES[z.zone].bg} opacity-80`} style={{ width: `${((z.to - z.from) / isoScaleMax) * 100}%` }} />
                             ))}
                           </div>
                           {/* Marker */}
                           {isoInfo.rmsMmS != null && (
                             <div
                               className="absolute top-0 h-3 w-0.5 bg-white shadow-[0_0_6px_rgba(255,255,255,0.8)] rounded-full"
-                              style={{ left: `${Math.min((isoInfo.rmsMmS / 12) * 100, 100)}%`, transform: "translateX(-50%)" }}
+                              style={{ left: `${Math.min((isoInfo.rmsMmS / isoScaleMax) * 100, 100)}%`, transform: "translateX(-50%)" }}
                             />
                           )}
                           {/* Zone labels under bar */}
                           <div className="flex w-full mt-1.5">
-                            {ISO_10816_ZONES_MM.map((z) => (
-                              <div key={z.zone} className="text-center" style={{ width: `${((z.to - z.from) / 12) * 100}%` }}>
-                                <span className={`text-[9px] font-bold ${z.text}`}>{z.zone}</span>
+                            {isoBands.map((z) => (
+                              <div key={z.zone} className="text-center" style={{ width: `${((z.to - z.from) / isoScaleMax) * 100}%` }}>
+                                <span className={`text-[9px] font-bold ${ISO_ZONE_STYLES[z.zone].text}`}>{z.zone}</span>
                                 <span className="text-[8px] text-slate-600 block leading-tight">{z.label}</span>
                               </div>
                             ))}

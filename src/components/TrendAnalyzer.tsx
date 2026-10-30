@@ -44,11 +44,9 @@ import {
   RotateCw,
   Search,
   Shield,
-  Sparkles,
   Thermometer,
   Upload,
   Wind,
-  Wrench,
   Zap
 } from "lucide-react";
 import { TrendDataPoint } from "../types";
@@ -138,12 +136,18 @@ import {
   type VibrationDiagnosticRecord
 } from "../lib/vibration/vibrationDiagnosticRecord";
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
+import { formatVelocityMmS } from "../lib/vibration/units";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
 import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
 import OilCleanlinessTab from "./trendAnalyzer/OilCleanlinessTab";
 import OilFerrographyVarnishTab from "./trendAnalyzer/OilFerrographyVarnishTab";
 import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
+import {
+  VibrationActionCard,
+  VibrationIsoMatrix,
+  VibrationKpiSummary
+} from "./trendAnalyzer/VibrationSeverityPanels";
   import {
     getEquipmentData,
     getFlatEquipment,
@@ -1176,17 +1180,10 @@ const VIB_SPECTRAL = [
   { date: "Aug 03", oneX: 2.55, twoX: 1.1, harmonics: 0.78, vpf: 0.38, gmf: 0.42 }
 ];
 
-const VIB_ISO_ZONES = [
-  { id: "A", label: "Zone A — Good", width: "22%", color: "bg-green-500" },
-  { id: "B", label: "Zone B — Acceptable", width: "28%", color: "bg-yellow-500" },
-  { id: "C", label: "Zone C — Warning", width: "28%", color: "bg-orange-500" },
-  { id: "D", label: "Zone D — Critical", width: "22%", color: "bg-red-500" }
-];
-
 const VIB_TRIAXIAL = [
-  { axis: "Horizontal (H)", value: 3.45, unit: "mm/s RMS", tone: "text-yellow-500" },
-  { axis: "Vertical (V)", value: 2.18, unit: "mm/s RMS", tone: "text-green-400" },
-  { axis: "Axial (A)", value: 2.92, unit: "mm/s RMS", tone: "text-orange-400" }
+  { axis: "Horizontal (H)", value: 3.45, unit: "mm/s peak", tone: "text-yellow-500" },
+  { axis: "Vertical (V)", value: 2.18, unit: "mm/s peak", tone: "text-green-400" },
+  { axis: "Axial (A)", value: 2.92, unit: "mm/s peak", tone: "text-orange-400" }
 ];
 
 type IrMode = "hotspot" | "phase" | "radiometric" | "mechanical";
@@ -2983,6 +2980,21 @@ export default function TrendAnalyzer({
     velocityTrendSeries.length > 0
       ? velocityTrendSeries[velocityTrendSeries.length - 1].peak
       : null;
+  const latestOverallVelocity = useMemo((): number | null => {
+    const td =
+      latestDb?.telemetry_data && typeof latestDb.telemetry_data === "object"
+        ? (latestDb.telemetry_data as Record<string, unknown>)
+        : null;
+    const fromTelemetry = Number(td?.overall_velocity ?? td?.overallVelocity);
+    if (Number.isFinite(fromTelemetry) && fromTelemetry > 0) {
+      return fromTelemetry;
+    }
+    const fromRecord = latestVibrationRecord?.broadband?.overallVelocity;
+    if (fromRecord != null && Number.isFinite(fromRecord) && fromRecord > 0) {
+      return fromRecord;
+    }
+    return null;
+  }, [latestVibrationRecord, latestDb]);
   const warningThreshold =
     selectedAsset?.warningThreshold ??
     selectedComp?.warningThreshold ??
@@ -2991,10 +3003,6 @@ export default function TrendAnalyzer({
     selectedAsset?.criticalThreshold ??
     selectedComp?.criticalThreshold ??
     null;
-  const isoMarkerPct =
-    latestPeak != null
-      ? Math.min(100, Math.max(2, (latestPeak / 11) * 100))
-      : null;
 
   const triaxialAxes = useMemo(() => {
     const peaks = Array.isArray(latestDb?.peaks) ? latestDb!.peaks : [];
@@ -3017,19 +3025,19 @@ export default function TrendAnalyzer({
       {
         axis: "Horizontal (H)",
         value: h ?? overall,
-        unit: "mm/s RMS",
+        unit: "mm/s peak",
         tone: "text-yellow-500"
       },
       {
         axis: "Vertical (V)",
         value: v,
-        unit: "mm/s RMS",
+        unit: "mm/s peak",
         tone: "text-green-400"
       },
       {
         axis: "Axial (A)",
         value: a,
-        unit: "mm/s RMS",
+        unit: "mm/s peak",
         tone: "text-orange-400"
       }
     ];
@@ -3340,7 +3348,9 @@ export default function TrendAnalyzer({
             </p>
             <p className="text-2xl font-bold text-cyan-400 font-mono">
               {latestVibrationRecord.broadband.overallVelocity > 0
-                ? `${latestVibrationRecord.broadband.overallVelocity} mm/s`
+                ? formatVelocityMmS(
+                    latestVibrationRecord.broadband.overallVelocity
+                  )
                 : "—"}
             </p>
           </div>
@@ -3375,65 +3385,46 @@ export default function TrendAnalyzer({
       )}
       {/* ===== SECTION 2: KPI RIBBON & PREDICTIVE BANNER ===== */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div className={CARD}>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-            KPI Summary
-          </p>
-          <ul className="space-y-2.5">
-            <li className="text-sm font-bold text-white flex items-center gap-1.5">
-              Health Score:{" "}
-              {latestVibrationRecord?.broadband.healthScore ??
-                (latestDb?.health_score != null ? latestDb.health_score : "—")}
-              <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(latestDb ?? null)} />
-            </li>
-            <li className="text-sm font-semibold text-yellow-500">
-              Primary Fault:{" "}
-              {latestVibrationRecord?.broadband.primaryFault ||
-                latestDb?.primary_fault ||
-                "No saved analysis"}
-            </li>
-            <li className="text-sm font-semibold text-slate-300">
-              Analyses:{" "}
-              {vibAnalyses.length}
-            </li>
-            <li className="text-sm font-semibold text-green-400">
-              Source:{" "}
-              {latestVibrationRecord
-                ? vibAnalyses.length
-                  ? "PostgreSQL + Trend Record"
-                  : "Local cache"
-                : "PostgreSQL"}
-            </li>
-          </ul>
-        </div>
-
-        <div className={`${CARD} md:col-span-2`}>
-          <div className="flex items-start gap-3 mb-3">
-            <Sparkles className="h-5 w-5 text-yellow-500 shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-white leading-relaxed">
-                {latestDb?.summary ||
-                  latestDb?.primary_fault ||
-                  "Run Diagnostics to populate health trends for this asset."}
-              </p>
-              <p className="text-sm text-slate-400 mt-2">
-                {Array.isArray(latestDb?.recommendations) &&
-                latestDb.recommendations.length > 0
-                  ? String(latestDb.recommendations[0])
-                  : "Recommended Action: Complete a diagnostic run to generate recommendations."}
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            disabled
-            title="Work order creation from trend pending — WO creation endpoint not connected"
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-sm font-bold cursor-not-allowed hover:bg-slate-700 transition-colors"
-          >
-            <Wrench className="h-4 w-4" />
-            + Create Work Order
-          </button>
-        </div>
+        <VibrationKpiSummary
+          valueMmS={latestOverallVelocity}
+          machineClass={machineSpecs.isoClass}
+          healthScore={
+            latestVibrationRecord?.broadband.healthScore ??
+            latestDb?.health_score ??
+            null
+          }
+          primaryFault={
+            latestVibrationRecord?.broadband.primaryFault ||
+            latestDb?.primary_fault ||
+            null
+          }
+          analysesCount={vibAnalyses.length}
+          source={
+            latestVibrationRecord
+              ? vibAnalyses.length
+                ? "PostgreSQL + Trend Record"
+                : "Local cache"
+              : "PostgreSQL"
+          }
+          provenanceSlot={
+            <TelemetryProvenanceBadge
+              provenance={telemetryProvenanceOf(latestDb ?? null)}
+            />
+          }
+        />
+        <VibrationActionCard
+          valueMmS={latestOverallVelocity}
+          machineClass={machineSpecs.isoClass}
+          summary={
+            latestDb?.summary || latestDb?.primary_fault || null
+          }
+          recommendation={
+            Array.isArray(latestDb?.recommendations) &&
+            latestDb.recommendations.length > 0
+              ? String(latestDb.recommendations[0])
+              : null
+          }
+        />
       </div>
 
       {/* ===== SECTION 3: PRIMARY TREND CHARTS (2x2) ===== */}
@@ -3564,7 +3555,7 @@ export default function TrendAnalyzer({
                     stroke="#f97316"
                     tick={{ fontSize: 11 }}
                     label={{
-                      value: "Peak amp",
+                      value: "Peak amp (mm/s)",
                       angle: -90,
                       position: "insideLeft",
                       fill: "#f97316",
@@ -3573,7 +3564,10 @@ export default function TrendAnalyzer({
                   />
                   <Tooltip
                     contentStyle={tooltipStyle}
-                    formatter={(value: number) => [`${value}`, "Peak"]}
+                    formatter={(value: number) => [
+                      `${value} mm/s (peak)`,
+                      "Peak amplitude"
+                    ]}
                     labelFormatter={(label, payload) => {
                       const fault = payload?.[0]?.payload?.fault;
                       return fault ? `${label} · ${fault}` : String(label);
@@ -3623,48 +3617,10 @@ export default function TrendAnalyzer({
       </div>
 
       {/* ISO 20816 Severity Matrix */}
-      <div className={`${CARD} mb-6`}>
-        <h3 className="text-base font-bold text-white mb-1">ISO 20816 Severity Matrix</h3>
-        <p className="text-xs text-slate-400 mb-4">
-          {latestPeak != null
-            ? `Current asset marker at ${latestPeak} (peak amplitude from latest analysis)`
-            : "No peak amplitude available yet — run a diagnostic to place the severity marker."}
-          {machineSpecs.isoClass !== "Not set" ? ` · ${machineSpecs.isoClass}` : ""}
-        </p>
-        <div className="relative">
-          <div className="flex h-8 w-full overflow-hidden rounded-lg border border-white/10">
-            {VIB_ISO_ZONES.map((zone) => (
-              <div
-                key={zone.id}
-                className={`${zone.color} h-full flex items-center justify-center text-[10px] font-bold text-slate-950`}
-                style={{ width: zone.width }}
-                title={zone.label}
-              >
-                {zone.id}
-              </div>
-            ))}
-          </div>
-          {latestPeak != null && isoMarkerPct != null && (
-            <div
-              className="absolute -top-1 flex flex-col items-center"
-              style={{ left: `${isoMarkerPct}%` }}
-            >
-              <div className="w-0.5 h-10 bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]" />
-              <span className="mt-1 text-[10px] font-bold text-white bg-slate-950 border border-white/20 px-1.5 py-0.5 rounded whitespace-nowrap">
-                {latestPeak}
-              </span>
-            </div>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-3 mt-8 text-[10px] text-slate-400">
-          {VIB_ISO_ZONES.map((zone) => (
-            <span key={zone.id} className="inline-flex items-center gap-1.5">
-              <span className={`w-2.5 h-2.5 rounded-sm ${zone.color}`} />
-              {zone.label}
-            </span>
-          ))}
-        </div>
-      </div>
+      <VibrationIsoMatrix
+        valueMmS={latestOverallVelocity}
+        machineClass={machineSpecs.isoClass}
+      />
 
       {/* Triaxial Severity Breakdown */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -3727,7 +3683,7 @@ export default function TrendAnalyzer({
                       stroke="#38bdf8"
                       tick={{ fontSize: 10 }}
                       label={{
-                        value: "Amplitude (mm/s)",
+                        value: "Peak amplitude (mm/s)",
                         angle: -90,
                         position: "insideLeft",
                         fill: "#38bdf8",
@@ -3922,7 +3878,7 @@ export default function TrendAnalyzer({
                 stroke="#94a3b8"
                 tick={{ fontSize: 11 }}
                 label={{
-                  value: "Velocity (mm/s)",
+                  value: "Velocity (mm/s RMS)",
                   angle: -90,
                   position: "insideLeft",
                   fill: "#94a3b8",
