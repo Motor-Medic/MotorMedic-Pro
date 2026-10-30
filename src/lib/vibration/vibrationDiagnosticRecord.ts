@@ -63,7 +63,8 @@ export interface VibrationDiagnosticRecord {
   waveformAnalysis?: {
     peakToPeak: number;
     crestFactor: number;
-    impactCount: number;
+    /** Null when unrecorded — never a zero-filled substitute. */
+    impactCount: number | null;
     symmetry: "Symmetric" | "Clipped" | "Asymmetric";
     timePerRevolutionMs?: number | null;
     modulation?: "None" | "Amplitude" | "Frequency";
@@ -744,6 +745,8 @@ export function extractWaveformTrendPoint(
     td?.waveform_impact_count,
     (td?.waveform as Record<string, unknown> | undefined)?.impactCount
   ]
+    // Null/blank is missing data, not a measured zero.
+    .filter((v) => v != null && v !== "")
     .map((v) => Number(v))
     .filter((n) => Number.isFinite(n) && n >= 0);
 
@@ -752,15 +755,7 @@ export function extractWaveformTrendPoint(
   const crestFactor =
     crestCandidates.length > 0 ? crestCandidates[0] : null;
   const impactCount =
-    r.waveform_impact_count != null ||
-    wa?.impactCount != null ||
-    (td && "waveform_impact_count" in td)
-      ? impactCandidates.length > 0
-        ? impactCandidates[0]
-        : null
-      : impactCandidates.length > 0
-        ? impactCandidates[0]
-        : null;
+    impactCandidates.length > 0 ? impactCandidates[0] : null;
 
   const symmetry =
     r.waveform_symmetry ||

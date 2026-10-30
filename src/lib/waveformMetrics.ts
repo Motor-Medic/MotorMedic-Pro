@@ -169,7 +169,8 @@ export function interpretImpactCount(
 export interface NormalizedWaveformMetrics {
   peakToPeak: number;
   crestFactor: number;
-  impactCount: number;
+  /** Null when no impact count was recorded (never a fabricated 0). */
+  impactCount: number | null;
   symmetry: WaveformSymmetry;
   timePerRevolutionMs: number | null;
   modulation: WaveformModulation;
@@ -235,7 +236,7 @@ export function normalizeWaveformMetrics(raw: unknown, rpm?: number): Normalized
     impactCount:
       Number.isFinite(impactCount) && impactCount >= 0
         ? Math.round(impactCount)
-        : 0,
+        : null,
     symmetry,
     timePerRevolutionMs: computedTpr,
     modulation,

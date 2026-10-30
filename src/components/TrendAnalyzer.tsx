@@ -5082,6 +5082,7 @@ export default function TrendAnalyzer({
               waveformSamples={vibExtractedWaveformChart}
               emptyAlert={vibrationAwaitingRecordAlert}
               analysesCount={vibAnalyses.length}
+              velocityUnit={displayUnits.velocity}
               renderExpandButton={(chart: WaveformChartId, label: string) => (
                 <ChartExpandButton
                   onClick={() =>

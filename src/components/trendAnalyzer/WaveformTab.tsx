@@ -22,8 +22,33 @@ import {
   interpretCrestFactor,
   interpretImpactCount
 } from "../../lib/waveformMetrics";
+import {
+  SPARSE_TREND_HELPER_TEXT,
+  isSparseTrendSeries
+} from "../../lib/vibration/trendSeries";
+import {
+  formatVelocityValue,
+  velocityUnitLabel,
+  type VelocityDisplayUnit
+} from "../../lib/vibration/units";
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
+
+/**
+ * Slice-J2 reuse: a series with no readings (or a single reading) has no
+ * measurable slope. Both waveform trend cards share this honest fallback
+ * instead of plotting a fabricated flat line.
+ */
+function WaveformSeriesFallback({ testId }: { testId: string }) {
+  return (
+    <div
+      data-testid={testId}
+      className="h-full flex items-center justify-center px-4 text-center"
+    >
+      <p className="text-sm text-slate-500">{SPARSE_TREND_HELPER_TEXT}</p>
+    </div>
+  );
+}
 
 const tooltipStyle = {
   backgroundColor: "#0f172a",
@@ -195,66 +220,69 @@ export function CrestFactorTrendChartBody({
   data: WaveformChartModel["crestTrend"];
 }) {
   if (data.length === 0) {
-    return (
-      <div
-        data-testid="chart-body-waveformCrest"
-        className="h-full flex items-center justify-center px-4 text-center"
-      >
-        <p className="text-sm text-slate-500">No crest factor history yet.</p>
-      </div>
-    );
+    return <WaveformSeriesFallback testId="chart-body-waveformCrest" />;
   }
 
+  const sparse = isSparseTrendSeries(data);
+
   return (
-    <ResponsiveContainer
-      width="100%"
-      height="100%"
+    <div
       data-testid="chart-body-waveformCrest"
+      className="h-full flex flex-col"
     >
-      <LineChart
-        data={data}
-        margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
-      >
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-        <YAxis
-          stroke="#22d3ee"
-          tick={{ fontSize: 11 }}
-          domain={[0, "auto"]}
-        />
-        <Tooltip
-          contentStyle={tooltipStyle}
-          allowEscapeViewBox={{ x: true, y: true }}
-          wrapperStyle={{ zIndex: 20 }}
-          formatter={(value: number) => [
-            `${value.toFixed(2)} — ${interpretCrestFactor(value)}`,
-            "Crest Factor"
-          ]}
-        />
-        <Legend />
-        <ReferenceLine
-          y={5}
-          stroke="#ef4444"
-          strokeDasharray="5 5"
-          label={{
-            value: "CF=5 Warn",
-            fill: "#ef4444",
-            fontSize: 10,
-            position: "insideTopRight"
-          }}
-        />
-        <Line
-          type="monotone"
-          dataKey="crestFactor"
-          stroke="#22d3ee"
-          strokeWidth={2.5}
-          name="Crest Factor"
-          dot={{ r: 4 }}
-          connectNulls={false}
-          isAnimationActive={false}
-        />
-      </LineChart>
-    </ResponsiveContainer>
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+            <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+            <YAxis
+              stroke="#22d3ee"
+              tick={{ fontSize: 11 }}
+              domain={[0, "auto"]}
+            />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              allowEscapeViewBox={{ x: true, y: true }}
+              wrapperStyle={{ zIndex: 20 }}
+              formatter={(value: number) => [
+                `${value.toFixed(2)} — ${interpretCrestFactor(value)}`,
+                "Crest Factor"
+              ]}
+            />
+            <Legend />
+            <ReferenceLine
+              y={5}
+              stroke="#ef4444"
+              strokeDasharray="5 5"
+              label={{
+                value: "CF=5 Warn",
+                fill: "#ef4444",
+                fontSize: 10,
+                position: "insideTopRight"
+              }}
+            />
+            <Line
+              type="monotone"
+              dataKey="crestFactor"
+              stroke="#22d3ee"
+              strokeWidth={2.5}
+              name="Crest Factor"
+              dot={{ r: 4 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {sparse && (
+        <p className="text-xs text-amber-300 text-center px-2">
+          {SPARSE_TREND_HELPER_TEXT}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -264,46 +292,53 @@ export function ImpactCountTrendChartBody({
   data: WaveformChartModel["impactTrend"];
 }) {
   if (data.length === 0) {
-    return (
-      <div
-        data-testid="chart-body-waveformImpact"
-        className="h-full flex items-center justify-center px-4 text-center"
-      >
-        <p className="text-sm text-slate-500">No impact count history yet.</p>
-      </div>
-    );
+    return <WaveformSeriesFallback testId="chart-body-waveformImpact" />;
   }
 
+  const sparse = isSparseTrendSeries(data);
+
   return (
-    <ResponsiveContainer
-      width="100%"
-      height="100%"
+    <div
       data-testid="chart-body-waveformImpact"
+      className="h-full flex flex-col"
     >
-      <LineChart
-        data={data}
-        margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
-      >
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-        <YAxis stroke="#f97316" tick={{ fontSize: 11 }} domain={[0, "auto"]} />
-        <Tooltip
-          contentStyle={tooltipStyle}
-          allowEscapeViewBox={{ x: true, y: true }}
-          wrapperStyle={{ zIndex: 20 }}
-        />
-        <Line
-          type="monotone"
-          dataKey="impactCount"
-          stroke="#f97316"
-          strokeWidth={2.5}
-          name="Impacts"
-          dot={{ r: 4 }}
-          connectNulls={false}
-          isAnimationActive={false}
-        />
-      </LineChart>
-    </ResponsiveContainer>
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+            <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+            <YAxis
+              stroke="#f97316"
+              tick={{ fontSize: 11 }}
+              domain={[0, "auto"]}
+            />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              allowEscapeViewBox={{ x: true, y: true }}
+              wrapperStyle={{ zIndex: 20 }}
+            />
+            <Line
+              type="monotone"
+              dataKey="impactCount"
+              stroke="#f97316"
+              strokeWidth={2.5}
+              name="Impacts"
+              dot={{ r: 4 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {sparse && (
+        <p className="text-xs text-amber-300 text-center px-2">
+          {SPARSE_TREND_HELPER_TEXT}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -322,6 +357,8 @@ export interface WaveformTabProps {
   waveformSamples: Array<{ time: number; amplitude: number }>;
   emptyAlert: React.ReactNode;
   analysesCount: number;
+  /** Active tenant velocity display unit (slice H2); defaults to mm/s. */
+  velocityUnit?: VelocityDisplayUnit;
   renderExpandButton?: (
     chart: WaveformChartId,
     label: string
@@ -336,6 +373,7 @@ export default function WaveformTab({
   waveformSamples,
   emptyAlert,
   analysesCount,
+  velocityUnit = "mm/s",
   renderExpandButton
 }: WaveformTabProps) {
   const hasLatest =
@@ -377,6 +415,12 @@ export default function WaveformTab({
   const crest = latestMetrics?.crestFactor;
   const impacts = latestMetrics?.impactCount;
   const windowSec = sampleWindowMs / 1000;
+  // Peak-to-peak is a velocity amplitude (time-waveform Y axis is mm/s), so the
+  // label and value follow the tenant velocity preference, never a vague hedge.
+  const peakToPeakDisplay =
+    latestMetrics?.peakToPeak != null
+      ? formatVelocityValue(latestMetrics.peakToPeak, velocityUnit)
+      : "—";
 
   return (
     <div className="space-y-6">
@@ -386,11 +430,11 @@ export default function WaveformTab({
             Peak-to-Peak
           </p>
           <p className="text-2xl font-bold text-emerald-400 font-mono">
-            {latestMetrics?.peakToPeak != null
-              ? `${latestMetrics.peakToPeak.toFixed(2)}`
-              : "—"}
+            {peakToPeakDisplay}
           </p>
-          <p className="text-xs text-slate-500 mt-1">mm/s (or chart unit)</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {velocityUnitLabel(velocityUnit)}
+          </p>
         </div>
         <div className={CARD}>
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
