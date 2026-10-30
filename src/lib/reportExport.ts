@@ -17,6 +17,19 @@ import {
 } from "./maintenance/prescriptiveDictionary";
 // LEGAL-WRAPPER-A (E1/E4) — reused disclaimer prose, never authored here.
 import { ARTIFACT_DISCLAIMER } from "../components/ArtifactDisclaimer";
+import {
+  CANONICAL_DISPLAY_UNITS,
+  formatAccelerationDisplay,
+  formatVelocityDisplay,
+  frequencyDisplayValue,
+  frequencyUnitLabel,
+  frequencyValueForDisplay,
+  gToMmPerSecondSquared,
+  normalizeDisplayUnits,
+  velocityValueForDisplay,
+  type DisplayUnits,
+  type FrequencyDisplayUnit
+} from "./vibration/units";
 
 export interface ReportExportContext {
   assetLabel: string;
@@ -26,6 +39,8 @@ export interface ReportExportContext {
   /** Records backing the CSV; defaults to just `analysis`. */
   records?: SavedAnalysisResult[];
   generatedAt?: Date;
+  /** Tenant-selected DISPLAY units; canonical values are never mutated. */
+  displayUnits?: DisplayUnits;
 }
 
 const MARGIN = 14;
@@ -56,6 +71,58 @@ function stamp(date: Date): string {
 function text(value: unknown): string {
   if (value == null || value === "") return "—";
   return String(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function finiteNumber(...values: unknown[]): number | null {
+  for (const raw of values) {
+    if (raw == null) continue;
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function telemetryOf(row: SavedAnalysisResult): Record<string, unknown> {
+  return asRecord(row.telemetry_data);
+}
+
+function overallVelocityMmSOf(row: SavedAnalysisResult): number | null {
+  const td = telemetryOf(row);
+  const trendRecord = asRecord(td.vibration_trend_record);
+  return finiteNumber(
+    td.overall_velocity,
+    td.overallVelocity,
+    asRecord(trendRecord.broadband).overallVelocity,
+    asRecord(td.broadband).overallVelocity
+  );
+}
+
+function overallAccelerationGOf(row: SavedAnalysisResult): number | null {
+  const td = telemetryOf(row);
+  const trendRecord = asRecord(td.vibration_trend_record);
+  return finiteNumber(
+    td.overall_acceleration,
+    td.overallAcceleration,
+    asRecord(trendRecord.broadband).overallAcceleration,
+    asRecord(td.broadband).overallAcceleration
+  );
+}
+
+function rpmOf(row: SavedAnalysisResult): number | null {
+  const td = telemetryOf(row);
+  const trendRecord = asRecord(td.vibration_trend_record);
+  const rpm = finiteNumber(td.rpm, td.running_speed_rpm, trendRecord.rpm);
+  return rpm != null && rpm > 0 ? rpm : null;
+}
+
+function exportDisplayUnits(ctx: ReportExportContext): DisplayUnits {
+  return normalizeDisplayUnits(ctx.displayUnits ?? CANONICAL_DISPLAY_UNITS);
 }
 
 /** Cursor that wraps text and breaks pages as content grows. */
@@ -132,6 +199,8 @@ export function reportPdfFilename(ctx: ReportExportContext): string {
 export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   const { analysis } = ctx;
   if (!analysis) throw new Error("No saved analysis to export");
+  const units = exportDisplayUnits(ctx);
+  const frequencyUnit = frequencyUnitLabel(units.frequency, rpmOf(analysis));
 
   const { jsPDF } = await import("jspdf");
   const generatedAt = ctx.generatedAt ?? new Date();
@@ -150,6 +219,38 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   c.pair("Component", text(ctx.component));
   c.pair("Analysed", text(analysis.timestamp && new Date(analysis.timestamp).toLocaleString()));
   c.pair("Record ID", text(analysis.id));
+  c.pair(
+    "Display units",
+    `velocity ${units.velocity} · acceleration ${units.acceleration} · frequency ${frequencyUnit}`
+  );
+
+  const overallVelocity = overallVelocityMmSOf(analysis);
+  const overallAcceleration = overallAccelerationGOf(analysis);
+  if (overallVelocity != null || overallAcceleration != null || analysis.envelope_dominant_frequency != null) {
+    c.heading("Measurements (display units)");
+    if (overallVelocity != null) {
+      c.pair(
+        `Overall velocity (${units.velocity})`,
+        formatVelocityDisplay(overallVelocity, units.velocity)
+      );
+    }
+    if (overallAcceleration != null) {
+      c.pair(
+        `Overall acceleration (${units.acceleration})`,
+        formatAccelerationDisplay(overallAcceleration, units.acceleration)
+      );
+    }
+    if (analysis.envelope_dominant_frequency != null) {
+      c.pair(
+        `Envelope dominant frequency (${frequencyUnit})`,
+        frequencyDisplayValue(
+          analysis.envelope_dominant_frequency,
+          units.frequency,
+          rpmOf(analysis)
+        ).text
+      );
+    }
+  }
 
   c.heading("Finding");
   c.pair("Primary fault", text(analysis.primary_fault));
@@ -181,7 +282,11 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
         fault.severity ? `severity ${fault.severity}` : null,
         confidence == null ? null : `confidence ${confidence}%`,
         fault.frequencyHz != null
-          ? `${fault.frequencyHz} Hz`
+          ? frequencyDisplayValue(
+              fault.frequencyHz,
+              units.frequency,
+              rpmOf(analysis)
+            ).text
           : fault.frequency != null
             ? String(fault.frequency)
             : null
@@ -281,24 +386,75 @@ const CSV_COLUMNS: { key: keyof SavedAnalysisResult; label: string }[] = [
 ];
 
 const PROVENANCE_COLUMN_LABEL = "Telemetry Provenance";
-const EXPORT_COLUMN_LABELS = [
-  ...CSV_COLUMNS.map((c) => c.label),
-  PROVENANCE_COLUMN_LABEL
-];
 
-function measurementRows(ctx: ReportExportContext) {
+function exportRecords(ctx: ReportExportContext): SavedAnalysisResult[] {
   const records = ctx.records?.length
     ? ctx.records
     : ctx.analysis
       ? [ctx.analysis]
       : [];
   if (records.length === 0) throw new Error("No saved analysis to export");
+  return records;
+}
+
+/**
+ * The frequency header is the unit actually stamped for every row. Orders
+ * need RPM on every record; any missing RPM forces an honest Hz header rather
+ * than mixing order values under an orders label.
+ */
+function exportFrequencyHeaderUnit(
+  units: DisplayUnits,
+  records: SavedAnalysisResult[]
+): FrequencyDisplayUnit {
+  return frequencyUnitLabel(
+    units.frequency,
+    records.every((record) => rpmOf(record) != null) ? 1 : null
+  );
+}
+
+function csvColumnLabel(
+  col: (typeof CSV_COLUMNS)[number],
+  frequencyHeaderUnit: FrequencyDisplayUnit
+): string {
+  return col.key === "envelope_dominant_frequency"
+    ? `Envelope Dominant Freq (${frequencyHeaderUnit})`
+    : col.label;
+}
+
+function exportColumnLabels(ctx: ReportExportContext): string[] {
+  const units = exportDisplayUnits(ctx);
+  const records = exportRecords(ctx);
+  const frequencyHeaderUnit = exportFrequencyHeaderUnit(units, records);
+  return [
+    ...CSV_COLUMNS.map((col) => csvColumnLabel(col, frequencyHeaderUnit)),
+    PROVENANCE_COLUMN_LABEL,
+    `Overall Velocity (${units.velocity})`,
+    `Overall Acceleration (${units.acceleration})`
+  ];
+}
+
+function measurementRows(ctx: ReportExportContext) {
+  const records = exportRecords(ctx);
+  const units = exportDisplayUnits(ctx);
+  const frequencyHeaderUnit = exportFrequencyHeaderUnit(units, records);
+  const velocityColumn = `Overall Velocity (${units.velocity})`;
+  const accelerationColumn = `Overall Acceleration (${units.acceleration})`;
 
   return records.map((record) => {
     const row: Record<string, string | number> = {};
     for (const col of CSV_COLUMNS) {
       const value = record[col.key];
-      row[col.label] = value == null ? "" : (value as string | number);
+      if (col.key === "envelope_dominant_frequency" && value != null) {
+        row[csvColumnLabel(col, frequencyHeaderUnit)] =
+          frequencyValueForDisplay(
+            Number(value),
+            frequencyHeaderUnit,
+            rpmOf(record)
+          );
+      } else {
+        row[csvColumnLabel(col, frequencyHeaderUnit)] =
+          value == null ? "" : (value as string | number);
+      }
     }
     // Computed provenance column — never a keyed field, always read from
     // the persisted tag so default/prefilled runs stay badged in exports.
@@ -309,6 +465,18 @@ function measurementRows(ctx: ReportExportContext) {
         : prov === "prefilled-run"
           ? TELEMETRY_PROVENANCE_PREFILLED_NOTE
           : "";
+    const velocity = overallVelocityMmSOf(record);
+    row[velocityColumn] =
+      velocity == null
+        ? ""
+        : velocityValueForDisplay(velocity, units.velocity);
+    const acceleration = overallAccelerationGOf(record);
+    row[accelerationColumn] =
+      acceleration == null
+        ? ""
+        : units.acceleration === "mm/s2"
+          ? gToMmPerSecondSquared(acceleration)
+          : acceleration;
     return row;
   });
 }
@@ -332,7 +500,7 @@ function download(blob: Blob, filename: string): string {
  */
 export function reportCsvText(ctx: ReportExportContext): string {
   const rows = Papa.unparse(measurementRows(ctx), {
-    columns: EXPORT_COLUMN_LABELS
+    columns: exportColumnLabels(ctx)
   });
   const disclaimerRows = Papa.unparse(
     ARTIFACT_DISCLAIMER.split("\n\n").map((paragraph) => ({
@@ -363,7 +531,7 @@ export async function exportReportXlsx(ctx: ReportExportContext): Promise<string
   const XLSX = await import("xlsx");
   const generatedAt = ctx.generatedAt ?? new Date();
   const sheet = XLSX.utils.json_to_sheet(measurementRows(ctx), {
-    header: EXPORT_COLUMN_LABELS
+    header: exportColumnLabels(ctx)
   });
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, sheet, "Measurements");

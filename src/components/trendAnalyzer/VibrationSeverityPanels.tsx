@@ -6,7 +6,12 @@ import {
   isoZoneLabel,
   type IsoZone
 } from "../../lib/vibration/isoZone";
-import { formatVelocityMmS } from "../../lib/vibration/units";
+import {
+  formatVelocityDisplay,
+  formatVelocityMmS,
+  velocityValueForDisplay,
+  type VelocityDisplayUnit
+} from "../../lib/vibration/units";
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
 
@@ -20,11 +25,33 @@ const ZONE_ACTION: Record<IsoZone, string> = {
 export interface VibrationSeverityPanelProps {
   /** Overall velocity in canonical mm/s RMS. */
   valueMmS: number | null;
+  /** Display-only preference; classification ALWAYS uses valueMmS (mm/s RMS). */
+  velocityUnit?: VelocityDisplayUnit;
   machineClass?: string | null;
+}
+
+function velocityLabel(
+  valueMmS: number,
+  velocityUnit?: VelocityDisplayUnit
+): string {
+  return velocityUnit
+    ? formatVelocityDisplay(valueMmS, velocityUnit)
+    : formatVelocityMmS(valueMmS);
+}
+
+function bandEdgeLabel(
+  valueMmS: number,
+  velocityUnit?: VelocityDisplayUnit
+): string {
+  if (velocityUnit === "in/s") {
+    return velocityValueForDisplay(valueMmS, "in/s").toFixed(4);
+  }
+  return valueMmS.toFixed(2);
 }
 
 export function VibrationIsoMatrix({
   valueMmS,
+  velocityUnit,
   machineClass
 }: VibrationSeverityPanelProps) {
   const bands = isoZoneBands(machineClass);
@@ -34,6 +61,7 @@ export function VibrationIsoMatrix({
     valueMmS != null && Number.isFinite(valueMmS)
       ? Math.min(100, Math.max(0, (valueMmS / scaleMax) * 100))
       : null;
+  const bandUnit = velocityUnit ?? "mm/s";
 
   return (
     <div className={`${CARD} mb-6`}>
@@ -42,7 +70,7 @@ export function VibrationIsoMatrix({
       </h3>
       <p className="text-xs text-slate-400 mb-4">
         {valueMmS != null
-          ? `Current asset marker at ${formatVelocityMmS(valueMmS)} (Zone ${
+          ? `Current asset marker at ${velocityLabel(valueMmS, velocityUnit)} (Zone ${
               zone ?? "—"
             } — ${isoZoneLabel(zone)})`
           : "No overall velocity available yet — run a diagnostic to place the severity marker."}
@@ -57,9 +85,12 @@ export function VibrationIsoMatrix({
               style={{
                 width: `${((band.to - band.from) / scaleMax) * 100}%`
               }}
-              title={`Zone ${band.zone} — ${band.label} (${band.from.toFixed(
-                2
-              )}–${band.to.toFixed(2)} mm/s RMS)`}
+              title={`Zone ${band.zone} — ${band.label} (${bandEdgeLabel(
+                band.from,
+                velocityUnit
+              )}–${bandEdgeLabel(band.to, velocityUnit)} ${bandUnit}${
+                velocityUnit ? "" : " RMS"
+              })`}
             >
               {band.zone}
             </div>
@@ -72,7 +103,7 @@ export function VibrationIsoMatrix({
           >
             <div className="w-0.5 h-10 bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]" />
             <span className="mt-1 text-[10px] font-bold text-white bg-slate-950 border border-white/20 px-1.5 py-0.5 rounded whitespace-nowrap">
-              {formatVelocityMmS(valueMmS)}
+              {velocityLabel(valueMmS, velocityUnit)}
             </span>
           </div>
         )}
@@ -99,6 +130,7 @@ export interface VibrationKpiSummaryProps extends VibrationSeverityPanelProps {
 
 export function VibrationKpiSummary({
   valueMmS,
+  velocityUnit,
   machineClass,
   healthScore,
   primaryFault,
@@ -119,7 +151,7 @@ export function VibrationKpiSummary({
         </li>
         <li className="text-sm font-semibold text-cyan-300">
           Overall Velocity:{" "}
-          {valueMmS != null ? formatVelocityMmS(valueMmS) : "—"}
+          {valueMmS != null ? velocityLabel(valueMmS, velocityUnit) : "—"}
         </li>
         <li className="text-sm font-semibold text-slate-300">
           ISO Zone: {zone ? `Zone ${zone} — ${isoZoneLabel(zone)}` : "—"}

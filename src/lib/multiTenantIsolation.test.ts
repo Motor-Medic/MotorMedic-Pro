@@ -830,6 +830,113 @@ describe("E3/E4 - storefront checkout provisions a NEW, isolated tenant", () => 
   });
 });
 
+describe("SLICE-H2 - display-unit preferences are per-tenant and display-only", () => {
+  it("unauthenticated settings reads and writes are rejected", async () => {
+    const read = await callApi("GET", "/api/tenant-settings");
+    expect(read.statusCode).toBe(401);
+    const write = await callApi("PUT", "/api/tenant-settings", {
+      body: { display_units: { velocity: "in/s" } }
+    });
+    expect(write.statusCode).toBe(401);
+  });
+
+  it("defaults each tenant to canonical mm/s, g and Hz", async () => {
+    const a = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantA.cookie
+    });
+    const b = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantB.cookie
+    });
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(a.body.company_id).toBe(tenantA.companyId);
+    expect(b.body.company_id).toBe(tenantB.companyId);
+    expect(a.body.display_units).toEqual({
+      velocity: "mm/s",
+      acceleration: "g",
+      frequency: "Hz"
+    });
+    expect(b.body.display_units).toEqual(a.body.display_units);
+  });
+
+  it("set -> read round-trips tenant A without changing tenant B", async () => {
+    const chosen = {
+      velocity: "in/s",
+      acceleration: "mm/s2",
+      frequency: "CPM"
+    };
+    const write = await callApi("PUT", "/api/tenant-settings", {
+      cookie: tenantA.cookie,
+      body: { display_units: chosen }
+    });
+    expect(write.statusCode).toBe(200);
+    expect(write.body.company_id).toBe(tenantA.companyId);
+    expect(write.body.display_units).toEqual(chosen);
+
+    const a = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantA.cookie
+    });
+    const b = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantB.cookie
+    });
+    expect(a.body.display_units).toEqual(chosen);
+    expect(b.body.display_units).toEqual({
+      velocity: "mm/s",
+      acceleration: "g",
+      frequency: "Hz"
+    });
+
+    // Tenant B's own choice must not leak back into A.
+    const writeB = await callApi("PUT", "/api/tenant-settings", {
+      cookie: tenantB.cookie,
+      body: {
+        display_units: {
+          velocity: "mm/s",
+          acceleration: "g",
+          frequency: "orders"
+        }
+      }
+    });
+    expect(writeB.statusCode).toBe(200);
+    const aAgain = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantA.cookie
+    });
+    const bAgain = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantB.cookie
+    });
+    expect(aAgain.body.display_units).toEqual(chosen);
+    expect(bAgain.body.display_units.frequency).toBe("orders");
+  });
+
+  it("never accepts a client company id as tenancy authority", async () => {
+    const before = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantB.cookie
+    });
+    const forged = await callApi("PUT", "/api/tenant-settings", {
+      cookie: tenantB.cookie,
+      body: {
+        company_id: tenantA.companyId,
+        display_units: { velocity: "in/s", acceleration: "g", frequency: "Hz" }
+      }
+    });
+    expect(forged.statusCode).toBe(200);
+    // The session tenant (B) changed; tenant A's earlier choice is untouched.
+    const a = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantA.cookie
+    });
+    const b = await callApi("GET", "/api/tenant-settings", {
+      cookie: tenantB.cookie
+    });
+    expect(a.body.company_id).toBe(tenantA.companyId);
+    expect(a.body.display_units.velocity).toBe("in/s");
+    expect(b.body.company_id).toBe(tenantB.companyId);
+    expect(b.body.display_units.velocity).toBe("in/s");
+    expect(before.body.company_id).toBe(tenantB.companyId);
+    // A's tenant_id never moved even though B sent A's id.
+    expect(a.body.display_units).not.toEqual(before.body.display_units);
+  });
+});
+
 function readServer(): string {
   const fs = require("node:fs") as typeof import("node:fs");
   const path = require("node:path") as typeof import("node:path");

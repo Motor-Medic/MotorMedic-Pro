@@ -8,6 +8,12 @@ import {
 import { useToast } from "./Toast";
 import CustomerPortal from "./CustomerPortal";
 import { assignableRoles, can } from "../lib/roles";
+import { useTenantDisplayUnits } from "../lib/tenantSettings";
+import {
+  ACCELERATION_DISPLAY_OPTIONS,
+  FREQUENCY_DISPLAY_OPTIONS,
+  VELOCITY_DISPLAY_OPTIONS
+} from "../lib/vibration/units";
 
 interface Company {
   id: number;
@@ -34,6 +40,28 @@ export default function AdminPanel({
   const [selectedCompId, setSelectedCompId] = useState<number>(selectedCompanyId);
   const [selectedPlan, setSelectedPlan] = useState<string>("vibration_only");
   const [isSaving, setIsSaving] = useState(false);
+
+  // SLICE-H2 - display-only units, scoped to the signed-in tenant by the API.
+  const {
+    units: displayUnits,
+    setUnits: setDisplayUnits,
+    saveUnits: saveDisplayUnits,
+    loading: displayUnitsLoading,
+    error: displayUnitsError
+  } = useTenantDisplayUnits();
+  const [isSavingUnits, setIsSavingUnits] = useState(false);
+
+  const handleSaveDisplayUnits = async () => {
+    setIsSavingUnits(true);
+    try {
+      await saveDisplayUnits(displayUnits);
+      showToast("Display units saved for this tenant.", "success");
+    } catch (error: any) {
+      showToast(error.message || "Failed to save display units.", "error");
+    } finally {
+      setIsSavingUnits(false);
+    }
+  };
 
   // NOTIFICATIONS-1 - tenant alert recipients + visible send audit trail.
   const [alertRecipients, setAlertRecipients] = useState<
@@ -557,6 +585,118 @@ export default function AdminPanel({
                   >
                     <Save className="w-4 h-4" />
                     {isSaving ? "Allocating licenses..." : "Update Subscription Plan"}
+                  </button>
+                </div>
+              </div>
+
+              {/* SLICE-H2 - Display units (presentation only) */}
+              <div
+                className="bg-slate-900/40 border border-slate-900 rounded-2xl p-6 space-y-5"
+                id="admin-display-units-section"
+              >
+                <div>
+                  <h3 className="text-sm font-bold text-slate-200 uppercase tracking-widest flex items-center gap-2">
+                    <Sliders className="w-4.5 h-4.5 text-yellow-400" />
+                    Display Units
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Presentation only for the signed-in tenant. Readings stay stored
+                    and classified in canonical mm/s RMS, g and Hz.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Velocity
+                    </label>
+                    <select
+                      value={displayUnits.velocity}
+                      onChange={(e) =>
+                        setDisplayUnits({
+                          ...displayUnits,
+                          velocity: e.target.value as typeof displayUnits.velocity
+                        })
+                      }
+                      disabled={displayUnitsLoading}
+                      className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-100 text-xs font-semibold rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer disabled:opacity-50"
+                      id="admin-units-velocity"
+                    >
+                      {VELOCITY_DISPLAY_OPTIONS.map((unit) => (
+                        <option key={unit} value={unit}>
+                          {unit}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Acceleration
+                    </label>
+                    <select
+                      value={displayUnits.acceleration}
+                      onChange={(e) =>
+                        setDisplayUnits({
+                          ...displayUnits,
+                          acceleration: e.target.value as typeof displayUnits.acceleration
+                        })
+                      }
+                      disabled={displayUnitsLoading}
+                      className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-100 text-xs font-semibold rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer disabled:opacity-50"
+                      id="admin-units-acceleration"
+                    >
+                      {ACCELERATION_DISPLAY_OPTIONS.map((unit) => (
+                        <option key={unit} value={unit}>
+                          {unit}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                      Frequency
+                    </label>
+                    <select
+                      value={displayUnits.frequency}
+                      onChange={(e) =>
+                        setDisplayUnits({
+                          ...displayUnits,
+                          frequency: e.target.value as typeof displayUnits.frequency
+                        })
+                      }
+                      disabled={displayUnitsLoading}
+                      className="w-full bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-100 text-xs font-semibold rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-1 focus:ring-yellow-400/30 cursor-pointer disabled:opacity-50"
+                      id="admin-units-frequency"
+                    >
+                      {FREQUENCY_DISPLAY_OPTIONS.map((unit) => (
+                        <option key={unit} value={unit}>
+                          {unit}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-slate-950/40 border border-slate-900 rounded-xl text-[11px] text-slate-400">
+                  Frequency orders need a recorded running speed. Without RPM the
+                  Trend Analyzer falls back to Hz and shows a hint instead of guessing.
+                </div>
+
+                {displayUnitsError && (
+                  <p className="text-xs text-amber-400">{displayUnitsError}</p>
+                )}
+
+                <div className="pt-2">
+                  <button
+                    onClick={() => void handleSaveDisplayUnits()}
+                    disabled={isSavingUnits || displayUnitsLoading}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-yellow-400 text-slate-950 text-xs font-bold hover:bg-yellow-300 transition-all duration-200 cursor-pointer shadow-lg shadow-yellow-400/5 disabled:opacity-50"
+                    id="admin-save-units-btn"
+                  >
+                    <Save className="w-4 h-4" />
+                    {isSavingUnits ? "Saving units..." : "Save Display Units"}
                   </button>
                 </div>
               </div>

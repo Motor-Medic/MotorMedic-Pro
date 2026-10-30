@@ -53,6 +53,7 @@ import { CmmsWorkOrderBridge } from "./CmmsWorkOrderBridge";
 import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import { RunHistoryTrigger, RunHistoryPopover, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
+import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import { canCurrent } from "../lib/roles";
 import {
   ARTIFACT_DISCLAIMER,
@@ -5927,6 +5928,9 @@ export default function AnalysisReport({
   onNavigateToRca
 }: AnalysisReportProps) {
   const { toast } = useToast();
+  // SLICE-H2 - exports use the session tenant's display units; stored values
+  // and zone classification remain canonical.
+  const { units: displayUnits } = useTenantDisplayUnits();
   const [selectedTech, setSelectedTech] = useState<ReportTechnology>("vibration");
   const [activeTab, setActiveTab] = useState<ReportTab>(1); // 1=Analysis, 2=Library, 3=Actions
 
@@ -6626,7 +6630,8 @@ export default function AnalysisReport({
     component: loadedComponent,
     technology: selectedTech,
     analysis: selectedAnalysis,
-    records: loadedAnalyses
+    records: loadedAnalyses,
+    displayUnits
   };
 
   // AR-28 rule 7 — this view's export engines (PDF/Excel) are isolated vendor

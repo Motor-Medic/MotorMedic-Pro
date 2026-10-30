@@ -16,6 +16,11 @@ import {
 } from "./src/lib/vibration/visionModelConfig";
 import { synthesizeSpectrumFromPeaks, synthesizeEnvelopeFromRecord } from "./src/lib/vibration/synthesizeSpectrum";
 import {
+  CANONICAL_DISPLAY_UNITS,
+  normalizeDisplayUnits,
+  type DisplayUnits
+} from "./src/lib/vibration/units";
+import {
   MCA_VISION_MODELS,
   MCA_VISION_PROMPT
 } from "./src/lib/mca/mcaVisionExtractor";
@@ -8310,6 +8315,10 @@ let memoryCompanies: any[] = [
   { id: 3, name: "Demo Reliability Corp", subscription_plan: "full_suite", created_at: new Date() }
 ];
 
+// SLICE-H2 - per-tenant display units in DATABASE_URL-less boots. Keyed by the
+// session tenant id, mirroring the tenant_settings table's company_id PK.
+let memoryTenantSettings = new Map<number, DisplayUnits>();
+
 let memoryAlertPreferences: any[] = [];
 let memoryAlertHistory: any[] = [];
 // GOOD-CATCHES - session-tenant rows in DATABASE_URL-less mode.
@@ -8666,6 +8675,7 @@ const memoryProcessedWebhookEvents = new Set<string>();
 // tenant collection starts honestly empty; tenants come only from signup.
 if (!memoryDemoSeedEnabled) {
   memoryCompanies = [];
+    memoryTenantSettings = new Map();
     memoryPlants = [];
     memoryUnits = [];
     memoryRoutes = [];
@@ -12050,6 +12060,67 @@ app.get("/api/companies", async (req, res) => {
   } catch (error: any) {
     console.error("GET /api/companies failed:", error);
     return res.status(500).json({ error: error.message || "Failed to fetch companies" });
+  }
+});
+
+// SLICE-H2 - per-tenant DISPLAY preferences (never canonical storage).
+// The tenant is always the verified session's company; the route accepts no
+// client company id, so one tenant can never read or write another's units.
+app.get("/api/tenant-settings", async (req, res) => {
+  try {
+    const companyId = requestTenantId(req);
+    if (companyId == null) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    if (pool) {
+      const result = await pool.query(
+        "SELECT display_units FROM tenant_settings WHERE company_id = $1 LIMIT 1",
+        [companyId]
+      );
+      const displayUnits = normalizeDisplayUnits(
+        result.rows[0]?.display_units ?? CANONICAL_DISPLAY_UNITS
+      );
+      return res.json({ company_id: companyId, display_units: displayUnits });
+    }
+    return res.json({
+      company_id: companyId,
+      display_units:
+        memoryTenantSettings.get(companyId) ?? { ...CANONICAL_DISPLAY_UNITS }
+    });
+  } catch (error: any) {
+    console.error("GET /api/tenant-settings failed:", error);
+    return res
+      .status(500)
+      .json({ error: error.message || "Failed to fetch tenant settings" });
+  }
+});
+
+app.put("/api/tenant-settings", async (req, res) => {
+  try {
+    const companyId = requestTenantId(req);
+    if (companyId == null) {
+      return res.status(401).json({ error: "Authentication required" });
+    }
+    const incoming = req.body?.display_units ?? req.body ?? {};
+    const displayUnits = normalizeDisplayUnits(incoming);
+    if (pool) {
+      await pool.query(
+        `INSERT INTO tenant_settings (company_id, display_units, updated_at)
+         VALUES ($1, $2::jsonb, NOW())
+         ON CONFLICT (company_id) DO UPDATE
+           SET display_units = EXCLUDED.display_units,
+               updated_at = NOW()`,
+        [companyId, JSON.stringify(displayUnits)]
+      );
+    } else {
+      memoryTenantSettings.set(companyId, displayUnits);
+    }
+    return res.json({ success: true, company_id: companyId, display_units: displayUnits });
+  } catch (error: any) {
+    console.error("PUT /api/tenant-settings failed:", error);
+    return res
+      .status(500)
+      .json({ error: error.message || "Failed to update tenant settings" });
   }
 });
 
@@ -18400,6 +18471,17 @@ async function initializeDatabase() {
         throw err;
       }
     }
+    // migrations/030 - SLICE-H2. Per-tenant DISPLAY-only preferences. The
+    // canonical defaults are mm/s, g and Hz; alternate display units never
+    // touch stored readings or the ISO zone classifier.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS tenant_settings (
+        company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+        display_units JSONB NOT NULL DEFAULT
+          '{"velocity":"mm/s","acceleration":"g","frequency":"Hz"}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
     // Backfill derivable tenants from the owning company chain; anything
     // underivable stays on the disclosed -1 sentinel (no silent NULLs).
     await pool.query(`

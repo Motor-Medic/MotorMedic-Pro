@@ -136,7 +136,22 @@ import {
   type VibrationDiagnosticRecord
 } from "../lib/vibration/vibrationDiagnosticRecord";
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
-import { formatVelocityMmS } from "../lib/vibration/units";
+import {
+  ACCELERATION_DISPLAY_OPTIONS,
+  FREQUENCY_DISPLAY_OPTIONS,
+  ORDERS_FALLBACK_HINT,
+  VELOCITY_DISPLAY_OPTIONS,
+  formatAccelerationDisplay,
+  formatVelocityDisplay,
+  formatVelocityMmS,
+  frequencyDisplayValue,
+  frequencyUnitLabel,
+  frequencyValueForDisplay,
+  resolveFrequencyDisplayUnit,
+  velocityValueForDisplay,
+  type DisplayUnits
+} from "../lib/vibration/units";
+import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import WaveformTab from "./trendAnalyzer/WaveformTab";
 import OilWearMetalsTab from "./trendAnalyzer/OilWearMetalsTab";
 import OilFluidChemistryTab from "./trendAnalyzer/OilFluidChemistryTab";
@@ -1432,10 +1447,14 @@ function peakAmplitudeFromAnalysis(row: SavedAnalysisResult): number | null {
   return found ? Number(max.toFixed(4)) : null;
 }
 
-function formatRpmHz(rpm: number | null): string {
+function formatRpmHz(
+  rpm: number | null,
+  frequencyUnit: DisplayUnits["frequency"] = "Hz"
+): string {
   if (rpm == null || !Number.isFinite(rpm) || rpm <= 0) return "Not set";
   const hz = rpm / 60;
-  return `${rpm.toLocaleString()} RPM (${hz.toFixed(1)} Hz)`;
+  const display = frequencyDisplayValue(hz, frequencyUnit, rpm);
+  return `${rpm.toLocaleString()} RPM (${display.text})`;
 }
 
 function readSpecNumber(
@@ -1472,6 +1491,34 @@ export default function TrendAnalyzer({
   void trendData;
   void onAddTrendPoint;
   void selectedCompanyId;
+
+  // SLICE-H2 - display-only unit preference. The API scopes this to the
+  // session tenant; canonical values and classifyZone never see these units.
+  const {
+    units: displayUnits,
+    setUnits: setDisplayUnitsLocal,
+    saveUnits: saveDisplayUnits,
+    error: displayUnitsError
+  } = useTenantDisplayUnits();
+  const displayUnitsRef = useRef(displayUnits);
+  displayUnitsRef.current = displayUnits;
+  const [unitsSaveError, setUnitsSaveError] = useState<string | null>(null);
+  const updateDisplayUnits = useCallback(
+    async (patch: Partial<DisplayUnits>) => {
+      const next = { ...displayUnitsRef.current, ...patch };
+      displayUnitsRef.current = next;
+      setDisplayUnitsLocal(next);
+      try {
+        await saveDisplayUnits(next);
+        setUnitsSaveError(null);
+      } catch (err) {
+        setUnitsSaveError(
+          err instanceof Error ? err.message : "Failed to save display units"
+        );
+      }
+    },
+    [saveDisplayUnits, setDisplayUnitsLocal]
+  );
 
   const [equipTick, setEquipTick] = useState(0);
   const equipmentRoutes = useMemo(() => {
@@ -1643,14 +1690,14 @@ export default function TrendAnalyzer({
         isoClass === "Not set"
           ? "MACHINE CLASS: Not set"
           : `MACHINE CLASS: ${isoClass}${foundation ? ` (${foundation})` : ""}`,
-        `RUNNING SPEED: ${formatRpmHz(rpm)}`,
+        `RUNNING SPEED: ${formatRpmHz(rpm, displayUnits.frequency)}`,
         bpfo ? `BEARING: ${bearing} (BPFO: ${bpfo})` : `BEARING: ${bearing}`
       ],
       isoClass,
       rpm,
       bearing
     };
-  }, [selectedAsset, selectedComp]);
+  }, [selectedAsset, selectedComp, displayUnits.frequency]);
 
   // Prefer tag (Diagnose persists asset_id as tag), then id — never mix in stale nav props
   const analysisAssetQueryKey = useMemo(() => {
@@ -2175,6 +2222,59 @@ export default function TrendAnalyzer({
   const spectralTrendChartData = isUsingReferenceSpectralTrend
     ? REFERENCE_TREND_DATA
     : spectralHarmonicTrend;
+  const spectralTrendDisplayData = useMemo(
+    () =>
+      spectralTrendChartData.map((point) => ({
+        ...point,
+        amp1X: velocityValueForDisplay(point.amp1X, displayUnits.velocity),
+        amp2X: velocityValueForDisplay(point.amp2X, displayUnits.velocity),
+        overall: velocityValueForDisplay(point.overall, displayUnits.velocity)
+      })),
+    [spectralTrendChartData, displayUnits.velocity]
+  );
+
+  // Frequency axes: Hz -> CPM -> orders. Without recorded RPM, orders falls
+  // back to Hz (the selected option stays visible; the header shows the hint).
+  const frequencyAxisUnit = frequencyUnitLabel(
+    displayUnits.frequency,
+    machineSpecs.rpm
+  );
+  const fftADisplay = useMemo(
+    () =>
+      FFT_A.map((point) => ({
+        ...point,
+        hz: frequencyValueForDisplay(
+          point.hz,
+          displayUnits.frequency,
+          machineSpecs.rpm
+        )
+      })),
+    [displayUnits.frequency, machineSpecs.rpm]
+  );
+  const fftBDisplay = useMemo(
+    () =>
+      FFT_B.map((point) => ({
+        ...point,
+        hz: frequencyValueForDisplay(
+          point.hz,
+          displayUnits.frequency,
+          machineSpecs.rpm
+        )
+      })),
+    [displayUnits.frequency, machineSpecs.rpm]
+  );
+  const fftOverlayDisplay = useMemo(
+    () =>
+      FFT_OVERLAY.map((point) => ({
+        ...point,
+        hz: frequencyValueForDisplay(
+          point.hz,
+          displayUnits.frequency,
+          machineSpecs.rpm
+        )
+      })),
+    [displayUnits.frequency, machineSpecs.rpm]
+  );
 
   const vibExtractedEnvelopeChart = useMemo(() => {
     if (!latestVibrationRecord?.enveloping?.length) return [];
@@ -3004,6 +3104,24 @@ export default function TrendAnalyzer({
     selectedComp?.criticalThreshold ??
     null;
 
+  // Display-only projections: the saved series/thresholds stay canonical.
+  const velocityTrendDisplaySeries = useMemo(
+    () =>
+      velocityTrendSeries.map((point) => ({
+        ...point,
+        peak: velocityValueForDisplay(point.peak, displayUnits.velocity)
+      })),
+    [velocityTrendSeries, displayUnits.velocity]
+  );
+  const warningThresholdDisplay =
+    warningThreshold == null
+      ? null
+      : velocityValueForDisplay(warningThreshold, displayUnits.velocity);
+  const criticalThresholdDisplay =
+    criticalThreshold == null
+      ? null
+      : velocityValueForDisplay(criticalThreshold, displayUnits.velocity);
+
   const triaxialAxes = useMemo(() => {
     const peaks = Array.isArray(latestDb?.peaks) ? latestDb!.peaks : [];
     const byLabel = (re: RegExp) => {
@@ -3021,27 +3139,35 @@ export default function TrendAnalyzer({
     const a = byLabel(/\bA\b|axial/i);
     // If axis-tagged peaks are missing, use overall peak for Horizontal only
     const overall = latestPeak;
+    const peakUnit = `${displayUnits.velocity} peak`;
+    const display = (valueMmS: number | null) =>
+      valueMmS == null
+        ? "—"
+        : formatVelocityDisplay(valueMmS, displayUnits.velocity);
     return [
       {
         axis: "Horizontal (H)",
         value: h ?? overall,
-        unit: "mm/s peak",
+        display: display(h ?? overall),
+        unit: peakUnit,
         tone: "text-yellow-500"
       },
       {
         axis: "Vertical (V)",
         value: v,
-        unit: "mm/s peak",
+        display: display(v),
+        unit: peakUnit,
         tone: "text-green-400"
       },
       {
         axis: "Axial (A)",
         value: a,
-        unit: "mm/s peak",
+        display: display(a),
+        unit: peakUnit,
         tone: "text-orange-400"
       }
     ];
-  }, [latestDb, latestPeak]);
+  }, [latestDb, latestPeak, displayUnits.velocity]);
 
   const hasAnyAnalysisData = dbAnalyses.length > 0;
   const hasThermographyData = thermoAnalyses.length > 0;
@@ -3053,6 +3179,20 @@ export default function TrendAnalyzer({
     "bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-yellow-500 outline-none w-full";
 
   const rulData = useMemo(() => buildRulCone(speedFactor), [speedFactor]);
+  const rulDisplayData = useMemo(
+    () =>
+      rulData.map((point) => ({
+        ...point,
+        best: velocityValueForDisplay(point.best, displayUnits.velocity),
+        mostLikely: velocityValueForDisplay(
+          point.mostLikely,
+          displayUnits.velocity
+        ),
+        worst: velocityValueForDisplay(point.worst, displayUnits.velocity),
+        alarm: velocityValueForDisplay(point.alarm, displayUnits.velocity)
+      })),
+    [rulData, displayUnits.velocity]
+  );
   const projectedRulDays = Math.max(3, Math.round(14 / speedFactor));
 
   const handlePointClick = (point: SpectrumPoint) => {
@@ -3241,24 +3381,89 @@ export default function TrendAnalyzer({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              const trendData = { exported: new Date().toISOString() };
-              const blob = new Blob([JSON.stringify(trendData, null, 2)], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `trend-package-${Date.now()}.json`;
-              a.click();
-              URL.revokeObjectURL(url);
-            }}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-700 text-white hover:bg-slate-800 text-xs font-semibold cursor-pointer transition-colors shrink-0"
-          >
-            <Download className="h-3.5 w-3.5" />
-            Export
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              Units
+            </span>
+            <select
+              value={displayUnits.velocity}
+              onChange={(e) =>
+                void updateDisplayUnits({
+                  velocity: e.target.value as DisplayUnits["velocity"]
+                })
+              }
+              aria-label="Velocity display unit"
+              title="Velocity display unit"
+              className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+            >
+              {VELOCITY_DISPLAY_OPTIONS.map((unit) => (
+                <option key={unit} value={unit}>
+                  {unit}
+                </option>
+              ))}
+            </select>
+            <select
+              value={displayUnits.acceleration}
+              onChange={(e) =>
+                void updateDisplayUnits({
+                  acceleration: e.target.value as DisplayUnits["acceleration"]
+                })
+              }
+              aria-label="Acceleration display unit"
+              title="Acceleration display unit"
+              className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+            >
+              {ACCELERATION_DISPLAY_OPTIONS.map((unit) => (
+                <option key={unit} value={unit}>
+                  {unit}
+                </option>
+              ))}
+            </select>
+            <select
+              value={displayUnits.frequency}
+              onChange={(e) =>
+                void updateDisplayUnits({
+                  frequency: e.target.value as DisplayUnits["frequency"]
+                })
+              }
+              aria-label="Frequency display unit"
+              title="Frequency display unit"
+              className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+            >
+              {FREQUENCY_DISPLAY_OPTIONS.map((unit) => (
+                <option key={unit} value={unit}>
+                  {unit}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => {
+                const trendData = { exported: new Date().toISOString() };
+                const blob = new Blob([JSON.stringify(trendData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `trend-package-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-700 text-white hover:bg-slate-800 text-xs font-semibold cursor-pointer transition-colors shrink-0"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export
+            </button>
+          </div>
         </div>
+        {(displayUnits.frequency === "orders" && !machineSpecs.rpm) ||
+        displayUnitsError ||
+        unitsSaveError ? (
+          <p className="mt-2 text-[11px] text-amber-300">
+            {displayUnits.frequency === "orders" && !machineSpecs.rpm
+              ? ORDERS_FALLBACK_HINT
+              : displayUnitsError || unitsSaveError}
+          </p>
+        ) : null}
       </div>
 
       {/* ===== VIBRATION TECH CONTENT ===== */}
@@ -3348,8 +3553,9 @@ export default function TrendAnalyzer({
             </p>
             <p className="text-2xl font-bold text-cyan-400 font-mono">
               {latestVibrationRecord.broadband.overallVelocity > 0
-                ? formatVelocityMmS(
-                    latestVibrationRecord.broadband.overallVelocity
+                ? formatVelocityDisplay(
+                    latestVibrationRecord.broadband.overallVelocity,
+                    displayUnits.velocity
                   )
                 : "—"}
             </p>
@@ -3360,7 +3566,10 @@ export default function TrendAnalyzer({
             </p>
             <p className="text-2xl font-bold text-cyan-400 font-mono">
               {latestVibrationRecord.broadband.overallAcceleration > 0
-                ? `${latestVibrationRecord.broadband.overallAcceleration} g`
+                ? formatAccelerationDisplay(
+                    latestVibrationRecord.broadband.overallAcceleration,
+                    displayUnits.acceleration
+                  )
                 : "—"}
             </p>
           </div>
@@ -3387,6 +3596,7 @@ export default function TrendAnalyzer({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <VibrationKpiSummary
           valueMmS={latestOverallVelocity}
+          velocityUnit={displayUnits.velocity}
           machineClass={machineSpecs.isoClass}
           healthScore={
             latestVibrationRecord?.broadband.healthScore ??
@@ -3414,6 +3624,7 @@ export default function TrendAnalyzer({
         />
         <VibrationActionCard
           valueMmS={latestOverallVelocity}
+          velocityUnit={displayUnits.velocity}
           machineClass={machineSpecs.isoClass}
           summary={
             latestDb?.summary || latestDb?.primary_fault || null
@@ -3534,8 +3745,8 @@ export default function TrendAnalyzer({
             </div>
             <p className="text-xs text-slate-400">
               From analysis peaks
-              {warningThreshold != null || criticalThreshold != null
-                ? ` · Warning ${warningThreshold ?? "—"} / Alarm ${criticalThreshold ?? "—"}`
+              {warningThresholdDisplay != null || criticalThresholdDisplay != null
+                ? ` · Warning ${warningThresholdDisplay ?? "—"} / Alarm ${criticalThresholdDisplay ?? "—"} ${displayUnits.velocity}`
                 : " · thresholds not set for this asset"}
             </p>
           </div>
@@ -3548,14 +3759,14 @@ export default function TrendAnalyzer({
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={velocityTrendSeries} margin={chartMargin}>
+                <LineChart data={velocityTrendDisplaySeries} margin={chartMargin}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                   <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
                   <YAxis
                     stroke="#f97316"
                     tick={{ fontSize: 11 }}
                     label={{
-                      value: "Peak amp (mm/s)",
+                      value: `Peak amp (${displayUnits.velocity})`,
                       angle: -90,
                       position: "insideLeft",
                       fill: "#f97316",
@@ -3565,7 +3776,7 @@ export default function TrendAnalyzer({
                   <Tooltip
                     contentStyle={tooltipStyle}
                     formatter={(value: number) => [
-                      `${value} mm/s (peak)`,
+                      `${value} ${displayUnits.velocity} (peak)`,
                       "Peak amplitude"
                     ]}
                     labelFormatter={(label, payload) => {
@@ -3573,9 +3784,9 @@ export default function TrendAnalyzer({
                       return fault ? `${label} · ${fault}` : String(label);
                     }}
                   />
-                  {showThresholds && warningThreshold != null && (
+                  {showThresholds && warningThresholdDisplay != null && (
                       <ReferenceLine
-                        y={warningThreshold}
+                        y={warningThresholdDisplay}
                         stroke="#eab308"
                         strokeDasharray="4 4"
                         label={{
@@ -3586,9 +3797,9 @@ export default function TrendAnalyzer({
                         }}
                       />
                   )}
-                  {showThresholds && criticalThreshold != null && (
+                  {showThresholds && criticalThresholdDisplay != null && (
                       <ReferenceLine
-                        y={criticalThreshold}
+                        y={criticalThresholdDisplay}
                         stroke="#ef4444"
                         strokeDasharray="4 4"
                         label={{
@@ -3619,6 +3830,7 @@ export default function TrendAnalyzer({
       {/* ISO 20816 Severity Matrix */}
       <VibrationIsoMatrix
         valueMmS={latestOverallVelocity}
+        velocityUnit={displayUnits.velocity}
         machineClass={machineSpecs.isoClass}
       />
 
@@ -3630,7 +3842,7 @@ export default function TrendAnalyzer({
               {axis.axis}
             </p>
             <p className={`text-2xl font-bold ${axis.tone}`}>
-              {axis.value != null ? Number(axis.value).toFixed(2) : "—"}
+              {axis.display}
             </p>
             <p className="text-xs text-slate-400 mt-1">{axis.unit}</p>
           </div>
@@ -3663,7 +3875,7 @@ export default function TrendAnalyzer({
               <div className="h-[420px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart
-                    data={spectralTrendChartData}
+                    data={spectralTrendDisplayData}
                     margin={{ top: 16, right: 24, bottom: 28, left: 48 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -3683,14 +3895,20 @@ export default function TrendAnalyzer({
                       stroke="#38bdf8"
                       tick={{ fontSize: 10 }}
                       label={{
-                        value: "Peak amplitude (mm/s)",
+                        value: `Peak amplitude (${displayUnits.velocity})`,
                         angle: -90,
                         position: "insideLeft",
                         fill: "#38bdf8",
                         fontSize: 11
                       }}
                     />
-                    <Tooltip contentStyle={tooltipStyle} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      formatter={(value: number, name: string) => [
+                        `${value} ${displayUnits.velocity}`,
+                        name
+                      ]}
+                    />
                     <Legend />
                     <Line
                       type="monotone"
@@ -3871,21 +4089,27 @@ export default function TrendAnalyzer({
 
         <div className="h-72 bg-slate-950 rounded-lg border border-white/10 p-2">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={rulData} margin={{ top: 20, right: 30, bottom: 20, left: 56 }}>
+            <ComposedChart data={rulDisplayData} margin={{ top: 20, right: 30, bottom: 20, left: 56 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
               <XAxis dataKey="day" stroke="#94a3b8" tick={{ fontSize: 11 }} />
               <YAxis
                 stroke="#94a3b8"
                 tick={{ fontSize: 11 }}
                 label={{
-                  value: "Velocity (mm/s RMS)",
+                  value: `Velocity (${displayUnits.velocity})`,
                   angle: -90,
                   position: "insideLeft",
                   fill: "#94a3b8",
                   fontSize: 11
                 }}
               />
-              <Tooltip contentStyle={tooltipStyle} />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                formatter={(value: number, name: string) => [
+                  `${value} ${displayUnits.velocity}`,
+                  name
+                ]}
+              />
               <Legend />
               <Area
                 type="monotone"
@@ -3985,16 +4209,19 @@ export default function TrendAnalyzer({
               </p>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={FFT_A} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
+                  <LineChart data={fftADisplay} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                     <XAxis
                       dataKey="hz"
                       stroke="#94a3b8"
                       tick={{ fontSize: 10 }}
-                      label={{ value: "Hz", position: "insideBottom", offset: -4, fill: "#64748b" }}
+                      label={{ value: frequencyAxisUnit, position: "insideBottom", offset: -4, fill: "#64748b" }}
                     />
                     <YAxis stroke="#eab308" tick={{ fontSize: 10 }} />
-                    <Tooltip contentStyle={tooltipStyle} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      labelFormatter={(label) => `${label} ${frequencyAxisUnit}`}
+                    />
                     <Line
                       type="monotone"
                       dataKey="amp"
@@ -4014,16 +4241,19 @@ export default function TrendAnalyzer({
               </p>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={FFT_B} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
+                  <LineChart data={fftBDisplay} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                     <XAxis
                       dataKey="hz"
                       stroke="#94a3b8"
                       tick={{ fontSize: 10 }}
-                      label={{ value: "Hz", position: "insideBottom", offset: -4, fill: "#64748b" }}
+                      label={{ value: frequencyAxisUnit, position: "insideBottom", offset: -4, fill: "#64748b" }}
                     />
                     <YAxis stroke="#22d3ee" tick={{ fontSize: 10 }} />
-                    <Tooltip contentStyle={tooltipStyle} />
+                    <Tooltip
+                      contentStyle={tooltipStyle}
+                      labelFormatter={(label) => `${label} ${frequencyAxisUnit}`}
+                    />
                     <Line
                       type="monotone"
                       dataKey="amp"
@@ -4044,16 +4274,19 @@ export default function TrendAnalyzer({
             </p>
             <div className="h-64">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={FFT_OVERLAY} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
+                <LineChart data={fftOverlayDisplay} margin={{ top: 12, right: 16, bottom: 12, left: 40 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                   <XAxis
                     dataKey="hz"
                     stroke="#94a3b8"
                     tick={{ fontSize: 10 }}
-                    label={{ value: "Hz", position: "insideBottom", offset: -4, fill: "#64748b" }}
+                    label={{ value: frequencyAxisUnit, position: "insideBottom", offset: -4, fill: "#64748b" }}
                   />
                   <YAxis stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <Tooltip contentStyle={tooltipStyle} />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    labelFormatter={(label) => `${label} ${frequencyAxisUnit}`}
+                  />
                   <Legend />
                   <Line
                     type="monotone"

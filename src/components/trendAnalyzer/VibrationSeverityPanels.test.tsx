@@ -60,6 +60,38 @@ describe("Trend Analyzer vibration severity panels", () => {
     expect(kpi).toContain("5.00 mm/s RMS");
   });
 
+  it("SLICE-H2 displays the tenant unit while classifying canonical mm/s", () => {
+    const common = {
+      valueMmS: 11.85,
+      machineClass,
+      healthScore: 80,
+      primaryFault: "Imbalance",
+      analysesCount: 1,
+      source: "PostgreSQL"
+    };
+    const inches = renderToStaticMarkup(
+      <VibrationKpiSummary {...common} velocityUnit="in/s" />
+    );
+    expect(inches).toContain("0.4665 in/s");
+    expect(zoneText(inches)).toBe("Zone D");
+
+    const millimetres = renderToStaticMarkup(
+      <VibrationKpiSummary {...common} velocityUnit="mm/s" />
+    );
+    expect(millimetres).toContain("11.85 mm/s");
+    expect(zoneText(millimetres)).toBe("Zone D");
+
+    const matrix = renderToStaticMarkup(
+      <VibrationIsoMatrix
+        valueMmS={11.85}
+        velocityUnit="in/s"
+        machineClass={machineClass}
+      />
+    );
+    expect(matrix).toContain("0.4665 in/s");
+    expect(zoneText(matrix)).toBe("Zone D");
+  });
+
   it("keeps the report Actions tab (action card) on the same zone", () => {
     const timestamp = "2026-01-01T00:00:00.000Z";
     const row = {
