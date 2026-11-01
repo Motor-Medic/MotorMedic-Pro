@@ -4,6 +4,7 @@
  */
 
 import type { SavedAnalysisResult } from "./analysisPersistence";
+import { convertAbsoluteTemperature } from "./vibration/units";
 
 export type ThermoChartPoint = {
   date: string;
@@ -218,6 +219,82 @@ export function severityClassToLevel(raw: unknown): number | null {
   const m = s.match(/CLASS\s*([1-4])/);
   if (m) return Number(m[1]);
   return null;
+}
+
+export interface NetaRepairReference {
+  readonly classLabel: string;
+  readonly repairWindow: string;
+}
+
+/**
+ * Static NETA / NFPA 70B reference repair windows keyed to the STORED severity
+ * class level (1 = LOW … 4 = CRITICAL). The wording mirrors the class rubric
+ * that produced the stored severity_class (thermographyAnalysis.ts severity
+ * assessment), so the matrix never re-derives a class from ΔT at render time.
+ * Reference guidance only — not a live per-asset diagnosis.
+ */
+export const NETA_STORED_CLASS_REPAIR_WINDOW: Readonly<
+  Record<1 | 2 | 3 | 4, NetaRepairReference>
+> = {
+  1: {
+    classLabel: "Class 1 (LOW)",
+    repairWindow: "Monitor — routine re-inspection"
+  },
+  2: {
+    classLabel: "Class 2 (MEDIUM)",
+    repairWindow: "Schedule repair within 30 days"
+  },
+  3: {
+    classLabel: "Class 3 (HIGH)",
+    repairWindow: "Priority repair within 7 days"
+  },
+  4: {
+    classLabel: "Class 4 (CRITICAL)",
+    repairWindow: "Immediate action required (24–48 hrs)"
+  }
+};
+
+/** Look up the canonical repair window for a STORED class level, else null. */
+export function netaRepairWindowForStoredClass(
+  level: number | null | undefined
+): NetaRepairReference | null {
+  if (level == null || !Number.isFinite(level)) return null;
+  const key = Math.round(level);
+  if (key < 1 || key > 4) return null;
+  return NETA_STORED_CLASS_REPAIR_WINDOW[key as 1 | 2 | 3 | 4];
+}
+
+export type ThermoEmissivityAmbientSource = Pick<
+  ThermoChartPoint,
+  "emissivity" | "reference" | "ambientReferenceTemp" | "tempUnit"
+>;
+
+/**
+ * Emissivity + ambient/reference pill text. Returns null when emissivity was
+ * never stored — callers omit the pill rather than invent a default. Ambient is
+ * an ABSOLUTE temperature, so it converts affinely (scale + offset) via the
+ * shared temperature unit resolver, never with a ΔT scale-only conversion.
+ */
+export function thermoEmissivityAmbientPill(
+  point: ThermoEmissivityAmbientSource | null,
+  displayUnit: "°C" | "°F",
+  fallbackStoredUnit: "°C" | "°F"
+): string | null {
+  if (!point || point.emissivity == null || !Number.isFinite(point.emissivity)) {
+    return null;
+  }
+  const ambient = point.ambientReferenceTemp ?? point.reference;
+  const storedUnit = point.tempUnit ?? fallbackStoredUnit;
+  const ambientDisplay =
+    ambient == null
+      ? null
+      : Math.round(
+          convertAbsoluteTemperature(ambient, storedUnit, displayUnit) * 10
+        ) / 10;
+  const emissivity = point.emissivity;
+  return ambientDisplay == null
+    ? `Emissivity: ${emissivity}`
+    : `Emissivity: ${emissivity} | Ambient/Ref: ${ambientDisplay}${displayUnit}`;
 }
 
 function deepNum(

@@ -65,11 +65,13 @@ import {
   extractThermoChartFields,
   hottestPhaseFromPoint,
   mechanicalKpis,
+  netaRepairWindowForStoredClass,
   nfpaClassBadge,
   planThermoTrendAxis,
   radiometricKpis,
   resolveThermoTempUnit,
   seriesHasAny,
+  thermoEmissivityAmbientPill,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
 import { calculateLeakImpact } from "../lib/ultrasound/leakCalculator";
@@ -3587,6 +3589,22 @@ export default function TrendAnalyzer({
     thermoDisplaySeries.length > 0
       ? thermoDisplaySeries[thermoDisplaySeries.length - 1]
       : null;
+  /**
+   * Raw (unprojected) latest scan: the pill converts absolute ambient from the
+   * stored unit, so it must not read the display-projected point.
+   */
+  const latestThermoRaw: ThermoChartPoint | null =
+    thermoChartSeries.length > 0
+      ? thermoChartSeries[thermoChartSeries.length - 1]
+      : null;
+  const thermoEmissivityPill = thermoEmissivityAmbientPill(
+    latestThermoRaw,
+    thermoDisplayUnit,
+    thermoStoredUnit
+  );
+  const netaRepairReference = netaRepairWindowForStoredClass(
+    latestThermoChart?.severityClass ?? null
+  );
   const thermoAxisPlan = useMemo(
     () => planThermoTrendAxis(thermoChartSeries),
     [thermoChartSeries]
@@ -5346,6 +5364,13 @@ export default function TrendAnalyzer({
                         <li className="text-sm font-semibold text-slate-300">
                           NETA: {latestThermoChart?.severityLabel || "—"}
                         </li>
+                        {thermoEmissivityPill && (
+                          <li className="pt-1">
+                            <span className="inline-flex max-w-full rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-300">
+                              {thermoEmissivityPill}
+                            </span>
+                          </li>
+                        )}
                       </ul>
                     </div>
                     <div className={`${CARD} md:col-span-2`}>
@@ -5363,6 +5388,39 @@ export default function TrendAnalyzer({
                       </p>
                     </div>
                   </div>
+
+                  {netaRepairReference && (
+                    <div className={`${CARD} mb-6`}>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        NETA Repair-Priority Reference
+                      </p>
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                            <th className="py-2 pr-3 font-bold">Stored class</th>
+                            <th className="py-2 pr-3 font-bold">
+                              Reference repair window
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="text-slate-300">
+                            <td className="py-2 pr-3 font-semibold">
+                              {netaRepairReference.classLabel}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {netaRepairReference.repairWindow}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <p className="text-[10px] text-slate-500 mt-2 italic">
+                        Static NETA / NFPA 70B reference guidance keyed to the
+                        stored severity class — not a live per-asset diagnosis
+                        and not recomputed from ΔT.
+                      </p>
+                    </div>
+                  )}
 
                   <ThermoChartFrame
                     title="Hotspot & NETA Severity"
