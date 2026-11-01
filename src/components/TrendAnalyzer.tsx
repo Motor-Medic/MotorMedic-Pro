@@ -74,6 +74,7 @@ import {
   radiometricKpis,
   resolveThermoTempUnit,
   seriesHasAny,
+  skinAmbientDelta,
   thermoEmissivityAmbientPill,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
@@ -3543,7 +3544,9 @@ export default function TrendAnalyzer({
    * rate fields by scale only. Equal units return the stored value untouched,
    * so the default (no preference) can never silently convert real data.
    */
-  const thermoDisplaySeries = useMemo(() => {
+  const thermoDisplaySeries = useMemo<
+    (ThermoChartPoint & { skinAmbientDelta: number | null })[]
+  >(() => {
     const absolute = (value: number | null, from: "°C" | "°F") =>
       value == null
         ? null
@@ -3562,7 +3565,9 @@ export default function TrendAnalyzer({
             ) / 10;
     return thermoChartSeries.map((point) => {
       const from = point.tempUnit ?? thermoStoredUnit;
-      return {
+      const projected: ThermoChartPoint & {
+        skinAmbientDelta: number | null;
+      } = {
         ...point,
         hotspot: absolute(point.hotspot, from),
         reference: absolute(point.reference, from),
@@ -3584,8 +3589,17 @@ export default function TrendAnalyzer({
         ambientReferenceTemp: absolute(point.ambientReferenceTemp, from),
         maxAllowable: absolute(point.maxAllowable, from),
         thermalGradient: difference(point.thermalGradient, from),
-        thermalDissipationRate: difference(point.thermalDissipationRate, from)
+        thermalDissipationRate: difference(point.thermalDissipationRate, from),
+        // Derived only from stored columns already projected above: the
+        // subtraction of two absolute temps converts by scale only.
+        skinAmbientDelta: null
       };
+      projected.skinAmbientDelta = skinAmbientDelta({
+        refractorySkinTemp: projected.refractorySkinTemp,
+        skinTemp: projected.skinTemp,
+        ambientReferenceTemp: projected.ambientReferenceTemp
+      });
+      return projected;
     });
   }, [thermoChartSeries, thermoStoredUnit, thermoDisplayUnit]);
   const latestThermoChart: ThermoChartPoint | null =
@@ -3686,6 +3700,11 @@ export default function TrendAnalyzer({
     "thermalDissipationRate"
   ]);
   const mechKpis = mechanicalKpis(thermoDisplaySeries);
+  /** A safety threshold may only render when the run actually stored one. */
+  const hasStoredMaxAllowable = mechKpis.latest?.maxAllowable != null;
+  const hasSkinAmbientDeltaSeries = thermoDisplaySeries.some(
+    (point) => point.skinAmbientDelta != null
+  );
   const thermoTempAxisLabel = `Temperature (${thermoDisplayUnit})`;
   const ueBearingAnalyses = useMemo(
     () => ueAnalyses.filter(isUeBearingMechanicalRow),
@@ -6208,15 +6227,19 @@ export default function TrendAnalyzer({
                       {mechKpis.latest?.frictionalAnomaly ? (
                         <span className="inline-flex items-center gap-1.5 mt-1 px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 text-amber-400 text-sm font-bold">
                           <AlertTriangle className="h-4 w-4" />
-                          {mechKpis.latest.frictionalSeverity || "Anomaly"}
+                          {mechKpis.latest.frictionalSeverity ?? "Anomaly"}
                         </span>
                       ) : (
                         <p className="text-2xl font-bold text-slate-400">
-                          {mechKpis.latest?.frictionalSeverity || "N/A"}
+                          {mechKpis.latest?.frictionalSeverity ?? "N/A"}
                         </p>
                       )}
                       <p className="text-xs text-slate-500 mt-2">
-                        ISO 18434-1 mechanical friction class
+                        {mechKpis.latest?.frictionalSeverity
+                          ? "Stored friction class"
+                          : mechKpis.latest?.frictionalAnomaly
+                            ? "Stored friction anomaly flag — no class recorded"
+                            : "No stored friction class"}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6229,18 +6252,16 @@ export default function TrendAnalyzer({
                           : "N/A"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
-                        {mechKpis.creepAccelerating === true
-                          ? "Accelerating — friction/binding may be rising"
-                          : mechKpis.creepAccelerating === false
-                            ? "Not accelerating vs prior interval"
-                            : "—"}
+                        {mechKpis.creepRatePerDay != null
+                          ? "Measured least-squares slope across stored skin temps"
+                          : SPARSE_TREND_HELPER_TEXT}
                       </p>
                     </div>
                   </div>
 
                   <ThermoChartFrame
                     title="Mechanical & Refractory — Bearing housing and refractory skin temps vs ambient and limits"
-                    subtitle={`DE / ODE housing · refractory lagging · ambient reference · max allowable threshold (${thermoDisplayUnit})`}
+                    subtitle={`DE / ODE housing · refractory lagging · ambient reference${hasStoredMaxAllowable ? " · max allowable threshold" : ""}${hasSkinAmbientDeltaSeries ? " · derived skin−ambient ΔT" : ""} (${thermoDisplayUnit})`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
@@ -6281,7 +6302,7 @@ export default function TrendAnalyzer({
                             fontSize: 11
                           }}
                         />
-                        {mechKpis.latest?.maxAllowable != null && (
+                        {hasStoredMaxAllowable && mechKpis.latest?.maxAllowable != null && (
                           <ReferenceLine
                             y={mechKpis.latest.maxAllowable}
                             stroke="#ef4444"
@@ -6350,16 +6371,38 @@ export default function TrendAnalyzer({
                           }
                           connectNulls
                         />
-                        <Line
-                          type="monotone"
-                          dataKey="maxAllowable"
-                          name="Max Allowable Limit"
-                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#ef4444"}
-                          strokeWidth={1.5}
-                          strokeDasharray="6 4"
-                          dot={false}
-                          connectNulls
-                        />
+                        {hasSkinAmbientDeltaSeries && (
+                          <Line
+                            type="monotone"
+                            dataKey="skinAmbientDelta"
+                            name="Skin - Ambient ΔT (derived)"
+                            stroke={
+                              thermoAxisPlan.snapshot ? "transparent" : "#a78bfa"
+                            }
+                            strokeWidth={2}
+                            strokeDasharray="2 3"
+                            dot={
+                              thermoAxisPlan.snapshot
+                                ? { r: 4, fill: "#a78bfa", stroke: "#a78bfa" }
+                                : { r: 3 }
+                            }
+                            connectNulls
+                          />
+                        )}
+                        {hasStoredMaxAllowable && (
+                          <Line
+                            type="monotone"
+                            dataKey="maxAllowable"
+                            name="Max Allowable Limit"
+                            stroke={
+                              thermoAxisPlan.snapshot ? "transparent" : "#ef4444"
+                            }
+                            strokeWidth={1.5}
+                            strokeDasharray="6 4"
+                            dot={false}
+                            connectNulls
+                          />
+                        )}
                       </ComposedChart>
                     </ResponsiveContainer>
                   </ThermoChartFrame>

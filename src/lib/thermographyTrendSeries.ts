@@ -47,7 +47,8 @@ export type ThermoChartPoint = {
   thermalGradient: number | null;
   thermalDissipationRate: number | null;
   frictionalSeverity: string | null;
-  frictionalAnomaly: boolean;
+  /** Stored flag only — null when no run recorded one (never inferred). */
+  frictionalAnomaly: boolean | null;
   /** Operator / EXIF unit from telemetry_data.environmental.temp_unit when saved. */
   tempUnit: "°C" | "°F" | null;
 };
@@ -632,25 +633,24 @@ export function extractThermoChartFields(
         "creep_rate",
         "temp_rise_rate"
       ]),
+    // Stored friction class only. A fault-name regex or row.severity would
+    // fabricate a class from unrelated prose, so neither is used here.
     frictionalSeverity:
       asText(peak.frictional_severity) ??
       deepText(analysis, [
         "frictional_severity",
         "iso_18434_severity",
         "mechanical_severity"
-      ]) ??
-      (String(row.primary_fault || "")
-        .toLowerCase()
-        .match(/friction|bearing|misalignment|lubrication|binding/)
-        ? asText(row.severity) || asText(row.primary_fault)
-        : null),
-    frictionalAnomaly: Boolean(
-      peak.frictional_anomaly === true ||
-        analysis?.frictional_anomaly === true ||
-        /friction|bearing defect|lubrication|binding|misalignment/i.test(
-          String(row.primary_fault || "")
-        )
-    ),
+      ]),
+    // Stored flag only. Null means the run recorded nothing, which the card
+    // must render as N/A rather than inferring friction from a fault name.
+    frictionalAnomaly:
+      peak.frictional_anomaly === true || analysis?.frictional_anomaly === true
+        ? true
+        : peak.frictional_anomaly === false ||
+            analysis?.frictional_anomaly === false
+          ? false
+          : null,
     tempUnit:
       normalizeThermoTempUnit(env.temp_unit) ??
       normalizeThermoTempUnit(env.tempUnit) ??
@@ -754,6 +754,22 @@ export function seriesHasAny(
   );
 }
 
+/**
+ * Derived (skin − ambient) difference for one run. Both operands must be
+ * stored; a missing ambient yields null rather than an assumed reference.
+ * Callers pass display-projected values, so the difference is scale-only.
+ */
+export function skinAmbientDelta(point: {
+  refractorySkinTemp: number | null;
+  skinTemp: number | null;
+  ambientReferenceTemp: number | null;
+}): number | null {
+  const skin = point.refractorySkinTemp ?? point.skinTemp;
+  const ambient = point.ambientReferenceTemp;
+  if (skin == null || ambient == null) return null;
+  return Math.round((skin - ambient) * 10) / 10;
+}
+
 /** Hottest phase among A/B/C for KPI card — nulls when no phase temps. */
 export function hottestPhaseFromPoint(
   pt: ThermoChartPoint | null
@@ -840,13 +856,45 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
   };
 }
 
+/** Milliseconds in one day, shared by the creep regression. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Ordinary least-squares slope in value-units per day. The caller supplies
+ * already display-projected values, so an absolute temperature preference
+ * changes the slope by scale only (the affine offset cancels in regression).
+ */
+export function linearSlopePerDay(
+  points: readonly { ms: number; value: number }[]
+): number | null {
+  const n = points.length;
+  if (n < 2) return null;
+  const origin = points[0].ms;
+  const xs = points.map((p) => (p.ms - origin) / DAY_MS);
+  const meanX = xs.reduce((sum, x) => sum + x, 0) / n;
+  const meanY = points.reduce((sum, p) => sum + p.value, 0) / n;
+  let sxx = 0;
+  let sxy = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = xs[i] - meanX;
+    sxx += dx * dx;
+    sxy += dx * (points[i].value - meanY);
+  }
+  if (!Number.isFinite(sxx) || sxx === 0) return null;
+  const slope = sxy / sxx;
+  return Number.isFinite(slope) ? Math.round(slope * 100) / 100 : null;
+}
+
 /** Mechanical / refractory KPI helpers — only from real series points. */
 export function mechanicalKpis(series: ThermoChartPoint[]): {
   latest: ThermoChartPoint | null;
   deDeltaAmbient: number | null;
   odeDeltaAmbient: number | null;
   creepRatePerDay: number | null;
+  /** Reserved: a slope-sign comparison is not a trajectory, so it stays null. */
   creepAccelerating: boolean | null;
+  /** Distinct calendar dates that carry a stored skin temperature. */
+  creepDistinctDates: number;
 } {
   const latest = series.length ? series[series.length - 1] : null;
   const ambient = latest?.ambientReferenceTemp ?? null;
@@ -859,60 +907,30 @@ export function mechanicalKpis(series: ThermoChartPoint[]): {
       ? Math.round((latest.odeBearing - ambient) * 10) / 10
       : null;
 
-  // Creep from last two points that have a mechanical temp + timestamp
-  const withTemp = series.filter(
-    (p) =>
-      p.timestamp &&
-      (p.deBearing != null ||
-        p.odeBearing != null ||
-        p.refractorySkinTemp != null ||
-        p.skinTemp != null)
-  );
-  let creepRatePerDay: number | null = null;
-  let creepAccelerating: boolean | null = null;
-  if (withTemp.length >= 2) {
-    const a = withTemp[withTemp.length - 2];
-    const b = withTemp[withTemp.length - 1];
-    const pick = (p: ThermoChartPoint) =>
-      p.deBearing ?? p.refractorySkinTemp ?? p.skinTemp ?? p.odeBearing;
-    const ta = pick(a);
-    const tb = pick(b);
-    const t0 = new Date(a.timestamp).getTime();
-    const t1 = new Date(b.timestamp).getTime();
-    if (
-      ta != null &&
-      tb != null &&
-      Number.isFinite(t0) &&
-      Number.isFinite(t1) &&
-      t1 > t0
-    ) {
-      const days = (t1 - t0) / (1000 * 60 * 60 * 24);
-      if (days > 0) {
-        creepRatePerDay = Math.round(((tb - ta) / days) * 100) / 100;
-        // Acceleration only if ≥3 points with prior segment
-        if (withTemp.length >= 3) {
-          const z = withTemp[withTemp.length - 3];
-          const tz = pick(z);
-          const tZ = new Date(z.timestamp).getTime();
-          if (tz != null && Number.isFinite(tZ) && t0 > tZ) {
-            const days0 = (t0 - tZ) / (1000 * 60 * 60 * 24);
-            if (days0 > 0) {
-              const prevRate = (ta - tz) / days0;
-              creepAccelerating = creepRatePerDay > prevRate + 0.05;
-            }
-          }
-        }
-      }
-    }
-  } else if (latest?.thermalDissipationRate != null) {
-    creepRatePerDay = latest.thermalDissipationRate;
+  // True creep velocity needs a fit, not a two-point line. Gate on at least
+  // three stored skin-temperature readings on distinct calendar dates; below
+  // that the card stays N/A instead of drawing a slope from a snapshot.
+  const skinPoints: { ms: number; value: number }[] = [];
+  const skinDates = new Set<string>();
+  for (const point of series) {
+    const value = point.refractorySkinTemp ?? point.skinTemp;
+    if (value == null || !Number.isFinite(value)) continue;
+    const ms = Date.parse(point.timestamp || "");
+    if (!Number.isFinite(ms)) continue;
+    skinPoints.push({ ms, value });
+    const key = localDateKey(point.timestamp);
+    if (key) skinDates.add(key);
   }
+  const creepDistinctDates = skinDates.size;
+  const creepRatePerDay =
+    creepDistinctDates >= 3 ? linearSlopePerDay(skinPoints) : null;
 
   return {
     latest,
     deDeltaAmbient,
     odeDeltaAmbient,
     creepRatePerDay,
-    creepAccelerating
+    creepAccelerating: null,
+    creepDistinctDates
   };
 }
