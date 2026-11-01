@@ -705,7 +705,7 @@ export const SAME_DATE_SNAPSHOT_SPAN_MS = 60 * 60 * 1000;
  * - same-date duplicates across multiple dates → "MMM d HH:mm" (no collisions)
  */
 export function planThermoTrendAxis(
-  points: readonly ThermoChartPoint[]
+  points: readonly Pick<ThermoChartPoint, "timestamp">[]
 ): ThermoAxisPlan {
   const groups = new Map<string, number[]>();
   for (const point of points) {

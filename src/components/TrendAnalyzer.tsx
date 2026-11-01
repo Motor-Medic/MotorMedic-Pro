@@ -175,6 +175,10 @@ import {
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import { navigateToTab } from "../navigation";
 import { stageWorkOrderPrefill } from "../lib/maintenance/workOrderPrefill";
+import {
+  US_DDB_BRACKETS,
+  US_DDB_SOURCE
+} from "../lib/maintenance/prescriptiveDictionary";
 import WaveformTab, {
   buildWaveformChartModel,
   CrestFactorTrendChartBody,
@@ -3710,6 +3714,15 @@ export default function TrendAnalyzer({
     () => ueAnalyses.filter(isUeBearingMechanicalRow),
     [ueAnalyses]
   );
+  /**
+   * Same shared window as every other technology. Delegates to
+   * filterTrendByTimeRange via windowTrendByTimeRange so the window predicate
+   * can never drift per tab.
+   */
+  const windowedUeBearingAnalyses = useMemo(
+    () => windowTrendByTimeRange(ueBearingAnalyses, timeRange),
+    [ueBearingAnalyses, timeRange]
+  );
   const ueLeakAnalyses = useMemo(
     () => ueAnalyses.filter(isUeLeakRow),
     [ueAnalyses]
@@ -3834,7 +3847,7 @@ export default function TrendAnalyzer({
     );
   };
   const ueBearingChartSeries = useMemo(() => {
-    return [...ueBearingAnalyses]
+    return [...windowedUeBearingAnalyses]
       .slice()
       .reverse()
       .map((r) => {
@@ -3854,7 +3867,7 @@ export default function TrendAnalyzer({
           fault: r.primary_fault || "—"
         };
       });
-  }, [ueBearingAnalyses]);
+  }, [windowedUeBearingAnalyses]);
   const latestUeBearing =
     ueBearingAnalyses.length > 0 ? ueBearingAnalyses[0] : null;
   const latestUeBearingPeaks = latestUeBearing
@@ -3865,6 +3878,19 @@ export default function TrendAnalyzer({
       (typeof p.rms === "number" && Number.isFinite(p.rms)) ||
       (typeof p.peak === "number" && Number.isFinite(p.peak))
   );
+  /**
+   * J2 snapshot guard: a same-day series whose runs sit inside one inspection
+   * window is a snapshot, not a trend. Reused here instead of forking a UE-only
+   * sparse-date check.
+   */
+  const ueBearingAxisPlan = useMemo(
+    () => planThermoTrendAxis(ueBearingChartSeries),
+    [ueBearingChartSeries]
+  );
+  const ueBearingChartSparse =
+    isSparseTrendSeries(ueBearingChartSeries) || ueBearingAxisPlan.snapshot;
+  const ueBearingWindowEmpty =
+    ueBearingAnalyses.length > 0 && ueBearingChartSeries.length === 0;
   const mcaTrendSeries = useMemo(
     () => healthTrendFromAnalyses(mcaAnalyses),
     [mcaAnalyses]
@@ -4004,10 +4030,44 @@ export default function TrendAnalyzer({
 
   return (
     <div className="w-full min-w-0 bg-slate-950 text-slate-100">
-      {/* ===== SECTION 1: TOP FILTER (Dropdowns → Tech → Time Range) ===== */}
+      {/* ===== SECTION 1: TOP FILTER (Tech → Equipment → Time Range) ===== */}
       <div className={`${CARD} mb-4`}>
+        {/* Technology switcher — match Run Diagnostics card layout */}
+        <div
+          data-testid="trend-tech-cards"
+          className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-6 pb-4 border-b border-white/10"
+        >
+          {TREND_TECH_CARDS.map(({ id, title, description, Icon, iconClass }) => {
+            const isActive = trendTech === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTrendTech(id)}
+                className={`min-h-[160px] h-40 p-4 rounded-xl border flex flex-col items-center justify-center cursor-pointer transition-all ${
+                  isActive
+                    ? "border-yellow-500 bg-yellow-500/10"
+                    : "bg-slate-800/50 border-white/80 hover:border-yellow-500 hover:bg-slate-800"
+                }`}
+              >
+                <div
+                  className={`w-10 h-10 rounded-lg border flex items-center justify-center mb-2 mx-auto shrink-0 ${iconClass}`}
+                >
+                  <Icon className="w-5 h-5" />
+                </div>
+                <p className="text-sm font-bold text-white text-center leading-tight">
+                  {title}
+                </p>
+                <p className="text-[11px] text-slate-400 text-center mt-1 leading-snug">
+                  {description}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+
         {/* Asset selection — Equipment DB (same keys Diagnose saves with) */}
-        <div className="mb-4">
+        <div data-testid="trend-equipment-selector" className="mb-4">
           {!equipmentRoutes.length && (
             <p className="text-xs text-amber-400 mb-2">
               No equipment in Equipment DB yet. Add assets there, then run a diagnostic.
@@ -4109,37 +4169,6 @@ export default function TrendAnalyzer({
               </button>
             </div>
           </div>
-        </div>
-
-        {/* Technology switcher — match Run Diagnostics card layout */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4 mb-6 pb-4 border-b border-white/10">
-          {TREND_TECH_CARDS.map(({ id, title, description, Icon, iconClass }) => {
-            const isActive = trendTech === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setTrendTech(id)}
-                className={`min-h-[160px] h-40 p-4 rounded-xl border flex flex-col items-center justify-center cursor-pointer transition-all ${
-                  isActive
-                    ? "border-yellow-500 bg-yellow-500/10"
-                    : "bg-slate-800/50 border-white/80 hover:border-yellow-500 hover:bg-slate-800"
-                }`}
-              >
-                <div
-                  className={`w-10 h-10 rounded-lg border flex items-center justify-center mb-2 mx-auto shrink-0 ${iconClass}`}
-                >
-                  <Icon className="w-5 h-5" />
-                </div>
-                <p className="text-sm font-bold text-white text-center leading-tight">
-                  {title}
-                </p>
-                <p className="text-[11px] text-slate-400 text-center mt-1 leading-snug">
-                  {description}
-                </p>
-              </button>
-            );
-          })}
         </div>
 
         <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
@@ -6474,7 +6503,7 @@ export default function TrendAnalyzer({
                       : "—"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Peak acoustic amplitude vs baseline
+                    Latest mechanical / bearing scan peak acoustic amplitude
                   </p>
                 </div>
                 <div className={CARD}>
@@ -6487,7 +6516,8 @@ export default function TrendAnalyzer({
                       : "—"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Peak dB - RMS dB — early bearing defect indicator
+                    Linear peak/RMS ratio (stored crest, else
+                    10^((Peak−RMS)/20)) — early bearing defect indicator
                   </p>
                 </div>
               </div>
@@ -6496,8 +6526,17 @@ export default function TrendAnalyzer({
                 title="Bearings & Mechanical — RMS / Peak acoustic trend"
                 subtitle="Solid: RMS dBµV (friction) · Dashed: Peak dBµV (impact) · From analysis_results.peaks"
                 overlay={
-                  !hasUeBearingSeries
-                    ? "No mechanical / bearing ultrasound metrics in saved scans yet"
+                  ueBearingWindowEmpty
+                    ? `No mechanical / bearing ultrasound readings in the selected ${timeRange} window.`
+                    : !hasUeBearingSeries
+                      ? ueBearingAnalyses.length === 0
+                        ? "No mechanical / bearing ultrasound metrics in saved scans yet"
+                        : `No mechanical / bearing ultrasound metrics in the selected ${timeRange} window.`
+                      : null
+                }
+                note={
+                  hasUeBearingSeries && ueBearingChartSparse
+                    ? SPARSE_TREND_HELPER_TEXT
                     : null
                 }
               >
@@ -6558,6 +6597,42 @@ export default function TrendAnalyzer({
                   </ComposedChart>
                 </ResponsiveContainer>
               </ThermoChartFrame>
+
+              <div className={`${CARD} mb-6 overflow-x-auto`} data-testid="ue-ddb-rubric">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                  UE Systems Bearing-Condition Reference Ladder
+                </p>
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                      <th className="py-2 pr-3 font-bold">Δ over baseline</th>
+                      <th className="py-2 pr-3 font-bold">Stored class</th>
+                      <th className="py-2 pr-3 font-bold">Program action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {US_DDB_BRACKETS.map((bracket) => (
+                      <tr key={bracket.clazz} className="text-slate-300">
+                        <td className="py-2 pr-3 font-mono">
+                          {bracket.minDb === -Infinity
+                            ? `≤ ${bracket.maxDb} dB`
+                            : bracket.maxDb === Infinity
+                              ? `> ${bracket.minDb} dB`
+                              : `> ${bracket.minDb} – ≤ ${bracket.maxDb} dB`}
+                        </td>
+                        <td className="py-2 pr-3 font-semibold">
+                          {bracket.clazz}
+                        </td>
+                        <td className="py-2 pr-3">{bracket.action}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="text-[10px] text-slate-500 mt-2 italic">
+                  {US_DDB_SOURCE}. Static in-repo reference — not recomputed
+                  from this scan and not a live per-asset diagnosis.
+                </p>
+              </div>
 
               <div className={`${CARD} mb-6 overflow-x-auto`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">

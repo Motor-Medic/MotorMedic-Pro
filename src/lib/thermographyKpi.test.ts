@@ -326,7 +326,9 @@ describe("SLICE-W same-date + windowing reuse", () => {
     expect(trendSrc).toContain(
       "windowTrendByTimeRange(thermoAnalyses, timeRange)"
     );
-    expect((trendSrc.match(/planThermoTrendAxis\(/g) ?? []).length).toBe(1);
+    // Two call sites, one planner: the UE Bearings chart reuses the same J2
+    // snapshot plan instead of forking a sparse-date check.
+    expect((trendSrc.match(/planThermoTrendAxis\(/g) ?? []).length).toBe(2);
     expect((trendSrc.match(/filterTrendByTimeRange\(/g) ?? []).length).toBe(1);
   });
 });
