@@ -4,8 +4,13 @@ import { describe, expect, it } from "vitest";
 import type { SavedAnalysisResult } from "./analysisPersistence";
 import {
   NETA_STORED_CLASS_REPAIR_WINDOW,
+  PROJECTION_DISPLAY_FLOOR,
+  PROJECTION_LOW_LOAD_CAVEAT,
+  PROJECTION_MIN_VALID_LOAD_PERCENT,
   buildThermoChartSeries,
+  formatTemperatureProjection,
   netaRepairWindowForStoredClass,
+  nfpaClassBadge,
   thermoEmissivityAmbientPill,
   type ThermoChartPoint
 } from "./thermographyTrendSeries";
@@ -250,5 +255,132 @@ describe("SLICE-V deepest temperature fallback", () => {
     );
     expect(convertTemperatureDelta(30, "°C", "°F")).toBeCloseTo(54, 10);
     expect(convertTemperatureDelta(30, "°C", "°F")).not.toBe(86);
+  });
+});
+
+describe("SLICE-W scale-aware projection formatter", () => {
+  it("keeps real magnitude: no false 2-dp precision and no fake zero", () => {
+    // (15/180)² × 2.3 = 0.015972… — a real computed projection.
+    expect(formatTemperatureProjection(0.015972222222222222, "°C")).toBe(
+      "0.016°C"
+    );
+    expect(formatTemperatureProjection(0.015972222222222222, "°C")).not.toBe(
+      "0.02°C"
+    );
+    const tiny = formatTemperatureProjection(0.0098765, "°C");
+    expect(tiny).toBe("0.00988°C");
+    expect(tiny).not.toBe("0.01°C");
+    expect(tiny).not.toBe("0°C");
+    expect(tiny).not.toBe("0.00°C");
+    expect(formatTemperatureProjection(0.00004, "°C")).toBe(
+      `<${PROJECTION_DISPLAY_FLOOR}°C`
+    );
+    expect(formatTemperatureProjection(0, "°C")).toBe("0°C");
+    expect(formatTemperatureProjection(null, "°C")).toBeNull();
+  });
+
+  it("converts the raw projection by scale only before formatting", () => {
+    expect(trendSrc).toContain("latestThermoRaw?.i2rNormalizedDelta");
+    expect(trendSrc).toMatch(
+      /convertTemperatureDelta\(\s*projectionStoredValue,\s*projectionStoredUnit,\s*thermoDisplayUnit\s*\)/
+    );
+    expect(trendSrc).toContain(
+      "formatTemperatureProjection(projectionDisplayValue, thermoDisplayUnit)"
+    );
+    // 0.01597 °C ΔT is 0.0287 °F — scale only, never +32.
+    expect(convertTemperatureDelta(0.015972222222222222, "°C", "°F")).toBeCloseTo(
+      0.02875,
+      10
+    );
+  });
+});
+
+describe("SLICE-W dual-axis unit compliance", () => {
+  it("resolves the temperature axis while Load % and the load KPI stay raw", () => {
+    expect(trendSrc).toContain("value: thermoTempAxisLabel");
+    expect(trendSrc).toContain('value: "Load (%)"');
+    expect(trendSrc).toContain("`${latestThermoChart.loadPercent}%`");
+    expect(trendSrc).not.toContain('value: "Temperature (°C)"');
+    // The load series is bound to the load axis, never the temperature axis.
+    expect(trendSrc).toMatch(
+      /yAxisId="load"[\s\S]{0,160}?dataKey="loadPercent"/
+    );
+  });
+});
+
+describe("SLICE-W same-date + windowing reuse", () => {
+  it("Phase Delta shares the one axis plan and the one window predicate", () => {
+    expect(trendSrc).toContain("planThermoTrendAxis(thermoChartSeries)");
+    expect(trendSrc).toContain("dataKey={thermoAxisDataKey}");
+    expect(trendSrc).toContain(
+      "windowTrendByTimeRange(thermoAnalyses, timeRange)"
+    );
+    expect((trendSrc.match(/planThermoTrendAxis\(/g) ?? []).length).toBe(1);
+    expect((trendSrc.match(/filterTrendByTimeRange\(/g) ?? []).length).toBe(1);
+  });
+});
+
+describe("SLICE-W single NETA source", () => {
+  it("badge and repair matrix read the same stored class and omit together", () => {
+    const badge = nfpaClassBadge(
+      point({ severityClass: 3, severityLabel: "HIGH" })
+    );
+    expect(badge?.label).toBe(NETA_STORED_CLASS_REPAIR_WINDOW[3].classLabel);
+    expect(netaRepairWindowForStoredClass(3)?.repairWindow).toBe(
+      NETA_STORED_CLASS_REPAIR_WINDOW[3].repairWindow
+    );
+
+    // No stored class -> the badge returns null (omitted) just like the matrix.
+    expect(
+      nfpaClassBadge(point({ severityClass: null, severityLabel: "ANOMALY" }))
+    ).toBeNull();
+    expect(netaRepairWindowForStoredClass(null)).toBeNull();
+
+    expect(trendSrc).toContain("nfpaClassBadge(latestThermoChart)");
+    expect(trendSrc).toContain("netaRepairWindowForStoredClass(");
+    expect(trendSrc).toContain("latestThermoChart?.severityClass");
+    expect(trendSrc).not.toContain("evaluateIrSeverity");
+  });
+});
+
+describe("SLICE-W sub-40% projection honesty", () => {
+  it("suppresses the normalised figure below the validity floor with a caveat", () => {
+    expect(PROJECTION_MIN_VALID_LOAD_PERCENT).toBe(40);
+    expect(trendSrc).toContain("projectionBelowValidity");
+    expect(trendSrc).toContain("PROJECTION_LOW_LOAD_CAVEAT");
+    expect(trendSrc).toContain("PROJECTION_MIN_VALID_LOAD_PERCENT");
+    expect(trendSrc).toContain(
+      "y1: PROJECTION_MIN_VALID_LOAD_PERCENT"
+    );
+    expect(PROJECTION_LOW_LOAD_CAVEAT).toMatch(/below 40%/i);
+  });
+});
+
+describe("SLICE-W phase-current schema verdict", () => {
+  it("stores one measured amp figure, so no imbalance banner is fabricated", () => {
+    const migrationSrc = readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../migrations/001_analysis_results_polymorphic_thermography.sql",
+          import.meta.url
+        )
+      ),
+      "utf8"
+    );
+    expect(migrationSrc).toContain("measured_amps");
+    expect(migrationSrc).toContain("rated_amps");
+    // Three per-phase CURRENTS were never stored — only phase TEMPERATURES.
+    expect(migrationSrc).not.toMatch(/phase_[abc]_amp/i);
+
+    const phaseBlock = trendSrc.slice(
+      trendSrc.indexOf("TAB 2"),
+      trendSrc.indexOf("TAB 3")
+    );
+    expect(phaseBlock.length).toBeGreaterThan(0);
+    expect(phaseBlock).not.toMatch(/phase[-_ ]imbalance/i);
+    // Cross-technology thermal <-> vibration fusion stays killed.
+    expect(phaseBlock).not.toMatch(
+      /BPFO|BPFI|loose connection correlates|impacts\/sec|MCSA|vibration/i
+    );
   });
 });

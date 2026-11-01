@@ -61,8 +61,11 @@ import {
 } from "../lib/analysisPersistence";
 import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 import {
+  PROJECTION_LOW_LOAD_CAVEAT,
+  PROJECTION_MIN_VALID_LOAD_PERCENT,
   buildThermoChartSeries,
   extractThermoChartFields,
+  formatTemperatureProjection,
   hottestPhaseFromPoint,
   mechanicalKpis,
   netaRepairWindowForStoredClass,
@@ -3605,6 +3608,31 @@ export default function TrendAnalyzer({
   const netaRepairReference = netaRepairWindowForStoredClass(
     latestThermoChart?.severityClass ?? null
   );
+  /**
+   * Scale-aware I²R projection. Read from the RAW latest scan so a unit switch
+   * cannot round a sub-0.1 projection to 0.0 before formatting; convert by
+   * scale only (ΔT has no zero point) and let the adaptive formatter choose
+   * precision. Below the 40% validity floor the figure is suppressed.
+   */
+  const projectionStoredValue =
+    latestThermoRaw?.i2rNormalizedDelta ?? latestThermoRaw?.i2rDelta ?? null;
+  const projectionStoredUnit = latestThermoRaw?.tempUnit ?? thermoStoredUnit;
+  const projectionDisplayValue =
+    projectionStoredValue == null
+      ? null
+      : convertTemperatureDelta(
+          projectionStoredValue,
+          projectionStoredUnit,
+          thermoDisplayUnit
+        );
+  const projectionLoadPercent = latestThermoChart?.loadPercent ?? null;
+  const projectionBelowValidity =
+    projectionLoadPercent != null &&
+    projectionLoadPercent < PROJECTION_MIN_VALID_LOAD_PERCENT;
+  const projectionText =
+    projectionStoredValue == null || projectionBelowValidity
+      ? null
+      : formatTemperatureProjection(projectionDisplayValue, thermoDisplayUnit);
   const thermoAxisPlan = useMemo(
     () => planThermoTrendAxis(thermoChartSeries),
     [thermoChartSeries]
@@ -5651,25 +5679,36 @@ export default function TrendAnalyzer({
                         Normalized ΔT Projection
                       </p>
                       <p className="text-2xl font-bold text-yellow-400">
-                        {latestThermoChart?.i2rNormalizedDelta != null
-                          ? `${latestThermoChart.i2rNormalizedDelta}${thermoDisplayUnit}`
-                          : latestThermoChart?.i2rDelta != null
-                            ? `${latestThermoChart.i2rDelta}${thermoDisplayUnit}`
-                            : "N/A"}
+                        {projectionText ??
+                          (projectionStoredValue == null ? "N/A" : "—")}
                       </p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        I²R-corrected rise @ 100% load
+                      <p
+                        className={`text-xs mt-1 ${
+                          projectionBelowValidity
+                            ? "text-amber-300"
+                            : "text-slate-500"
+                        }`}
+                      >
+                        {projectionBelowValidity
+                          ? PROJECTION_LOW_LOAD_CAVEAT
+                          : "I²R-corrected rise @ 100% load"}
                       </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                         NFPA 70B Compliance
                       </p>
-                      <span
-                        className={`inline-flex mt-1 px-3 py-1.5 rounded-lg border text-sm font-bold ${phaseNfpaBadge.className}`}
-                      >
-                        {phaseNfpaBadge.label}
-                      </span>
+                      {phaseNfpaBadge ? (
+                        <span
+                          className={`inline-flex mt-1 px-3 py-1.5 rounded-lg border text-sm font-bold ${phaseNfpaBadge.className}`}
+                        >
+                          {phaseNfpaBadge.label}
+                        </span>
+                      ) : (
+                        <p className="text-sm text-slate-500 mt-1">
+                          No stored severity class
+                        </p>
+                      )}
                       <p className="text-xs text-slate-500 mt-2">Severity class badge</p>
                     </div>
                   </div>
@@ -5734,7 +5773,7 @@ export default function TrendAnalyzer({
                         {/* Green ≥40% load validity band (NFPA operational zone) */}
                         {React.createElement(ReferenceArea, {
                           yAxisId: "load",
-                          y1: 40,
+                          y1: PROJECTION_MIN_VALID_LOAD_PERCENT,
                           y2: 100,
                           fill: "#22c55e",
                           fillOpacity: 0.12,
@@ -5742,11 +5781,11 @@ export default function TrendAnalyzer({
                         })}
                         <ReferenceLine
                           yAxisId="load"
-                          y={40}
+                          y={PROJECTION_MIN_VALID_LOAD_PERCENT}
                           stroke="#22c55e"
                           strokeDasharray="4 4"
                           label={{
-                            value: "≥40% load",
+                            value: `≥${PROJECTION_MIN_VALID_LOAD_PERCENT}% load`,
                             fill: "#4ade80",
                             fontSize: 10,
                             position: "insideTopRight"

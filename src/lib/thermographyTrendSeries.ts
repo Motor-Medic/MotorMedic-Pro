@@ -203,6 +203,48 @@ function telemetryDataBlob(row: SavedAnalysisResult): {
   return { root, environmental, aiVision, polymorphic };
 }
 
+/**
+ * NFPA operational validity floor for I²R normalization. Below this load the
+ * (rated/measured)² extrapolation to 100% load amplifies measurement error by
+ * more than ~6×, so the projected figure is not a confident risk metric.
+ */
+export const PROJECTION_MIN_VALID_LOAD_PERCENT = 40;
+
+/**
+ * Honest caveat shown whenever a projection exists but the stored load is below
+ * the validity floor. The normalised figure is suppressed rather than dressed
+ * up as a confident number.
+ */
+export const PROJECTION_LOW_LOAD_CAVEAT =
+  "Load below 40% — I²R projection suppressed; extrapolating to 100% load is unreliable.";
+
+/** Values below this are shown as a bound, never rounded to a fake zero. */
+export const PROJECTION_DISPLAY_FLOOR = 0.0001;
+
+/**
+ * Scale-aware formatter for the I²R-normalised ΔT projection.
+ *
+ * A real projection from a small measured phase delta (e.g. (15/180)² × 2.3 =
+ * 0.01597 °C) carries genuine magnitude. Blind `toFixed(2)` would round it to
+ * "0.02" (false precision) and a 1-decimal display would collapse it to "0.0"
+ * (fake zero). This keeps THREE significant figures — 0.01597 → "0.016",
+ * 0.00987 → "0.00988" — strips trailing zeros, and reports anything under the
+ * display floor as "0.0001" bound rather than zero. `null` stays `null` so the
+ * caller can omit the readout entirely when nothing was stored.
+ */
+export function formatTemperatureProjection(
+  value: number | null | undefined,
+  unit: string
+): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (value === 0) return `0${unit}`;
+  const abs = Math.abs(value);
+  if (abs < PROJECTION_DISPLAY_FLOOR) {
+    return `<${PROJECTION_DISPLAY_FLOOR}${unit}`;
+  }
+  return `${Number(value.toPrecision(3))}${unit}`;
+}
+
 /** Map NETA / NFPA class labels + API severity → 1–4 for step chart. */
 export function severityClassToLevel(raw: unknown): number | null {
   if (raw == null || raw === "") return null;
@@ -442,7 +484,7 @@ export function extractThermoChartFields(
       num(poly.rated_amps) ??
       num(peak.rated_amps) ??
       deepNum(extracted, ["rated_amps", "fla", "full_load_amps"]),
-    loadThreshold: 40,
+    loadThreshold: PROJECTION_MIN_VALID_LOAD_PERCENT,
     // Tab 3 — hybrid JSONB environmental (form physics) + AI vision radiometric
     emissivity:
       num(env.emissivity) ??
@@ -725,44 +767,41 @@ export function hottestPhaseFromPoint(
   return candidates.reduce((best, cur) => (cur.temp > best.temp ? cur : best));
 }
 
+/**
+ * NFPA 70B badge for the Phase Delta tab. It reads the SAME stored
+ * `severityClass` level as `netaRepairWindowForStoredClass`, and labels it from
+ * the same canonical table so the badge and the repair matrix can never
+ * disagree. No stored level → both omit (returns null, never "N/A" or an
+ * independently re-derived class).
+ */
 export function nfpaClassBadge(pt: ThermoChartPoint | null): {
   label: string;
   className: string;
-} {
+} | null {
   const level = pt?.severityClass;
+  const reference = netaRepairWindowForStoredClass(level);
+  if (reference == null) return null;
   if (level === 4) {
     return {
-      label: pt?.severityLabel || "Class 4",
+      label: reference.classLabel,
       className: "bg-red-500/20 border-red-500/40 text-red-400"
     };
   }
   if (level === 3) {
     return {
-      label: pt?.severityLabel || "Class 3",
+      label: reference.classLabel,
       className: "bg-orange-500/20 border-orange-500/40 text-orange-400"
     };
   }
   if (level === 2) {
     return {
-      label: pt?.severityLabel || "Class 2",
+      label: reference.classLabel,
       className: "bg-yellow-500/20 border-yellow-500/40 text-yellow-400"
     };
   }
-  if (level === 1) {
-    return {
-      label: pt?.severityLabel || "Class 1",
-      className: "bg-green-500/20 border-green-500/40 text-green-400"
-    };
-  }
-  if (pt?.severityLabel) {
-    return {
-      label: pt.severityLabel,
-      className: "bg-slate-800 border-slate-600 text-slate-300"
-    };
-  }
   return {
-    label: "N/A",
-    className: "bg-slate-800 border-slate-700 text-slate-500"
+    label: reference.classLabel,
+    className: "bg-green-500/20 border-green-500/40 text-green-400"
   };
 }
 
