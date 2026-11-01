@@ -1,6 +1,11 @@
 /**
  * Compressed-air leak impact calculator (industry orifice + DOE-style energy).
  * Pure math — safe for client or server.
+ *
+ * Every economic/CO2 output below is MODELED from a single measured peak dBµV
+ * delta. The constants are hardcoded defaults; nothing here is stored or
+ * configured per tenant. Callers must surface `LEAK_BASIS_TEXT` beside any
+ * derived dollar/CO2 figure so a model is never presented as a measurement.
  */
 
 export type LeakImpactParams = {
@@ -29,13 +34,144 @@ export type LeakImpactResult = {
   co2Emissions: number;
 };
 
-const DEFAULT_SYSTEM_PRESSURE_PSI = 100;
-const DEFAULT_ELECTRICITY_COST = 0.12;
-const DEFAULT_OPERATING_HOURS = 8760;
-/** kW per 100 CFM → annualKwh uses (efficiency / 100) as kW/CFM. */
-const DEFAULT_COMPRESSOR_EFFICIENCY = 18;
-/** US EPA eGRID factor: metric tons CO₂e per kWh. */
-const EPA_EGRID_TONS_PER_KWH = 0.000385;
+/**
+ * Single source of truth for the modeled-leak assumptions. These are hardcoded
+ * defaults (leakCalculator.ts), not tenant settings and not stored on the row.
+ */
+export const LEAK_IMPACT_DEFAULTS = {
+  systemPressurePsi: 100,
+  electricityCostPerKwh: 0.12,
+  operatingHoursPerYear: 8760,
+  /** kW per 100 CFM — annualKwh uses (efficiency / 100) as kW/CFM. */
+  compressorSpecificPowerKwPer100Cfm: 18,
+  /** US EPA eGRID factor: metric tons CO₂e per kWh. */
+  egridMetricTonsCo2PerKwh: 0.000385,
+  /** Acoustic amplitude scaling: orifice_in = coeff · 10^(ΔdB/20). */
+  orificeAmplitudeCoeff: 0.0005,
+  /** Choked-orifice flow coeff: CFM = coeff · orifice_in² · (psi + atmosphere). */
+  chokedFlowCoeff: 18,
+  atmospherePsi: 14.7
+} as const;
+
+/** User-visible disclosure of the exact model basis. */
+export const LEAK_BASIS_TEXT =
+  `Basis: ${LEAK_IMPACT_DEFAULTS.systemPressurePsi} psi | ` +
+  `$${LEAK_IMPACT_DEFAULTS.electricityCostPerKwh}/kWh | ` +
+  `${LEAK_IMPACT_DEFAULTS.operatingHoursPerYear} h/yr | ` +
+  `${LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm} kW/100 CFM | ` +
+  `eGRID US avg ${LEAK_IMPACT_DEFAULTS.egridMetricTonsCo2PerKwh} MT/kWh`;
+
+export const LEAK_BASIS_NOTE =
+  "Modeled from peak ΔdBµV — not measured. Per-scan economics are shown when stored; " +
+  "otherwise the defaults above are applied at render time.";
+
+/**
+ * No repair labor rate is stored or configured per tenant, so the ROI-days
+ * sentence stays gated off. Daily savings (annual cost ÷ 365) is still shown.
+ */
+export const LEAK_REPAIR_LABOR_RATE_USD_PER_HOUR: number | null = null;
+
+/**
+ * Static in-repo guidance. Dollar-per-year bands for one leak — NOT an
+ * ISO/DOE standard and not derived from a stored severity field.
+ */
+export const LEAK_COST_SEVERITY_BANDS = [
+  { severity: "small", maxAnnualCost: 100, inclusive: false },
+  { severity: "medium", maxAnnualCost: 1000, inclusive: false },
+  { severity: "large", maxAnnualCost: 5000, inclusive: true }
+] as const;
+
+export const LEAK_COST_SEVERITY_SOURCE =
+  "Static in-repo $/yr bands — guidance, not an ISO/DOE standard";
+
+export type LeakCostSeverity = "small" | "medium" | "large" | "critical";
+
+/** Classify modeled annual cost using the explicit in-repo bands above. */
+export function leakCostSeverity(annualCost: number): LeakCostSeverity {
+  const cost = Number(annualCost);
+  if (!Number.isFinite(cost)) return "small";
+  for (const band of LEAK_COST_SEVERITY_BANDS) {
+    if (band.inclusive ? cost <= band.maxAnnualCost : cost < band.maxAnnualCost) {
+      return band.severity;
+    }
+  }
+  return "critical";
+}
+
+/** Round to a fixed number of significant figures (2 = honest for a dB input). */
+export function roundToSignificant(n: number, significantDigits = 2): number {
+  if (!Number.isFinite(n) || n === 0) return 0;
+  const magnitude = Math.ceil(Math.log10(Math.abs(n)));
+  const factor = Math.pow(10, significantDigits - magnitude);
+  return Math.round(n * factor) / factor;
+}
+
+function formatNumber(n: number, maximumFractionDigits: number): string {
+  return n.toLocaleString("en-US", { maximumFractionDigits });
+}
+
+/** $ at two significant figures — never four from a one-decimal dB reading. */
+export function formatLeakUsdAmount(n: number): string {
+  return `$${formatNumber(roundToSignificant(n, 2), 2)}`;
+}
+
+export function formatLeakUsdPerYear(n: number): string {
+  return `${formatLeakUsdAmount(n)}/yr`;
+}
+
+export function formatLeakCfm(n: number): string {
+  return `${formatNumber(roundToSignificant(n, 2), 2)} CFM`;
+}
+
+export function formatLeakOrificeIn(n: number): string {
+  return `${formatNumber(roundToSignificant(n, 2), 4)} in`;
+}
+
+export function formatLeakCo2(n: number): string {
+  return `${formatNumber(roundToSignificant(n, 2), 2)} MT/yr`;
+}
+
+export type LeakInventoryTotals = {
+  totalAnnualCost: number;
+  totalCfm: number;
+  totalCo2: number;
+};
+
+export type LeakInventoryTotalsInput = {
+  annualCost: number;
+  estimatedCfm: number;
+  co2Emissions: number;
+};
+
+/**
+ * KPI totals are the sum of the DISPLAYED inventory rows (the caller passes the
+ * same windowed/filtered array it renders). Keeping this pure makes the
+ * window↔totals lockstep directly testable.
+ */
+export function summarizeLeakInventory(
+  rows: readonly LeakInventoryTotalsInput[]
+): LeakInventoryTotals {
+  let totalAnnualCost = 0;
+  let totalCfm = 0;
+  let totalCo2 = 0;
+  for (const row of rows) {
+    totalAnnualCost += Number.isFinite(row.annualCost) ? row.annualCost : 0;
+    totalCfm += Number.isFinite(row.estimatedCfm) ? row.estimatedCfm : 0;
+    totalCo2 += Number.isFinite(row.co2Emissions) ? row.co2Emissions : 0;
+  }
+  return {
+    totalAnnualCost: Math.round(totalAnnualCost * 100) / 100,
+    totalCfm: Math.round(totalCfm * 10) / 10,
+    totalCo2: Math.round(totalCo2 * 10) / 10
+  };
+}
+
+/** Derived daily savings — present only when an annual cost exists. */
+export function leakDailySavingsUsd(annualCost: number): number | null {
+  const n = Number(annualCost);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round((n / 365) * 100) / 100;
+}
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -72,36 +208,39 @@ export function calculateLeakImpact(params: LeakImpactParams): LeakImpactResult 
     Number.isFinite(Number(params.systemPressure)) &&
     Number(params.systemPressure)! > 0
       ? Number(params.systemPressure)
-      : DEFAULT_SYSTEM_PRESSURE_PSI;
+      : LEAK_IMPACT_DEFAULTS.systemPressurePsi;
   const electricityCost =
     Number.isFinite(Number(params.electricityCost)) &&
     Number(params.electricityCost)! >= 0
       ? Number(params.electricityCost)
-      : DEFAULT_ELECTRICITY_COST;
+      : LEAK_IMPACT_DEFAULTS.electricityCostPerKwh;
   const operatingHours =
     Number.isFinite(Number(params.operatingHours)) &&
     Number(params.operatingHours)! > 0
       ? Number(params.operatingHours)
-      : DEFAULT_OPERATING_HOURS;
+      : LEAK_IMPACT_DEFAULTS.operatingHoursPerYear;
   const compressorEfficiency =
     Number.isFinite(Number(params.compressorEfficiency)) &&
     Number(params.compressorEfficiency)! > 0
       ? Number(params.compressorEfficiency)
-      : DEFAULT_COMPRESSOR_EFFICIENCY;
+      : LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm;
 
   // 1/8″ @ ~Δ20 dBµV ballpark; scales with acoustic amplitude ratio
-  const orificeSize = 0.0005 * Math.pow(10, dbDelta / 20);
+  const orificeSize =
+    LEAK_IMPACT_DEFAULTS.orificeAmplitudeCoeff * Math.pow(10, dbDelta / 20);
 
   // Choked orifice approximation (gauge PSI + atmosphere)
   const flowRateCfm =
-    18 * Math.pow(orificeSize, 2) * (systemPressure + 14.7);
+    LEAK_IMPACT_DEFAULTS.chokedFlowCoeff *
+    Math.pow(orificeSize, 2) *
+    (systemPressure + LEAK_IMPACT_DEFAULTS.atmospherePsi);
 
   // DOE-style: CFM × (kW per 100 CFM) / 100 × hours
   const annualKwh =
     flowRateCfm * (compressorEfficiency / 100) * operatingHours;
 
   const annualCost = annualKwh * electricityCost;
-  const co2Emissions = annualKwh * EPA_EGRID_TONS_PER_KWH;
+  const co2Emissions = annualKwh * LEAK_IMPACT_DEFAULTS.egridMetricTonsCo2PerKwh;
 
   return {
     orificeSize: round4(orificeSize),

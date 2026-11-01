@@ -78,7 +78,21 @@ import {
   thermoEmissivityAmbientPill,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
-import { calculateLeakImpact } from "../lib/ultrasound/leakCalculator";
+import {
+  calculateLeakImpact,
+  formatLeakCfm,
+  formatLeakCo2,
+  formatLeakOrificeIn,
+  formatLeakUsdAmount,
+  formatLeakUsdPerYear,
+  leakCostSeverity,
+  leakDailySavingsUsd,
+  LEAK_BASIS_NOTE,
+  LEAK_BASIS_TEXT,
+  LEAK_COST_SEVERITY_SOURCE,
+  summarizeLeakInventory,
+  type LeakCostSeverity
+} from "../lib/ultrasound/leakCalculator";
 import {
   calculateAdvancedSteamLoss,
   estimateSteamOrificeFromPeakDb
@@ -442,14 +456,7 @@ function safeFinite(value: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-type UeLeakCostSeverity = "small" | "medium" | "large" | "critical";
-
-function leakCostSeverity(annualCost: number): UeLeakCostSeverity {
-  if (annualCost < 100) return "small";
-  if (annualCost < 1000) return "medium";
-  if (annualCost <= 5000) return "large";
-  return "critical";
-}
+type UeLeakCostSeverity = LeakCostSeverity;
 
 function leakCostTextClass(severity: UeLeakCostSeverity): string {
   switch (severity) {
@@ -3727,8 +3734,18 @@ export default function TrendAnalyzer({
     () => ueAnalyses.filter(isUeLeakRow),
     [ueAnalyses]
   );
+  /** Leak inventory shares the SAME window predicate as every other tab. */
+  const windowedUeLeakAnalyses = useMemo(
+    () => windowTrendByTimeRange(ueLeakAnalyses, timeRange),
+    [ueLeakAnalyses, timeRange]
+  );
+  /** True when the asset has any stored leak-mode scan at all (not windowed). */
+  const hasUeLeakScans = ueLeakAnalyses.length > 0;
   const ueLeakInventoryRows = useMemo(() => {
-    const rows = ueLeakAnalyses.map(ueLeakInventoryFromRow);
+    const rows = windowedUeLeakAnalyses
+      .map(ueLeakInventoryFromRow)
+      // "Active Leak Inventory" lists leaks with modeled/ stored loss only.
+      .filter((row) => safeFinite(row.annualCost, 0) > 0 || safeFinite(row.estimatedCfm, 0) > 0);
     const mult = ueLeakSort.dir === "asc" ? 1 : -1;
     return [...rows].sort((a, b) => {
       if (ueLeakSort.key === "annual_cost") {
@@ -3736,22 +3753,16 @@ export default function TrendAnalyzer({
       }
       return (a.dateMs - b.dateMs) * mult;
     });
-  }, [ueLeakAnalyses, ueLeakSort]);
-  const ueLeakKpis = useMemo(() => {
-    let totalAnnualCost = 0;
-    let totalCfm = 0;
-    let totalCo2 = 0;
-    for (const row of ueLeakInventoryRows) {
-      totalAnnualCost += safeFinite(row.annualCost, 0);
-      totalCfm += safeFinite(row.estimatedCfm, 0);
-      totalCo2 += safeFinite(row.co2Emissions, 0);
-    }
-    return {
-      totalAnnualCost: Math.round(totalAnnualCost * 100) / 100,
-      totalCfm: Math.round(totalCfm * 10) / 10,
-      totalCo2: Math.round(totalCo2 * 10) / 10
-    };
-  }, [ueLeakInventoryRows]);
+  }, [windowedUeLeakAnalyses, ueLeakSort]);
+  /** KPI totals are computed from the exact rows rendered below (lockstep). */
+  const ueLeakKpis = useMemo(
+    () => summarizeLeakInventory(ueLeakInventoryRows),
+    [ueLeakInventoryRows]
+  );
+  /** N/A when the window holds no leak scans (or none exist at all). */
+  const ueLeakKpisAbsent = windowedUeLeakAnalyses.length === 0;
+  const ueLeakTotalAnnualCost = ueLeakKpis.totalAnnualCost;
+  const ueLeakDailySavings = leakDailySavingsUsd(ueLeakTotalAnnualCost);
   const ueElectricalAnalyses = useMemo(
     () => ueAnalyses.filter(isUeElectricalPdRow),
     [ueAnalyses]
@@ -6693,16 +6704,42 @@ export default function TrendAnalyzer({
             </>
           ) : ueMode === "leaks" ? (
             <>
+              {hasUeLeakScans && (
+                <div
+                  className="rounded-xl border border-sky-500/30 bg-sky-500/[0.06] px-4 py-3 mb-4"
+                  data-testid="ue-leak-basis-pill"
+                >
+                  <p className="text-[11px] font-semibold text-sky-200">
+                    {LEAK_BASIS_TEXT}
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {LEAK_BASIS_NOTE}
+                  </p>
+                  {ueLeakDailySavings != null && (
+                    <p
+                      className="text-[10px] font-mono text-emerald-300 mt-1"
+                      data-testid="ue-leak-daily-savings"
+                    >
+                      Derived daily savings:{" "}
+                      {formatLeakUsdAmount(ueLeakDailySavings)}/day (annual cost ÷
+                      365)
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                     Total Annual Waste
                   </p>
                   <p className="text-2xl font-bold text-red-400 font-mono">
-                    {formatUsdPerYear(ueLeakKpis.totalAnnualCost)}
+                    {ueLeakKpisAbsent
+                      ? "N/A"
+                      : formatLeakUsdPerYear(ueLeakKpis.totalAnnualCost)}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Sum of active leak annual energy cost
+                    Sum of displayed active leak annual energy cost
                   </p>
                 </div>
                 <div className={CARD}>
@@ -6710,10 +6747,12 @@ export default function TrendAnalyzer({
                     Total Flow Loss
                   </p>
                   <p className="text-2xl font-bold text-sky-400 font-mono">
-                    {ueLeakKpis.totalCfm.toFixed(1)} CFM
+                    {ueLeakKpisAbsent
+                      ? "N/A"
+                      : formatLeakCfm(ueLeakKpis.totalCfm)}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Continuous compressed-air loss across inventory
+                    Continuous compressed-air loss across displayed inventory
                   </p>
                 </div>
                 <div className={CARD}>
@@ -6721,7 +6760,7 @@ export default function TrendAnalyzer({
                     Total Carbon Footprint
                   </p>
                   <p className="text-2xl font-bold text-amber-400 font-mono">
-                    {ueLeakKpis.totalCo2.toFixed(1)} MT CO₂e/yr
+                    {ueLeakKpisAbsent ? "N/A" : formatLeakCo2(ueLeakKpis.totalCo2)}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
                     EPA eGRID CO₂e from compressor energy waste
@@ -6735,7 +6774,8 @@ export default function TrendAnalyzer({
                     Active Leak Inventory
                   </p>
                   <p className="text-[10px] text-slate-500">
-                    Sort by Date or Annual Cost · severity from $/yr thresholds
+                    Sort by Date or Annual Cost · severity:{" "}
+                    {LEAK_COST_SEVERITY_SOURCE}
                   </p>
                 </div>
                 {ueLeakInventoryRows.length === 0 ? (
@@ -6744,9 +6784,11 @@ export default function TrendAnalyzer({
                       <Wind className="h-5 w-5" />
                     </div>
                     <p className="text-sm font-semibold text-slate-200 max-w-lg">
-                      No compressed air leaks detected for this asset. Run an
-                      ultrasound diagnostic in Leak Detection mode to populate
-                      this inventory.
+                      {!hasUeLeakScans
+                        ? "No stored ultrasound leak scans for this asset. Run a Leak Detection diagnostic to populate this inventory."
+                        : windowedUeLeakAnalyses.length === 0
+                          ? `No leak scans in the selected ${timeRange} window.`
+                          : "No active leaks in the selected window — stored scans exist but none model a positive loss."}
                     </p>
                   </div>
                 ) : (
@@ -6801,22 +6843,27 @@ export default function TrendAnalyzer({
                             {safeFinite(row.peakDb, 0).toFixed(1)} dBµV
                           </td>
                           <td className="py-2.5 pr-3 font-mono">
-                            {safeFinite(row.orificeSize, 0).toFixed(4)} in
+                            {formatLeakOrificeIn(
+                              safeFinite(row.orificeSize, 0)
+                            )}
                           </td>
                           <td className="py-2.5 pr-3 font-mono text-sky-300">
-                            {safeFinite(row.estimatedCfm, 0).toFixed(2)} CFM
+                            {formatLeakCfm(safeFinite(row.estimatedCfm, 0))}
                           </td>
                           <td
                             className={`py-2.5 pr-3 font-mono font-semibold ${leakCostTextClass(row.severity)}`}
                           >
-                            {formatUsdPerYear(safeFinite(row.annualCost, 0))}
+                            {formatLeakUsdPerYear(
+                              safeFinite(row.annualCost, 0)
+                            )}
                           </td>
                           <td className="py-2.5 pr-3 font-mono">
-                            {safeFinite(row.co2Emissions, 0).toFixed(2)} MT/yr
+                            {formatLeakCo2(safeFinite(row.co2Emissions, 0))}
                           </td>
                           <td className="py-2.5 pr-3">
                             <span
                               className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${leakCostBadgeClass(row.severity)}`}
+                              title="Computed from modeled annual cost > $0 — not a stored status field"
                             >
                               Active Leak
                             </span>
@@ -6826,6 +6873,14 @@ export default function TrendAnalyzer({
                     </tbody>
                   </table>
                 )}
+                <p
+                  className="text-[10px] text-slate-500 mt-3"
+                  data-testid="ue-leak-status-provenance"
+                >
+                  Status is computed from modeled annual cost (&gt; $0), not a
+                  stored status field. CO₂ and dollars are estimates from
+                  peak ΔdBµV.
+                </p>
               </div>
             </>
           ) : ueMode === "electrical" ? (
