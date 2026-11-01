@@ -54,6 +54,10 @@ import { buildBridgeContext, fetchPlanningBundle } from "../lib/diagnostics/cmms
 import { RunHistoryTrigger, RunHistoryPopover, isModalityRun, type RunHistoryRun } from "./RunHistoryPopover";
 import { exportReportCsv, exportReportPdf, exportReportXlsx } from "../lib/reportExport";
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
+import {
+  convertAbsoluteTemperature,
+  resolveTemperatureDisplayUnit
+} from "../lib/vibration/units";
 import { canCurrent } from "../lib/roles";
 import {
   ARTIFACT_DISCLAIMER,
@@ -6128,8 +6132,21 @@ export default function AnalysisReport({
     const peak = peakOfType(record, "thermography");
     const hotspot = peak?.hotspot_temp;
     if (hotspot == null || !Number.isFinite(Number(hotspot))) return null;
-    return `${hotspot}${resolveTempUnit(record) ?? ""}`;
-  }, [assessmentAssetId, loadedAnalyses]);
+    const storedUnit = resolveTempUnit(record);
+    if (!storedUnit) return `${hotspot}`;
+    const displayUnit = resolveTemperatureDisplayUnit(
+      displayUnits.temperature,
+      storedUnit
+    );
+    const value =
+      displayUnit === storedUnit
+        ? Number(hotspot)
+        : Math.round(
+            convertAbsoluteTemperature(Number(hotspot), storedUnit, displayUnit) *
+              10
+          ) / 10;
+    return `${value}${displayUnit}`;
+  }, [assessmentAssetId, loadedAnalyses, displayUnits.temperature]);
 
   const flatEquipment = useMemo(() => {
     void equipTick;

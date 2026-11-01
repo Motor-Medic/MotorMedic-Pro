@@ -4,7 +4,12 @@ import {
   CANONICAL_VELOCITY_UNIT,
   ORDERS_FALLBACK_HINT,
   STANDARD_GRAVITY_MM_S2,
+  TEMPERATURE_DISPLAY_OPTIONS,
+  celsiusToFahrenheit,
+  convertAbsoluteTemperature,
+  convertTemperatureDelta,
   cpmToHz,
+  fahrenheitToCelsius,
   formatAccelerationDisplay,
   formatVelocityDisplay,
   formatVelocityMmS,
@@ -20,6 +25,7 @@ import {
   normalizeDisplayUnits,
   ordersToHz,
   resolveFrequencyDisplayUnit,
+  resolveTemperatureDisplayUnit,
   roundTo
 } from "./units";
 
@@ -139,5 +145,49 @@ describe("SLICE-H2 display preference normalization", () => {
   it("formats velocity in the selected unit without touching the canonical value", () => {
     expect(formatVelocityDisplay(25.4, "in/s")).toBe("1.0000 in/s");
     expect(formatVelocityDisplay(11.85, "mm/s")).toBe("11.85 mm/s");
+  });
+});
+
+describe("SLICE-U temperature display preference", () => {
+  it("defaults to the STORED unit: no temperature key means no conversion", () => {
+    // Absence is deliberate: a hardcoded °C/°F default would silently convert
+    // real readings on first load.
+    expect(CANONICAL_DISPLAY_UNITS.temperature).toBeUndefined();
+    expect(normalizeDisplayUnits({})).toEqual({
+      velocity: "mm/s",
+      acceleration: "g",
+      frequency: "Hz"
+    });
+    expect(normalizeDisplayUnits({}).temperature).toBeUndefined();
+    expect(resolveTemperatureDisplayUnit(undefined, "°F")).toBe("°F");
+    expect(resolveTemperatureDisplayUnit(null, "°C")).toBe("°C");
+  });
+
+  it("round-trips an explicit temperature choice and rejects unknown values", () => {
+    expect(TEMPERATURE_DISPLAY_OPTIONS).toEqual(["°C", "°F"]);
+    expect(
+      normalizeDisplayUnits({
+        velocity: "mm/s",
+        acceleration: "g",
+        frequency: "Hz",
+        temperature: "°C"
+      }).temperature
+    ).toBe("°C");
+    expect(
+      normalizeDisplayUnits({ temperature: "kelvin" }).temperature
+    ).toBeUndefined();
+    expect(resolveTemperatureDisplayUnit("°C", "°F")).toBe("°C");
+  });
+
+  it("converts absolute temperatures affinely but ΔT by scale only", () => {
+    expect(celsiusToFahrenheit(0)).toBe(32);
+    expect(celsiusToFahrenheit(100)).toBe(212);
+    expect(fahrenheitToCelsius(32)).toBe(0);
+    expect(convertAbsoluteTemperature(84.2, "°C", "°F")).toBeCloseTo(183.56, 2);
+    expect(convertAbsoluteTemperature(84.2, "°C", "°C")).toBe(84.2);
+    // A 30°C rise is a 54°F rise - adding the 32° offset would fabricate 86°F.
+    expect(convertTemperatureDelta(30, "°C", "°F")).toBeCloseTo(54, 10);
+    expect(convertTemperatureDelta(54, "°F", "°C")).toBeCloseTo(30, 10);
+    expect(convertTemperatureDelta(20, "°C", "°C")).toBe(20);
   });
 });

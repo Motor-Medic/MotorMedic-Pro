@@ -19,11 +19,18 @@ export const CANONICAL_VELOCITY_UNIT = "mm/s RMS" as const;
 export type VelocityDisplayUnit = "mm/s" | "in/s";
 export type AccelerationDisplayUnit = "g" | "mm/s2";
 export type FrequencyDisplayUnit = "Hz" | "CPM" | "orders";
+export type TemperatureDisplayUnit = "°C" | "°F";
 
 export interface DisplayUnits {
   velocity: VelocityDisplayUnit;
   acceleration: AccelerationDisplayUnit;
   frequency: FrequencyDisplayUnit;
+  /**
+   * Optional tenant override. Absent means "render the unit stored on the
+   * reading" — never a hardcoded default, because silently converting real
+   * thermography data on first load would misstate every temperature.
+   */
+  temperature?: TemperatureDisplayUnit;
 }
 
 /** Canonical defaults; every tenant without a saved preference reads these. */
@@ -46,10 +53,15 @@ export const FREQUENCY_DISPLAY_OPTIONS: readonly FrequencyDisplayUnit[] = [
   "CPM",
   "orders"
 ];
+export const TEMPERATURE_DISPLAY_OPTIONS: readonly TemperatureDisplayUnit[] = [
+  "°C",
+  "°F"
+];
 
 const VELOCITY_UNITS = new Set<string>(VELOCITY_DISPLAY_OPTIONS);
 const ACCELERATION_UNITS = new Set<string>(ACCELERATION_DISPLAY_OPTIONS);
 const FREQUENCY_UNITS = new Set<string>(FREQUENCY_DISPLAY_OPTIONS);
+const TEMPERATURE_UNITS = new Set<string>(TEMPERATURE_DISPLAY_OPTIONS);
 
 function asRecord(input: unknown): Record<string, unknown> {
   return input && typeof input === "object" && !Array.isArray(input)
@@ -67,7 +79,8 @@ export function normalizeDisplayUnits(input: unknown): DisplayUnits {
   const velocity = String(raw.velocity ?? "");
   const acceleration = String(raw.acceleration ?? "");
   const frequency = String(raw.frequency ?? "");
-  return {
+  const temperature = String(raw.temperature ?? "");
+  const units: DisplayUnits = {
     velocity: VELOCITY_UNITS.has(velocity)
       ? (velocity as VelocityDisplayUnit)
       : CANONICAL_DISPLAY_UNITS.velocity,
@@ -78,6 +91,12 @@ export function normalizeDisplayUnits(input: unknown): DisplayUnits {
       ? (frequency as FrequencyDisplayUnit)
       : CANONICAL_DISPLAY_UNITS.frequency
   };
+  // Temperature is deliberately omitted when not chosen: an absent preference
+  // must fall through to the reading's stored unit, not a guessed default.
+  if (TEMPERATURE_UNITS.has(temperature)) {
+    units.temperature = temperature as TemperatureDisplayUnit;
+  }
+  return units;
 }
 
 /** Convert a velocity expressed in in/s to the canonical mm/s. */
@@ -120,6 +139,57 @@ export function hzToOrders(value: number, rpm: number | null | undefined): numbe
 export function ordersToHz(value: number, rpm: number | null | undefined): number | null {
   if (rpm == null || !Number.isFinite(rpm) || rpm <= 0) return null;
   return value * (rpm / SECONDS_PER_MINUTE);
+}
+
+/** Exact affine Celsius → Fahrenheit scale (9/5) and zero-point offset (+32). */
+export const FAHRENHEIT_PER_CELSIUS = 9 / 5;
+export const FAHRENHEIT_OFFSET = 32;
+
+export function celsiusToFahrenheit(valueC: number): number {
+  return valueC * FAHRENHEIT_PER_CELSIUS + FAHRENHEIT_OFFSET;
+}
+
+export function fahrenheitToCelsius(valueF: number): number {
+  return (valueF - FAHRENHEIT_OFFSET) / FAHRENHEIT_PER_CELSIUS;
+}
+
+/**
+ * Absolute temperature (hotspot, ambient, bearing housing) has a real zero
+ * point, so the conversion is affine — scale plus offset.
+ */
+export function convertAbsoluteTemperature(
+  value: number,
+  from: TemperatureDisplayUnit,
+  to: TemperatureDisplayUnit
+): number {
+  if (from === to) return value;
+  return from === "°C" ? celsiusToFahrenheit(value) : fahrenheitToCelsius(value);
+}
+
+/**
+ * A temperature DIFFERENCE or rate (ΔT, gradient, creep/day) has no zero point:
+ * convert with the scale only. Applying +32 here would fabricate ~32° of rise.
+ */
+export function convertTemperatureDelta(
+  value: number,
+  from: TemperatureDisplayUnit,
+  to: TemperatureDisplayUnit
+): number {
+  if (from === to) return value;
+  return from === "°C"
+    ? value * FAHRENHEIT_PER_CELSIUS
+    : value / FAHRENHEIT_PER_CELSIUS;
+}
+
+/**
+ * Effective display unit: an explicit tenant preference wins; otherwise the
+ * unit the reading was stored in is authoritative. Never invents °C.
+ */
+export function resolveTemperatureDisplayUnit(
+  preference: TemperatureDisplayUnit | null | undefined,
+  storedUnit: TemperatureDisplayUnit
+): TemperatureDisplayUnit {
+  return preference ?? storedUnit;
 }
 
 /** Round a number to a fixed number of decimal places (banker-safe enough here). */

@@ -66,6 +66,7 @@ import {
   hottestPhaseFromPoint,
   mechanicalKpis,
   nfpaClassBadge,
+  planThermoTrendAxis,
   radiometricKpis,
   resolveThermoTempUnit,
   seriesHasAny,
@@ -142,13 +143,17 @@ import {
   ACCELERATION_DISPLAY_OPTIONS,
   FREQUENCY_DISPLAY_OPTIONS,
   ORDERS_FALLBACK_HINT,
+  TEMPERATURE_DISPLAY_OPTIONS,
   VELOCITY_DISPLAY_OPTIONS,
+  convertAbsoluteTemperature,
+  convertTemperatureDelta,
   formatAccelerationDisplay,
   formatVelocityDisplay,
   formatVelocityMmS,
   frequencyDisplayValue,
   frequencyValueForDisplay,
   resolveFrequencyDisplayUnit,
+  resolveTemperatureDisplayUnit,
   velocityValueForDisplay,
   type DisplayUnits
 } from "../lib/vibration/units";
@@ -189,6 +194,7 @@ import {
   SPARSE_TREND_HELPER_TEXT,
   filterTrendByTimeRange,
   isSparseTrendSeries,
+  windowTrendByTimeRange,
   type TrendTimeRange
 } from "../lib/vibration/trendSeries";
 import {
@@ -249,11 +255,14 @@ function ThermoChartFrame({
   title,
   subtitle,
   overlay,
+  note,
   children
 }: {
   title: string;
   subtitle?: string;
   overlay?: string | null;
+  /** Honest caveat under the plot (reuses SPARSE_TREND_HELPER_TEXT). */
+  note?: string | null;
   children: React.ReactNode;
 }) {
   return (
@@ -276,6 +285,9 @@ function ThermoChartFrame({
           </div>
         ) : null}
       </div>
+      {note ? (
+        <p className="text-[11px] text-amber-300 mt-2">{note}</p>
+      ) : null}
     </div>
   );
 }
@@ -3499,21 +3511,94 @@ export default function TrendAnalyzer({
   };
 
   const latestOil = oilAnalyses[0] ?? null;
-  const thermoChartSeries = useMemo(
-    () => buildThermoChartSeries(thermoAnalyses),
-    [thermoAnalyses]
+  /**
+   * IR trends share slice N's exact time window. `windowTrendByTimeRange`
+   * delegates to `filterTrendByTimeRange`, so 7D/30D/90D/1Y can never drift
+   * between the vibration and thermography tabs.
+   */
+  const windowedThermoAnalyses = useMemo(
+    () => windowTrendByTimeRange(thermoAnalyses, timeRange),
+    [thermoAnalyses, timeRange]
   );
+  const thermoChartSeries = useMemo(
+    () => buildThermoChartSeries(windowedThermoAnalyses),
+    [windowedThermoAnalyses]
+  );
+  /** Unit the rows were actually saved in; absent preference must defer to it. */
+  const thermoStoredUnit = useMemo(
+    () => resolveThermoTempUnit(thermoChartSeries),
+    [thermoChartSeries]
+  );
+  const thermoDisplayUnit = resolveTemperatureDisplayUnit(
+    displayUnits.temperature,
+    thermoStoredUnit
+  );
+  /**
+   * Display-only projection: convert absolute temperatures affinely and ΔT /
+   * rate fields by scale only. Equal units return the stored value untouched,
+   * so the default (no preference) can never silently convert real data.
+   */
+  const thermoDisplaySeries = useMemo(() => {
+    const absolute = (value: number | null, from: "°C" | "°F") =>
+      value == null
+        ? null
+        : from === thermoDisplayUnit
+          ? value
+          : Math.round(
+              convertAbsoluteTemperature(value, from, thermoDisplayUnit) * 10
+            ) / 10;
+    const difference = (value: number | null, from: "°C" | "°F") =>
+      value == null
+        ? null
+        : from === thermoDisplayUnit
+          ? value
+          : Math.round(
+              convertTemperatureDelta(value, from, thermoDisplayUnit) * 10
+            ) / 10;
+    return thermoChartSeries.map((point) => {
+      const from = point.tempUnit ?? thermoStoredUnit;
+      return {
+        ...point,
+        hotspot: absolute(point.hotspot, from),
+        reference: absolute(point.reference, from),
+        deltaT: difference(point.deltaT, from),
+        phaseA: absolute(point.phaseA, from),
+        phaseB: absolute(point.phaseB, from),
+        phaseC: absolute(point.phaseC, from),
+        i2rDelta: difference(point.i2rDelta, from),
+        i2rNormalizedDelta: difference(point.i2rNormalizedDelta, from),
+        scaleMin: absolute(point.scaleMin, from),
+        scaleMax: absolute(point.scaleMax, from),
+        isothermThreshold: absolute(point.isothermThreshold, from),
+        boxAverage: absolute(point.boxAverage, from),
+        reflectedApparentTemp: absolute(point.reflectedApparentTemp, from),
+        deBearing: absolute(point.deBearing, from),
+        odeBearing: absolute(point.odeBearing, from),
+        skinTemp: absolute(point.skinTemp, from),
+        refractorySkinTemp: absolute(point.refractorySkinTemp, from),
+        ambientReferenceTemp: absolute(point.ambientReferenceTemp, from),
+        maxAllowable: absolute(point.maxAllowable, from),
+        thermalGradient: difference(point.thermalGradient, from),
+        thermalDissipationRate: difference(point.thermalDissipationRate, from)
+      };
+    });
+  }, [thermoChartSeries, thermoStoredUnit, thermoDisplayUnit]);
   const latestThermoChart: ThermoChartPoint | null =
-    thermoChartSeries.length > 0
-      ? thermoChartSeries[thermoChartSeries.length - 1]
+    thermoDisplaySeries.length > 0
+      ? thermoDisplaySeries[thermoDisplaySeries.length - 1]
       : null;
-  const hasHotspotSeries = seriesHasAny(thermoChartSeries, [
+  const thermoAxisPlan = useMemo(
+    () => planThermoTrendAxis(thermoChartSeries),
+    [thermoChartSeries]
+  );
+  const thermoAxisDataKey = thermoAxisPlan.dataKey;
+  const hasHotspotSeries = seriesHasAny(thermoDisplaySeries, [
     "hotspot",
     "reference",
     "deltaT",
     "severityClass"
   ]);
-  const hasPhaseSeries = seriesHasAny(thermoChartSeries, [
+  const hasPhaseSeries = seriesHasAny(thermoDisplaySeries, [
     "phaseA",
     "phaseB",
     "phaseC",
@@ -3523,7 +3608,7 @@ export default function TrendAnalyzer({
   ]);
   const phaseHottest = hottestPhaseFromPoint(latestThermoChart);
   const phaseNfpaBadge = nfpaClassBadge(latestThermoChart);
-  const hasRadiometricSeries = seriesHasAny(thermoChartSeries, [
+  const hasRadiometricSeries = seriesHasAny(thermoDisplaySeries, [
     "emissivity",
     "scaleMin",
     "scaleMax",
@@ -3532,8 +3617,8 @@ export default function TrendAnalyzer({
     "reflectedApparentTemp",
     "ambientReferenceTemp"
   ]);
-  const radioKpis = radiometricKpis(thermoChartSeries);
-  const hasMechanicalSeries = seriesHasAny(thermoChartSeries, [
+  const radioKpis = radiometricKpis(thermoDisplaySeries);
+  const hasMechanicalSeries = seriesHasAny(thermoDisplaySeries, [
     "deBearing",
     "odeBearing",
     "skinTemp",
@@ -3543,12 +3628,8 @@ export default function TrendAnalyzer({
     "thermalGradient",
     "thermalDissipationRate"
   ]);
-  const mechKpis = mechanicalKpis(thermoChartSeries);
-  const thermoTempUnit = useMemo(
-    () => resolveThermoTempUnit(thermoChartSeries),
-    [thermoChartSeries]
-  );
-  const thermoTempAxisLabel = `Temperature (${thermoTempUnit})`;
+  const mechKpis = mechanicalKpis(thermoDisplaySeries);
+  const thermoTempAxisLabel = `Temperature (${thermoDisplayUnit})`;
   const ueBearingAnalyses = useMemo(
     () => ueAnalyses.filter(isUeBearingMechanicalRow),
     [ueAnalyses]
@@ -4087,6 +4168,25 @@ export default function TrendAnalyzer({
                 </option>
               ))}
             </select>
+            {trendTech === "thermography" && (
+              <select
+                value={thermoDisplayUnit}
+                onChange={(e) =>
+                  void updateDisplayUnits({
+                    temperature: e.target.value as DisplayUnits["temperature"]
+                  })
+                }
+                aria-label="Temperature display unit"
+                title="Temperature display unit"
+                className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+              >
+                {TEMPERATURE_DISPLAY_OPTIONS.map((unit) => (
+                  <option key={unit} value={unit}>
+                    {unit}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -5225,19 +5325,19 @@ export default function TrendAnalyzer({
                         <li className="text-sm font-bold text-red-400">
                           Hotspot:{" "}
                           {latestThermoChart?.hotspot != null
-                            ? `${latestThermoChart.hotspot}°`
+                            ? `${latestThermoChart.hotspot}${thermoDisplayUnit}`
                             : "—"}
                         </li>
                         <li className="text-sm font-semibold text-green-400">
                           Reference:{" "}
                           {latestThermoChart?.reference != null
-                            ? `${latestThermoChart.reference}°`
+                            ? `${latestThermoChart.reference}${thermoDisplayUnit}`
                             : "—"}
                         </li>
                         <li className="text-sm font-semibold text-yellow-400">
                           ΔT:{" "}
                           {latestThermoChart?.deltaT != null
-                            ? `${latestThermoChart.deltaT}°`
+                            ? `${latestThermoChart.deltaT}${thermoDisplayUnit}`
                             : "—"}
                         </li>
                         <li className="text-sm font-semibold text-white">
@@ -5274,16 +5374,34 @@ export default function TrendAnalyzer({
                           ? "No hotspot / ΔT fields in saved scans yet"
                           : null
                     }
+                    note={
+                      thermoAxisPlan.snapshot && hasHotspotSeries
+                        ? SPARSE_TREND_HELPER_TEXT
+                        : null
+                    }
                   >
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={thermoChartSeries} margin={chartMargin}>
+                      <ComposedChart
+                        data={thermoDisplaySeries}
+                        margin={chartMargin}
+                      >
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                        <XAxis dataKey="date" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                        <XAxis
+                          dataKey={thermoAxisDataKey}
+                          tick={{ fill: "#94a3b8", fontSize: 11 }}
+                          label={{
+                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
+                            position: "insideBottom",
+                            offset: -2,
+                            fill: "#64748b",
+                            fontSize: 11
+                          }}
+                        />
                         <YAxis
                           yAxisId="temp"
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "°C / °F",
+                            value: thermoTempAxisLabel,
                             angle: -90,
                             position: "insideLeft",
                             fill: "#64748b",
@@ -5311,9 +5429,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="hotspot"
                           name="Hotspot"
-                          stroke="#f87171"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#f87171"}
                           strokeWidth={2}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#f87171", stroke: "#f87171" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5321,9 +5443,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="reference"
                           name="Reference"
-                          stroke="#34d399"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#34d399"}
                           strokeWidth={2}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#34d399", stroke: "#34d399" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5331,9 +5457,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="deltaT"
                           name="ΔT"
-                          stroke="#fbbf24"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#fbbf24"}
                           strokeWidth={2}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#fbbf24", stroke: "#fbbf24" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5341,16 +5471,20 @@ export default function TrendAnalyzer({
                           type="stepAfter"
                           dataKey="severityClass"
                           name="Severity Class"
-                          stroke="#a78bfa"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#a78bfa"}
                           strokeWidth={2}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#a78bfa", stroke: "#a78bfa" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                       </ComposedChart>
                     </ResponsiveContainer>
                   </ThermoChartFrame>
 
-                  {hasThermographyData && (
+                  {windowedThermoAnalyses.length > 0 && (
                     <div className={`${CARD} mb-6 overflow-x-auto`}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
                         Saved Thermography Analyses
@@ -5361,15 +5495,21 @@ export default function TrendAnalyzer({
                             <th className="py-2 pr-3 font-bold">Date</th>
                             <th className="py-2 pr-3 font-bold">Health</th>
                             <th className="py-2 pr-3 font-bold">Fault</th>
-                            <th className="py-2 pr-3 font-bold">Hotspot</th>
-                            <th className="py-2 pr-3 font-bold">ΔT</th>
+                            <th className="py-2 pr-3 font-bold">
+                              Hotspot ({thermoDisplayUnit})
+                            </th>
+                            <th className="py-2 pr-3 font-bold">
+                              ΔT ({thermoDisplayUnit})
+                            </th>
                             <th className="py-2 pr-3 font-bold">NETA</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {thermoAnalyses.map((r, idx) => {
+                          {windowedThermoAnalyses.map((r, idx) => {
                             const pt =
-                              thermoChartSeries[thermoChartSeries.length - 1 - idx];
+                              thermoDisplaySeries[
+                                thermoDisplaySeries.length - 1 - idx
+                              ];
                             return (
                               <tr
                                 key={r.id}
@@ -5425,7 +5565,9 @@ export default function TrendAnalyzer({
                           : "N/A"}
                       </p>
                       <p className="text-sm text-slate-400 mt-1 font-mono">
-                        {phaseHottest != null ? `${phaseHottest.temp}°` : "—"}
+                        {phaseHottest != null
+                          ? `${phaseHottest.temp}${thermoDisplayUnit}`
+                          : "—"}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -5452,9 +5594,9 @@ export default function TrendAnalyzer({
                       </p>
                       <p className="text-2xl font-bold text-yellow-400">
                         {latestThermoChart?.i2rNormalizedDelta != null
-                          ? `${latestThermoChart.i2rNormalizedDelta}°`
+                          ? `${latestThermoChart.i2rNormalizedDelta}${thermoDisplayUnit}`
                           : latestThermoChart?.i2rDelta != null
-                            ? `${latestThermoChart.i2rDelta}°`
+                            ? `${latestThermoChart.i2rDelta}${thermoDisplayUnit}`
                             : "N/A"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
@@ -5476,7 +5618,7 @@ export default function TrendAnalyzer({
 
                   <ThermoChartFrame
                     title="Phase Delta & I²R Load — Phase A/B/C temperatures with ≥40% load validity band"
-                    subtitle="Left: Temperature (°C) · Right: Load (%) · Green band = operational validity (≥40% load)"
+                    subtitle={`Left: Temperature (${thermoDisplayUnit}) · Right: Load (%) · Green band = operational validity (≥40% load)`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
@@ -5484,15 +5626,23 @@ export default function TrendAnalyzer({
                           ? "No phase/load data in saved scans yet"
                           : null
                     }
+                    note={
+                      thermoAxisPlan.snapshot && hasPhaseSeries
+                        ? SPARSE_TREND_HELPER_TEXT
+                        : null
+                    }
                   >
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={thermoChartSeries} margin={chartMargin}>
+                      <ComposedChart
+                        data={thermoDisplaySeries}
+                        margin={chartMargin}
+                      >
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                         <XAxis
-                          dataKey="date"
+                          dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "Time",
+                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -5503,7 +5653,7 @@ export default function TrendAnalyzer({
                           yAxisId="temp"
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "Temperature (°C)",
+                            value: thermoTempAxisLabel,
                             angle: -90,
                             position: "insideLeft",
                             fill: "#64748b",
@@ -5551,9 +5701,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="phaseA"
                           name="Phase A"
-                          stroke="#ef4444"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#ef4444"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#ef4444", stroke: "#ef4444" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5561,9 +5715,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="phaseB"
                           name="Phase B"
-                          stroke="#f59e0b"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#f59e0b"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#f59e0b", stroke: "#f59e0b" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5571,9 +5729,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="phaseC"
                           name="Phase C"
-                          stroke="#3b82f6"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#3b82f6"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#3b82f6", stroke: "#3b82f6" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5581,9 +5743,13 @@ export default function TrendAnalyzer({
                           type="stepAfter"
                           dataKey="loadPercent"
                           name="Load %"
-                          stroke="#22d3ee"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#22d3ee"}
                           strokeWidth={2}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#22d3ee", stroke: "#22d3ee" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                       </ComposedChart>
@@ -5637,12 +5803,12 @@ export default function TrendAnalyzer({
                         }`}
                       >
                         {radioKpis.paletteConfigured
-                          ? `Range: ${radioKpis.paletteSpan}°`
+                          ? `Range: ${radioKpis.paletteSpan}${thermoDisplayUnit}`
                           : "Not Configured"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1 font-mono">
                         {radioKpis.paletteConfigured
-                          ? `${radioKpis.latest!.scaleMin}° → ${radioKpis.latest!.scaleMax}°`
+                          ? `${radioKpis.latest!.scaleMin}${thermoDisplayUnit} → ${radioKpis.latest!.scaleMax}${thermoDisplayUnit}`
                           : "Camera scale pending"}
                       </p>
                     </div>
@@ -5658,7 +5824,7 @@ export default function TrendAnalyzer({
                         }`}
                       >
                         {radioKpis.isothermConfigured
-                          ? `Active: >${radioKpis.latest!.isothermThreshold}°`
+                          ? `Active: >${radioKpis.latest!.isothermThreshold}${thermoDisplayUnit}`
                           : "Not Configured"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
@@ -5679,12 +5845,12 @@ export default function TrendAnalyzer({
                         }`}
                       >
                         {radioKpis.boxAverageConfigured
-                          ? `Box Avg: ${radioKpis.latest!.boxAverage}°`
+                          ? `Box Avg: ${radioKpis.latest!.boxAverage}${thermoDisplayUnit}`
                           : "Awaiting AI Extraction"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {radioKpis.latest?.reflectedApparentTemp != null
-                          ? `Reflected: ${radioKpis.latest.reflectedApparentTemp}°`
+                          ? `Reflected: ${radioKpis.latest.reflectedApparentTemp}${thermoDisplayUnit}`
                           : radioKpis.boxAverageConfigured
                             ? "Baseline thermal creep tracking"
                             : "ROI statistics not yet available"}
@@ -5694,7 +5860,7 @@ export default function TrendAnalyzer({
 
                   <ThermoChartFrame
                     title="Radiometric & Isotherm — Calibration parameters over time (emissivity, scale, isotherm, box avg)"
-                    subtitle="Left: temperatures (°C) · Right: emissivity (ε) · Detect operator ε drift between scans"
+                    subtitle={`Left: temperatures (${thermoDisplayUnit}) · Right: emissivity (ε) · Detect operator ε drift between scans`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
@@ -5702,15 +5868,23 @@ export default function TrendAnalyzer({
                           ? "Environmental & radiometric fields will appear as scans include them"
                           : null
                     }
+                    note={
+                      thermoAxisPlan.snapshot && hasRadiometricSeries
+                        ? SPARSE_TREND_HELPER_TEXT
+                        : null
+                    }
                   >
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={thermoChartSeries} margin={chartMargin}>
+                      <ComposedChart
+                        data={thermoDisplaySeries}
+                        margin={chartMargin}
+                      >
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                         <XAxis
-                          dataKey="date"
+                          dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "Date",
+                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -5721,7 +5895,7 @@ export default function TrendAnalyzer({
                           yAxisId="temp"
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "Calibration Parameters (°C)",
+                            value: `Calibration Parameters (${thermoDisplayUnit})`,
                             angle: -90,
                             position: "insideLeft",
                             fill: "#64748b",
@@ -5748,9 +5922,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="boxAverage"
                           name="Box Average Temperature"
-                          stroke="#22c55e"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#22c55e"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#22c55e", stroke: "#22c55e" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5769,9 +5947,13 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="isothermThreshold"
                           name="Isotherm threshold"
-                          stroke="#f97316"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#f97316"}
                           strokeWidth={2}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#f97316", stroke: "#f97316" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5779,10 +5961,14 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="scaleMax"
                           name="Scale Max boundary"
-                          stroke="#ef4444"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#ef4444"}
                           strokeWidth={2}
                           strokeDasharray="4 3"
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#ef4444", stroke: "#ef4444" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
@@ -5790,10 +5976,14 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="scaleMin"
                           name="Scale Min boundary"
-                          stroke="#3b82f6"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#3b82f6"}
                           strokeWidth={2}
                           strokeDasharray="4 3"
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#3b82f6", stroke: "#3b82f6" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                       </ComposedChart>
@@ -5814,14 +6004,14 @@ export default function TrendAnalyzer({
                         DE:{" "}
                         <span className="text-red-400 font-mono">
                           {mechKpis.latest?.deBearing != null
-                            ? `${mechKpis.latest.deBearing}°`
+                            ? `${mechKpis.latest.deBearing}${thermoDisplayUnit}`
                             : "—"}
                         </span>
                         <span className="text-slate-600 mx-1">·</span>
                         ODE:{" "}
                         <span className="text-blue-400 font-mono">
                           {mechKpis.latest?.odeBearing != null
-                            ? `${mechKpis.latest.odeBearing}°`
+                            ? `${mechKpis.latest.odeBearing}${thermoDisplayUnit}`
                             : "—"}
                         </span>
                       </p>
@@ -5831,11 +6021,11 @@ export default function TrendAnalyzer({
                         mechKpis.odeDeltaAmbient != null
                           ? `DE ${
                               mechKpis.deDeltaAmbient != null
-                                ? `${mechKpis.deDeltaAmbient}°`
+                                ? `${mechKpis.deDeltaAmbient}${thermoDisplayUnit}`
                                 : "—"
                             } / ODE ${
                               mechKpis.odeDeltaAmbient != null
-                                ? `${mechKpis.odeDeltaAmbient}°`
+                                ? `${mechKpis.odeDeltaAmbient}${thermoDisplayUnit}`
                                 : "—"
                             }`
                           : "N/A"}
@@ -5851,12 +6041,12 @@ export default function TrendAnalyzer({
                           ? `Skin: ${
                               mechKpis.latest?.refractorySkinTemp ??
                               mechKpis.latest?.skinTemp
-                            }°`
+                            }${thermoDisplayUnit}`
                           : "N/A"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1 font-mono">
                         {mechKpis.latest?.maxAllowable != null
-                          ? `Max: ${mechKpis.latest.maxAllowable}°`
+                          ? `Max: ${mechKpis.latest.maxAllowable}${thermoDisplayUnit}`
                           : "—"}
                       </p>
                     </div>
@@ -5884,7 +6074,7 @@ export default function TrendAnalyzer({
                       </p>
                       <p className="text-2xl font-bold text-yellow-400">
                         {mechKpis.creepRatePerDay != null
-                          ? `${mechKpis.creepRatePerDay}°/day`
+                          ? `${mechKpis.creepRatePerDay}${thermoDisplayUnit}/day`
                           : "N/A"}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
@@ -5899,7 +6089,7 @@ export default function TrendAnalyzer({
 
                   <ThermoChartFrame
                     title="Mechanical & Refractory — Bearing housing and refractory skin temps vs ambient and limits"
-                    subtitle="DE / ODE housing · refractory lagging · ambient reference · max allowable threshold"
+                    subtitle={`DE / ODE housing · refractory lagging · ambient reference · max allowable threshold (${thermoDisplayUnit})`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
@@ -5907,15 +6097,23 @@ export default function TrendAnalyzer({
                           ? "No mechanical or refractory thermal logs in saved scans yet"
                           : null
                     }
+                    note={
+                      thermoAxisPlan.snapshot && hasMechanicalSeries
+                        ? SPARSE_TREND_HELPER_TEXT
+                        : null
+                    }
                   >
                     <ResponsiveContainer width="100%" height="100%">
-                      <ComposedChart data={thermoChartSeries} margin={chartMargin}>
+                      <ComposedChart
+                        data={thermoDisplaySeries}
+                        margin={chartMargin}
+                      >
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                         <XAxis
-                          dataKey="date"
+                          dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: "Date",
+                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -5952,44 +6150,60 @@ export default function TrendAnalyzer({
                           type="monotone"
                           dataKey="deBearing"
                           name="Drive-End (DE) Bearing Housing Temp"
-                          stroke="#ef4444"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#ef4444"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#ef4444", stroke: "#ef4444" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
                           type="monotone"
                           dataKey="odeBearing"
                           name="Opposite Drive-End (ODE) Bearing Housing Temp"
-                          stroke="#3b82f6"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#3b82f6"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#3b82f6", stroke: "#3b82f6" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
                           type="monotone"
                           dataKey="refractorySkinTemp"
                           name="Refractory Lagging Skin Temp"
-                          stroke="#f97316"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#f97316"}
                           strokeWidth={2.5}
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#f97316", stroke: "#f97316" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
                           type="monotone"
                           dataKey="ambientReferenceTemp"
                           name="Ambient Reference Temp"
-                          stroke="#94a3b8"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#94a3b8"}
                           strokeWidth={2}
                           strokeDasharray="6 4"
-                          dot={{ r: 3 }}
+                          dot={
+                            thermoAxisPlan.snapshot
+                              ? { r: 4, fill: "#94a3b8", stroke: "#94a3b8" }
+                              : { r: 3 }
+                          }
                           connectNulls
                         />
                         <Line
                           type="monotone"
                           dataKey="maxAllowable"
                           name="Max Allowable Limit"
-                          stroke="#ef4444"
+                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#ef4444"}
                           strokeWidth={1.5}
                           strokeDasharray="6 4"
                           dot={false}

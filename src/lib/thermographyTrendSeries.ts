@@ -7,6 +7,10 @@ import type { SavedAnalysisResult } from "./analysisPersistence";
 
 export type ThermoChartPoint = {
   date: string;
+  /** HH:mm in the viewer's local timezone — used when runs share a date. */
+  time: string;
+  /** "Oct 30 16:33" — used when a series has both multiple dates and same-day runs. */
+  dateTime: string;
   timestamp: string;
   // Tab 1 — Hotspot & NETA
   hotspot: number | null;
@@ -105,6 +109,29 @@ function formatDate(ts: string | null | undefined): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatTime(ts: string | null | undefined): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes()
+  ).padStart(2, "0")}`;
+}
+
+function formatDateTime(ts: string | null | undefined): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${formatDate(ts)} ${formatTime(ts)}`;
+}
+
+function localDateKey(ts: string | null | undefined): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
 }
 
 function parseConsensusBlob(
@@ -286,6 +313,8 @@ export function extractThermoChartFields(
 
   return {
     date: formatDate(row.timestamp || row.created_at),
+    time: formatTime(row.timestamp || row.created_at),
+    dateTime: formatDateTime(row.timestamp || row.created_at),
     timestamp: row.timestamp || row.created_at || "",
     hotspot,
     reference,
@@ -525,6 +554,73 @@ export function buildThermoChartSeries(
     .slice()
     .reverse()
     .map(extractThermoChartFields);
+}
+
+export type ThermoAxisGranularity = "date" | "time" | "dateTime";
+
+export interface ThermoAxisPlan {
+  /** Field on ThermoChartPoint the X axis should read. */
+  dataKey: ThermoAxisGranularity;
+  /** True when at least one calendar date has two or more runs. */
+  sameDate: boolean;
+  /**
+   * True only when the whole series sits on one calendar date and the runs
+   * span less than SAME_DATE_SNAPSHOT_SPAN_MS — a snapshot, not a trend.
+   */
+  snapshot: boolean;
+  /** Widest same-date span in ms, or null when no date has duplicates. */
+  spanMs: number | null;
+}
+
+/**
+ * Below one hour, same-date runs are a snapshot of one inspection window, not
+ * a trend. Drawing a connecting slope across them would imply a rate of change
+ * that was never measured.
+ */
+export const SAME_DATE_SNAPSHOT_SPAN_MS = 60 * 60 * 1000;
+
+/**
+ * Decide how to label the IR X axis honestly:
+ * - no same-date duplicates → calendar DATE (unchanged behaviour)
+ * - same-date duplicates on a single date → HH:mm (points separate)
+ * - same-date duplicates across multiple dates → "MMM d HH:mm" (no collisions)
+ */
+export function planThermoTrendAxis(
+  points: readonly ThermoChartPoint[]
+): ThermoAxisPlan {
+  const groups = new Map<string, number[]>();
+  for (const point of points) {
+    const ms = Date.parse(point.timestamp || "");
+    if (!Number.isFinite(ms)) continue;
+    const key = localDateKey(point.timestamp);
+    if (!key) continue;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(ms);
+    else groups.set(key, [ms]);
+  }
+
+  let sameDate = false;
+  let spanMs: number | null = null;
+  for (const bucket of groups.values()) {
+    if (new Set(bucket).size < 2) continue;
+    sameDate = true;
+    const span = Math.max(...bucket) - Math.min(...bucket);
+    spanMs = spanMs == null ? span : Math.max(spanMs, span);
+  }
+
+  const singleDate = groups.size === 1;
+  const dataKey: ThermoAxisGranularity = sameDate
+    ? singleDate
+      ? "time"
+      : "dateTime"
+    : "date";
+  const snapshot =
+    sameDate &&
+    singleDate &&
+    spanMs != null &&
+    spanMs < SAME_DATE_SNAPSHOT_SPAN_MS;
+
+  return { dataKey, sameDate, snapshot, spanMs };
 }
 
 export function seriesHasAny(

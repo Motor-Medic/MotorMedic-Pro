@@ -63,6 +63,19 @@ export function filterTrendByTimeRange<T extends TrendTimestampLike>(
   });
 }
 
+/**
+ * Non-forking adapter for surfaces that must share the exact same window
+ * predicate but live outside the vibration tab (e.g. the IR trend charts).
+ * It delegates to `filterTrendByTimeRange` so 7D/30D/90D/1Y can never drift.
+ */
+export function windowTrendByTimeRange<T extends TrendTimestampLike>(
+  points: readonly T[],
+  range: TrendTimeRange,
+  nowMs: number = Date.now()
+): T[] {
+  return filterTrendByTimeRange(points, range, nowMs);
+}
+
 export function distinctTrendTimestampCount(
   points: readonly TrendTimestampLike[]
 ): number {

@@ -19,6 +19,8 @@ import {
 import { ARTIFACT_DISCLAIMER } from "../components/ArtifactDisclaimer";
 import {
   CANONICAL_DISPLAY_UNITS,
+  convertAbsoluteTemperature,
+  convertTemperatureDelta,
   formatAccelerationDisplay,
   formatVelocityDisplay,
   frequencyDisplayValue,
@@ -26,10 +28,14 @@ import {
   frequencyValueForDisplay,
   gToMmPerSecondSquared,
   normalizeDisplayUnits,
+  resolveTemperatureDisplayUnit,
+  roundTo,
   velocityValueForDisplay,
   type DisplayUnits,
-  type FrequencyDisplayUnit
+  type FrequencyDisplayUnit,
+  type TemperatureDisplayUnit
 } from "./vibration/units";
+import { resolveTempUnit } from "./diagnostics/sensorFusion";
 
 export interface ReportExportContext {
   assetLabel: string;
@@ -121,8 +127,85 @@ function rpmOf(row: SavedAnalysisResult): number | null {
   return rpm != null && rpm > 0 ? rpm : null;
 }
 
+function thermographyPeakOf(
+  row: SavedAnalysisResult
+): Record<string, unknown> {
+  const peaks = Array.isArray(row.peaks) ? row.peaks : [];
+  for (const raw of peaks) {
+    if (!raw || typeof raw !== "object") continue;
+    const peak = raw as Record<string, unknown>;
+    if (String(peak.type || "").toLowerCase() === "thermography") return peak;
+  }
+  return peaks.find(
+    (raw): raw is Record<string, unknown> =>
+      Boolean(raw) && typeof raw === "object"
+  ) ?? {};
+}
+
 function exportDisplayUnits(ctx: ReportExportContext): DisplayUnits {
   return normalizeDisplayUnits(ctx.displayUnits ?? CANONICAL_DISPLAY_UNITS);
+}
+
+/** Absolute thermography columns (their unit is a real temperature axis). */
+const TEMPERATURE_ABSOLUTE_COLUMNS = new Set<keyof SavedAnalysisResult>([
+  "phase_a_temp",
+  "phase_b_temp",
+  "phase_c_temp",
+  "de_bearing_temp",
+  "ode_bearing_temp"
+]);
+
+/** Unit each record was captured in, or null when no thermography unit is stored. */
+function recordTemperatureUnit(
+  record: SavedAnalysisResult
+): TemperatureDisplayUnit | null {
+  return resolveTempUnit(record);
+}
+
+/**
+ * One header unit for the whole export: the tenant preference when set,
+ * otherwise the first stored thermography unit. Never hardcodes °C.
+ */
+function exportTemperatureUnit(
+  ctx: ReportExportContext,
+  records: SavedAnalysisResult[]
+): TemperatureDisplayUnit | null {
+  const units = exportDisplayUnits(ctx);
+  if (units.temperature) return units.temperature;
+  for (const record of records) {
+    const stored = recordTemperatureUnit(record);
+    if (stored) return stored;
+  }
+  return null;
+}
+
+function temperatureSuffix(unit: TemperatureDisplayUnit | null): string {
+  return unit ? ` (${unit})` : "";
+}
+
+/**
+ * Convert a stored temperature to the export's one header unit. If no unit was
+ * stored we leave the value untouched rather than guess.
+ */
+function exportTemperatureValue(
+  value: number,
+  record: SavedAnalysisResult,
+  headerUnit: TemperatureDisplayUnit | null
+): number {
+  const stored = recordTemperatureUnit(record);
+  if (!stored || !headerUnit || stored === headerUnit) return value;
+  return roundTo(convertAbsoluteTemperature(value, stored, headerUnit), 1);
+}
+
+/** ΔT/rate fields have no zero point: scale only, never +32. */
+function exportTemperatureDeltaValue(
+  value: number,
+  record: SavedAnalysisResult,
+  headerUnit: TemperatureDisplayUnit | null
+): number {
+  const stored = recordTemperatureUnit(record);
+  if (!stored || !headerUnit || stored === headerUnit) return value;
+  return roundTo(convertTemperatureDelta(value, stored, headerUnit), 1);
 }
 
 /** Cursor that wraps text and breaks pages as content grows. */
@@ -201,6 +284,7 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   if (!analysis) throw new Error("No saved analysis to export");
   const units = exportDisplayUnits(ctx);
   const frequencyUnit = frequencyUnitLabel(units.frequency, rpmOf(analysis));
+  const temperatureUnit = exportTemperatureUnit(ctx, [analysis]);
 
   const { jsPDF } = await import("jspdf");
   const generatedAt = ctx.generatedAt ?? new Date();
@@ -221,7 +305,9 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   c.pair("Record ID", text(analysis.id));
   c.pair(
     "Display units",
-    `velocity ${units.velocity} · acceleration ${units.acceleration} · frequency ${frequencyUnit}`
+    `velocity ${units.velocity} · acceleration ${units.acceleration} · frequency ${frequencyUnit}${
+      temperatureUnit ? ` · temperature ${temperatureUnit}` : ""
+    }`
   );
 
   const overallVelocity = overallVelocityMmSOf(analysis);
@@ -248,6 +334,55 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
           units.frequency,
           rpmOf(analysis)
         ).text
+      );
+    }
+  }
+
+  const thermalPeak = thermographyPeakOf(analysis);
+  const thermalHotspot = finiteNumber(thermalPeak.hotspot_temp);
+  const thermalReference = finiteNumber(thermalPeak.reference_temp);
+  const thermalDeltaT = finiteNumber(
+    thermalPeak.delta_t,
+    analysis.i2r_normalized_delta_t
+  );
+  if (
+    thermalHotspot != null ||
+    thermalReference != null ||
+    thermalDeltaT != null ||
+    analysis.phase_a_temp != null
+  ) {
+    const suffix = temperatureSuffix(temperatureUnit);
+    c.heading("Thermography measurements (display units)");
+    if (thermalHotspot != null) {
+      c.pair(
+        `Hotspot${suffix}`,
+        `${exportTemperatureValue(thermalHotspot, analysis, temperatureUnit)}${temperatureUnit ?? ""}`
+      );
+    }
+    if (thermalReference != null) {
+      c.pair(
+        `Reference${suffix}`,
+        `${exportTemperatureValue(thermalReference, analysis, temperatureUnit)}${temperatureUnit ?? ""}`
+      );
+    }
+    if (thermalDeltaT != null) {
+      c.pair(
+        `ΔT${suffix}`,
+        `${exportTemperatureDeltaValue(thermalDeltaT, analysis, temperatureUnit)}${temperatureUnit ?? ""}`
+      );
+    }
+    for (const [label, field] of [
+      ["Phase A", "phase_a_temp"],
+      ["Phase B", "phase_b_temp"],
+      ["Phase C", "phase_c_temp"],
+      ["DE bearing", "de_bearing_temp"],
+      ["ODE bearing", "ode_bearing_temp"]
+    ] as const) {
+      const value = finiteNumber(analysis[field]);
+      if (value == null) continue;
+      c.pair(
+        `${label}${suffix}`,
+        `${exportTemperatureValue(value, analysis, temperatureUnit)}${temperatureUnit ?? ""}`
       );
     }
   }
@@ -414,19 +549,27 @@ function exportFrequencyHeaderUnit(
 
 function csvColumnLabel(
   col: (typeof CSV_COLUMNS)[number],
-  frequencyHeaderUnit: FrequencyDisplayUnit
+  frequencyHeaderUnit: FrequencyDisplayUnit,
+  temperatureUnit: TemperatureDisplayUnit | null
 ): string {
-  return col.key === "envelope_dominant_frequency"
-    ? `Envelope Dominant Freq (${frequencyHeaderUnit})`
-    : col.label;
+  if (col.key === "envelope_dominant_frequency") {
+    return `Envelope Dominant Freq (${frequencyHeaderUnit})`;
+  }
+  if (TEMPERATURE_ABSOLUTE_COLUMNS.has(col.key)) {
+    return `${col.label}${temperatureSuffix(temperatureUnit)}`;
+  }
+  return col.label;
 }
 
 function exportColumnLabels(ctx: ReportExportContext): string[] {
   const units = exportDisplayUnits(ctx);
   const records = exportRecords(ctx);
   const frequencyHeaderUnit = exportFrequencyHeaderUnit(units, records);
+  const temperatureUnit = exportTemperatureUnit(ctx, records);
   return [
-    ...CSV_COLUMNS.map((col) => csvColumnLabel(col, frequencyHeaderUnit)),
+    ...CSV_COLUMNS.map((col) =>
+      csvColumnLabel(col, frequencyHeaderUnit, temperatureUnit)
+    ),
     PROVENANCE_COLUMN_LABEL,
     `Overall Velocity (${units.velocity})`,
     `Overall Acceleration (${units.acceleration})`
@@ -437,6 +580,7 @@ function measurementRows(ctx: ReportExportContext) {
   const records = exportRecords(ctx);
   const units = exportDisplayUnits(ctx);
   const frequencyHeaderUnit = exportFrequencyHeaderUnit(units, records);
+  const temperatureUnit = exportTemperatureUnit(ctx, records);
   const velocityColumn = `Overall Velocity (${units.velocity})`;
   const accelerationColumn = `Overall Acceleration (${units.acceleration})`;
 
@@ -444,16 +588,29 @@ function measurementRows(ctx: ReportExportContext) {
     const row: Record<string, string | number> = {};
     for (const col of CSV_COLUMNS) {
       const value = record[col.key];
+      const label = csvColumnLabel(
+        col,
+        frequencyHeaderUnit,
+        temperatureUnit
+      );
       if (col.key === "envelope_dominant_frequency" && value != null) {
-        row[csvColumnLabel(col, frequencyHeaderUnit)] =
-          frequencyValueForDisplay(
-            Number(value),
-            frequencyHeaderUnit,
-            rpmOf(record)
-          );
+        row[label] = frequencyValueForDisplay(
+          Number(value),
+          frequencyHeaderUnit,
+          rpmOf(record)
+        );
+      } else if (
+        TEMPERATURE_ABSOLUTE_COLUMNS.has(col.key) &&
+        value != null &&
+        Number.isFinite(Number(value))
+      ) {
+        row[label] = exportTemperatureValue(
+          Number(value),
+          record,
+          temperatureUnit
+        );
       } else {
-        row[csvColumnLabel(col, frequencyHeaderUnit)] =
-          value == null ? "" : (value as string | number);
+        row[label] = value == null ? "" : (value as string | number);
       }
     }
     // Computed provenance column — never a keyed field, always read from

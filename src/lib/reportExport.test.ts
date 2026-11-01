@@ -75,3 +75,56 @@ describe("SLICE-H2 report exports use display units (canonical storage untouched
     expect(csv).toContain("Envelope Dominant Freq (Hz)");
   });
 });
+
+function thermoRow(): SavedAnalysisResult {
+  return row({
+    analysis_type: "thermography",
+    phase_a_temp: 212,
+    phase_b_temp: 194,
+    de_bearing_temp: 176,
+    peaks: [
+      {
+        type: "thermography",
+        hotspot_temp: 212,
+        reference_temp: 194,
+        delta_t: 18,
+        severity_class: "Class 2"
+      }
+    ],
+    telemetry_data: {
+      environmental: { temp_unit: "°F" }
+    }
+  });
+}
+
+describe("SLICE-U temperature export headers follow the tenant preference", () => {
+  it("labels and converts temperature columns into the selected unit", () => {
+    const csv = reportCsvText({
+      assetLabel: "Test Motor",
+      technology: "Thermography",
+      analysis: thermoRow(),
+      displayUnits: {
+        velocity: "mm/s",
+        acceleration: "g",
+        frequency: "Hz",
+        temperature: "°C"
+      }
+    });
+    expect(csv).toContain("Phase A Temp (°C)");
+    expect(csv).toContain("DE Bearing Temp (°C)");
+    expect(csv).not.toContain("Phase A Temp (°F)");
+    expect(csv).toContain("100"); // 212°F → 100°C
+    expect(csv).toContain("90"); // 194°F → 90°C
+  });
+
+  it("defaults to the STORED unit and never converts on first load", () => {
+    const csv = reportCsvText({
+      assetLabel: "Test Motor",
+      technology: "Thermography",
+      analysis: thermoRow()
+    });
+    expect(csv).toContain("Phase A Temp (°F)");
+    expect(csv).toContain("212");
+    expect(csv).not.toContain("Phase A Temp (°C)");
+  });
+});
