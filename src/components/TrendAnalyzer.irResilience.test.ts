@@ -69,7 +69,7 @@ describe("SLICE-U IR trend resilience", () => {
     // KPI, table header and narrative subtitles all consume the same unit.
     expect(src).toContain("Hotspot ({thermoDisplayUnit})");
     expect(src).toContain("ΔT ({thermoDisplayUnit})");
-    expect(src).toContain("Left: temperatures (${thermoDisplayUnit})");
+    expect(src).toContain("Left: ${thermoTempAxisLabel}");
     expect(src).toContain("${latestThermoChart.hotspot}${thermoDisplayUnit}");
     expect(src).not.toContain("${latestThermoChart.hotspot}°");
   });

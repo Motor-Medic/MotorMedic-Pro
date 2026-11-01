@@ -3654,15 +3654,26 @@ export default function TrendAnalyzer({
   ]);
   const phaseHottest = hottestPhaseFromPoint(latestThermoChart);
   const phaseNfpaBadge = nfpaClassBadge(latestThermoChart);
-  const hasRadiometricSeries = seriesHasAny(thermoDisplaySeries, [
-    "emissivity",
+  /**
+   * The left/right Radiometric axes are type-specific: left carries absolute
+   * temperatures only (already display-projected through the shared temp-unit
+   * resolver), right carries dimensionless ε. Render each axis only when a
+   * series of its own type exists, so an empty labelled axis never appears.
+   */
+  const hasRadiometricTempSeries = seriesHasAny(thermoDisplaySeries, [
     "scaleMin",
     "scaleMax",
     "isothermThreshold",
     "boxAverage",
-    "reflectedApparentTemp",
-    "ambientReferenceTemp"
+    "reflectedApparentTemp"
   ]);
+  const hasEmissivitySeries = seriesHasAny(thermoDisplaySeries, ["emissivity"]);
+  const hasReflectedTempSeries = seriesHasAny(thermoDisplaySeries, [
+    "reflectedApparentTemp"
+  ]);
+  /** Ambient-only rows plot nothing here, so they must still show the overlay. */
+  const hasRadiometricSeries =
+    hasRadiometricTempSeries || hasEmissivitySeries;
   const radioKpis = radiometricKpis(thermoDisplaySeries);
   const hasMechanicalSeries = seriesHasAny(thermoDisplaySeries, [
     "deBearing",
@@ -5956,13 +5967,13 @@ export default function TrendAnalyzer({
                   </div>
 
                   <ThermoChartFrame
-                    title="Radiometric & Isotherm — Calibration parameters over time (emissivity, scale, isotherm, box avg)"
-                    subtitle={`Left: temperatures (${thermoDisplayUnit}) · Right: emissivity (ε) · Detect operator ε drift between scans`}
+                    title="Radiometric & Isotherm — Temperature & emissivity over time (scale, isotherm, box avg, T_refl)"
+                    subtitle={`Left: ${thermoTempAxisLabel} · Right: Emissivity (ε) · Detect operator ε drift between scans`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
                         : !hasRadiometricSeries
-                          ? "Environmental & radiometric fields will appear as scans include them"
+                          ? "No temperature or emissivity series in saved scans yet"
                           : null
                     }
                     note={
@@ -5988,101 +5999,144 @@ export default function TrendAnalyzer({
                             fontSize: 11
                           }}
                         />
-                        <YAxis
-                          yAxisId="temp"
-                          tick={{ fill: "#94a3b8", fontSize: 11 }}
-                          label={{
-                            value: `Calibration Parameters (${thermoDisplayUnit})`,
-                            angle: -90,
-                            position: "insideLeft",
-                            fill: "#64748b",
-                            fontSize: 11
-                          }}
-                        />
-                        <YAxis
-                          yAxisId="eps"
-                          orientation="right"
-                          domain={[0, 1]}
-                          tick={{ fill: "#94a3b8", fontSize: 11 }}
-                          label={{
-                            value: "Emissivity (ε)",
-                            angle: 90,
-                            position: "insideRight",
-                            fill: "#64748b",
-                            fontSize: 11
-                          }}
-                        />
+                        {hasRadiometricTempSeries && (
+                          <YAxis
+                            yAxisId="temp"
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            label={{
+                              value: thermoTempAxisLabel,
+                              angle: -90,
+                              position: "insideLeft",
+                              fill: "#64748b",
+                              fontSize: 11
+                            }}
+                          />
+                        )}
+                        {hasEmissivitySeries && (
+                          <YAxis
+                            yAxisId="eps"
+                            orientation="right"
+                            domain={[0, 1]}
+                            tick={{ fill: "#94a3b8", fontSize: 11 }}
+                            label={{
+                              value: "Emissivity (ε)",
+                              angle: 90,
+                              position: "insideRight",
+                              fill: "#64748b",
+                              fontSize: 11
+                            }}
+                          />
+                        )}
                         <Tooltip contentStyle={tooltipStyle} />
                         <Legend verticalAlign="bottom" height={28} />
-                        <Line
-                          yAxisId="temp"
-                          type="monotone"
-                          dataKey="boxAverage"
-                          name="Box Average Temperature"
-                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#22c55e"}
-                          strokeWidth={2.5}
-                          dot={
-                            thermoAxisPlan.snapshot
-                              ? { r: 4, fill: "#22c55e", stroke: "#22c55e" }
-                              : { r: 3 }
-                          }
-                          connectNulls
-                        />
-                        <Line
-                          yAxisId="eps"
-                          type="monotone"
-                          dataKey="emissivity"
-                          name="Emissivity setting"
-                          stroke="#a78bfa"
-                          strokeWidth={2.5}
-                          strokeDasharray="6 4"
-                          dot={{ r: 3 }}
-                          connectNulls
-                        />
-                        <Line
-                          yAxisId="temp"
-                          type="monotone"
-                          dataKey="isothermThreshold"
-                          name="Isotherm threshold"
-                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#f97316"}
-                          strokeWidth={2}
-                          dot={
-                            thermoAxisPlan.snapshot
-                              ? { r: 4, fill: "#f97316", stroke: "#f97316" }
-                              : { r: 3 }
-                          }
-                          connectNulls
-                        />
-                        <Line
-                          yAxisId="temp"
-                          type="monotone"
-                          dataKey="scaleMax"
-                          name="Scale Max boundary"
-                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#ef4444"}
-                          strokeWidth={2}
-                          strokeDasharray="4 3"
-                          dot={
-                            thermoAxisPlan.snapshot
-                              ? { r: 4, fill: "#ef4444", stroke: "#ef4444" }
-                              : { r: 3 }
-                          }
-                          connectNulls
-                        />
-                        <Line
-                          yAxisId="temp"
-                          type="monotone"
-                          dataKey="scaleMin"
-                          name="Scale Min boundary"
-                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#3b82f6"}
-                          strokeWidth={2}
-                          strokeDasharray="4 3"
-                          dot={
-                            thermoAxisPlan.snapshot
-                              ? { r: 4, fill: "#3b82f6", stroke: "#3b82f6" }
-                              : { r: 3 }
-                          }
-                          connectNulls
-                        />
+                        {hasRadiometricTempSeries && (
+                          <>
+                            <Line
+                              yAxisId="temp"
+                              type="monotone"
+                              dataKey="boxAverage"
+                              name="Box Average Temperature"
+                              stroke={
+                                thermoAxisPlan.snapshot ? "transparent" : "#22c55e"
+                              }
+                              strokeWidth={2.5}
+                              dot={
+                                thermoAxisPlan.snapshot
+                                  ? { r: 4, fill: "#22c55e", stroke: "#22c55e" }
+                                  : { r: 3 }
+                              }
+                              connectNulls
+                            />
+                            <Line
+                              yAxisId="temp"
+                              type="monotone"
+                              dataKey="isothermThreshold"
+                              name="Isotherm threshold"
+                              stroke={
+                                thermoAxisPlan.snapshot ? "transparent" : "#f97316"
+                              }
+                              strokeWidth={2}
+                              dot={
+                                thermoAxisPlan.snapshot
+                                  ? { r: 4, fill: "#f97316", stroke: "#f97316" }
+                                  : { r: 3 }
+                              }
+                              connectNulls
+                            />
+                            <Line
+                              yAxisId="temp"
+                              type="monotone"
+                              dataKey="scaleMax"
+                              name="Scale Max boundary"
+                              stroke={
+                                thermoAxisPlan.snapshot ? "transparent" : "#ef4444"
+                              }
+                              strokeWidth={2}
+                              strokeDasharray="4 3"
+                              dot={
+                                thermoAxisPlan.snapshot
+                                  ? { r: 4, fill: "#ef4444", stroke: "#ef4444" }
+                                  : { r: 3 }
+                              }
+                              connectNulls
+                            />
+                            <Line
+                              yAxisId="temp"
+                              type="monotone"
+                              dataKey="scaleMin"
+                              name="Scale Min boundary"
+                              stroke={
+                                thermoAxisPlan.snapshot ? "transparent" : "#3b82f6"
+                              }
+                              strokeWidth={2}
+                              strokeDasharray="4 3"
+                              dot={
+                                thermoAxisPlan.snapshot
+                                  ? { r: 4, fill: "#3b82f6", stroke: "#3b82f6" }
+                                  : { r: 3 }
+                              }
+                              connectNulls
+                            />
+                            {hasReflectedTempSeries && (
+                              <Line
+                                yAxisId="temp"
+                                type="monotone"
+                                dataKey="reflectedApparentTemp"
+                                name="Reflected temp (T_refl)"
+                                stroke={
+                                  thermoAxisPlan.snapshot
+                                    ? "transparent"
+                                    : "#f472b6"
+                                }
+                                strokeWidth={2}
+                                strokeDasharray="2 3"
+                                dot={
+                                  thermoAxisPlan.snapshot
+                                    ? {
+                                        r: 4,
+                                        fill: "#f472b6",
+                                        stroke: "#f472b6"
+                                      }
+                                    : { r: 3 }
+                                }
+                                connectNulls
+                              />
+                            )}
+                          </>
+                        )}
+                        {hasEmissivitySeries && (
+                          <Line
+                            yAxisId="eps"
+                            type="monotone"
+                            dataKey="emissivity"
+                            name="Emissivity setting"
+                            stroke="#a78bfa"
+                            strokeWidth={2.5}
+                            strokeDasharray="6 4"
+                            dot={{ r: 3 }}
+                            connectNulls
+                          />
+                        )}
                       </ComposedChart>
                     </ResponsiveContainer>
                   </ThermoChartFrame>

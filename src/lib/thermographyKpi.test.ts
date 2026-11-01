@@ -11,6 +11,7 @@ import {
   formatTemperatureProjection,
   netaRepairWindowForStoredClass,
   nfpaClassBadge,
+  radiometricKpis,
   thermoEmissivityAmbientPill,
   type ThermoChartPoint
 } from "./thermographyTrendSeries";
@@ -31,6 +32,16 @@ const trendSrc = readFileSync(
 
 const unitsSrc = readFileSync(
   fileURLToPath(new URL("./vibration/units.ts", import.meta.url)),
+  "utf8"
+);
+
+const serverSrc = readFileSync(
+  fileURLToPath(new URL("../../server.ts", import.meta.url)),
+  "utf8"
+);
+
+const diagnoseSrc = readFileSync(
+  fileURLToPath(new URL("../components/Diagnose.tsx", import.meta.url)),
   "utf8"
 );
 
@@ -382,5 +393,149 @@ describe("SLICE-W phase-current schema verdict", () => {
     expect(phaseBlock).not.toMatch(
       /BPFO|BPFI|loose connection correlates|impacts\/sec|MCSA|vibration/i
     );
+  });
+});
+
+describe("SLICE-X radiometric baseline provenance", () => {
+  it("uses the first stored run's emissivity, never a hardcoded value", () => {
+    const series = [
+      point({
+        timestamp: "2026-10-01T12:00:00.000Z",
+        emissivity: 0.91
+      }),
+      point({
+        timestamp: "2026-10-02T12:00:00.000Z",
+        emissivity: 0.74
+      })
+    ];
+    const kpis = radiometricKpis(series);
+    expect(kpis.baselineEmissivity).toBe(0.91);
+    expect(kpis.latest?.emissivity).toBe(0.74);
+    expect(kpis.emissivityDrift).toBe(true);
+
+    expect(seriesSrc).toMatch(
+      /series\.find\(\(p\) => p\.emissivity != null\)\?\.emissivity \?\? null/
+    );
+    expect(seriesSrc).not.toMatch(/baselineEmissivity\s*=\s*0\./);
+    expect(seriesSrc).not.toMatch(/\?\?\s*0\.95/);
+  });
+
+  it("skips runs with no stored ε and takes the first that was saved", () => {
+    const kpis = radiometricKpis([
+      point({ emissivity: null }),
+      point({ emissivity: 0.83 }),
+      point({ emissivity: 0.83 })
+    ]);
+    expect(kpis.baselineEmissivity).toBe(0.83);
+    expect(kpis.emissivityDrift).toBe(false);
+  });
+});
+
+describe("SLICE-X ROI pending-state truth", () => {
+  it("keeps 'Awaiting AI Extraction' only because ROI mean has a write path", () => {
+    // Server mirrors the extracted ROI mean into ai_vision.
+    expect(serverSrc).toMatch(/ai_vision:\s*\{/);
+    expect(serverSrc).toMatch(
+      /roiStatisticalMean:\s*pick\([\s\S]{0,220}?peak0\.roiStatisticalMean/
+    );
+    // Client save sends the same per-run ROI mean.
+    expect(diagnoseSrc).toContain(
+      "roi_statistical_mean: radiometric.roiStatisticalMean"
+    );
+    expect(diagnoseSrc).toContain(
+      "roiStatisticalMean: radiometric.roiStatisticalMean"
+    );
+    expect(trendSrc).toContain("Awaiting AI Extraction");
+  });
+
+  it("'Not Configured' cards evaluate null DB state with no fallback default", () => {
+    const kpis = radiometricKpis([point()]);
+    expect(kpis.latest?.emissivity).toBeNull();
+    expect(kpis.baselineEmissivity).toBeNull();
+    expect(kpis.paletteConfigured).toBe(false);
+    expect(kpis.isothermConfigured).toBe(false);
+    expect(kpis.boxAverageConfigured).toBe(false);
+
+    expect(trendSrc).toContain("radioKpis.latest?.emissivity != null");
+    expect(trendSrc).toContain("radioKpis.paletteConfigured");
+    expect(trendSrc).toContain("radioKpis.isothermConfigured");
+    expect(trendSrc).toContain("radioKpis.boxAverageConfigured");
+    expect(trendSrc).not.toMatch(/radioKpis\.latest\?\.emissivity \?\? 0\./);
+    expect(trendSrc).not.toMatch(/baselineEmissivity \?\? 0\.95/);
+  });
+});
+
+describe("SLICE-X radiometric axis clarity", () => {
+  it("labels the left axis as temperature + active unit, never a mixed hedge", () => {
+    expect(trendSrc).toMatch(
+      /\{hasRadiometricTempSeries && \(\s*<YAxis[\s\S]{0,200}?yAxisId="temp"/
+    );
+    expect(trendSrc).toContain("value: thermoTempAxisLabel");
+    expect(trendSrc).not.toContain("Calibration Parameters");
+    expect(trendSrc).not.toContain("Calibration Parameter");
+  });
+
+  it("keeps ε dimensionless (0–1) on the right and never temp-converts it", () => {
+    expect(trendSrc).toContain('value: "Emissivity (ε)"');
+    expect(trendSrc).toMatch(
+      /yAxisId="eps"[\s\S]{0,160}?domain=\{\[0, 1\]\}/
+    );
+    expect(trendSrc).toContain("hasEmissivitySeries &&");
+    expect(trendSrc).not.toMatch(/emissivity:\s*(absolute|difference)\(/);
+  });
+});
+
+describe("SLICE-X reflected temperature trend", () => {
+  it("stores reflected/apparent temperature per run and plots only when present", () => {
+    const series = buildThermoChartSeries([
+      row({
+        environmental: {
+          environmental: { reflected_temp: 70, temp_unit: "°F" }
+        }
+      }),
+      row({
+        environmental: {
+          environmental: { reflected_temp: 75, temp_unit: "°F" }
+        }
+      })
+    ]);
+    expect(
+      series
+        .map((p) => p.reflectedApparentTemp)
+        .sort((a, b) => (a ?? 0) - (b ?? 0))
+    ).toEqual([70, 75]);
+
+    expect(trendSrc).toMatch(
+      /\{hasReflectedTempSeries && \(\s*<Line[\s\S]{0,220}?dataKey="reflectedApparentTemp"/
+    );
+    expect(trendSrc).toContain(
+      "reflectedApparentTemp: absolute(point.reflectedApparentTemp, from)"
+    );
+
+    const [absent] = buildThermoChartSeries([row()]);
+    expect(absent.reflectedApparentTemp).toBeNull();
+  });
+});
+
+describe("SLICE-X radiometric temperature routing", () => {
+  it("routes ROI reflected, isotherm and box avg through the preference projection", () => {
+    expect(trendSrc).toContain(
+      "boxAverage: absolute(point.boxAverage, from)"
+    );
+    expect(trendSrc).toContain(
+      "isothermThreshold: absolute(point.isothermThreshold, from)"
+    );
+    expect(trendSrc).toContain(
+      "reflectedApparentTemp: absolute(point.reflectedApparentTemp, from)"
+    );
+    expect(trendSrc).toContain(
+      "Reflected: ${radioKpis.latest.reflectedApparentTemp}"
+    );
+    expect(trendSrc).toContain(
+      "Active: >${radioKpis.latest!.isothermThreshold}"
+    );
+    expect(trendSrc).toContain("Box Avg: ${radioKpis.latest!.boxAverage}");
+    // ε and all ratio fields stay raw (no absolute/difference projection).
+    expect(trendSrc).not.toMatch(/emissivity:\s*(absolute|difference)\(/);
   });
 });
