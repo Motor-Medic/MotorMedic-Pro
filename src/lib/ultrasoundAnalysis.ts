@@ -65,6 +65,16 @@ export interface UltrasoundResult {
     annual_cost?: number;
     /** Leak mode — CO₂e (metric tons/year). */
     co2_emissions?: number;
+    /** Leak mode — per-run basis inputs persisted for reproducible economics. */
+    system_pressure?: number;
+    electricity_cost?: number;
+    operating_hours?: number;
+    compressor_efficiency?: number;
+    discharge_coefficient?: number;
+    /** true when the 28 dBµV baseline was applied because none was stored. */
+    baseline_fallback?: boolean;
+    baseline_fallback_db?: number;
+    baseline_source?: "stored" | "fallback";
     /**
      * Phase 2 AI stub — Phase Resolved Partial Discharge pattern
      * as [phase_angle_deg, amplitude] pairs. Optional; ignored in Phase 1 UI.
@@ -130,6 +140,8 @@ export interface UltrasoundMetadata {
   operatingHours?: number | string;
   /** Compressor specific power: kW per 100 CFM (default 18). */
   compressorEfficiency?: number | string;
+  /** Orifice discharge coefficient (default 0.79 smooth/round hole). */
+  dischargeCoefficient?: number | string;
   equipmentRpm?: number | string;
   voltageClass?: string;
   valveType?: string;
@@ -343,6 +355,42 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
   const co2Emissions = optionalFinite(
     peaksRaw.co2_emissions ?? peaksRaw.co2Emissions ?? obj.co2_emissions
   );
+  const systemPressure = optionalFinite(
+    peaksRaw.system_pressure ?? peaksRaw.systemPressure
+  );
+  const electricityCost = optionalFinite(
+    peaksRaw.electricity_cost ?? peaksRaw.electricityCost
+  );
+  const operatingHours = optionalFinite(
+    peaksRaw.operating_hours ?? peaksRaw.operatingHours
+  );
+  const compressorEfficiency = optionalFinite(
+    peaksRaw.compressor_efficiency ?? peaksRaw.compressorEfficiency
+  );
+  const dischargeCoefficient = optionalFinite(
+    peaksRaw.discharge_coefficient ?? peaksRaw.dischargeCoefficient
+  );
+  const baselineSourceRaw =
+    peaksRaw.baseline_source ?? peaksRaw.baselineSource;
+  let baselineSource: "stored" | "fallback" | undefined =
+    baselineSourceRaw === "stored" || baselineSourceRaw === "fallback"
+      ? baselineSourceRaw
+      : undefined;
+  let baselineFallback =
+    peaksRaw.baseline_fallback === true ||
+    peaksRaw.baselineFallback === true;
+  const baselineFallbackDb = optionalFinite(
+    peaksRaw.baseline_fallback_db ?? peaksRaw.baselineFallbackDb
+  );
+  // Legacy/AI payloads without an explicit source: a missing baseline is a
+  // fallback, never a measured baseline.
+  if (!baselineSource) {
+    const hasStoredBaseline =
+      (peaksRaw.baseline_dbmv ?? peaksRaw.baseline_dbuv ?? obj.baseline_dbmv) !=
+      null;
+    baselineSource = hasStoredBaseline ? "stored" : "fallback";
+    if (!hasStoredBaseline) baselineFallback = true;
+  }
 
   const prpdRaw = peaksRaw.prpd_data ?? peaksRaw.prpdData ?? obj.prpd_data;
   let prpdData: Array<[number, number]> | undefined;
@@ -399,6 +447,24 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
       ...(annualKwh != null ? { annual_kwh: annualKwh } : {}),
       ...(annualCostLeak != null ? { annual_cost: annualCostLeak } : {}),
       ...(co2Emissions != null ? { co2_emissions: co2Emissions } : {}),
+      ...(systemPressure != null ? { system_pressure: systemPressure } : {}),
+      ...(electricityCost != null
+        ? { electricity_cost: electricityCost }
+        : {}),
+      ...(operatingHours != null ? { operating_hours: operatingHours } : {}),
+      ...(compressorEfficiency != null
+        ? { compressor_efficiency: compressorEfficiency }
+        : {}),
+      ...(dischargeCoefficient != null
+        ? { discharge_coefficient: dischargeCoefficient }
+        : {}),
+      ...(baselineSource ? { baseline_source: baselineSource } : {}),
+      ...(baselineFallback ? { baseline_fallback: true } : {}),
+      ...(baselineFallbackDb != null
+        ? { baseline_fallback_db: baselineFallbackDb }
+        : baselineFallback
+          ? { baseline_fallback_db: baseline }
+          : {}),
       ...(prpdData ? { prpd_data: prpdData } : {}),
       ...(environmentalContext
         ? { environmental_context: environmentalContext }
@@ -603,6 +669,14 @@ export function ultrasoundPeaksForSave(result: UltrasoundResult): unknown[] {
       annual_kwh: result.peaks.annual_kwh ?? null,
       annual_cost: result.peaks.annual_cost ?? null,
       co2_emissions: result.peaks.co2_emissions ?? null,
+      system_pressure: result.peaks.system_pressure ?? null,
+      electricity_cost: result.peaks.electricity_cost ?? null,
+      operating_hours: result.peaks.operating_hours ?? null,
+      compressor_efficiency: result.peaks.compressor_efficiency ?? null,
+      discharge_coefficient: result.peaks.discharge_coefficient ?? null,
+      baseline_source: result.peaks.baseline_source ?? null,
+      baseline_fallback: result.peaks.baseline_fallback ?? false,
+      baseline_fallback_db: result.peaks.baseline_fallback_db ?? null,
       // Phase 2 AI stubs (optional — null-safe for legacy rows)
       prpd_data: result.peaks.prpd_data ?? null,
       environmental_context: result.peaks.environmental_context ?? null,

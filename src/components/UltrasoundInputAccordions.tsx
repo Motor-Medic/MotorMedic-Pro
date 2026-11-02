@@ -69,6 +69,19 @@ const OPERATIONAL_HOURS = [
   "Custom Manual Entry"
 ] as const;
 
+const OPERATIONAL_HOURS_PER_YEAR: Record<string, number> = {
+  "24/7/365 Continuous (8,760 hrs/year)": 8760,
+  "2-Shift Operation (4,000 hrs/year)": 4000,
+  "1-Shift Operation (2,000 hrs/year)": 2000
+};
+
+const DISCHARGE_COEFFICIENTS: Record<string, number> = {
+  "Smooth/Round Hole (Coefficient 0.79)": 0.79,
+  "Jagged/Crack (Coefficient 0.74)": 0.74,
+  "Thread/Fitting Leak (Coefficient 0.65)": 0.65,
+  "Slit/Crack in Hose (Coefficient 0.72)": 0.72
+};
+
 const GAS_TYPES = ["Compressed Air", "Nitrogen", "Argon", "Steam", "Vacuum"] as const;
 const GREASE_TYPES = ["Polyurea", "Lithium", "Synthetic", "None"] as const;
 const VOLTAGE_CLASSES = [
@@ -355,6 +368,30 @@ export default function UltrasoundInputAccordions({
 
   const modeLabel = MODE_CARDS.find((m) => m.id === ultrasoundMode)?.title ?? ultrasoundMode;
 
+  /** Resolve the operator-entered leak basis into the engine's units (PSI). */
+  const operatingHoursPerYear = useMemo(() => {
+    if (operationalHours === "Custom Manual Entry") {
+      const n = Number(customHours);
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    }
+    return OPERATIONAL_HOURS_PER_YEAR[operationalHours];
+  }, [operationalHours, customHours]);
+
+  const systemPressurePsi = useMemo(() => {
+    const n = Number(systemPressure);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    const psi = pressureUnit === "Bar" ? n * 14.5037738 : n;
+    return Math.round(psi * 100) / 100;
+  }, [systemPressure, pressureUnit]);
+
+  const dischargeCoefficient = useMemo(() => {
+    if (customOrifice) {
+      const n = Number(customDischargeCoeff);
+      return Number.isFinite(n) && n > 0 ? n : undefined;
+    }
+    return DISCHARGE_COEFFICIENTS[orificeProfile];
+  }, [customOrifice, customDischargeCoeff, orificeProfile]);
+
   // Push measurement snapshot to parent (Diagnose → /api/analyze-ultrasound)
   useEffect(() => {
     if (!onSnapshotChange) return;
@@ -380,7 +417,11 @@ export default function UltrasoundInputAccordions({
       wavFileName: wavName || undefined,
       photoFileName: photoName || undefined,
       gasType,
-      systemPressure,
+      systemPressure: systemPressurePsi,
+      pressureUnit,
+      operatingHours: operatingHoursPerYear,
+      dischargeCoefficient,
+      orificeProfile,
       equipmentRpm: equipmentRpm || equipment?.rpm,
       voltageClass,
       valveType,
@@ -407,7 +448,11 @@ export default function UltrasoundInputAccordions({
     wavName,
     photoName,
     gasType,
-    systemPressure,
+    systemPressurePsi,
+    pressureUnit,
+    operatingHoursPerYear,
+    dischargeCoefficient,
+    orificeProfile,
     equipmentRpm,
     voltageClass,
     valveType,

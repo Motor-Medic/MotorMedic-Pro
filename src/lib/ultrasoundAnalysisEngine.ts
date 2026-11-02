@@ -17,7 +17,7 @@ import {
   type UltrasoundMetadata,
   type UltrasoundResult
 } from "./ultrasoundAnalysis";
-import { calculateLeakImpact } from "./ultrasound/leakCalculator";
+import { calculateLeakImpact, LEAK_IMPACT_DEFAULTS } from "./ultrasound/leakCalculator";
 
 function optionalPositiveNumber(value: unknown): number | undefined {
   const n = Number(value);
@@ -121,15 +121,18 @@ export async function analyzeUltrasoundData(
   const peakFromMeta = Number(metadata.peakDbuV);
   const rmsFromMeta = Number(metadata.rmsDbuV);
   const crestFromMeta = Number(metadata.crestFactor ?? metadata.crest_factor);
-  const baselineFromMeta = Number(metadata.baselineDb ?? metadata.baseline_dbmv);
+  const baselineFromMeta = optionalNonNegNumber(
+    metadata.baselineDb ?? metadata.baseline_dbmv
+  );
   const peak =
     Number.isFinite(peakFromMeta) && peakFromMeta > 0 ? peakFromMeta : 55;
   const rms =
     Number.isFinite(rmsFromMeta) && rmsFromMeta > 0 ? rmsFromMeta : 39;
-  const baseline =
-    Number.isFinite(baselineFromMeta) && baselineFromMeta >= 0
-      ? baselineFromMeta
-      : 28;
+  // A stored baseline is used when present. Otherwise the 28 dBµV fallback is
+  // applied to keep the economics computable — but it is tagged so the UI can
+  // disclose the fallback rather than presenting it as measured.
+  const baselineProvided = baselineFromMeta != null;
+  const baseline = baselineProvided ? baselineFromMeta : 28;
   const delta = Math.round((peak - baseline) * 10) / 10;
   const crest_factor =
     Number.isFinite(crestFromMeta) && crestFromMeta > 0
@@ -145,18 +148,30 @@ export async function analyzeUltrasoundData(
   const primary = primaryByMode[mode] || "Air Leak";
 
   const isLeak = mode === "leak";
+  const systemPressureUsed =
+    optionalPositiveNumber(metadata.systemPressure) ??
+    LEAK_IMPACT_DEFAULTS.systemPressurePsi;
+  const electricityCostUsed =
+    optionalNonNegNumber(metadata.electricityCost ?? metadata.costPerKwh) ??
+    LEAK_IMPACT_DEFAULTS.electricityCostPerKwh;
+  const operatingHoursUsed =
+    optionalPositiveNumber(metadata.operatingHours) ??
+    LEAK_IMPACT_DEFAULTS.operatingHoursPerYear;
+  const compressorEfficiencyUsed =
+    optionalPositiveNumber(metadata.compressorEfficiency) ??
+    LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm;
+  const dischargeCoefficientUsed =
+    optionalPositiveNumber(metadata.dischargeCoefficient) ??
+    LEAK_IMPACT_DEFAULTS.dischargeCoefficient;
   const leakImpact = isLeak
     ? calculateLeakImpact({
         peakDb: peak,
         baselineDb: baseline,
-        systemPressure: optionalPositiveNumber(metadata.systemPressure),
-        electricityCost: optionalNonNegNumber(
-          metadata.electricityCost ?? metadata.costPerKwh
-        ),
-        operatingHours: optionalPositiveNumber(metadata.operatingHours),
-        compressorEfficiency: optionalPositiveNumber(
-          metadata.compressorEfficiency
-        )
+        systemPressure: systemPressureUsed,
+        electricityCost: electricityCostUsed,
+        operatingHours: operatingHoursUsed,
+        compressorEfficiency: compressorEfficiencyUsed,
+        dischargeCoefficient: dischargeCoefficientUsed
       })
     : null;
 
@@ -203,7 +218,18 @@ export async function analyzeUltrasoundData(
             estimated_cfm: leakImpact.flowRateCfm,
             annual_kwh: leakImpact.annualKwh,
             annual_cost: leakImpact.annualCost,
-            co2_emissions: leakImpact.co2Emissions
+            co2_emissions: leakImpact.co2Emissions,
+            // Per-run basis inputs (persisted so historical economics and the
+            // basis pill stay reproducible after defaults change).
+            system_pressure: systemPressureUsed,
+            electricity_cost: electricityCostUsed,
+            operating_hours: operatingHoursUsed,
+            compressor_efficiency: compressorEfficiencyUsed,
+            discharge_coefficient: dischargeCoefficientUsed,
+            baseline_source: baselineProvided ? "stored" : "fallback",
+            ...(baselineProvided
+              ? {}
+              : { baseline_fallback: true, baseline_fallback_db: baseline })
           }
         : {})
     },

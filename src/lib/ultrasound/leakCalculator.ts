@@ -41,7 +41,8 @@ export type LeakImpactResult = {
 
 /**
  * Single source of truth for the modeled-leak assumptions. These are hardcoded
- * defaults (leakCalculator.ts), not tenant settings and not stored on the row.
+ * defaults used only when a scan did not persist its own per-run basis; they are
+ * not tenant settings.
  */
 export const LEAK_IMPACT_DEFAULTS = {
   systemPressurePsi: 100,
@@ -71,7 +72,8 @@ export const LEAK_BASIS_TEXT =
 
 export const LEAK_BASIS_NOTE =
   "Modeled from peak ΔdBµV — not measured. Per-scan economics are shown when stored; " +
-  "otherwise the defaults above are applied at render time.";
+  "otherwise they are recomputed from that scan's persisted basis, using the defaults " +
+  "above only when no basis was stored.";
 
 export type LeakRunBasisInput = {
   systemPressure?: number | null;
