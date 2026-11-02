@@ -192,8 +192,12 @@ import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import { navigateToTab } from "../navigation";
 import { stageWorkOrderPrefill } from "../lib/maintenance/workOrderPrefill";
 import {
+  PD_PEAK_DB_SOURCE,
   US_DDB_BRACKETS,
-  US_DDB_SOURCE
+  US_DDB_SOURCE,
+  evaluatePdPeakDb,
+  type PdPeakDbClassification,
+  type PdPeakDbSeverity
 } from "../lib/maintenance/prescriptiveDictionary";
 import WaveformTab, {
   buildWaveformChartModel,
@@ -738,45 +742,24 @@ function isUeElectricalPdRow(r: SavedAnalysisResult): boolean {
   return false;
 }
 
-type UePdSeverity = "normal" | "low" | "medium" | "critical";
-type UePdClassification =
-  | "Normal"
-  | "Corona"
-  | "Surface Tracking"
-  | "General Discharge";
+type UePdSeverity = PdPeakDbSeverity;
+type UePdClassification = PdPeakDbClassification;
 
-/** Phase 1 thresholds on peak dBµV (ISO-style acoustic PD screening). */
+/**
+ * Phase 1 screening on peak dBµV. Boundaries live in the single in-repo table
+ * (PD_PEAK_DB_BRACKETS) which supplies BOTH the classification and the
+ * severity so they can never disagree on a row.
+ */
 function classifyPdFromPeakDb(peakDb: number): {
   classification: UePdClassification;
   severity: UePdSeverity;
   severityLabel: string;
 } {
-  const peak = safeFinite(peakDb, 0);
-  if (peak < 15) {
-    return {
-      classification: "Normal",
-      severity: "normal",
-      severityLabel: "Normal"
-    };
-  }
-  if (peak < 25) {
-    return {
-      classification: "Corona",
-      severity: "low",
-      severityLabel: "Low / Corona"
-    };
-  }
-  if (peak <= 40) {
-    return {
-      classification: "Surface Tracking",
-      severity: "medium",
-      severityLabel: "Medium / Tracking"
-    };
-  }
+  const bracket = evaluatePdPeakDb(safeFinite(peakDb, 0));
   return {
-    classification: "General Discharge",
-    severity: "critical",
-    severityLabel: "Critical / Arcing"
+    classification: bracket.classification,
+    severity: bracket.severity,
+    severityLabel: bracket.severityLabel
   };
 }
 
@@ -819,6 +802,21 @@ function pdSeverityTextClass(severity: UePdSeverity): string {
   }
 }
 
+/**
+ * Safe electrical advisory. Deliberately generic: it derives no electrical
+ * safety category, protective-equipment level, energy value, or standard
+ * citation from dBµV.
+ */
+const PD_ELECTRICAL_ADVISORY =
+  "Severe acoustic discharge detected — follow site electrical safety procedures before approach.";
+
+/**
+ * Cross-technology workflow pointer only. It must not assert that a thermal
+ * signature exists, pair specific events, or claim a statistical link.
+ */
+const PD_THERMAL_FOLLOWUP_POINTER =
+  "Consider thermal follow-up per site procedure when critical discharge is present.";
+
 type UePdInventoryRow = {
   id: string;
   assetId: string;
@@ -828,6 +826,9 @@ type UePdInventoryRow = {
   peakDb: number;
   baselineDb: number;
   baselineDelta: number;
+  /** AB persisted basis: fallback means the delta is modeled, not measured. */
+  baselineSource: "stored" | "fallback" | "unknown";
+  baselineFallbackDb: number | null;
   classification: UePdClassification;
   severity: UePdSeverity;
   severityLabel: string;
@@ -854,6 +855,8 @@ function uePdInventoryFromRow(r: SavedAnalysisResult): UePdInventoryRow {
   let peakDb = 0;
   let baselineDb = 0;
   let deltaDb: number | null = null;
+  let baselineSource: "stored" | "fallback" | "unknown" = "unknown";
+  let baselineFallbackDb: number | null = null;
   let prpdData: Array<[number, number]> | null = null;
   let environmentalContext: { temperature?: number; humidity?: number } | null =
     null;
@@ -863,9 +866,27 @@ function uePdInventoryFromRow(r: SavedAnalysisResult): UePdInventoryRow {
     if (!raw || typeof raw !== "object") continue;
     const p = raw as Record<string, unknown>;
     if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
+    const storedBaseline = p.baseline_dbmv ?? p.baseline_dbuv;
     peakDb = safeFinite(p.peak_dbmv ?? p.peak_dbuv, 0);
-    baselineDb = safeFinite(p.baseline_dbmv ?? p.baseline_dbuv, 0);
+    baselineDb = safeFinite(storedBaseline, 0);
     if (p.delta_db != null) deltaDb = safeFinite(p.delta_db, 0);
+    const sourceRaw = String(
+      p.baseline_source ?? p.baselineSource ?? ""
+    ).toLowerCase();
+    baselineSource =
+      sourceRaw === "stored" || sourceRaw === "fallback"
+        ? sourceRaw
+        : storedBaseline != null && storedBaseline !== ""
+          ? "stored"
+          : "fallback";
+    const fallbackDb = optionalPdConfidence(
+      p.baseline_fallback_db ?? p.baselineFallbackDb
+    );
+    baselineFallbackDb =
+      fallbackDb ??
+      (baselineSource === "fallback"
+        ? optionalPdConfidence(storedBaseline) ?? 28
+        : null);
     prpdData = parsePrpdData(p.prpd_data ?? p.prpdData);
     const env = p.environmental_context ?? p.environmentalContext;
     if (env && typeof env === "object") {
@@ -914,8 +935,13 @@ function uePdInventoryFromRow(r: SavedAnalysisResult): UePdInventoryRow {
     }
   }
 
+  // A fallback baseline still anchors the modeled delta; never subtract 0.
+  const baselineForDelta =
+    baselineSource === "fallback" && baselineFallbackDb != null
+      ? baselineFallbackDb
+      : baselineDb;
   const baselineDelta =
-    deltaDb != null ? deltaDb : Math.max(0, peakDb - baselineDb);
+    deltaDb != null ? deltaDb : Math.max(0, peakDb - baselineForDelta);
   const classified = classifyPdFromPeakDb(peakDb);
   const dateIso = r.timestamp || r.created_at || "";
   const dateMs = dateIso ? new Date(dateIso).getTime() : 0;
@@ -929,6 +955,8 @@ function uePdInventoryFromRow(r: SavedAnalysisResult): UePdInventoryRow {
     peakDb,
     baselineDb,
     baselineDelta: Math.round(baselineDelta * 10) / 10,
+    baselineSource,
+    baselineFallbackDb,
     classification: classified.classification,
     severity: classified.severity,
     severityLabel: classified.severityLabel,
@@ -3862,27 +3890,47 @@ export default function TrendAnalyzer({
     () => ueAnalyses.filter(isUeElectricalPdRow),
     [ueAnalyses]
   );
+  /** PD history shares the SAME window predicate as every other tab. */
+  const windowedUePdAnalyses = useMemo(
+    () => windowTrendByTimeRange(ueElectricalAnalyses, timeRange),
+    [ueElectricalAnalyses, timeRange]
+  );
+  /** True when the asset has any stored electrical/PD scan at all (not windowed). */
+  const hasUePdScans = ueElectricalAnalyses.length > 0;
+  /** Table rows and KPIs are derived from the exact same windowed rows. */
   const uePdInventoryRows = useMemo(() => {
-    return [...ueElectricalAnalyses.map(uePdInventoryFromRow)].sort(
+    return [...windowedUePdAnalyses.map(uePdInventoryFromRow)].sort(
       (a, b) => b.dateMs - a.dateMs
     );
-  }, [ueElectricalAnalyses]);
+  }, [windowedUePdAnalyses]);
+  /** N/A when the window holds no PD scans (or none exist at all). */
+  const uePdKpisAbsent = windowedUePdAnalyses.length === 0;
   const uePdKpis = useMemo(() => {
     if (uePdInventoryRows.length === 0) {
       return {
-        peakElectricalDb: 0,
-        avgBaselineDelta: 0,
+        peakElectricalDb: null as number | null,
+        avgBaselineDelta: null as number | null,
         threatSeverity: "normal" as UePdSeverity,
-        threatLabel: "Normal"
+        threatLabel: "N/A",
+        baselineFallbackCount: 0,
+        baselineFallbackDb: null as number | null
       };
     }
     let maxPeak = 0;
     let deltaSum = 0;
     let topSeverity: UePdSeverity = "normal";
     let topLabel = "Normal";
+    let baselineFallbackCount = 0;
+    let baselineFallbackDb: number | null = null;
     for (const row of uePdInventoryRows) {
       maxPeak = Math.max(maxPeak, safeFinite(row.peakDb, 0));
       deltaSum += safeFinite(row.baselineDelta, 0);
+      if (row.baselineSource === "fallback") {
+        baselineFallbackCount += 1;
+        if (baselineFallbackDb == null && row.baselineFallbackDb != null) {
+          baselineFallbackDb = row.baselineFallbackDb;
+        }
+      }
       if (pdSeverityRank(row.severity) >= pdSeverityRank(topSeverity)) {
         topSeverity = row.severity;
         topLabel = row.severityLabel;
@@ -3893,7 +3941,9 @@ export default function TrendAnalyzer({
       avgBaselineDelta:
         Math.round((deltaSum / uePdInventoryRows.length) * 10) / 10,
       threatSeverity: topSeverity,
-      threatLabel: topLabel
+      threatLabel: topLabel,
+      baselineFallbackCount,
+      baselineFallbackDb
     };
   }, [uePdInventoryRows]);
   const ueSteamAnalyses = useMemo(
@@ -6993,16 +7043,48 @@ export default function TrendAnalyzer({
             </>
           ) : ueMode === "electrical" ? (
             <>
+              {hasUePdScans && (
+                <div
+                  className="rounded-xl border border-yellow-500/30 bg-yellow-500/[0.06] px-4 py-3 mb-4"
+                  data-testid="ue-pd-baseline-disclosure"
+                >
+                  <p className="text-[11px] font-semibold text-yellow-200">
+                    {uePdKpis.baselineFallbackCount > 0
+                      ? `Baseline delta basis: fallback model applied (${uePdKpis.baselineFallbackDb ?? 28} dBµV).`
+                      : "Baseline delta basis: each run's stored baseline."}
+                  </p>
+                  {uePdKpis.baselineFallbackCount > 0 && (
+                    <p
+                      className="text-[10px] font-semibold text-amber-300 mt-1"
+                      data-testid="ue-pd-baseline-fallback-note"
+                    >
+                      Baseline fallback: no stored baseline dBµV for{" "}
+                      {uePdKpis.baselineFallbackCount} run
+                      {uePdKpis.baselineFallbackCount === 1 ? "" : "s"} —{" "}
+                      {uePdKpis.baselineFallbackDb ?? 28} dBµV applied. Delta is
+                      modeled, not measured.
+                    </p>
+                  )}
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Classification and severity are keyed off peak dBµV
+                    thresholds only — not the baseline delta. {PD_PEAK_DB_SOURCE}.
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                     Peak Electrical dB
                   </p>
                   <p className="text-2xl font-bold text-yellow-400 font-mono">
-                    {uePdKpis.peakElectricalDb.toFixed(1)} dBµV
+                    {uePdKpisAbsent || uePdKpis.peakElectricalDb == null
+                      ? "N/A"
+                      : `${uePdKpis.peakElectricalDb.toFixed(1)} dBµV`}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Max peak_dbmv across electrical / PD scans
+                    Max peak_dbmv across electrical / PD scans in the selected{" "}
+                    {timeRange} window
                   </p>
                 </div>
                 <div className={CARD}>
@@ -7010,11 +7092,22 @@ export default function TrendAnalyzer({
                     Avg Baseline Delta
                   </p>
                   <p className="text-2xl font-bold text-sky-400 font-mono">
-                    {uePdKpis.avgBaselineDelta.toFixed(1)} dB
+                    {uePdKpisAbsent || uePdKpis.avgBaselineDelta == null
+                      ? "N/A"
+                      : `${uePdKpis.avgBaselineDelta.toFixed(1)} dB`}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Mean peak − baseline across PD event history
+                    Mean peak − baseline across PD event history in the selected{" "}
+                    {timeRange} window
                   </p>
+                  {uePdKpis.baselineFallbackCount > 0 && (
+                    <p
+                      className="text-[10px] font-semibold text-amber-300 mt-1"
+                      data-testid="ue-pd-avg-delta-modeled"
+                    >
+                      Includes modeled fallback deltas — not measured.
+                    </p>
+                  )}
                 </div>
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -7023,15 +7116,31 @@ export default function TrendAnalyzer({
                   <p
                     className={`text-2xl font-bold font-mono ${pdSeverityTextClass(uePdKpis.threatSeverity)}`}
                   >
-                    {uePdInventoryRows.length === 0
-                      ? "—"
-                      : uePdKpis.threatLabel}
+                    {uePdKpisAbsent ? "N/A" : uePdKpis.threatLabel}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Highest severity from peak dBµV thresholds
+                    Highest severity from peak dBµV thresholds only — not the
+                    baseline delta
                   </p>
                 </div>
               </div>
+
+              {!uePdKpisAbsent && uePdKpis.threatSeverity === "critical" && (
+                <div
+                  className="rounded-xl border border-red-500/30 bg-red-500/[0.06] px-4 py-3 mb-6"
+                  data-testid="ue-pd-electrical-advisory"
+                >
+                  <p className="text-[11px] font-semibold text-red-200">
+                    {PD_ELECTRICAL_ADVISORY}
+                  </p>
+                  <p
+                    className="text-[10px] text-slate-400 mt-1"
+                    data-testid="ue-pd-thermal-followup"
+                  >
+                    {PD_THERMAL_FOLLOWUP_POINTER}
+                  </p>
+                </div>
+              )}
 
               <div className={`${CARD} mb-6 overflow-x-auto`}>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -7048,9 +7157,9 @@ export default function TrendAnalyzer({
                       <Zap className="h-5 w-5" />
                     </div>
                     <p className="text-sm font-semibold text-slate-200 max-w-lg">
-                      No electrical PD events detected for this asset. Run an
-                      ultrasound diagnostic in Electrical mode to populate this
-                      history.
+                      {!hasUePdScans
+                        ? "No stored electrical PD scans for this asset. Run an ultrasound diagnostic in Electrical mode to populate this history."
+                        : `No electrical PD scans in the selected ${timeRange} window.`}
                     </p>
                   </div>
                 ) : (
@@ -7078,6 +7187,14 @@ export default function TrendAnalyzer({
                           </td>
                           <td className="py-2.5 pr-3 font-mono">
                             {safeFinite(row.baselineDelta, 0).toFixed(1)} dB
+                            {row.baselineSource === "fallback" && (
+                              <span
+                                className="ml-1 text-[10px] font-semibold text-amber-300"
+                                data-testid="ue-pd-delta-modeled"
+                              >
+                                (modeled)
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 pr-3">{row.classification}</td>
                           <td className="py-2.5 pr-3">

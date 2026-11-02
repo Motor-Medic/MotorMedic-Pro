@@ -1498,6 +1498,82 @@ export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
 }
 
 // ---------------------------------------------------------------------------
+// Electrical partial-discharge peak-dBµV screening ladder — Phase 1 static
+// in-repo program guidance. No in-repo PD mechanism rubric exists, so the
+// labels below are retained from the original screening implementation and
+// are keyed off peak dBµV only (never the baseline delta, which may be a
+// fallback). These boundaries are guidance, not an industry severity standard
+// and not a substitute for site electrical safety procedures. Exclusive lower,
+// inclusive upper where noted so boundaries classify identically everywhere.
+// Never interpolate between brackets.
+// ---------------------------------------------------------------------------
+
+export type PdPeakDbSeverity = "normal" | "low" | "medium" | "critical";
+export type PdPeakDbClassification =
+  | "Normal"
+  | "Corona"
+  | "Surface Tracking"
+  | "General Discharge";
+
+export interface PdPeakDbBracket {
+  readonly minPeakDb: number;
+  readonly maxPeakDb: number;
+  readonly maxInclusive: boolean;
+  readonly classification: PdPeakDbClassification;
+  readonly severity: PdPeakDbSeverity;
+  readonly severityLabel: string;
+}
+
+export const PD_PEAK_DB_SOURCE =
+  "Static in-repo Phase 1 acoustic PD screening guidance on peak dBµV (no in-repo PD mechanism rubric; labels retained from the prior screening implementation); not an industry severity standard and not a substitute for site electrical safety procedures";
+
+export const PD_PEAK_DB_BRACKETS: readonly PdPeakDbBracket[] = [
+  {
+    minPeakDb: -Infinity,
+    maxPeakDb: 15,
+    maxInclusive: false,
+    classification: "Normal",
+    severity: "normal",
+    severityLabel: "Normal"
+  },
+  {
+    minPeakDb: 15,
+    maxPeakDb: 25,
+    maxInclusive: false,
+    classification: "Corona",
+    severity: "low",
+    severityLabel: "Low / Corona"
+  },
+  {
+    minPeakDb: 25,
+    maxPeakDb: 40,
+    maxInclusive: true,
+    classification: "Surface Tracking",
+    severity: "medium",
+    severityLabel: "Medium / Tracking"
+  },
+  {
+    minPeakDb: 40,
+    maxPeakDb: Infinity,
+    maxInclusive: false,
+    classification: "General Discharge",
+    severity: "critical",
+    severityLabel: "Critical / Arcing"
+  }
+] as const;
+
+/** Single source for both PD classification and severity (agree-or-both-omit). */
+export function evaluatePdPeakDb(peakDb: number): PdPeakDbBracket {
+  const peak = Number.isFinite(peakDb) ? peakDb : 0;
+  for (const b of PD_PEAK_DB_BRACKETS) {
+    const aboveFloor = peak >= b.minPeakDb;
+    const belowCeiling = b.maxInclusive ? peak <= b.maxPeakDb : peak < b.maxPeakDb;
+    if (aboveFloor && belowCeiling) return b;
+  }
+  return PD_PEAK_DB_BRACKETS[PD_PEAK_DB_BRACKETS.length - 1];
+}
+
+// ---------------------------------------------------------------------------
 // Ultrasound crest-factor bands - dimensionless peak/RMS ratio applied as
 // program practice for the interpretation guide (results tab) and the pattern
 // classifier (pattern dossier tab). Inclusive ceiling: a crest of exactly 6
