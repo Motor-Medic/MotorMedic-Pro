@@ -19,6 +19,11 @@ export type LeakImpactParams = {
   operatingHours?: number;
   /** Compressor specific power: kW per 100 CFM. Default 18. */
   compressorEfficiency?: number;
+  /**
+   * Orifice discharge coefficient (e.g. 0.79 smooth hole). Scales the choked
+   * flow relative to the default coefficient. Default 0.79.
+   */
+  dischargeCoefficient?: number;
 };
 
 export type LeakImpactResult = {
@@ -50,7 +55,9 @@ export const LEAK_IMPACT_DEFAULTS = {
   orificeAmplitudeCoeff: 0.0005,
   /** Choked-orifice flow coeff: CFM = coeff · orifice_in² · (psi + atmosphere). */
   chokedFlowCoeff: 18,
-  atmospherePsi: 14.7
+  atmospherePsi: 14.7,
+  /** Reference orifice discharge coefficient (smooth/round hole). */
+  dischargeCoefficient: 0.79
 } as const;
 
 /** User-visible disclosure of the exact model basis. */
@@ -58,12 +65,145 @@ export const LEAK_BASIS_TEXT =
   `Basis: ${LEAK_IMPACT_DEFAULTS.systemPressurePsi} psi | ` +
   `$${LEAK_IMPACT_DEFAULTS.electricityCostPerKwh}/kWh | ` +
   `${LEAK_IMPACT_DEFAULTS.operatingHoursPerYear} h/yr | ` +
+  `Cd ${LEAK_IMPACT_DEFAULTS.dischargeCoefficient} | ` +
   `${LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm} kW/100 CFM | ` +
   `eGRID US avg ${LEAK_IMPACT_DEFAULTS.egridMetricTonsCo2PerKwh} MT/kWh`;
 
 export const LEAK_BASIS_NOTE =
   "Modeled from peak ΔdBµV — not measured. Per-scan economics are shown when stored; " +
   "otherwise the defaults above are applied at render time.";
+
+export type LeakRunBasisInput = {
+  systemPressure?: number | null;
+  operatingHours?: number | null;
+  dischargeCoefficient?: number | null;
+  electricityCost?: number | null;
+  compressorEfficiency?: number | null;
+  baselineSource?: "stored" | "fallback" | "unknown" | null;
+  baselineFallbackDb?: number | null;
+};
+
+export type LeakBasisSummary = {
+  /** True when every run used the documented calculator defaults. */
+  isDefault: boolean;
+  /** User-visible basis text — defaults or the distinct per-run bases. */
+  text: string;
+  /** Number of runs whose ΔdB economics rest on a fallback baseline. */
+  fallbackCount: number;
+  /** Fallback baseline dBµV (null when no run used one). */
+  fallbackDb: number | null;
+  runCount: number;
+};
+
+function basisPressure(b: LeakRunBasisInput): number {
+  return b.systemPressure != null && Number.isFinite(Number(b.systemPressure))
+    ? Number(b.systemPressure)
+    : LEAK_IMPACT_DEFAULTS.systemPressurePsi;
+}
+function basisHours(b: LeakRunBasisInput): number {
+  return b.operatingHours != null && Number.isFinite(Number(b.operatingHours))
+    ? Number(b.operatingHours)
+    : LEAK_IMPACT_DEFAULTS.operatingHoursPerYear;
+}
+function basisCoefficient(b: LeakRunBasisInput): number {
+  return b.dischargeCoefficient != null &&
+    Number.isFinite(Number(b.dischargeCoefficient)) &&
+    Number(b.dischargeCoefficient) > 0
+    ? Number(b.dischargeCoefficient)
+    : LEAK_IMPACT_DEFAULTS.dischargeCoefficient;
+}
+function basisElectricity(b: LeakRunBasisInput): number {
+  return b.electricityCost != null && Number.isFinite(Number(b.electricityCost))
+    ? Number(b.electricityCost)
+    : LEAK_IMPACT_DEFAULTS.electricityCostPerKwh;
+}
+
+/** A run uses the documented defaults when none of its inputs differ. */
+export function leakRunBasisIsDefault(b: LeakRunBasisInput): boolean {
+  return (
+    basisPressure(b) === LEAK_IMPACT_DEFAULTS.systemPressurePsi &&
+    basisHours(b) === LEAK_IMPACT_DEFAULTS.operatingHoursPerYear &&
+    basisCoefficient(b) === LEAK_IMPACT_DEFAULTS.dischargeCoefficient &&
+    basisElectricity(b) === LEAK_IMPACT_DEFAULTS.electricityCostPerKwh
+  );
+}
+
+/** Format the exact basis used for one run (pressure/hours/Cd included). */
+export function formatLeakRunBasis(b: LeakRunBasisInput): string {
+  const hours = basisHours(b).toLocaleString("en-US", {
+    maximumFractionDigits: 0
+  });
+  return (
+    `Basis: ${formatNumber(basisPressure(b), 1)} psi | ` +
+    `$${basisElectricity(b)}/kWh | ` +
+    `${hours} h/yr | ` +
+    `Cd ${basisCoefficient(b)} | ` +
+    `${LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm} kW/100 CFM | ` +
+    `eGRID US avg ${LEAK_IMPACT_DEFAULTS.egridMetricTonsCo2PerKwh} MT/kWh`
+  );
+}
+
+/**
+ * Basis pill summary. When any run differs from the defaults the pill must
+ * show the per-run bases (grouped, with run counts) instead of the defaults.
+ * Fallback baselines are counted so the note can disclose the 28 dBµV default.
+ */
+export function summarizeLeakRunBases(
+  bases: readonly LeakRunBasisInput[]
+): LeakBasisSummary {
+  const fallback = bases.filter((b) => b.baselineSource === "fallback");
+  const fallbackCount = fallback.length;
+  const fallbackDb =
+    fallback.length > 0
+      ? fallback.reduce<number>(
+          (db, b) =>
+            b.baselineFallbackDb != null &&
+            Number.isFinite(Number(b.baselineFallbackDb))
+              ? Number(b.baselineFallbackDb)
+              : db,
+          28
+        )
+      : null;
+
+  const nonDefault = bases.filter((b) => !leakRunBasisIsDefault(b));
+  if (nonDefault.length === 0) {
+    return {
+      isDefault: true,
+      text: LEAK_BASIS_TEXT,
+      fallbackCount,
+      fallbackDb,
+      runCount: bases.length
+    };
+  }
+
+  const groups = new Map<
+    string,
+    { count: number; basis: LeakRunBasisInput }
+  >();
+  for (const b of bases) {
+    const key = `${basisPressure(b)}|${basisHours(b)}|${basisCoefficient(
+      b
+    )}|${basisElectricity(b)}`;
+    const existing = groups.get(key);
+    if (existing) existing.count += 1;
+    else groups.set(key, { count: 1, basis: b });
+  }
+
+  const parts: string[] = [];
+  for (const { count, basis } of groups.values()) {
+    parts.push(
+      `${formatLeakRunBasis(basis)} (${count} run${count === 1 ? "" : "s"})`
+    );
+  }
+
+  return {
+    isDefault: false,
+    text: `Per-run basis — ${parts.join("; ")}`,
+    fallbackCount,
+    fallbackDb,
+    runCount: bases.length
+  };
+}
 
 /**
  * No repair labor rate is stored or configured per tenant, so the ROI-days
@@ -224,16 +364,23 @@ export function calculateLeakImpact(params: LeakImpactParams): LeakImpactResult 
     Number(params.compressorEfficiency)! > 0
       ? Number(params.compressorEfficiency)
       : LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm;
+  const dischargeCoefficient =
+    Number.isFinite(Number(params.dischargeCoefficient)) &&
+    Number(params.dischargeCoefficient)! > 0
+      ? Number(params.dischargeCoefficient)
+      : LEAK_IMPACT_DEFAULTS.dischargeCoefficient;
 
   // 1/8″ @ ~Δ20 dBµV ballpark; scales with acoustic amplitude ratio
   const orificeSize =
     LEAK_IMPACT_DEFAULTS.orificeAmplitudeCoeff * Math.pow(10, dbDelta / 20);
 
-  // Choked orifice approximation (gauge PSI + atmosphere)
+  // Choked orifice approximation (gauge PSI + atmosphere). The selected
+  // discharge coefficient scales flow relative to the default (smooth hole).
   const flowRateCfm =
     LEAK_IMPACT_DEFAULTS.chokedFlowCoeff *
     Math.pow(orificeSize, 2) *
-    (systemPressure + LEAK_IMPACT_DEFAULTS.atmospherePsi);
+    (systemPressure + LEAK_IMPACT_DEFAULTS.atmospherePsi) *
+    (dischargeCoefficient / LEAK_IMPACT_DEFAULTS.dischargeCoefficient);
 
   // DOE-style: CFM × (kW per 100 CFM) / 100 × hours
   const annualKwh =

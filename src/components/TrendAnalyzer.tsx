@@ -91,7 +91,9 @@ import {
   LEAK_BASIS_TEXT,
   LEAK_COST_SEVERITY_SOURCE,
   summarizeLeakInventory,
-  type LeakCostSeverity
+  summarizeLeakRunBases,
+  type LeakCostSeverity,
+  type LeakRunBasisInput
 } from "../lib/ultrasound/leakCalculator";
 import {
   calculateAdvancedSteamLoss,
@@ -517,7 +519,80 @@ type UeLeakInventoryRow = {
   co2Emissions: number;
   healthScore: number | null;
   severity: UeLeakCostSeverity;
+  /** Per-run economics basis persisted with the scan (null = default used). */
+  systemPressure: number | null;
+  operatingHours: number | null;
+  dischargeCoefficient: number | null;
+  electricityCost: number | null;
+  compressorEfficiency: number | null;
+  baselineSource: "stored" | "fallback" | "unknown";
+  baselineFallbackDb: number | null;
 };
+
+function optionalFiniteNumber(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Read the persisted per-run leak basis off the first ultrasound peak. */
+function ueLeakBasisFromRow(r: SavedAnalysisResult): LeakRunBasisInput {
+  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
+  for (const raw of peaks) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
+    const storedBaseline = p.baseline_dbmv ?? p.baseline_dbuv;
+    const sourceRaw = String(
+      p.baseline_source ?? p.baselineSource ?? ""
+    ).toLowerCase();
+    let baselineSource: "stored" | "fallback" | "unknown" =
+      sourceRaw === "stored" || sourceRaw === "fallback"
+        ? sourceRaw
+        : "unknown";
+    if (baselineSource === "unknown") {
+      baselineSource =
+        storedBaseline != null && storedBaseline !== ""
+          ? "stored"
+          : "fallback";
+    }
+    const fallbackDb = optionalFiniteNumber(
+      p.baseline_fallback_db ?? p.baselineFallbackDb
+    );
+    return {
+      systemPressure: optionalFiniteNumber(
+        p.system_pressure ?? p.systemPressure
+      ),
+      operatingHours: optionalFiniteNumber(
+        p.operating_hours ?? p.operatingHours
+      ),
+      dischargeCoefficient: optionalFiniteNumber(
+        p.discharge_coefficient ?? p.dischargeCoefficient
+      ),
+      electricityCost: optionalFiniteNumber(
+        p.electricity_cost ?? p.electricityCost
+      ),
+      compressorEfficiency: optionalFiniteNumber(
+        p.compressor_efficiency ?? p.compressorEfficiency
+      ),
+      baselineSource,
+      baselineFallbackDb:
+        fallbackDb ??
+        (baselineSource === "fallback"
+          ? optionalFiniteNumber(storedBaseline) ?? 28
+          : null)
+    };
+  }
+  return {
+    systemPressure: null,
+    operatingHours: null,
+    dischargeCoefficient: null,
+    electricityCost: null,
+    compressorEfficiency: null,
+    baselineSource: "unknown",
+    baselineFallbackDb: null
+  };
+}
 
 /** Extract leak economics from peaks / financial_impact / telemetry_data (+ calculator backfill). */
 function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
@@ -588,7 +663,10 @@ function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
     }
   }
 
-  // Backfill from peak/baseline when persisted economics are missing
+  // Backfill from peak/baseline when persisted economics are missing. Use the
+  // scan's own persisted basis (pressure / hours / Cd) so a backfilled row is
+  // not silently recomputed on today's defaults.
+  const basis = ueLeakBasisFromRow(r);
   if (
     foundUe &&
     peakDb > 0 &&
@@ -596,7 +674,12 @@ function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
   ) {
     const computed = calculateLeakImpact({
       peakDb,
-      baselineDb
+      baselineDb,
+      systemPressure: basis.systemPressure ?? undefined,
+      electricityCost: basis.electricityCost ?? undefined,
+      operatingHours: basis.operatingHours ?? undefined,
+      compressorEfficiency: basis.compressorEfficiency ?? undefined,
+      dischargeCoefficient: basis.dischargeCoefficient ?? undefined
     });
     if (orificeSize <= 0) orificeSize = computed.orificeSize;
     if (estimatedCfm <= 0) estimatedCfm = computed.flowRateCfm;
@@ -619,6 +702,13 @@ function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
     estimatedCfm,
     annualCost,
     co2Emissions,
+    systemPressure: basis.systemPressure ?? null,
+    operatingHours: basis.operatingHours ?? null,
+    dischargeCoefficient: basis.dischargeCoefficient ?? null,
+    electricityCost: basis.electricityCost ?? null,
+    compressorEfficiency: basis.compressorEfficiency ?? null,
+    baselineSource: basis.baselineSource ?? "unknown",
+    baselineFallbackDb: basis.baselineFallbackDb ?? null,
     healthScore:
       r.health_score != null && Number.isFinite(Number(r.health_score))
         ? Number(r.health_score)
@@ -3763,6 +3853,11 @@ export default function TrendAnalyzer({
   const ueLeakKpisAbsent = windowedUeLeakAnalyses.length === 0;
   const ueLeakTotalAnnualCost = ueLeakKpis.totalAnnualCost;
   const ueLeakDailySavings = leakDailySavingsUsd(ueLeakTotalAnnualCost);
+  /** Basis pill: defaults when every run matches, otherwise the per-run bases. */
+  const ueLeakBasisSummary = useMemo(
+    () => summarizeLeakRunBases(windowedUeLeakAnalyses.map(ueLeakBasisFromRow)),
+    [windowedUeLeakAnalyses]
+  );
   const ueElectricalAnalyses = useMemo(
     () => ueAnalyses.filter(isUeElectricalPdRow),
     [ueAnalyses]
@@ -6710,11 +6805,24 @@ export default function TrendAnalyzer({
                   data-testid="ue-leak-basis-pill"
                 >
                   <p className="text-[11px] font-semibold text-sky-200">
-                    {LEAK_BASIS_TEXT}
+                    {ueLeakBasisSummary.isDefault
+                      ? LEAK_BASIS_TEXT
+                      : ueLeakBasisSummary.text}
                   </p>
                   <p className="text-[10px] text-slate-400 mt-1">
                     {LEAK_BASIS_NOTE}
                   </p>
+                  {ueLeakBasisSummary.fallbackCount > 0 && (
+                    <p
+                      className="text-[10px] font-semibold text-amber-300 mt-1"
+                      data-testid="ue-leak-baseline-fallback-note"
+                    >
+                      Baseline fallback: no stored baseline dBµV for{" "}
+                      {ueLeakBasisSummary.fallbackCount} run
+                      {ueLeakBasisSummary.fallbackCount === 1 ? "" : "s"} —{" "}
+                      {ueLeakBasisSummary.fallbackDb ?? 28} dBµV applied.
+                    </p>
+                  )}
                   {ueLeakDailySavings != null && (
                     <p
                       className="text-[10px] font-mono text-emerald-300 mt-1"
