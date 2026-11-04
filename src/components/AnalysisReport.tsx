@@ -2132,7 +2132,8 @@ function ThermographyRepairActions({
         <div className="w-full bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-4 flex items-start gap-3">
           <AlertTriangle className="h-7 w-7 text-red-500 shrink-0 mt-0.5" />
           <p className="text-sm font-bold text-white leading-snug">
-            Required PPE Level: NFPA 70E Category 2 / 4 Arc Flash Suit required prior to removing MCC Panel A cover.
+            Confirm the site arc-flash risk assessment and required PPE before
+            removing the panel cover.
           </p>
         </div>
         <ul className="space-y-2.5">
@@ -3188,7 +3189,7 @@ const US_LEAK_STEPS = [
 
 const US_ARCING_STEPS = [
   "Do not approach energized equipment until arc-flash boundary and PPE category are confirmed.",
-  "Notify electrical supervision and open a Category 2 / 4 arc-flash work permit as required.",
+  "Notify electrical supervision and follow the site's arc-flash risk assessment / work permit.",
   "De-energize and LOTO the affected cubicle before cleaning or retorquing connections.",
   "Clean corona residue / tracking paths; retorque bus joints to manufacturer torque values.",
   "Perform follow-up ultrasound scan under load to verify arcing signature is eliminated."
@@ -3538,7 +3539,8 @@ function UltrasoundRepairActions({
         <div className="w-full bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-4 flex items-start gap-3">
           <AlertTriangle className="h-6 w-6 text-red-500 shrink-0" />
           <p className="text-sm font-bold text-white leading-snug">
-            Required PPE: NFPA 70E Category 2 / 4 Arc Flash Suit before opening energized enclosures.
+            Follow the site arc-flash risk assessment to select PPE before
+            opening energized enclosures.
           </p>
         </div>
         <ul className="space-y-2.5">
@@ -4651,7 +4653,7 @@ const MCA_ACTIVE_PI = 2.9;
 const MCA_ISOLATION_STEPS = [
   "Apply Lockout/Tagout (LOTO) at MCC Feeder Breaker.",
   "Disconnect motor leads at the local junction box (T-leads) and perform a point-of-use MCA test.",
-  "Verify Arc Flash PPE Level 2 requirements before panel open."
+  "Verify the site arc-flash risk assessment and required PPE before opening the panel."
 ];
 
 /** MCA — Tab 3: Repair & Rewind Actions */

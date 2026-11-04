@@ -16,6 +16,7 @@ import {
   AUDIT_SAFE_FALLBACK,
   resolveActionCardAction
 } from "../../components/trendAnalyzer/VibrationSeverityPanels";
+import type { PrognosticsModality } from "../../components/reports/prognosticsResolvers";
 import { isoZoneLabel, type IsoZone } from "../vibration/isoZone";
 import {
   formatVelocityDisplay,
@@ -40,6 +41,15 @@ export interface WorkOrderPrefillInput {
   /** Canonical mm/s RMS value; formatted for display with `velocityUnit`. */
   velocityMmS?: number | null;
   velocityUnit?: VelocityDisplayUnit;
+  /** Where the prefill came from (defaults to "Trend Analyzer"). */
+  sourceLabel?: string | null;
+  /** Modality carried into the draft proposal (defaults to vibration). */
+  modality?: PrognosticsModality;
+  modalityLabel?: string | null;
+  trackedMetric?: string | null;
+  unit?: string | null;
+  /** Extra already-resolved context lines (steam-trap ID, status, etc.). */
+  contextLines?: readonly string[];
 }
 
 export interface WorkOrderPrefill {
@@ -56,6 +66,11 @@ export interface WorkOrderPrefill {
   velocityUnit: VelocityDisplayUnit;
   suppressed: boolean;
   generatedAt: string;
+  sourceLabel?: string;
+  modality?: PrognosticsModality;
+  modalityLabel?: string;
+  trackedMetric?: string;
+  unit?: string;
 }
 
 function clean(value: string | null | undefined): string | null {
@@ -70,11 +85,15 @@ function composeDescription(input: {
   suppressed: boolean;
   velocityDisplay: string | null;
   zone: IsoZone | null;
+  sourceLabel: string;
+  contextLines: readonly string[];
 }): string {
   const subject =
     [input.assetTag.trim(), input.component ?? ""].filter(Boolean).join(" / ") ||
     "the selected asset";
-  const lines = [`Work order prefill from Trend Analyzer for ${subject}.`];
+  const lines = [
+    `Work order prefill from ${input.sourceLabel} for ${subject}.`
+  ];
 
   if (input.suppressed) {
     lines.push(AUDIT_SAFE_FALLBACK);
@@ -83,6 +102,11 @@ function composeDescription(input: {
     );
   } else {
     lines.push(`Recommended action: ${input.action}`);
+  }
+
+  for (const line of input.contextLines) {
+    const text = line.trim();
+    if (text) lines.push(text);
   }
 
   if (input.velocityDisplay) {
@@ -127,6 +151,24 @@ export function buildWorkOrderPrefill(
       ? formatVelocityDisplay(velocityMmS, velocityUnit)
       : null;
   const generatedAt = new Date().toISOString();
+  const sourceLabel = clean(input.sourceLabel) ?? "Trend Analyzer";
+  const modality: PrognosticsModality = input.modality ?? "vibration";
+  const modalityLabel =
+    clean(input.modalityLabel) ??
+    (modality === "vibration"
+      ? "Vibration"
+      : modality === "ultrasound"
+        ? "Ultrasound"
+        : modality === "thermography"
+          ? "Thermography"
+          : modality === "mca"
+            ? "MCA"
+            : "Oil");
+  const trackedMetric = clean(input.trackedMetric) ?? "Overall velocity";
+  const unit = clean(input.unit) ?? velocityUnit;
+  const contextLines = (input.contextLines ?? [])
+    .map((line) => String(line ?? "").trim())
+    .filter((line) => line !== "");
 
   return {
     id: `${input.assetTag.trim()}::${generatedAt}`,
@@ -142,13 +184,20 @@ export function buildWorkOrderPrefill(
       action,
       suppressed,
       velocityDisplay,
-      zone
+      zone,
+      sourceLabel,
+      contextLines
     }),
     velocityMmS,
     velocityDisplay,
     velocityUnit,
     suppressed,
-    generatedAt
+    generatedAt,
+    sourceLabel,
+    modality,
+    modalityLabel,
+    trackedMetric,
+    unit
   };
 }
 
@@ -197,7 +246,28 @@ function sanitizePrefill(value: unknown): WorkOrderPrefill | null {
     velocityUnit,
     suppressed: record.suppressed === true,
     generatedAt:
-      typeof record.generatedAt === "string" ? record.generatedAt : ""
+      typeof record.generatedAt === "string" ? record.generatedAt : "",
+    sourceLabel:
+      typeof record.sourceLabel === "string" && record.sourceLabel
+        ? record.sourceLabel
+        : "Trend Analyzer",
+    modality:
+      record.modality === "vibration" ||
+      record.modality === "thermography" ||
+      record.modality === "ultrasound" ||
+      record.modality === "mca" ||
+      record.modality === "oil"
+        ? record.modality
+        : "vibration",
+    modalityLabel:
+      typeof record.modalityLabel === "string" && record.modalityLabel
+        ? record.modalityLabel
+        : "Vibration",
+    trackedMetric:
+      typeof record.trackedMetric === "string" && record.trackedMetric
+        ? record.trackedMetric
+        : "Overall velocity",
+    unit: typeof record.unit === "string" && record.unit ? record.unit : velocityUnit
   };
 }
 

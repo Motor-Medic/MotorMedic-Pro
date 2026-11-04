@@ -161,15 +161,18 @@ function DraftProposalsSection() {
   );
 
   const createDraftFromPrefill = (value: WorkOrderPrefill) => {
+    const modality = value.modality ?? "vibration";
     proposeWorkOrderDraft({
       assetId: value.assetTag,
       component: value.component ?? "",
-      modality: "vibration",
-      modalityLabel: "Vibration",
+      modality,
+      modalityLabel:
+        value.modalityLabel ??
+        (modality === "vibration" ? "Vibration" : modality),
       target: value.fault,
-      trackedMetric: "Overall velocity",
-      unit: value.velocityUnit,
-      verdict: value.isoZone ? `Zone ${value.isoZone}` : "Unresolved",
+      trackedMetric: value.trackedMetric ?? "Overall velocity",
+      unit: value.unit ?? value.velocityUnit,
+      verdict: value.isoZone ? `Zone ${value.isoZone}` : value.fault,
       sentence: value.description,
       description: value.description,
       n: 0,
@@ -178,7 +181,7 @@ function DraftProposalsSection() {
       seOfSlope: null,
       thresholdProvenance: value.isoZone
         ? `ISO 20816 Zone ${value.isoZone} band - trend prefill, no regression fit`
-        : "ISO zone unresolved - repair recommendation suppressed"
+        : `${value.sourceLabel ?? "Trend Analyzer"} prefill - no ISO band or regression fit`
     });
     clearWorkOrderPrefill();
   };

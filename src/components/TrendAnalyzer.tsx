@@ -64,7 +64,6 @@ import {
   PROJECTION_LOW_LOAD_CAVEAT,
   PROJECTION_MIN_VALID_LOAD_PERCENT,
   buildThermoChartSeries,
-  extractThermoChartFields,
   formatTemperatureProjection,
   hottestPhaseFromPoint,
   mechanicalKpis,
@@ -97,7 +96,11 @@ import {
 } from "../lib/ultrasound/leakCalculator";
 import {
   calculateAdvancedSteamLoss,
-  estimateSteamOrificeFromPeakDb
+  estimateSteamOrificeFromPeakDb,
+  formatSteamUsdPerYear,
+  STEAM_BASIS_NOTE,
+  STEAM_BASIS_TEXT,
+  STEAM_PAYBACK_BASIS_TEXT
 } from "../lib/steam/advancedSteamCalculator";
 import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
 import {
@@ -177,7 +180,8 @@ import {
   resolveFrequencyDisplayUnit,
   resolveTemperatureDisplayUnit,
   velocityValueForDisplay,
-  type DisplayUnits
+  type DisplayUnits,
+  type TemperatureDisplayUnit
 } from "../lib/vibration/units";
 import {
   resolveVelocityThresholds,
@@ -488,14 +492,6 @@ function leakCostBadgeClass(severity: UeLeakCostSeverity): string {
     case "critical":
       return "bg-red-500/15 border-red-500/40 text-red-300";
   }
-}
-
-function formatUsdPerYear(n: number): string {
-  return `${new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2
-  }).format(n)}/yr`;
 }
 
 function formatLeakDate(iso: string | null | undefined): string {
@@ -1017,68 +1013,12 @@ type UeSteamInventoryRow = {
 };
 
 /**
- * Best-effort Tin/Tout from latest thermography scan for the same asset.
- * Prefers explicit inlet/outlet telemetry; falls back to hotspot/reference.
+ * Trap ΔT comes ONLY from the trap scan itself (stored per-scan upstream /
+ * downstream temperature). A thermography hotspot/reference delta is an
+ * electrical-connection measurement and must never be presented as a trap
+ * differential, so no IR fallback is read here.
  */
-function latestThermoSteamTemps(
-  thermoRows: SavedAnalysisResult[],
-  assetId: string
-): { upstreamTemp: number | null; downstreamTemp: number | null } {
-  const tag = String(assetId || "").trim().toLowerCase();
-  if (!tag) return { upstreamTemp: null, downstreamTemp: null };
-
-  const match = [...thermoRows].find((r) => {
-    const a = String(r.asset_id || "").trim().toLowerCase();
-    return a === tag || a.includes(tag) || tag.includes(a);
-  });
-  if (!match) return { upstreamTemp: null, downstreamTemp: null };
-
-  const fields = extractThermoChartFields(match);
-  const td =
-    match.telemetry_data && typeof match.telemetry_data === "object"
-      ? match.telemetry_data
-      : null;
-  const poly =
-    td && td.polymorphic && typeof td.polymorphic === "object"
-      ? (td.polymorphic as Record<string, unknown>)
-      : null;
-
-  const pickTemp = (...candidates: unknown[]): number | null => {
-    for (const c of candidates) {
-      if (c == null || c === "") continue;
-      const n = Number(c);
-      if (Number.isFinite(n)) return n;
-    }
-    return null;
-  };
-
-  return {
-    upstreamTemp: pickTemp(
-      poly?.upstream_temp,
-      poly?.inlet_temp,
-      td?.upstream_temp,
-      td?.inlet_temp,
-      fields.hotspot,
-      fields.deBearing,
-      fields.phaseA
-    ),
-    downstreamTemp: pickTemp(
-      poly?.downstream_temp,
-      poly?.outlet_temp,
-      td?.downstream_temp,
-      td?.outlet_temp,
-      fields.reference,
-      fields.odeBearing,
-      fields.ambientReferenceTemp,
-      fields.phaseB
-    )
-  };
-}
-
-function ueSteamInventoryFromRow(
-  r: SavedAnalysisResult,
-  thermoTemps: { upstreamTemp: number | null; downstreamTemp: number | null }
-): UeSteamInventoryRow {
+function ueSteamInventoryFromRow(r: SavedAnalysisResult): UeSteamInventoryRow {
   const peaks = Array.isArray(r.peaks) ? r.peaks : [];
   const td =
     r.telemetry_data && typeof r.telemetry_data === "object"
@@ -1090,8 +1030,8 @@ function ueSteamInventoryFromRow(
   let orificeSize = 0;
   let trapType = "Thermodynamic";
   let trapId = String(r.asset_id || r.component || r.id || "TRAP");
-  let upstreamTemp = thermoTemps.upstreamTemp;
-  let downstreamTemp = thermoTemps.downstreamTemp;
+  let upstreamTemp: number | null = null;
+  let downstreamTemp: number | null = null;
   let operatingHours: number | undefined;
   let fuelCost: number | undefined;
 
@@ -1195,6 +1135,17 @@ function ueSteamInventoryFromRow(
     orificeSizeIn: orificeSize,
     thermalAvailable: loss.thermalAvailable
   };
+}
+
+/**
+ * ΔT is a difference: convert by scale only, never with the absolute offset.
+ * Kept in one helper so the dBµV UE surface never performs a temp conversion.
+ */
+function formatSteamDelta(
+  tempDropF: number,
+  unit: TemperatureDisplayUnit
+): string {
+  return `${convertTemperatureDelta(tempDropF, "°F", unit).toFixed(1)} ${unit}`;
 }
 
 function steamSeverityBadgeClass(
@@ -3950,18 +3901,26 @@ export default function TrendAnalyzer({
     () => ueAnalyses.filter(isUeSteamTrapRow),
     [ueAnalyses]
   );
-  const ueSteamThermoTemps = useMemo(() => {
-    const assetKey =
-      selectedAsset?.tag ||
-      selectedAssetKey ||
-      (ueSteamAnalyses[0]?.asset_id ?? "");
-    return latestThermoSteamTemps(thermoAnalyses, String(assetKey));
-  }, [thermoAnalyses, selectedAsset?.tag, selectedAssetKey, ueSteamAnalyses]);
+  /** Steam inventory shares the SAME window predicate as every other tab. */
+  const windowedUeSteamAnalyses = useMemo(
+    () => windowTrendByTimeRange(ueSteamAnalyses, timeRange),
+    [ueSteamAnalyses, timeRange]
+  );
+  /** True when the asset has any stored steam-trap scan at all (not windowed). */
+  const hasUeSteamScans = ueSteamAnalyses.length > 0;
+  /** Table rows and KPIs are derived from the exact same windowed rows. */
   const ueSteamInventoryRows = useMemo(() => {
-    return [...ueSteamAnalyses]
-      .map((r) => ueSteamInventoryFromRow(r, ueSteamThermoTemps))
+    return [...windowedUeSteamAnalyses]
+      .map((r) => ueSteamInventoryFromRow(r))
       .sort((a, b) => b.dateMs - a.dateMs);
-  }, [ueSteamAnalyses, ueSteamThermoTemps]);
+  }, [windowedUeSteamAnalyses]);
+  /** N/A when the window holds no trap scans (or none exist at all). */
+  const ueSteamKpisAbsent = windowedUeSteamAnalyses.length === 0;
+  /** ΔT is a difference → scale-only projection when the preference flips. */
+  const steamDeltaUnit = resolveTemperatureDisplayUnit(
+    displayUnits.temperature,
+    "°F"
+  );
   const ueSteamKpis = useMemo(() => {
     let totalAnnualCost = 0;
     let criticalCount = 0;
@@ -3995,6 +3954,11 @@ export default function TrendAnalyzer({
       systemHealthy: criticalCount === 0 && paybackN === 0
     };
   }, [ueSteamInventoryRows]);
+  /** Rows whose ΔT came from the trap scan itself (never from IR). */
+  const ueSteamThermalLinkedCount = useMemo(
+    () => ueSteamInventoryRows.filter((row) => row.thermalAvailable).length,
+    [ueSteamInventoryRows]
+  );
   const toggleUeLeakSort = (key: "date" | "annual_cost") => {
     setUeLeakSort((prev) =>
       prev.key === key
@@ -7213,16 +7177,39 @@ export default function TrendAnalyzer({
             </>
           ) : ueMode === "steam" ? (
             <>
+              {hasUeSteamScans && (
+                <div
+                  className="rounded-xl border border-cyan-500/30 bg-cyan-500/[0.06] px-4 py-3 mb-4"
+                  data-testid="ue-steam-basis-pill"
+                >
+                  <p className="text-[11px] font-semibold text-cyan-200">
+                    {STEAM_BASIS_TEXT}
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    {STEAM_BASIS_NOTE}
+                  </p>
+                  <p
+                    className="text-[10px] font-semibold text-amber-300 mt-1"
+                    data-testid="ue-steam-payback-basis"
+                  >
+                    {STEAM_PAYBACK_BASIS_TEXT}
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                     Total Annual Steam Waste
                   </p>
                   <p className="text-2xl font-bold text-red-400 font-mono">
-                    {formatUsdPerYear(ueSteamKpis.totalAnnualCost)}
+                    {ueSteamKpisAbsent
+                      ? "N/A"
+                      : formatSteamUsdPerYear(ueSteamKpis.totalAnnualCost)}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Domain-safe Napier / subsonic mass-loss economics
+                    Sum of displayed trap waste in the selected {timeRange}{" "}
+                    window
                   </p>
                 </div>
                 <div className={CARD}>
@@ -7230,11 +7217,12 @@ export default function TrendAnalyzer({
                     Critical Fault Traps
                   </p>
                   <p className="text-2xl font-bold text-orange-400 font-mono">
-                    {ueSteamKpis.criticalCount}
+                    {ueSteamKpisAbsent ? "N/A" : ueSteamKpis.criticalCount}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    {ueSteamKpis.blownCount} Blown-Through •{" "}
-                    {ueSteamKpis.blockedCount} Blocked
+                    {ueSteamKpisAbsent
+                      ? "N/A"
+                      : `${ueSteamKpis.blownCount} Blown-Through • ${ueSteamKpis.blockedCount} Blocked`}
                   </p>
                 </div>
                 <div className={CARD}>
@@ -7242,12 +7230,15 @@ export default function TrendAnalyzer({
                     Avg Repair Payback
                   </p>
                   <p className="text-2xl font-bold text-amber-400 font-mono">
-                    {ueSteamKpis.avgPaybackDays != null
-                      ? `${ueSteamKpis.avgPaybackDays} days`
-                      : "N/A - System Healthy"}
+                    {ueSteamKpisAbsent
+                      ? "N/A"
+                      : ueSteamKpis.avgPaybackDays != null
+                        ? `${ueSteamKpis.avgPaybackDays} days`
+                        : "N/A - System Healthy"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Mean ROI days across active failing traps
+                    Mean ROI days across active failing traps — hardcoded
+                    replacement-cost assumption, not a stored repair estimate
                   </p>
                 </div>
               </div>
@@ -7258,11 +7249,12 @@ export default function TrendAnalyzer({
                     Steam Trap Inventory
                   </p>
                   <p className="text-[10px] text-slate-500">
-                    Priority fusion matrix · thermal{" "}
-                    {ueSteamThermoTemps.upstreamTemp != null &&
-                    ueSteamThermoTemps.downstreamTemp != null
-                      ? "linked"
-                      : "optional / unavailable"}
+                    Priority fusion matrix ·{" "}
+                    {ueSteamThermalLinkedCount > 0
+                      ? `${ueSteamThermalLinkedCount} trap${
+                          ueSteamThermalLinkedCount === 1 ? "" : "s"
+                        } with stored per-scan ΔT`
+                      : "no stored per-trap ΔT — acoustic priority only"}
                   </p>
                 </div>
                 {ueSteamInventoryRows.length === 0 ? (
@@ -7271,9 +7263,9 @@ export default function TrendAnalyzer({
                       <Droplets className="h-5 w-5" />
                     </div>
                     <p className="text-sm font-semibold text-slate-200 max-w-lg">
-                      No steam trap diagnostics for this asset. Run an ultrasound
-                      scan in Valves &amp; Steam Traps mode (mode = steam_trap)
-                      to populate this inventory.
+                      {!hasUeSteamScans
+                        ? "No stored ultrasound steam-trap scans for this asset. Run an ultrasound scan in Valves & Steam Traps mode (mode = steam_trap) to populate this inventory."
+                        : `No steam-trap scans in the selected ${timeRange} window.`}
                     </p>
                   </div>
                 ) : (
@@ -7311,8 +7303,11 @@ export default function TrendAnalyzer({
                             <div>{safeFinite(row.pressurePsig, 0)} psig</div>
                             <div className="text-slate-500">
                               {row.tempDrop != null
-                                ? `ΔT ${row.tempDrop.toFixed(1)} °F`
-                                : "ΔT N/A"}
+                                ? `ΔT ${formatSteamDelta(
+                                    row.tempDrop,
+                                    steamDeltaUnit
+                                  )}`
+                                : "ΔT N/A (no stored per-trap temps)"}
                             </div>
                           </td>
                           <td className="py-2.5 pr-3 font-mono text-cyan-300">
@@ -7329,39 +7324,70 @@ export default function TrendAnalyzer({
                           <td
                             className={`py-2.5 pr-3 font-mono font-semibold ${steamSeverityTextClass(row.severity)}`}
                           >
-                            {formatUsdPerYear(safeFinite(row.annualCostUsd, 0))}
+                            {formatSteamUsdPerYear(
+                              safeFinite(row.annualCostUsd, 0)
+                            )}
                           </td>
                           <td className="py-2.5 pr-3 font-mono">
-                            {row.roiPaybackDays != null
-                              ? `${row.roiPaybackDays} days`
-                              : "—"}
+                            {row.roiPaybackDays != null ? (
+                              <span title={STEAM_PAYBACK_BASIS_TEXT}>
+                                {row.roiPaybackDays} days
+                              </span>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                           <td className="py-2.5 pr-3">
-<button
+                            <button
                               type="button"
                               onClick={() => {
                                 // LEGAL-WRAPPER-A (E3/E7) — the cost-bearing
                                 // work order is the highest-risk artifact: it
-                                // is confirmed before it downloads and it
-                                // carries the reused disclaimer as a
-                                // top-level field.
+                                // is confirmed before it fires.
                                 if (!confirmArtifactExport("Generate work order")) return;
-                                const workOrderData = {
-                                  trapId: row.trapId,
-                                  trapType: row.trapType,
-                                  status: row.status,
+                                stageWorkOrderPrefill({
+                                  assetTag:
+                                    selectedAsset?.tag ||
+                                    row.assetId ||
+                                    "steam-trap",
+                                  assetName: selectedAsset?.name,
+                                  component: `${row.trapId} (${row.trapType})`,
+                                  zone: null,
                                   action: row.action,
-                                  annualCost: row.annualCostUsd,
-                                  paybackDays: row.roiPaybackDays,
-                                  disclaimer: ARTIFACT_DISCLAIMER
-                                };
-                                const blob = new Blob([JSON.stringify(workOrderData, null, 2)], { type: 'application/json' });
-                                const url = URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.href = url;
-                                a.download = `work-order-${row.trapId}-${Date.now()}.json`;
-                                a.click();
-                                URL.revokeObjectURL(url);
+                                  recommendation: row.status,
+                                  modality: "ultrasound",
+                                  modalityLabel: "Ultrasound / Steam Trap",
+                                  trackedMetric: "Peak acoustic level",
+                                  unit: "dBµV",
+                                  sourceLabel: "Ultrasound Steam Trap Analyzer",
+                                  contextLines: [
+                                    `Trap status: ${row.status}.`,
+                                    `Peak acoustic level: ${safeFinite(
+                                      row.peakDb,
+                                      0
+                                    ).toFixed(1)} dBµV.`,
+                                    `Supply pressure: ${safeFinite(
+                                      row.pressurePsig,
+                                      0
+                                    )} psig.`,
+                                    row.upstreamTemp != null &&
+                                    row.downstreamTemp != null
+                                      ? `Stored per-scan ΔT: ${formatSteamDelta(
+                                          row.tempDrop ?? 0,
+                                          steamDeltaUnit
+                                        )}.`
+                                      : "No stored per-trap ΔT — acoustic priority only.",
+                                    `Modeled annual steam waste: ${formatSteamUsdPerYear(
+                                      safeFinite(row.annualCostUsd, 0)
+                                    )}. ${STEAM_BASIS_TEXT}`,
+                                    row.roiPaybackDays != null
+                                      ? `Modeled payback: ${
+                                          row.roiPaybackDays
+                                        } days. ${STEAM_PAYBACK_BASIS_TEXT}`
+                                      : "Payback not modeled."
+                                  ]
+                                });
+                                navigateToTab("calendar");
                               }}
                               className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 cursor-pointer whitespace-nowrap"
                             >
