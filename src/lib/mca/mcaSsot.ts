@@ -14,12 +14,14 @@ import {
   MCA_GROUNDWALL_EMPTY,
   MCA_WINDING_EMPTY,
   mcaTripletHasData,
+  normalizeConductorMaterial,
   normalizeMcaOperatorSnapshot,
   type McaGroundwallSnapshot,
   type McaOperatorSnapshot,
   type McaPhaseTriplet,
   type McaWindingSnapshot
 } from "./mcaPersistence";
+import type { ConductorMaterial } from "./windingBalanceCalculator";
 import { sanitizeRicSeries } from "./rotorInfluenceCalculator";
 import { sanitizeSurgeSeries, type SurgeDataPoint } from "./surgeCalculator";
 
@@ -33,6 +35,7 @@ export type McaPhaseBalanceDomain = {
   phase_angle: McaPhaseTriplet;
   if_ratio: McaPhaseTriplet;
   winding_temp_c?: number;
+  conductor_material?: ConductorMaterial;
   rated_hp?: number;
 };
 
@@ -140,9 +143,13 @@ function parseInsulationClass(raw: unknown): InsulationClass | undefined {
 
 function toTriplet(raw: unknown): McaPhaseTriplet {
   if (!Array.isArray(raw) || raw.length < 3) return [...ZERO];
-  const a = finiteNum(raw[0]) ?? 0;
-  const b = finiteNum(raw[1]) ?? 0;
-  const c = finiteNum(raw[2]) ?? 0;
+  // Incomplete triplets are absent. Never zero-fill a missing phase: a 0 Ω
+  // resistance would read as a dead short and a 0 % unbalance would fabricate
+  // a balanced winding.
+  const a = finiteNum(raw[0]);
+  const b = finiteNum(raw[1]);
+  const c = finiteNum(raw[2]);
+  if (a == null || b == null || c == null) return [...ZERO];
   return [a, b, c];
 }
 
@@ -164,6 +171,7 @@ function windingToPhaseBalance(w: McaWindingSnapshot): McaPhaseBalanceDomain {
     phase_angle: [...w.phaseFi],
     if_ratio: [...w.phaseIF],
     ...(w.windingTempC != null ? { winding_temp_c: w.windingTempC } : {}),
+    ...(w.conductorMaterial ? { conductor_material: w.conductorMaterial } : {}),
     ...(w.ratedHp != null ? { rated_hp: w.ratedHp } : {})
   };
 }
@@ -210,6 +218,8 @@ export function deepMergeMcaSsot(
         phase_angle: mergeTriplet(prev.phase_balance.phase_angle, pb.phase_angle),
         if_ratio: mergeTriplet(prev.phase_balance.if_ratio, pb.if_ratio),
         winding_temp_c: pb.winding_temp_c ?? prev.phase_balance.winding_temp_c,
+        conductor_material:
+          pb.conductor_material ?? prev.phase_balance.conductor_material,
         rated_hp: pb.rated_hp ?? prev.phase_balance.rated_hp
       }
     : prev.phase_balance;
@@ -331,6 +341,7 @@ export function mcaWindingFromSsot(
     phaseFi: [...pb.phase_angle],
     phaseIF: [...pb.if_ratio],
     windingTempC: pb.winding_temp_c,
+    ...(pb.conductor_material ? { conductorMaterial: pb.conductor_material } : {}),
     ratedHp: pb.rated_hp
   };
 }
@@ -349,6 +360,9 @@ export function mcaSsotFromExtracted(
       if_ratio: [...extracted.phaseIF],
       ...(extracted.windingTempC != null
         ? { winding_temp_c: extracted.windingTempC }
+        : {}),
+      ...(extracted.conductorMaterial
+        ? { conductor_material: extracted.conductorMaterial }
         : {}),
       ...(extracted.ratedHp != null ? { rated_hp: extracted.ratedHp } : {})
     },
@@ -444,6 +458,13 @@ export function mcaSsotFromVisionJson(
     ),
     winding_temp_c:
       finiteNum(pbRaw.winding_temp_c ?? pbRaw.windingTempC ?? parsed.windingTempC),
+    conductor_material: normalizeConductorMaterial(
+      pbRaw.conductor_material ??
+        pbRaw.conductorMaterial ??
+        pbRaw.material ??
+        parsed.conductorMaterial ??
+        parsed.conductor_material
+    ),
     rated_hp: finiteNum(pbRaw.rated_hp ?? pbRaw.ratedHp ?? parsed.ratedHp)
   };
 
@@ -636,6 +657,7 @@ export function mcaSsotToOperatorSnapshot(
     phaseFi: [...pb.phase_angle],
     phaseIF: [...pb.if_ratio],
     windingTempC: pb.winding_temp_c ?? gw.winding_temp_c ?? null,
+    conductorMaterial: pb.conductor_material ?? null,
     ratedHp: pb.rated_hp ?? null,
     ir15sMOmega: gw.ir_15s ?? null,
     ir30sMOmega: gw.ir_30s ?? null,

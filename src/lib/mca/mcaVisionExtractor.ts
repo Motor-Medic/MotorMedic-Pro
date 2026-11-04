@@ -57,6 +57,7 @@ REQUIRED JSON (no markdown, no commentary):
   "confidenceScore": <0-100>,
   "ratedHp": <number or null>,
   "windingTempC": <number or null>,
+  "conductorMaterial": "copper" | "aluminum" | null,
   "phase_balance": {
     "resistance": [<T12 Ω>, <T23 Ω>, <T31 Ω>],
     "inductance": [<T12 mH>, <T23 mH>, <T31 mH>],
@@ -64,6 +65,7 @@ REQUIRED JSON (no markdown, no commentary):
     "phase_angle": [<T12 °>, <T23 °>, <T31 °>],
     "if_ratio": [<T12>, <T23>, <T31>],
     "winding_temp_c": <number or null>,
+    "conductor_material": "copper" | "aluminum" | null,
     "rated_hp": <number or null>
   },
   "groundwall": {
@@ -140,9 +142,12 @@ function finiteNum(v: unknown): number | null {
 
 function toTriplet(raw: unknown): [number, number, number] {
   if (!Array.isArray(raw) || raw.length < 3) return [...ZERO];
-  const a = finiteNum(raw[0]) ?? 0;
-  const b = finiteNum(raw[1]) ?? 0;
-  const c = finiteNum(raw[2]) ?? 0;
+  // Incomplete triplets are absent, never zero-filled. A 0 Ω resistance would
+  // read as a dead short; a 0 % unbalance would fabricate a balanced winding.
+  const a = finiteNum(raw[0]);
+  const b = finiteNum(raw[1]);
+  const c = finiteNum(raw[2]);
+  if (a == null || b == null || c == null) return [...ZERO];
   return [a, b, c];
 }
 

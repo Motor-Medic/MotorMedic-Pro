@@ -21,6 +21,11 @@ import {
   type McaReportData
 } from "../lib/mcaVisionExtractor";
 import { mcaTripletHasData, type McaOperatorSnapshot } from "../lib/mca/mcaPersistence";
+import { useTenantDisplayUnits } from "../lib/tenantSettings";
+import {
+  convertAbsoluteTemperature,
+  resolveTemperatureDisplayUnit
+} from "../lib/vibration/units";
 
 type McaAccordionSection = "fingerprint" | "config" | "phase" | "insulation";
 export type McaMode = "static" | "dynamic" | "online";
@@ -212,6 +217,11 @@ export default function McaInputAccordions({
   equipment,
   onExtractionStatusChange
 }: McaInputAccordionsProps) {
+  const { units: displayUnits } = useTenantDisplayUnits();
+  const mcaTempDisplayUnit = resolveTemperatureDisplayUnit(
+    displayUnits.temperature,
+    "°C"
+  );
   const [openSections, setOpenSections] = useState<McaAccordionSection[]>([]);
   const [mcaMode, setMcaMode] = useState<McaMode>("static");
 
@@ -244,6 +254,9 @@ export default function McaInputAccordions({
   const [tvsBaseline, setTvsBaseline] = useState("");
   const [windingTemp, setWindingTemp] = useState("");
   const [ambientTemp, setAmbientTemp] = useState("");
+  /** Display-unit mirrors of the °C-canonical state (tenant temp preference). */
+  const [windingTempInput, setWindingTempInput] = useState("");
+  const [ambientTempInput, setAmbientTempInput] = useState("");
 
   // Section 3 — Phase-to-phase (offline) / Online PQ
   const [testConnectionPoint, setTestConnectionPoint] =
@@ -296,6 +309,50 @@ export default function McaInputAccordions({
 
   const isOnline = mcaMode === "online";
   const isDynamic = mcaMode === "dynamic";
+
+  // Display-only temperature conversion. The stored state and the R
+  // normalization formula remain °C-canonical; only the input text follows
+  // the tenant temperature preference.
+  const formatTempForDisplay = (
+    valueC: number | string | null | undefined
+  ): string => {
+    if (valueC == null || valueC === "") return "";
+    const n = Number(valueC);
+    if (!Number.isFinite(n)) return "";
+    const v = convertAbsoluteTemperature(n, "°C", mcaTempDisplayUnit);
+    return String(Math.round(v * 10) / 10);
+  };
+  const tempInputToCelsius = (raw: string): string => {
+    if (raw.trim() === "") return "";
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return "";
+    const c = convertAbsoluteTemperature(n, mcaTempDisplayUnit, "°C");
+    return String(Math.round(c * 100) / 100);
+  };
+  const handleWindingTempInput = (raw: string) => {
+    setWindingTempInput(raw);
+    setWindingTemp(tempInputToCelsius(raw));
+  };
+  const handleAmbientTempInput = (raw: string) => {
+    setAmbientTempInput(raw);
+    setAmbientTemp(tempInputToCelsius(raw));
+  };
+
+  const prevTempUnitRef = useRef(mcaTempDisplayUnit);
+  useEffect(() => {
+    const prev = prevTempUnitRef.current;
+    if (prev === mcaTempDisplayUnit) return;
+    const move = (raw: string): string => {
+      if (raw.trim() === "") return "";
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return raw;
+      const v = convertAbsoluteTemperature(n, prev, mcaTempDisplayUnit);
+      return String(Math.round(v * 10) / 10);
+    };
+    setWindingTempInput(move);
+    setAmbientTempInput(move);
+    prevTempUnitRef.current = mcaTempDisplayUnit;
+  }, [mcaTempDisplayUnit]);
 
   // Keep Diagnose / save path in sync with accordion inputs
   useEffect(() => {
@@ -425,8 +482,10 @@ export default function McaInputAccordions({
     }
     if (extracted.windingTempC != null && Number.isFinite(extracted.windingTempC)) {
       const sane = sanitizeTempForMca(extracted.windingTempC);
-      if (sane != null) setWindingTemp(String(sane));
-      else onToast?.(`Verify manually — winding temp ${extracted.windingTempC}°C out of bounds (-50..200) discarded`, "warning");
+      if (sane != null) {
+        setWindingTemp(String(sane));
+        setWindingTempInput(formatTempForDisplay(sane));
+      } else onToast?.(`Verify manually — winding temp ${extracted.windingTempC}°C out of bounds (-50..200) discarded`, "warning");
     }
     if (extracted.insulationClass) {
       const map: Record<string, string> = {
@@ -1162,10 +1221,10 @@ export default function McaInputAccordions({
           </label>
           <span
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
-            title="Copper/aluminum temperature correction applied behind the scenes."
+            title="Winding resistance is normalized to 25 °C only when a winding temperature is recorded. The coefficient is material-gated (copper 234.5 / aluminum 228); unknown material is labelled as assumed copper. Groundwall IR is normalized to 40 °C per IEEE 43."
           >
-            ⚙️ Winding resistance normalized to 40°C; Insulation metrics normalized to 20°C
-            per IEEE 43.
+            ⚙️ Winding R → 25°C (material-gated; assumed copper labelled) ·
+            groundwall IR → 40°C per IEEE 43.
             <Info className="h-3 w-3 shrink-0 opacity-80" aria-hidden />
           </span>
         </div>
@@ -1176,28 +1235,33 @@ export default function McaInputAccordions({
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-xl">
             <label className="block min-w-0">
-              <span className={fieldLabel}>Winding Temperature (°C)</span>
+              <span className={fieldLabel}>
+                Winding Temperature ({mcaTempDisplayUnit})
+              </span>
               <input
                 type="number"
-                value={windingTemp}
-                onChange={(e) => setWindingTemp(e.target.value)}
-                placeholder="e.g. 35"
+                value={windingTempInput}
+                onChange={(e) => handleWindingTempInput(e.target.value)}
+                placeholder={mcaTempDisplayUnit === "°F" ? "e.g. 95" : "e.g. 35"}
                 className={inputCls}
               />
             </label>
             <label className="block min-w-0">
-              <span className={fieldLabel}>Ambient Temperature (°C)</span>
+              <span className={fieldLabel}>
+                Ambient Temperature ({mcaTempDisplayUnit})
+              </span>
               <input
                 type="number"
-                value={ambientTemp}
-                onChange={(e) => setAmbientTemp(e.target.value)}
-                placeholder="e.g. 22"
+                value={ambientTempInput}
+                onChange={(e) => handleAmbientTempInput(e.target.value)}
+                placeholder={mcaTempDisplayUnit === "°F" ? "e.g. 72" : "e.g. 22"}
                 className={inputCls}
               />
             </label>
           </div>
           <p className={helperCls}>
-            Used to auto-correct Ohms readings to a standard 40°C baseline.
+            Stored and analyzed in °C regardless of the display preference; the
+            R correction formula is °C-locked.
           </p>
         </div>
       </AccordionShell>

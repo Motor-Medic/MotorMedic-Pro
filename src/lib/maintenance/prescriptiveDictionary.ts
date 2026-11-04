@@ -1625,14 +1625,27 @@ export function dedupeAnalysisResults<
 }
 
 // ---------------------------------------------------------------------------
-// MCA phase-unbalance brackets — NEMA MG-1 practice.  No ISO severity class
-// standard exists for MCA.  Exclusive lower, inclusive upper.  Values are
-// stated as whole-percent in the source practice; a rounding gap is
-// intentional — a delta landing on a boundary (e.g. exactly 2%) classifies
-// into the higher bracket, matching the inclusive-upper convention.
+// MCA phase-unbalance brackets — industry rule-of-thumb / vendor guidance.
+// This is a per-phase winding matrix (R/L/Z/Fi/I-F). It is NOT a NEMA MG-1
+// resistance severity matrix: NEMA MG-1 governs MOTOR VOLTAGE unbalance
+// (derating above ~1%, overheating above ~5%, do not operate above ~10%),
+// not winding resistance classes. No ISO severity class standard exists for
+// MCA. Exclusive lower, inclusive upper. Values are stated as whole-percent
+// in the source practice; a rounding gap is intentional — a delta landing on
+// a boundary (e.g. exactly 2%) classifies into the higher bracket, matching
+// the inclusive-upper convention.
 // ---------------------------------------------------------------------------
 
-export const MCA_IMBALANCE_SOURCE = "NEMA MG-1 practice - voltage unbalance <=5%, current unbalance >2-3% warrants investigation; no ISO severity class standard exists for MCA";
+export const MCA_IMBALANCE_SOURCE =
+  "industry rule-of-thumb / vendor guidance for phase R/L/Z/Fi/I-F unbalance — not a NEMA MG-1 resistance severity matrix (NEMA MG-1 governs motor voltage unbalance, not per-phase winding resistance); no ISO severity class standard exists for MCA";
+
+/** Formula/denominator shown beside every computed unbalance. */
+export const MCA_UNBALANCE_FORMULA =
+  "% unbalance = (max |X_i − mean| / mean) × 100; denominator is the three-phase mean (not max-min)";
+
+/** Descriptive L/Z divergence metric label + formula. */
+export const MCA_LZ_DIVERGENCE_SOURCE =
+  "Phase L/Z divergence % = |L unbalance − Z unbalance| (percentage points) — descriptive only; no stored healthy reference, not a fault verdict";
 
 // Single source for the IEEE Std 43 citation - MCA tabs import it here so
 // the guidance wording is byte-identical everywhere it renders.
@@ -1668,7 +1681,7 @@ export const MCA_IMBALANCE_BRACKETS: readonly McaImbalanceBracket[] = [
   { minPct: -Infinity, maxPct: 2, clazz: "Satisfactory", action: "No action required" },
   { minPct: 2, maxPct: 4, clazz: "Class 3 — Minor", action: "Early winding / connection asymmetry" },
   { minPct: 4, maxPct: 8, clazz: "Class 2 — Moderate", action: "Investigate connections and windings" },
-  { minPct: 8, maxPct: Infinity, clazz: "Class 1 — Critical", action: "Severe asymmetry - NEMA MG-1 derating practice" },
+  { minPct: 8, maxPct: Infinity, clazz: "Class 1 — Critical", action: "Severe phase asymmetry — investigate windings and connections" },
 ] as const;
 
 export function evaluateMcaSeverity(imbalancePct: number): McaImbalanceBracket {
@@ -1909,7 +1922,7 @@ export const PROGNOSTICS_PF_DISCLOSURES = Object.freeze({
   ultrasoundThresholdUeLadderProxy:
     "site-practice proxy — UE Systems bearing-condition ladder Class 1 boundary (+16 dB), not a stored functional limit",
   mcaThresholdNemaProxy:
-    "site-practice proxy — NEMA MG-1 Class 1 unbalance boundary (8 %), not a stored functional limit; no ISO severity standard exists for MCA",
+    "site-practice proxy — industry rule-of-thumb / vendor phase-unbalance boundary (8 %), not a stored functional limit; NEMA MG-1 governs motor voltage unbalance, not a per-phase winding-resistance severity matrix; no ISO severity standard exists for MCA",
   mcaThresholdIeee43Hook:
     "IEEE 43 minimum (groundwall calculator irIeeeMinMOmega from test voltage / winding class)",
   oilThresholdDefaultAlarmHook:

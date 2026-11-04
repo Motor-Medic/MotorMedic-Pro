@@ -93,7 +93,7 @@ describe("P1 dictionary single-source / byte-identity", () => {
       "site-practice proxy — UE Systems bearing-condition ladder Class 1 boundary (+16 dB), not a stored functional limit",
     );
     expect(D.mcaThresholdNemaProxy).toBe(
-      "site-practice proxy — NEMA MG-1 Class 1 unbalance boundary (8 %), not a stored functional limit; no ISO severity standard exists for MCA",
+      "site-practice proxy — industry rule-of-thumb / vendor phase-unbalance boundary (8 %), not a stored functional limit; NEMA MG-1 governs motor voltage unbalance, not a per-phase winding-resistance severity matrix; no ISO severity standard exists for MCA",
     );
     expect(D.mcaThresholdIeee43Hook).toBe(
       "IEEE 43 minimum (groundwall calculator irIeeeMinMOmega from test voltage / winding class)",

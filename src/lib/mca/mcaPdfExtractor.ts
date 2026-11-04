@@ -10,6 +10,7 @@ import {
   sanitizeRicPoint,
   type RicDataPoint
 } from "./rotorInfluenceCalculator";
+import type { ConductorMaterial } from "./windingBalanceCalculator";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -29,6 +30,7 @@ export interface McaExtractedData {
   phaseFi: [number, number, number];
   phaseIF: [number, number, number];
   windingTempC?: number;
+  conductorMaterial?: ConductorMaterial;
   ratedHp?: number;
   /** Groundwall / IR test voltage (V DC). */
   testVoltageV?: number;
@@ -219,6 +221,20 @@ function extractRatedHp(text: string): number | undefined {
   if (!m) return undefined;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Read a conductor material token when the report states it. */
+export function extractConductorMaterial(
+  text: string
+): ConductorMaterial | undefined {
+  const m = text.match(
+    /(?:conductor|winding|stator)\s*(?:material|metal)\s*[:=]?\s*(copper|aluminum|aluminium|cu|al)\b/i
+  );
+  if (!m) return undefined;
+  const t = m[1].toLowerCase();
+  if (/alumin|al/.test(t)) return "aluminum";
+  if (/copper|cu/.test(t)) return "copper";
+  return undefined;
 }
 
 /** Convert a magnitude + optional GΩ/MΩ/kΩ unit token into MΩ. */
@@ -844,6 +860,7 @@ export async function extractMcaDataFromPdf(
   const phaseIF = (parsed.phaseIF as Triplet) || ZERO;
 
   const windingTempC = extractWindingTemp(rawText);
+  const conductorMaterial = extractConductorMaterial(rawText);
   const ratedHp = extractRatedHp(rawText);
   const groundwall = extractGroundwallMetrics(rawText);
   const ricData = extractRicData(rawText);
@@ -863,6 +880,7 @@ export async function extractMcaDataFromPdf(
     phaseFi,
     phaseIF,
     ...(windingTempC != null ? { windingTempC } : {}),
+    ...(conductorMaterial ? { conductorMaterial } : {}),
     ...(ratedHp != null ? { ratedHp } : {}),
     ...groundwall,
     ...(ricData && ricData.length > 0 ? { ricData } : {}),

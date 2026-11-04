@@ -102,7 +102,7 @@ import {
   STEAM_BASIS_TEXT,
   STEAM_PAYBACK_BASIS_TEXT
 } from "../lib/steam/advancedSteamCalculator";
-import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
+import { calculateWindingBalance, type ConductorMaterial } from "../lib/mca/windingBalanceCalculator";
 import {
   calculateGroundwallInsulation,
   type InsulationClass
@@ -199,6 +199,10 @@ import {
   PD_PEAK_DB_SOURCE,
   US_DDB_BRACKETS,
   US_DDB_SOURCE,
+  MCA_IMBALANCE_SOURCE,
+  MCA_LZ_DIVERGENCE_SOURCE,
+  MCA_UNBALANCE_FORMULA,
+  evaluateMcaSeverity,
   evaluatePdPeakDb,
   type PdPeakDbClassification,
   type PdPeakDbSeverity
@@ -2623,6 +2627,17 @@ export default function TrendAnalyzer({
     () => dbAnalyses.filter((r) => resolveAnalysisType(r) === "mca"),
     [dbAnalyses]
   );
+  /**
+   * MCA winding / groundwall are point-in-time de-energized tests, not a
+   * continuous series. The shared 7D/30D/90D/1Y window therefore selects
+   * WHICH stored test is latest / in view — it does not imply a trend line.
+   * Delegating to the shared predicate keeps the toolbar honest and in
+   * lockstep with the other technologies.
+   */
+  const windowedMcaAnalyses = useMemo(
+    () => windowTrendByTimeRange(mcaAnalyses, timeRange),
+    [mcaAnalyses, timeRange]
+  );
   const oilAnalyses = useMemo(
     () =>
       dbAnalyses.filter((r) => {
@@ -2682,7 +2697,7 @@ export default function TrendAnalyzer({
   const activeAnalyses = useMemo(() => {
     if (trendTech === "thermography") return thermoAnalyses;
     if (trendTech === "ultrasound") return ueAnalyses;
-    if (trendTech === "mca") return mcaAnalyses;
+    if (trendTech === "mca") return windowedMcaAnalyses;
     if (trendTech === "oil_analysis") return oilAnalyses;
     if (trendTech === "vibration") return vibAnalyses;
     return dbAnalyses;
@@ -2690,7 +2705,7 @@ export default function TrendAnalyzer({
     trendTech,
     thermoAnalyses,
     ueAnalyses,
-    mcaAnalyses,
+    windowedMcaAnalyses,
     oilAnalyses,
     vibAnalyses,
     dbAnalyses
@@ -2698,30 +2713,32 @@ export default function TrendAnalyzer({
 
   const latestDb = activeAnalyses[0] ?? null;
   const latestThermo = thermoAnalyses[0] ?? null;
-  const latestMca = mcaAnalyses[0] ?? null;
+  const latestMca = windowedMcaAnalyses[0] ?? null;
   const latestMcaGroundwallRow = useMemo(
-    () => findLatestMcaWithGroundwall(mcaAnalyses) ?? latestMca,
-    [mcaAnalyses, latestMca]
+    () => findLatestMcaWithGroundwall(windowedMcaAnalyses) ?? latestMca,
+    [windowedMcaAnalyses, latestMca]
   );
 
   // SSOT hydration: merge DB telemetry into master record (never wipe sibling domains).
   useEffect(() => {
     const assetChanged = mcaAssetKeyRef.current !== selectedAssetKey;
     mcaAssetKeyRef.current = selectedAssetKey;
-    const latest = mcaAnalyses[0] ?? null;
+    const latest = windowedMcaAnalyses[0] ?? null;
     const gwRow = latestMcaGroundwallRow;
-    if (!latest && assetChanged) {
+    // Point-in-time window: if no stored MCA test falls inside the selected
+    // 7D/30D/90D/1Y window, the honest in-view state is empty — never a stale
+    // out-of-window snapshot.
+    if (!latest) {
       setMcaRecord(EMPTY_MCA_SSOT);
       return;
     }
-    if (!latest) return;
     setMcaRecord((prev) =>
       deepMergeMcaSsot(
         assetChanged ? EMPTY_MCA_SSOT : prev,
         mcaSsotFromSaved(latest, gwRow)
       )
     );
-  }, [mcaAnalyses, latestMcaGroundwallRow, selectedAssetKey]);
+  }, [windowedMcaAnalyses, latestMcaGroundwallRow, selectedAssetKey]);
 
   const ricData = mcaRecord.rotor_influence.series;
   const surgeData = mcaRecord.surge.waveform;
@@ -2733,6 +2750,7 @@ export default function TrendAnalyzer({
     return {
       ...w,
       windingTempC: w.windingTempC ?? fromDb.windingTempC,
+      conductorMaterial: w.conductorMaterial ?? fromDb.conductorMaterial,
       ratedHp: w.ratedHp ?? fromDb.ratedHp,
       fromTelemetry:
         hasMcaSsotPhaseBalance(mcaRecord) &&
@@ -2744,6 +2762,21 @@ export default function TrendAnalyzer({
   const mcaWindingResult = useMemo(
     () => calculateWindingBalance(mcaWindingParams),
     [mcaWindingParams]
+  );
+  const mcaWindingBracket = useMemo(
+    () =>
+      mcaWindingResult.hasData
+        ? evaluateMcaSeverity(mcaWindingResult.maxUnbalance)
+        : null,
+    [mcaWindingResult]
+  );
+  /**
+   * Display-unit boundary for temperature only. The stored value and the
+   * normalization formula remain °C-locked; this converts the display only.
+   */
+  const mcaWindingTempDisplayUnit = resolveTemperatureDisplayUnit(
+    displayUnits.temperature,
+    "°C"
   );
   const hasMcaWindingData =
     mcaTripletHasData(mcaWindingParams.phaseR) ||
@@ -2758,17 +2791,17 @@ export default function TrendAnalyzer({
         ? [
             {
               phase: "T1-T2",
-              Resistance: mcaWindingParams.phaseR[0] || undefined,
+              Resistance: mcaWindingResult.phaseR25[0] || undefined,
               Inductance: mcaWindingParams.phaseL[0] || undefined
             },
             {
               phase: "T2-T3",
-              Resistance: mcaWindingParams.phaseR[1] || undefined,
+              Resistance: mcaWindingResult.phaseR25[1] || undefined,
               Inductance: mcaWindingParams.phaseL[1] || undefined
             },
             {
               phase: "T3-T1",
-              Resistance: mcaWindingParams.phaseR[2] || undefined,
+              Resistance: mcaWindingResult.phaseR25[2] || undefined,
               Inductance: mcaWindingParams.phaseL[2] || undefined
             }
           ]
@@ -2777,7 +2810,7 @@ export default function TrendAnalyzer({
             { phase: "T2-T3" },
             { phase: "T3-T1" }
           ],
-    [mcaWindingParams, hasMcaWindingData]
+    [mcaWindingParams, mcaWindingResult, hasMcaWindingData]
   );
 
   const mcaGwSnapshot = useMemo(
@@ -3547,6 +3580,22 @@ export default function TrendAnalyzer({
     });
   };
 
+  const updateMcaWindingMaterial = (value: string) => {
+    const material: ConductorMaterial =
+      value === "aluminum"
+        ? "aluminum"
+        : value === "copper"
+          ? "copper"
+          : "unknown";
+    mergeMcaRecord({
+      phase_balance: {
+        ...mcaRecord.phase_balance,
+        conductor_material: material
+      },
+      meta: { source: "manual" }
+    });
+  };
+
   const gwFieldToDomain: Record<
     string,
     keyof McaSsotRecord["groundwall"] | "insulation_class"
@@ -4012,8 +4061,8 @@ export default function TrendAnalyzer({
   const ueBearingWindowEmpty =
     ueBearingAnalyses.length > 0 && ueBearingChartSeries.length === 0;
   const mcaTrendSeries = useMemo(
-    () => healthTrendFromAnalyses(mcaAnalyses),
-    [mcaAnalyses]
+    () => healthTrendFromAnalyses(windowedMcaAnalyses),
+    [windowedMcaAnalyses]
   );
   const oilTrendSeries = useMemo(
     () => healthTrendFromAnalyses(oilAnalyses),
@@ -7624,6 +7673,22 @@ export default function TrendAnalyzer({
                       ))}
                     </div>
                   ))}
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 mb-2 items-center">
+                    <span className="text-xs text-slate-400 font-semibold">
+                      Conductor material
+                    </span>
+                    <select
+                      value={mcaWindingParams.conductorMaterial ?? "unknown"}
+                      onChange={(e) => updateMcaWindingMaterial(e.target.value)}
+                      className="sm:col-span-3 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-cyan-500 outline-none"
+                    >
+                      <option value="unknown">
+                        Unknown — assumed copper if normalized (labelled)
+                      </option>
+                      <option value="copper">Copper (K = 234.5)</option>
+                      <option value="aluminum">Aluminum (K = 228)</option>
+                    </select>
+                  </div>
                 </div>
               )}
 
@@ -7632,14 +7697,24 @@ export default function TrendAnalyzer({
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
                     Phase Input / Summary Grid
                   </p>
-                  <p className="text-[10px] text-slate-500">
+                  <p
+                    className="text-[10px] text-slate-500"
+                    data-testid="mca-normalization-basis"
+                  >
                     {mcaExtractLoaded
                       ? `PDF · ${formatMcaPdfLabel(mcaExtractFormat)}`
                       : mcaWindingParams.fromTelemetry
                         ? "From saved MCA telemetry"
                         : "Awaiting Data · upload PDF or use Manual Entry"}
-                    {hasMcaWindingData && mcaWindingResult.tempCorrected
-                      ? " · R @ 25°C copper correction"
+                    {hasMcaWindingData
+                      ? ` · ${mcaWindingResult.normalization.basis}`
+                      : ""}
+                    {mcaWindingParams.windingTempC != null
+                      ? ` · winding temp ${convertAbsoluteTemperature(
+                          mcaWindingParams.windingTempC,
+                          "°C",
+                          mcaWindingTempDisplayUnit
+                        ).toFixed(1)}${mcaWindingTempDisplayUnit} (stored °C, formula °C-locked)`
                       : ""}
                   </p>
                 </div>
@@ -7671,7 +7746,7 @@ export default function TrendAnalyzer({
                         {mcaFmtCell(mcaWindingResult.phaseR25[2], 3)}
                       </td>
                       <td className="py-2 pr-3 font-mono">
-                        {hasMcaWindingData
+                        {hasMcaWindingData && mcaWindingResult.metricData.R
                           ? `${mcaWindingResult.unbalanceR.toFixed(2)}%`
                           : "---"}
                       </td>
@@ -7688,7 +7763,7 @@ export default function TrendAnalyzer({
                         {mcaFmtCell(mcaWindingParams.phaseL[2], 2)}
                       </td>
                       <td className="py-2 pr-3 font-mono">
-                        {hasMcaWindingData
+                        {hasMcaWindingData && mcaWindingResult.metricData.L
                           ? `${mcaWindingResult.unbalanceL.toFixed(2)}%`
                           : "---"}
                       </td>
@@ -7705,7 +7780,7 @@ export default function TrendAnalyzer({
                         {mcaFmtCell(mcaWindingParams.phaseZ[2], 2)}
                       </td>
                       <td className="py-2 pr-3 font-mono">
-                        {hasMcaWindingData
+                        {hasMcaWindingData && mcaWindingResult.metricData.Z
                           ? `${mcaWindingResult.unbalanceZ.toFixed(2)}%`
                           : "---"}
                       </td>
@@ -7722,7 +7797,7 @@ export default function TrendAnalyzer({
                         {mcaFmtCell(mcaWindingParams.phaseFi[2], 1)}
                       </td>
                       <td className="py-2 pr-3 font-mono">
-                        {hasMcaWindingData
+                        {hasMcaWindingData && mcaWindingResult.metricData.Fi
                           ? `${mcaWindingResult.unbalanceFi.toFixed(2)}%`
                           : "---"}
                       </td>
@@ -7739,44 +7814,64 @@ export default function TrendAnalyzer({
                         {mcaFmtCell(mcaWindingParams.phaseIF[2], 1)}
                       </td>
                       <td className="py-2 pr-3 font-mono">
-                        {hasMcaWindingData
+                        {hasMcaWindingData && mcaWindingResult.metricData.IF
                           ? `${mcaWindingResult.unbalanceIF.toFixed(2)}%`
                           : "---"}
                       </td>
                     </tr>
                   </tbody>
                 </table>
+                <p className="text-[10px] text-slate-500 mt-2">
+                  {MCA_UNBALANCE_FORMULA}
+                </p>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                     Max Phase Unbalance
                   </p>
                   <p className="text-2xl font-bold text-cyan-400 font-mono">
                     {hasMcaWindingData
-                      ? `${mcaWindingResult.maxUnbalanceRL.toFixed(2)}%`
+                      ? `${mcaWindingResult.maxUnbalance.toFixed(2)}%`
                       : "---"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
                     {hasMcaWindingData
-                      ? `Max of R ${mcaWindingResult.unbalanceR.toFixed(2)}% · L ${mcaWindingResult.unbalanceL.toFixed(2)}%`
+                      ? "Max of the stored R/L/Z/Fi/I-F unbalances"
                       : "Awaiting Data"}
                   </p>
                 </div>
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                    Thermal &amp; Life Impact
+                    Phase L/Z Divergence (descriptive)
+                  </p>
+                  <p
+                    className="text-2xl font-bold text-sky-400 font-mono"
+                    data-testid="mca-lz-divergence"
+                  >
+                    {mcaWindingResult.phaseLZDivergencePct != null
+                      ? `${mcaWindingResult.phaseLZDivergencePct.toFixed(2)}%`
+                      : "---"}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Descriptive only — not a fault verdict or severity score.
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Indicative Thermal &amp; Life Proxy
                   </p>
                   <p className="text-2xl font-bold text-amber-400 font-mono">
-                    {hasMcaWindingData
+                    {hasMcaWindingData && mcaWindingResult.metricData.R
                       ? `+${mcaWindingResult.extraTempRiseC.toFixed(1)} °C`
                       : "---"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Insulation life remaining{" "}
+                    R-unbalance proxy — not NEMA MG-1 compliance. Insulation life
+                    remaining{" "}
                     <span className="text-slate-300 font-semibold">
-                      {hasMcaWindingData
+                      {hasMcaWindingData && mcaWindingResult.metricData.R
                         ? `${mcaWindingResult.remainingLifePercent.toFixed(1)}%`
                         : "N/A"}
                     </span>
@@ -7784,10 +7879,10 @@ export default function TrendAnalyzer({
                 </div>
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                    MCA Health Index
+                    Indicative Health Index
                   </p>
                   <p className="text-2xl font-bold text-emerald-400 font-mono">
-                    {hasMcaWindingData
+                    {hasMcaWindingData && mcaWindingResult.metricData.R
                       ? `${mcaWindingResult.healthScore}%`
                       : "---"}
                   </p>
@@ -7798,8 +7893,8 @@ export default function TrendAnalyzer({
                         ? `${mcaWindingResult.usableHp} HP`
                         : "N/A"}
                     </span>
-                    {hasMcaWindingData
-                      ? ` · NEMA derate ${mcaWindingResult.nemaDeratingFactor.toFixed(3)}`
+                    {hasMcaWindingData && mcaWindingResult.metricData.R
+                      ? ` · indicative derate proxy ${mcaWindingResult.nemaDeratingFactor.toFixed(3)}`
                       : ""}
                   </p>
                 </div>
@@ -7807,7 +7902,7 @@ export default function TrendAnalyzer({
 
               <div className={`${CARD} mb-6`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                  Diagnostic Fault Isolation
+                  Phase Unbalance Classification (descriptive)
                 </p>
                 <div className="flex flex-wrap items-start gap-3">
                   <span
@@ -7816,18 +7911,25 @@ export default function TrendAnalyzer({
                         ? mcaFaultBadgeClass(mcaWindingResult.severity)
                         : "bg-slate-800/80 border-slate-700 text-slate-400"
                     }`}
+                    data-testid="mca-unbalance-bracket"
                   >
-                    {hasMcaWindingData
-                      ? mcaWindingResult.fault
+                    {hasMcaWindingData && mcaWindingBracket
+                      ? mcaWindingBracket.clazz
                       : "Awaiting Data"}
                   </span>
                   <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 pt-1">
-                    {hasMcaWindingData ? mcaWindingResult.severity : "---"}
+                    {hasMcaWindingData ? mcaWindingResult.fault : "---"}
                   </span>
                 </div>
+                <p className="text-[10px] text-slate-500 mt-2">
+                  Source: {MCA_IMBALANCE_SOURCE}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {MCA_LZ_DIVERGENCE_SOURCE}
+                </p>
                 <p className="text-sm text-slate-300 mt-3 leading-relaxed">
                   <span className="text-slate-500 text-xs font-bold uppercase tracking-wider mr-2">
-                    Recommended action
+                    Suggested next check
                   </span>
                   {hasMcaWindingData
                     ? mcaWindingResult.recommendation

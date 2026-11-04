@@ -6,6 +6,7 @@
 import type { SavedAnalysisResult } from "../analysisPersistence";
 import type { InsulationClass } from "./groundwallCalculator";
 import type { McaExtractedData, RicDataPoint } from "./mcaPdfExtractor";
+import type { ConductorMaterial } from "./windingBalanceCalculator";
 import { sanitizeRicSeries } from "./rotorInfluenceCalculator";
 import { sanitizeSurgeSeries, type SurgeDataPoint } from "./surgeCalculator";
 
@@ -18,6 +19,7 @@ export type McaWindingSnapshot = {
   phaseFi: McaPhaseTriplet;
   phaseIF: McaPhaseTriplet;
   windingTempC?: number;
+  conductorMaterial?: ConductorMaterial;
   ratedHp?: number;
 };
 
@@ -43,6 +45,8 @@ export type McaOperatorSnapshot = {
   ratedVoltage?: string | null;
   windingTempC?: number | string | null;
   ambientTempC?: number | string | null;
+  /** Conductor material for resistance temperature correction. */
+  conductorMaterial?: ConductorMaterial | string | null;
   insulationClass?: string | null;
   testVoltageV?: number | string | null;
   /** Phase pairs as entered in Diagnose (uv / vw / wu). */
@@ -116,12 +120,29 @@ export function mcaTripletHasData(t: McaPhaseTriplet): boolean {
   return t.some((n) => Number.isFinite(n) && n !== 0);
 }
 
-export function parsePhaseTriplet(raw: unknown): McaPhaseTriplet | null {
+/** Normalize a stored conductor material string; unknown when absent/unclear. */
+export function normalizeConductorMaterial(
+  raw: unknown
+): ConductorMaterial | undefined {
+  if (raw == null) return undefined;
+  const s = String(raw).trim().toLowerCase();
+  if (!s || /unknown|not recorded|n\/a|null|—|-/.test(s)) return undefined;
+  if (/alumin|al\b/.test(s)) return "aluminum";
+  if (/copper|cu\b/.test(s)) return "copper";
+  return undefined;
+}
+
+export function parsePhaseTriplet(
+  raw: unknown,
+  requirePositive = false
+): McaPhaseTriplet | null {
+  const accept = (v: number | null): v is number =>
+    v != null && (!requirePositive || v > 0);
   if (Array.isArray(raw) && raw.length >= 3) {
     const a = finiteNum(raw[0]);
     const b = finiteNum(raw[1]);
     const c = finiteNum(raw[2]);
-    if (a == null || b == null || c == null) return null;
+    if (!accept(a) || !accept(b) || !accept(c)) return null;
     return [a, b, c];
   }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -136,14 +157,18 @@ export function parsePhaseTriplet(raw: unknown): McaPhaseTriplet | null {
     const c =
       finiteNum(o.t31 ?? o.T31 ?? o.wu ?? o.WU ?? o.w ?? o.W ?? o.phase3 ?? o.p3) ??
       finiteNum(o[2]);
-    if (a != null && b != null && c != null) return [a, b, c];
+    if (!accept(a) || !accept(b) || !accept(c)) return null;
+    return [a, b, c];
   }
   return null;
 }
 
-function pickPhaseTriplet(...candidates: unknown[]): McaPhaseTriplet | null {
+function pickPhaseTriplet(
+  requirePositive: boolean,
+  ...candidates: unknown[]
+): McaPhaseTriplet | null {
   for (const c of candidates) {
-    const t = parsePhaseTriplet(c);
+    const t = parsePhaseTriplet(c, requirePositive);
     if (t) return t;
   }
   return null;
@@ -283,6 +308,7 @@ export function extractMcaWindingFromSaved(
 
   const phaseR =
     pickPhaseTriplet(
+      true,
       blob.phase_r,
       blob.phaseR,
       blob.resistance,
@@ -306,6 +332,7 @@ export function extractMcaWindingFromSaved(
 
   const phaseL =
     pickPhaseTriplet(
+      true,
       blob.phase_l,
       blob.phaseL,
       blob.inductance,
@@ -329,6 +356,7 @@ export function extractMcaWindingFromSaved(
 
   const phaseZ =
     pickPhaseTriplet(
+      true,
       blob.phase_z,
       blob.phaseZ,
       blob.impedance,
@@ -351,6 +379,7 @@ export function extractMcaWindingFromSaved(
 
   const phaseFi =
     pickPhaseTriplet(
+      false,
       blob.phase_fi,
       blob.phaseFi,
       blob.phase_angle,
@@ -376,6 +405,7 @@ export function extractMcaWindingFromSaved(
 
   const phaseIF =
     pickPhaseTriplet(
+      false,
       blob.phase_if,
       blob.phaseIF,
       blob.if_ratio,
@@ -421,6 +451,22 @@ export function extractMcaWindingFromSaved(
         consensus.ratedHp
     ) ?? undefined;
 
+  const conductorMaterial = normalizeConductorMaterial(
+    blob.conductor_material ??
+      blob.conductorMaterial ??
+      blob.material ??
+      nestedWinding.conductor_material ??
+      nestedWinding.conductorMaterial ??
+      nestedWinding.material ??
+      winding.conductor_material ??
+      winding.conductorMaterial ??
+      winding.material ??
+      root.conductor_material ??
+      root.conductorMaterial ??
+      consensus.conductor_material ??
+      consensus.conductorMaterial
+  );
+
   const fromTelemetry =
     mcaTripletHasData(phaseR) ||
     mcaTripletHasData(phaseL) ||
@@ -435,6 +481,7 @@ export function extractMcaWindingFromSaved(
     phaseFi,
     phaseIF,
     windingTempC,
+    ...(conductorMaterial ? { conductorMaterial } : {}),
     ratedHp,
     fromTelemetry
   };
@@ -783,9 +830,12 @@ function tripletFromPhaseField(
   phases: McaOperatorSnapshot["phases"],
   field: string
 ): McaPhaseTriplet {
-  const uv = finiteNum(phases?.uv?.[field]) ?? 0;
-  const vw = finiteNum(phases?.vw?.[field]) ?? 0;
-  const wu = finiteNum(phases?.wu?.[field]) ?? 0;
+  const uv = finiteNum(phases?.uv?.[field]);
+  const vw = finiteNum(phases?.vw?.[field]);
+  const wu = finiteNum(phases?.wu?.[field]);
+  // A partial measurement is absent, never a zero-filled triplet: a 0 Ω
+  // resistance would otherwise read as a dead short.
+  if (uv == null || vw == null || wu == null) return [0, 0, 0];
   return [uv, vw, wu];
 }
 
@@ -802,29 +852,36 @@ export function normalizeMcaOperatorSnapshot(
 
   const s = snap as McaOperatorSnapshot & Partial<McaExtractedData>;
   const phaseR =
-    parsePhaseTriplet(s.phaseR) ||
-    (s.phases ? tripletFromPhaseField(s.phases, "resistance") : null) ||
+    parsePhaseTriplet(s.phaseR, true) ||
+    (s.phases
+      ? parsePhaseTriplet(tripletFromPhaseField(s.phases, "resistance"), true)
+      : null) ||
     MCA_WINDING_EMPTY.phaseR;
   const phaseL =
-    parsePhaseTriplet(s.phaseL) ||
-    (s.phases ? tripletFromPhaseField(s.phases, "inductance") : null) ||
+    parsePhaseTriplet(s.phaseL, true) ||
+    (s.phases
+      ? parsePhaseTriplet(tripletFromPhaseField(s.phases, "inductance"), true)
+      : null) ||
     MCA_WINDING_EMPTY.phaseL;
   const phaseZ =
-    parsePhaseTriplet(s.phaseZ) ||
-    (s.phases ? tripletFromPhaseField(s.phases, "impedance") : null) ||
+    parsePhaseTriplet(s.phaseZ, true) ||
+    (s.phases
+      ? parsePhaseTriplet(tripletFromPhaseField(s.phases, "impedance"), true)
+      : null) ||
     MCA_WINDING_EMPTY.phaseZ;
   const phaseFi =
     parsePhaseTriplet(s.phaseFi) ||
     (s.phases
-      ? tripletFromPhaseField(s.phases, "phaseAngle")
+      ? parsePhaseTriplet(tripletFromPhaseField(s.phases, "phaseAngle"))
       : null) ||
     MCA_WINDING_EMPTY.phaseFi;
   const phaseIF =
     parsePhaseTriplet(s.phaseIF) ||
-    (s.phases ? tripletFromPhaseField(s.phases, "ifRatio") : null) ||
+    (s.phases ? parsePhaseTriplet(tripletFromPhaseField(s.phases, "ifRatio")) : null) ||
     MCA_WINDING_EMPTY.phaseIF;
 
   const windingTempC = finiteNum(s.windingTempC) ?? undefined;
+  const conductorMaterial = normalizeConductorMaterial(s.conductorMaterial);
   const ratedHp = finiteNum(s.ratedHp) ?? undefined;
 
   const ir1m =
@@ -848,6 +905,7 @@ export function normalizeMcaOperatorSnapshot(
       phaseFi,
       phaseIF,
       windingTempC,
+      ...(conductorMaterial ? { conductorMaterial } : {}),
       ratedHp
     },
     groundwall: {
@@ -941,6 +999,8 @@ export function mcaPayloadForSave(
     windingTempC: winding.windingTempC ?? null,
     rated_hp: winding.ratedHp ?? null,
     ratedHp: winding.ratedHp ?? null,
+    conductor_material: winding.conductorMaterial ?? null,
+    conductorMaterial: winding.conductorMaterial ?? null,
     phases,
     winding: {
       phaseR: winding.phaseR,
@@ -949,6 +1009,8 @@ export function mcaPayloadForSave(
       phaseFi: winding.phaseFi,
       phaseIF: winding.phaseIF,
       windingTempC: winding.windingTempC ?? null,
+      conductorMaterial: winding.conductorMaterial ?? null,
+      conductor_material: winding.conductorMaterial ?? null,
       ratedHp: winding.ratedHp ?? null,
       phases
     },
@@ -1059,6 +1121,8 @@ export function mcaPayloadForSave(
       impedance: winding.phaseZ,
       windingTempC: winding.windingTempC ?? null,
       winding_temp_c: winding.windingTempC ?? null,
+      conductorMaterial: winding.conductorMaterial ?? null,
+      conductor_material: winding.conductorMaterial ?? null,
       ratedHp: winding.ratedHp ?? null,
       rated_hp: winding.ratedHp ?? null,
       phases
