@@ -4,7 +4,10 @@
  */
 
 import type { SavedAnalysisResult } from "../analysisPersistence";
-import type { InsulationClass } from "./groundwallCalculator";
+import {
+  parseRatedVoltageVolts,
+  type InsulationClass
+} from "./groundwallCalculator";
 import type { McaExtractedData, RicDataPoint } from "./mcaPdfExtractor";
 import {
   extractMcaGroundwallFromSaved,
@@ -46,6 +49,8 @@ export type McaGroundwallDomain = {
   ir_1m?: number;
   ir_10m?: number;
   test_voltage?: number;
+  /** Stored nameplate line-to-line voltage (V) for IEEE 43 threshold/guard. */
+  rated_voltage_v?: number;
   insulation_class?: InsulationClass;
   pi?: number;
   dar?: number;
@@ -190,6 +195,9 @@ function groundwallSnapshotToDomain(
   if (ir1 != null) domain.ir_1m = ir1;
   if (ir10 != null) domain.ir_10m = ir10;
   if (tv != null) domain.test_voltage = tv;
+  if (gw.ratedVoltageV != null && gw.ratedVoltageV > 0) {
+    domain.rated_voltage_v = gw.ratedVoltageV;
+  }
   if (gw.insulationClass) domain.insulation_class = gw.insulationClass;
   if (gw.reportPi != null) domain.pi = gw.reportPi;
   if (gw.reportDar != null) domain.dar = gw.reportDar;
@@ -323,6 +331,7 @@ export function mcaGroundwallFromSsot(
     ir1mMOmega: gw.ir_1m ?? 0,
     ir10mMOmega: gw.ir_10m ?? 0,
     testVoltageV: gw.test_voltage ?? 0,
+    ratedVoltageV: gw.rated_voltage_v,
     windingTempC: gw.winding_temp_c,
     insulationClass: gw.insulation_class ?? "F",
     reportPi: gw.pi,
@@ -508,6 +517,14 @@ export function mcaSsotFromVisionJson(
     parsed.testVoltageV
   );
   if (tv != null) groundwall.test_voltage = tv;
+  const rv = parseRatedVoltageVolts(
+    gwRaw.rated_voltage_v ??
+      gwRaw.ratedVoltageV ??
+      gwRaw.rated_voltage ??
+      gwRaw.ratedVoltage ??
+      parsed.ratedVoltageV
+  );
+  if (rv != null && rv > 0) groundwall.rated_voltage_v = rv;
   const ic = parseInsulationClass(
     gwRaw.insulation_class ?? gwRaw.insulationClass ?? parsed.insulationClass
   );

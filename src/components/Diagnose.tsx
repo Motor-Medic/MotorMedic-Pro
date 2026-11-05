@@ -126,7 +126,10 @@ import type { ThermographyTelemetrySnapshot } from "./ThermographyInputAccordion
 import type { UltrasoundInputSnapshot } from "./UltrasoundInputAccordions";
 import SubviewSkeleton from "./suspense/SubviewSkeleton";
 import { calculateWindingBalance } from "../lib/mca/windingBalanceCalculator";
-import { calculateGroundwallInsulation } from "../lib/mca/groundwallCalculator";
+import {
+  calculateGroundwallInsulation,
+  parseRatedVoltageVolts
+} from "../lib/mca/groundwallCalculator";
 import {
   mcaPayloadForSave,
   mcaTripletHasData,
@@ -3388,7 +3391,9 @@ useEffect(() => {
           ir10mMOmega: groundwall.ir10mMOmega,
           testVoltageV: groundwall.testVoltageV || 0,
           windingTempC: groundwall.windingTempC ?? winding.windingTempC,
-          insulationClass: groundwall.insulationClass
+          insulationClass: groundwall.insulationClass,
+          ratedVoltageV:
+            parseRatedVoltageVolts(mcaSnapshot?.ratedVoltage) ?? undefined
         });
 
         const primaryFault = hasWinding
@@ -3404,9 +3409,11 @@ useEffect(() => {
         const healthScore = hasWinding
           ? windingResult.healthScore
           : hasGw
-            ? gwResult.irIeeePass
+            ? gwResult.irIeeePass === true
               ? 85
-              : 40
+              : gwResult.irIeeePass === false
+                ? 40
+                : 75
             : 75;
         // AR-20d — 85/40/75 are default-table values; only the winding-balance
         // branch computes a measured score. Provenance tag added at origin;

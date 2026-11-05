@@ -4,7 +4,10 @@
  */
 
 import type { SavedAnalysisResult } from "../analysisPersistence";
-import type { InsulationClass } from "./groundwallCalculator";
+import {
+  parseRatedVoltageVolts,
+  type InsulationClass
+} from "./groundwallCalculator";
 import type { McaExtractedData, RicDataPoint } from "./mcaPdfExtractor";
 import type { ConductorMaterial } from "./windingBalanceCalculator";
 import { sanitizeRicSeries } from "./rotorInfluenceCalculator";
@@ -29,6 +32,8 @@ export type McaGroundwallSnapshot = {
   ir1mMOmega?: number;
   ir10mMOmega?: number;
   testVoltageV?: number;
+  /** Stored nameplate line-to-line voltage (V) for IEEE 43 threshold/guard. */
+  ratedVoltageV?: number;
   windingTempC?: number;
   insulationClass?: InsulationClass;
   /** Pre-calculated Polarization Index from report / saved telemetry. */
@@ -634,6 +639,31 @@ export function extractMcaGroundwallFromSaved(
     consensusGw.testVoltageV,
     consensusGw.test_voltage
   );
+  const parseRated = (...vals: unknown[]): number | undefined => {
+    for (const v of vals) {
+      const parsed = parseRatedVoltageVolts(v);
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    return undefined;
+  };
+  const ratedVoltageV = parseRated(
+    nestedGw.ratedVoltageV,
+    nestedGw.rated_voltage_v,
+    nestedGw.ratedVoltage,
+    nestedGw.rated_voltage,
+    nestedIns.ratedVoltageV,
+    nestedIns.rated_voltage_v,
+    blob.ratedVoltageV,
+    blob.rated_voltage_v,
+    blob.ratedVoltage,
+    groundwall.ratedVoltageV,
+    groundwall.rated_voltage_v,
+    root.ratedVoltageV,
+    root.rated_voltage_v,
+    root.ratedVoltage,
+    consensusGw.ratedVoltageV,
+    consensusGw.rated_voltage_v
+  );
   const windingTempC = pickAny(
     nestedGw.windingTempC,
     nestedGw.winding_temp_c,
@@ -719,6 +749,7 @@ export function extractMcaGroundwallFromSaved(
     ir1mMOmega,
     ir10mMOmega,
     testVoltageV,
+    ratedVoltageV,
     windingTempC,
     insulationClass,
     reportPi,
@@ -793,6 +824,7 @@ export function mergeGroundwallPreferPositive(
   const ir1mMOmega = pick(preferred?.ir1mMOmega, fallback.ir1mMOmega);
   const ir10mMOmega = pick(preferred?.ir10mMOmega, fallback.ir10mMOmega);
   const testVoltageV = pick(preferred?.testVoltageV, fallback.testVoltageV);
+  const ratedVoltageV = pick(preferred?.ratedVoltageV, fallback.ratedVoltageV);
   const windingTempC = pickOpt(
     preferred?.windingTempC,
     fallback.windingTempC
@@ -818,6 +850,7 @@ export function mergeGroundwallPreferPositive(
     ir1mMOmega,
     ir10mMOmega,
     testVoltageV,
+    ratedVoltageV,
     windingTempC,
     insulationClass,
     reportPi,
@@ -896,6 +929,7 @@ export function normalizeMcaOperatorSnapshot(
     finiteNum(s.ir10mMOmega) ?? finiteNum(s.reading10Min) ?? 0;
   const ir15s = finiteNum(s.ir15sMOmega) ?? 0;
   const testVoltageV = finiteNum(s.testVoltageV) ?? 0;
+  const ratedVoltageV = parseRatedVoltageVolts(s.ratedVoltage) ?? undefined;
 
   return {
     winding: {
@@ -914,6 +948,7 @@ export function normalizeMcaOperatorSnapshot(
       ir1mMOmega: ir1m,
       ir10mMOmega: ir10m,
       testVoltageV,
+      ratedVoltageV,
       windingTempC,
       insulationClass: parseInsulationClass(s.insulationClass) ?? "F",
       reportPi: finiteNum(s.reportPi) ?? undefined,
@@ -1040,6 +1075,8 @@ export function mcaPayloadForSave(
       testVoltageV: groundwall.testVoltageV ?? null,
       test_voltage_v: groundwall.testVoltageV ?? null,
       test_voltage: groundwall.testVoltageV ?? null,
+      ratedVoltageV: groundwall.ratedVoltageV ?? null,
+      rated_voltage_v: groundwall.ratedVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
       insulation_class: groundwall.insulationClass ?? null,
@@ -1060,6 +1097,8 @@ export function mcaPayloadForSave(
       ir_10m: groundwall.ir10mMOmega ?? null,
       testVoltageV: groundwall.testVoltageV ?? null,
       test_voltage: groundwall.testVoltageV ?? null,
+      ratedVoltageV: groundwall.ratedVoltageV ?? null,
+      rated_voltage_v: groundwall.ratedVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
       insulation_class: groundwall.insulationClass ?? null,
@@ -1139,6 +1178,8 @@ export function mcaPayloadForSave(
       testVoltageV: groundwall.testVoltageV ?? null,
       test_voltage_v: groundwall.testVoltageV ?? null,
       test_voltage: groundwall.testVoltageV ?? null,
+      ratedVoltageV: groundwall.ratedVoltageV ?? null,
+      rated_voltage_v: groundwall.ratedVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
       insulation_class: groundwall.insulationClass ?? null,
@@ -1159,6 +1200,8 @@ export function mcaPayloadForSave(
       ir_10m: groundwall.ir10mMOmega ?? null,
       testVoltageV: groundwall.testVoltageV ?? null,
       test_voltage: groundwall.testVoltageV ?? null,
+      ratedVoltageV: groundwall.ratedVoltageV ?? null,
+      rated_voltage_v: groundwall.ratedVoltageV ?? null,
       windingTempC: groundwall.windingTempC ?? winding.windingTempC ?? null,
       insulationClass: groundwall.insulationClass ?? null,
       insulation_class: groundwall.insulationClass ?? null,

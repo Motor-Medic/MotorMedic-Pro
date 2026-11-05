@@ -96,7 +96,7 @@ describe("P1 dictionary single-source / byte-identity", () => {
       "site-practice proxy — industry rule-of-thumb / vendor phase-unbalance boundary (8 %), not a stored functional limit; NEMA MG-1 governs motor voltage unbalance, not a per-phase winding-resistance severity matrix; no ISO severity standard exists for MCA",
     );
     expect(D.mcaThresholdIeee43Hook).toBe(
-      "IEEE 43 minimum (groundwall calculator irIeeeMinMOmega from test voltage / winding class)",
+      "IEEE 43 voltage-rated minimum (kV + 1 MΩ from stored nameplate voltage; 100 MΩ floor at ≥ 10 kV) — not a flat 100 MΩ constant",
     );
     expect(D.oilThresholdDefaultAlarmHook).toBe(
       "DEFAULT_ALARM_LIMITS (lab/OEM practice defaults in oilAnalysis.ts)",

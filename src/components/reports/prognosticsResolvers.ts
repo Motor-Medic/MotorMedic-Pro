@@ -385,8 +385,13 @@ export function mcaThreshold(
         testVoltageV: gw.testVoltageV,
         windingTempC: gw.windingTempC,
         insulationClass: gw.insulationClass,
+        ratedVoltageV: gw.ratedVoltageV,
       });
-      if (result.hasData && result.irIeeeMinMOmega > 0) {
+      if (
+        result.hasData &&
+        result.irIeeeMinMOmega != null &&
+        result.irIeeeMinMOmega > 0
+      ) {
         return {
           threshold: {
             value: result.irIeeeMinMOmega,

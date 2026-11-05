@@ -105,6 +105,8 @@ import {
 import { calculateWindingBalance, type ConductorMaterial } from "../lib/mca/windingBalanceCalculator";
 import {
   calculateGroundwallInsulation,
+  evaluateGroundwallTestVoltage,
+  parseRatedVoltageVolts,
   type InsulationClass
 } from "../lib/mca/groundwallCalculator";
 import {
@@ -2818,6 +2820,35 @@ export default function TrendAnalyzer({
     [mcaRecord.groundwall]
   );
 
+  /**
+   * Nameplate voltage is stored on the component kinematics (and, for newer
+   * saves, in MCA groundwall telemetry). Never inferred from test voltage.
+   */
+  const mcaRatedVoltageV = useMemo(() => {
+    // Use the selected component; when the asset has exactly one component
+    // its stored kinematics are unambiguous. Never pick among several.
+    const component =
+      selectedComp ??
+      (selectedAsset?.components.length === 1
+        ? selectedAsset.components[0]
+        : null);
+    const kinematics = (component?.kinematics ?? null) as Record<
+      string,
+      unknown
+    > | null;
+    return parseRatedVoltageVolts(
+      mcaRecord.groundwall.rated_voltage_v ??
+        mcaGwSnapshot.ratedVoltageV ??
+        kinematics?.voltage ??
+        null
+    );
+  }, [
+    selectedComp,
+    selectedAsset,
+    mcaRecord.groundwall.rated_voltage_v,
+    mcaGwSnapshot.ratedVoltageV
+  ]);
+
   const mcaGwResult = useMemo(() => {
     const computed = calculateGroundwallInsulation({
       ir15sMOmega: mcaGwSnapshot.ir15sMOmega,
@@ -2826,18 +2857,21 @@ export default function TrendAnalyzer({
       ir10mMOmega: mcaGwSnapshot.ir10mMOmega,
       testVoltageV: mcaGwSnapshot.testVoltageV || 0,
       windingTempC: mcaGwSnapshot.windingTempC,
-      insulationClass: mcaGwSnapshot.insulationClass as InsulationClass
+      insulationClass: mcaGwSnapshot.insulationClass as InsulationClass,
+      ratedVoltageV: mcaRatedVoltageV ?? undefined
     });
-    const pi =
-      computed.pi ??
-      (mcaGwSnapshot.reportPi != null && mcaGwSnapshot.reportPi > 0
+    // A report PI/DAR fallback is only trustworthy when the raw sequence
+    // passes the data-quality gate — never re-inject an artifact ratio.
+    const reportPi =
+      mcaGwSnapshot.reportPi != null && mcaGwSnapshot.reportPi > 0
         ? mcaGwSnapshot.reportPi
-        : null);
-    const dar =
-      computed.dar ??
-      (mcaGwSnapshot.reportDar != null && mcaGwSnapshot.reportDar > 0
+        : null;
+    const reportDar =
+      mcaGwSnapshot.reportDar != null && mcaGwSnapshot.reportDar > 0
         ? mcaGwSnapshot.reportDar
-        : null);
+        : null;
+    const pi = computed.dataQuality.valid ? computed.pi ?? reportPi : null;
+    const dar = computed.dataQuality.valid ? computed.dar ?? reportDar : null;
     return {
       ...computed,
       pi,
@@ -2863,7 +2897,16 @@ export default function TrendAnalyzer({
         hasMcaSsotGroundwall(mcaRecord) ||
         mcaRecord.meta.source === "manual"
     };
-  }, [mcaGwSnapshot, mcaRecord]);
+  }, [mcaGwSnapshot, mcaRecord, mcaRatedVoltageV]);
+
+  const mcaGwVoltageGuard = useMemo(
+    () =>
+      evaluateGroundwallTestVoltage({
+        testVoltageV: mcaGwSnapshot.testVoltageV,
+        ratedVoltageV: mcaRatedVoltageV
+      }),
+    [mcaGwSnapshot.testVoltageV, mcaRatedVoltageV]
+  );
 
   const hasMcaGwData = hasMcaSsotGroundwall(mcaRecord) || mcaGwResult.hasData;
 
@@ -3341,16 +3384,17 @@ export default function TrendAnalyzer({
             ir10mMOmega: extracted.ir10mMOmega,
             testVoltageV: extracted.testVoltageV || 0,
             windingTempC: extracted.windingTempC,
-            insulationClass: extracted.insulationClass
+            insulationClass: extracted.insulationClass,
+            ratedVoltageV: mcaRatedVoltageV ?? undefined
           });
           const primaryFault = hasWinding
             ? windingResult.fault
             : gwResult.fault;
           const healthScore = hasWinding
             ? windingResult.healthScore
-            : gwResult.irIeeePass
+            : gwResult.irIeeePass === true
               ? 85
-              : gwResult.hasData
+              : gwResult.irIeeePass === false
                 ? 45
                 : 70;
           const payload = mcaPayloadForSave(
@@ -8026,10 +8070,12 @@ export default function TrendAnalyzer({
                       {mcaGwSnapshot.insulationClass
                         ? ` · Class ${mcaGwSnapshot.insulationClass}`
                         : ""}
-                      {mcaGwSnapshot.reportPi != null
+                      {mcaGwResult.dataQuality.valid &&
+                      mcaGwSnapshot.reportPi != null
                         ? ` · PI ${mcaGwSnapshot.reportPi}`
                         : ""}
-                      {mcaGwSnapshot.reportDar != null
+                      {mcaGwResult.dataQuality.valid &&
+                      mcaGwSnapshot.reportDar != null
                         ? ` · DAR ${mcaGwSnapshot.reportDar}`
                         : ""}
                     </p>
@@ -8123,6 +8169,37 @@ export default function TrendAnalyzer({
                 </div>
               )}
 
+              {hasMcaGwData && !mcaGwResult.dataQuality.valid && (
+                <div
+                  data-testid="mca-gw-data-quality-warning"
+                  className="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3"
+                >
+                  <p className="text-sm font-semibold text-amber-200">
+                    IR sequence non-monotonic — data-quality warning
+                  </p>
+                  <p className="text-xs text-amber-100/80 mt-1">
+                    Readings inconsistent with dielectric absorption. Verify
+                    30s / 1m / 10m entry order before trusting PI / DAR / fault.
+                  </p>
+                  <p className="text-xs text-amber-100/70 mt-1 font-mono">
+                    Raw IR: 15s {mcaFmtCell(mcaGwSnapshot.ir15sMOmega, 1)} · 30s{" "}
+                    {mcaFmtCell(mcaGwSnapshot.ir30sMOmega, 1)} · 1m{" "}
+                    {mcaFmtCell(mcaGwSnapshot.ir1mMOmega, 1)} · 10m{" "}
+                    {mcaFmtCell(mcaGwSnapshot.ir10mMOmega, 1)} MΩ
+                  </p>
+                  <ul className="mt-1 text-[11px] text-amber-100/70 list-disc list-inside">
+                    {mcaGwResult.dataQuality.reasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-amber-200/70 mt-1">
+                    PI, DAR, leakage, and the IEEE 43 energize verdict are
+                    suppressed. The motor is not condemned from a physically
+                    invalid test.
+                  </p>
+                </div>
+              )}
+
               <div className={`${CARD} mb-6`}>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
@@ -8188,21 +8265,61 @@ export default function TrendAnalyzer({
                 </div>
                 <p className="text-[10px] text-slate-500 mt-3">
                   {hasMcaGwData
-                    ? `IEEE 43-2013 · kT = ${mcaGwResult.kT.toFixed(3)} · IR corrected to 40°C baseline`
+                    ? mcaGwResult.tempCorrected
+                      ? `IEEE 43-2013 · kT = ${mcaGwResult.kT.toFixed(3)} · IR corrected to 40°C baseline`
+                      : "IEEE 43-2013 · IR shown uncorrected (no winding temp recorded, kt=1)"
                     : "IEEE 43-2013 · Awaiting IR data"}
-                  {mcaGwSnapshot.reportPi != null
+                  {mcaGwResult.dataQuality.valid &&
+                  mcaGwSnapshot.reportPi != null
                     ? ` · Report PI ${mcaGwSnapshot.reportPi}`
                     : ""}
-                  {mcaGwSnapshot.reportDar != null
+                  {mcaGwResult.dataQuality.valid &&
+                  mcaGwSnapshot.reportDar != null
                     ? ` · Report DAR ${mcaGwSnapshot.reportDar}`
                     : ""}
                 </p>
               </div>
 
+              {mcaGwVoltageGuard.applicable && (
+                <div
+                  data-testid="mca-gw-voltage-guard"
+                  className={`mb-6 rounded-xl border px-4 py-3 ${
+                    mcaGwVoltageGuard.overVoltage
+                      ? "border-red-500/40 bg-red-500/10"
+                      : "border-slate-700 bg-slate-900/60"
+                  }`}
+                >
+                  <p
+                    className={`text-sm font-semibold ${
+                      mcaGwVoltageGuard.overVoltage
+                        ? "text-red-200"
+                        : "text-slate-200"
+                    }`}
+                  >
+                    IEEE 43 test-voltage ceiling{" "}
+                    {mcaGwVoltageGuard.overVoltage ? "exceeded" : "check"}
+                  </p>
+                  <p
+                    className={`text-xs mt-1 ${
+                      mcaGwVoltageGuard.overVoltage
+                        ? "text-red-100/80"
+                        : "text-slate-400"
+                    }`}
+                  >
+                    {mcaGwVoltageGuard.message}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    {mcaGwVoltageGuard.provenance}
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                    IR @ 40°C Baseline
+                    {mcaGwResult.tempCorrected
+                      ? "IR @ 40°C Baseline"
+                      : "IR (raw, uncorrected)"}
                   </p>
                   <p className="text-2xl font-bold text-amber-400 font-mono">
                     {hasMcaGwData
@@ -8210,18 +8327,47 @@ export default function TrendAnalyzer({
                       : "---"}
                   </p>
                   {hasMcaGwData ? (
-                    <span
-                      className={`mt-2 inline-flex px-2 py-0.5 rounded border text-[10px] font-bold tracking-wide ${
-                        mcaGwResult.irIeeePass
-                          ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-                          : "bg-red-500/15 border-red-500/40 text-red-300"
-                      }`}
-                    >
-                      IEEE 43 {mcaGwResult.irIeeePass ? "PASS" : "FAIL"} (≥{" "}
-                      {mcaGwResult.irIeeeMinMOmega} MΩ)
-                    </span>
+                    mcaGwResult.irIeeePass != null &&
+                    mcaGwResult.irIeeeMinMOmega != null ? (
+                      <span
+                        data-testid="mca-gw-threshold-badge"
+                        className={`mt-2 inline-flex px-2 py-0.5 rounded border text-[10px] font-bold tracking-wide ${
+                          mcaGwResult.irIeeePass
+                            ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                            : "bg-red-500/15 border-red-500/40 text-red-300"
+                        }`}
+                      >
+                        IEEE 43 {mcaGwResult.irIeeePass ? "PASS" : "FAIL"} (≥{" "}
+                        {mcaGwResult.irIeeeMinMOmega} MΩ)
+                      </span>
+                    ) : (
+                      <span
+                        data-testid="mca-gw-threshold-badge"
+                        className="mt-2 inline-flex px-2 py-0.5 rounded border text-[10px] font-bold tracking-wide bg-slate-800/80 border-slate-700 text-slate-400"
+                      >
+                        {mcaGwResult.dataQuality.valid
+                          ? "No IEEE 43 verdict — nameplate voltage not stored"
+                          : "IEEE 43 verdict withheld — IR data quality"}
+                      </span>
+                    )
                   ) : (
                     <p className="text-xs text-slate-500 mt-2">Awaiting Data</p>
+                  )}
+                  {hasMcaGwData && !mcaGwResult.tempCorrected && (
+                    <p
+                      data-testid="mca-gw-temp-basis"
+                      className="text-[10px] text-slate-500 mt-2"
+                    >
+                      IR shown uncorrected (no winding temp recorded, kt=1)
+                    </p>
+                  )}
+                  {hasMcaGwData && (
+                    <p
+                      data-testid="mca-gw-threshold-provenance"
+                      className="text-[10px] text-slate-500 mt-1"
+                    >
+                      {mcaGwResult.irIeeeMinProvenance}
+                    </p>
                   )}
                 </div>
                 <div className={CARD}>
@@ -8248,11 +8394,13 @@ export default function TrendAnalyzer({
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
                     {hasMcaGwData
-                      ? `${mcaGwResult.piStatus}${
-                          mcaGwResult.pi != null
-                            ? ` · min ${mcaGwResult.piIeeeMin}`
-                            : " · needs IR 10m"
-                        }`
+                      ? !mcaGwResult.dataQuality.valid
+                        ? "Suppressed — IR data quality"
+                        : `${mcaGwResult.piStatus}${
+                            mcaGwResult.pi != null
+                              ? ` · min ${mcaGwResult.piIeeeMin}`
+                              : " · needs IR 10m"
+                          }`
                       : "Awaiting Data"}
                   </p>
                 </div>
@@ -8266,25 +8414,87 @@ export default function TrendAnalyzer({
                       : "---"}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    {hasMcaGwData ? mcaGwResult.darStatus : "Awaiting Data"}
+                    {hasMcaGwData
+                      ? !mcaGwResult.dataQuality.valid
+                        ? "Suppressed — IR data quality"
+                        : mcaGwResult.darStatus
+                      : "Awaiting Data"}
                   </p>
                 </div>
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
                     Leakage Current
                   </p>
-                  <p className="text-2xl font-bold text-amber-400 font-mono">
-                    {hasMcaGwData && mcaGwSnapshot.testVoltageV > 0
+                  <p
+                    data-testid="mca-gw-leakage-value"
+                    className="text-2xl font-bold text-amber-400 font-mono"
+                  >
+                    {hasMcaGwData &&
+                    mcaGwResult.dataQuality.valid &&
+                    mcaGwSnapshot.testVoltageV > 0
                       ? `${mcaGwResult.leakageCurrentUA.toFixed(2)} μA`
                       : "---"}
                   </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {hasMcaGwData && mcaGwSnapshot.testVoltageV > 0
-                      ? `@ ${mcaGwSnapshot.testVoltageV} V DC · IR@40°C`
-                      : "Awaiting Data"}
+                  <p
+                    data-testid="mca-gw-leakage-caveat"
+                    className="text-xs text-slate-500 mt-1"
+                  >
+                    {hasMcaGwData
+                      ? !mcaGwResult.dataQuality.valid
+                        ? "Suppressed by data-quality gate — derived from the same suspect 1m IR (V/R)"
+                        : mcaGwSnapshot.testVoltageV > 0
+                          ? `Derived from 1m IR (V/R) @ ${mcaGwSnapshot.testVoltageV} V DC — not an independent leakage measurement`
+                          : "Derived from 1m IR (V/R) — requires a test voltage"
+                      : "Awaiting Data · derived from 1m IR (V/R)"}
                   </p>
                 </div>
               </div>
+
+              <details
+                data-testid="mca-gw-kt-drawer"
+                className={`${CARD} mb-6`}
+              >
+                <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                  kt correction audit — IEEE 43 temperature correction
+                </summary>
+                <div className="mt-3 space-y-1 text-xs text-slate-300">
+                  <p>
+                    Formula: <code className="text-amber-300">R40 = kt × R_T</code>{" "}
+                    with{" "}
+                    <code className="text-amber-300">
+                      kt = 0.5^((40 − T)/10)
+                    </code>
+                    .
+                  </p>
+                  <p>
+                    kt used:{" "}
+                    <span className="font-mono text-amber-300">
+                      {mcaGwResult.kT.toFixed(3)}
+                    </span>
+                    {mcaGwResult.tempCorrected && mcaGwResult.windingTempC != null
+                      ? ` · winding temp ${
+                          Math.round(
+                            convertAbsoluteTemperature(
+                              mcaGwResult.windingTempC,
+                              "°C",
+                              mcaWindingTempDisplayUnit
+                            ) * 10
+                          ) / 10
+                        } ${mcaWindingTempDisplayUnit}`
+                      : " · no winding temp recorded — passthrough (uncorrected)"}
+                  </p>
+                  <p>
+                    Temperature lock: the correction formula is °C-locked (no
+                    display-unit conversion in the math); only the temperature
+                    display follows the tenant U preference.
+                  </p>
+                  <p>
+                    {mcaGwResult.tempCorrected
+                      ? "R40 is the 40°C baseline reported above."
+                      : "Missing-temperature rule: null temp is NOT coerced to 0°C (which would apply a bogus kt); IR is shown uncorrected with kt = 1."}
+                  </p>
+                </div>
+              </details>
 
               <div className={`${CARD} mb-6`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
@@ -9015,10 +9225,10 @@ export default function TrendAnalyzer({
               </div>
 
               {hasSurgeData && (
-                <div className={`${CARD} mb-6`}>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
-                    Diagnostic Fault Isolation
-                  </p>
+              <div className={`${CARD} mb-6`}>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                  Diagnostic Fault Isolation
+                </p>
                   <div className="flex flex-wrap items-start gap-3">
                     <span
                       className={`inline-flex items-center px-2.5 py-1 rounded-md border text-xs font-bold tracking-wide ${mcaFaultBadgeClass(surgeResult!.severity)}`}
