@@ -1647,6 +1647,20 @@ export const MCA_UNBALANCE_FORMULA =
 export const MCA_LZ_DIVERGENCE_SOURCE =
   "Phase L/Z divergence % = |L unbalance − Z unbalance| (percentage points) — descriptive only; no stored healthy reference, not a fault verdict";
 
+// RIC thresholds have no in-repo severity rubric and no IEEE/NEMA/vendor RIC
+// severity standard is stored. The existing peak-to-peak / variance brackets
+// are in-repo heuristics only and must be labelled as such at the point of use.
+export const MCA_RIC_VARIATION_SOURCE =
+  "in-repo heuristic RIC peak-to-peak variation brackets (4 % / 7 %) — no IEEE/NEMA/vendor rotor-influence severity standard is stored";
+
+/** Raw Lmax/Lmin ratio label — present-if-stored, no severity verdict. */
+export const MCA_RIC_RATIO_SOURCE =
+  "Lmax/Lmin from stored RIC inductance values — raw ratio only; no in-repo severity rubric";
+
+/** Spatial 2nd-harmonic label — only computable from a full 360° waveform. */
+export const MCA_RIC_SPATIAL_FFT_SOURCE =
+  "Spatial FFT (2nd harmonic, 2 cycles/revolution) — requires stored full-rotation data (≥12 angle samples spanning ≥330° with ≤45° gaps); never interpolated or synthesized";
+
 // Single source for the IEEE Std 43 citation - MCA tabs import it here so
 // the guidance wording is byte-identical everywhere it renders.
 export const MCA_IR_CITATION =

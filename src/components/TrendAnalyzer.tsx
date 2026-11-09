@@ -203,6 +203,9 @@ import {
   US_DDB_SOURCE,
   MCA_IMBALANCE_SOURCE,
   MCA_LZ_DIVERGENCE_SOURCE,
+  MCA_RIC_RATIO_SOURCE,
+  MCA_RIC_SPATIAL_FFT_SOURCE,
+  MCA_RIC_VARIATION_SOURCE,
   MCA_UNBALANCE_FORMULA,
   evaluateMcaSeverity,
   evaluatePdPeakDb,
@@ -2302,7 +2305,6 @@ export default function TrendAnalyzer({
   const [mcaPdfDragOver, setMcaPdfDragOver] = useState(false);
   const mcaPdfInputRef = useRef<HTMLInputElement>(null);
   const mcaAssetKeyRef = useRef(selectedAssetKey);
-  const [ricBaselineData, setRicBaselineData] = useState<RicDataPoint[]>([]);
   const [ricCompareBaseline, setRicCompareBaseline] = useState(false);
   const [ricApplySmoothing, setRicApplySmoothing] = useState(true);
   const [ricShowGrid, setRicShowGrid] = useState(false);
@@ -2640,6 +2642,42 @@ export default function TrendAnalyzer({
     () => windowTrendByTimeRange(mcaAnalyses, timeRange),
     [mcaAnalyses, timeRange]
   );
+  /**
+   * Real stored RIC traces for this asset, newest first (the API orders by
+   * timestamp DESC). The overlay baseline is the OLDEST stored trace — never a
+   * local snapshot, a default, or a synthesized waveform.
+   */
+  const ricStoredTraces = useMemo(() => {
+    const traces: { analysisId: string; timestamp: string; series: RicDataPoint[] }[] = [];
+    const seen = new Set<string>();
+    for (const row of mcaAnalyses) {
+      const series = extractMcaRicFromSaved(row);
+      if (series.length === 0) continue;
+      const analysisId = String(
+        row.id ?? `${row.timestamp ?? ""}|${traces.length}`
+      );
+      if (seen.has(analysisId)) continue;
+      seen.add(analysisId);
+      traces.push({
+        analysisId,
+        timestamp: String(row.timestamp ?? ""),
+        series
+      });
+    }
+    return traces;
+  }, [mcaAnalyses]);
+  const ricHistoricalBaselineSeries = useMemo(
+    () =>
+      ricStoredTraces.length > 1
+        ? ricStoredTraces[ricStoredTraces.length - 1].series
+        : [],
+    [ricStoredTraces]
+  );
+  const ricHistoricalBaseline =
+    ricStoredTraces.length > 1
+      ? ricStoredTraces[ricStoredTraces.length - 1]
+      : null;
+  const hasRicHistoricalBaseline = ricHistoricalBaselineSeries.length > 0;
   const oilAnalyses = useMemo(
     () =>
       dbAnalyses.filter((r) => {
@@ -2938,11 +2976,17 @@ export default function TrendAnalyzer({
       calculateRotorInfluence(ricData, {
         applySmoothing: ricApplySmoothing,
         baselineData:
-          ricCompareBaseline && ricBaselineData.length > 0
-            ? ricBaselineData
+          ricCompareBaseline && hasRicHistoricalBaseline
+            ? ricHistoricalBaselineSeries
             : undefined
       }),
-    [ricData, ricApplySmoothing, ricCompareBaseline, ricBaselineData]
+    [
+      ricData,
+      ricApplySmoothing,
+      ricCompareBaseline,
+      hasRicHistoricalBaseline,
+      ricHistoricalBaselineSeries
+    ]
   );
 
   const hasRicData = ricData.length > 0 && ricResult != null;
@@ -2950,7 +2994,7 @@ export default function TrendAnalyzer({
   const ricLinearChartData = useMemo(() => {
     if (!ricResult) return [];
     const baseMap: Map<number, RicDataPoint> = new Map<number, RicDataPoint>();
-    for (const point of ricBaselineData as RicDataPoint[]) {
+    for (const point of ricHistoricalBaselineSeries) {
       baseMap.set(Math.round(point.angle), point);
     }
     return ricResult.smoothedData.map((p: RicDataPoint) => {
@@ -2978,7 +3022,7 @@ export default function TrendAnalyzer({
       }
       return row;
     });
-  }, [ricResult, ricBaselineData, ricCompareBaseline]);
+  }, [ricResult, ricHistoricalBaselineSeries, ricCompareBaseline]);
 
   const ricRadarChartData = useMemo(
     () => toRicRadarData(ricResult?.smoothedData ?? ricData),
@@ -3366,7 +3410,7 @@ export default function TrendAnalyzer({
       }
 
       // Persist extracted MCA metrics so Trend Analyzer history / grids stay populated
-      if (analysisAssetQueryKey && (hasWinding || hasGw)) {
+      if (analysisAssetQueryKey && (hasWinding || hasGw || hasRic)) {
         try {
           const windingResult = calculateWindingBalance({
             phaseR: extracted.phaseR,
@@ -3387,16 +3431,27 @@ export default function TrendAnalyzer({
             insulationClass: extracted.insulationClass,
             ratedVoltageV: mcaRatedVoltageV ?? undefined
           });
+          const ricSavedResult = hasRic
+            ? calculateRotorInfluence(extracted.ricData ?? [])
+            : null;
           const primaryFault = hasWinding
             ? windingResult.fault
-            : gwResult.fault;
+            : hasGw
+              ? gwResult.fault
+              : ricSavedResult?.fault ?? "Rotor Influence Check";
           const healthScore = hasWinding
             ? windingResult.healthScore
-            : gwResult.irIeeePass === true
-              ? 85
-              : gwResult.irIeeePass === false
-                ? 45
-                : 70;
+            : hasGw
+              ? gwResult.irIeeePass === true
+                ? 85
+                : gwResult.irIeeePass === false
+                  ? 45
+                  : 70
+              : ricSavedResult?.severity === "CRITICAL"
+                ? 40
+                : ricSavedResult?.severity === "WARNING"
+                  ? 65
+                  : 85;
           const payload = mcaPayloadForSave(
             mcaSsotToOperatorSnapshot(mergedRecord, {
               reportPi: extracted.reportPi ?? gwResult.pi ?? undefined,
@@ -3429,11 +3484,15 @@ export default function TrendAnalyzer({
                       title: primaryFault,
                       severity: hasWinding
                         ? windingResult.severity
-                        : gwResult.severity,
+                        : hasGw
+                          ? gwResult.severity
+                          : ricSavedResult?.severity ?? "NORMAL",
                       confidence: 85,
                       description: hasWinding
                         ? windingResult.recommendation
-                        : gwResult.recommendation
+                        : hasGw
+                          ? gwResult.recommendation
+                          : ricSavedResult?.recommendation ?? ""
                     }
                   ]
                 : [],
@@ -3441,13 +3500,17 @@ export default function TrendAnalyzer({
             recommendations: [
               hasWinding
                 ? windingResult.recommendation
-                : gwResult.recommendation
+                : hasGw
+                  ? gwResult.recommendation
+                  : ricSavedResult?.recommendation ?? ""
             ],
             financial_impact: {},
             severity: (() => {
               const sev = hasWinding
                 ? windingResult.severity
-                : gwResult.severity;
+                : hasGw
+                  ? gwResult.severity
+                  : ricSavedResult?.severity ?? "NORMAL";
               return sev === "CRITICAL"
                 ? "CRITICAL"
                 : sev === "WARNING"
@@ -3543,12 +3606,6 @@ export default function TrendAnalyzer({
         meta: { source: "manual" }
       });
     });
-  };
-
-  const saveRicAsBaseline = () => {
-    if (ricData.length === 0) return;
-    setRicBaselineData(ricData.map((p) => ({ ...p })));
-    setRicCompareBaseline(true);
   };
 
   const applySurgeParsedPoints = (parsed: SurgeDataPoint[]) => {
@@ -8720,26 +8777,34 @@ export default function TrendAnalyzer({
                 >
                   3-Pt Smoothing {ricApplySmoothing ? "On" : "Off"}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setRicCompareBaseline((v) => !v)}
-                  disabled={ricBaselineData.length === 0}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                    ricCompareBaseline
-                      ? "bg-purple-500/15 border-purple-500 text-purple-300"
-                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
-                  }`}
-                >
-                  Compare to Baseline
-                </button>
-                <button
-                  type="button"
-                  onClick={saveRicAsBaseline}
-                  disabled={ricData.length === 0}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-700 bg-slate-800 text-slate-400 hover:border-slate-500 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  Save Current as Baseline
-                </button>
+                {hasRicHistoricalBaseline && (
+                  <button
+                    type="button"
+                    onClick={() => setRicCompareBaseline((v) => !v)}
+                    aria-pressed={ricCompareBaseline}
+                    data-testid="mca-ric-baseline-toggle"
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
+                      ricCompareBaseline
+                        ? "bg-purple-500/15 border-purple-500 text-purple-300"
+                        : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500"
+                    }`}
+                  >
+                    Compare to Baseline
+                  </button>
+                )}
+                {hasRicHistoricalBaseline && ricHistoricalBaseline && (
+                  <span
+                    data-testid="mca-ric-baseline-provenance"
+                    className="text-[11px] text-slate-500"
+                  >
+                    Oldest stored RIC test
+                    {ricHistoricalBaseline.timestamp
+                      ? ` · ${new Date(
+                          ricHistoricalBaseline.timestamp
+                        ).toLocaleDateString()}`
+                      : ""}
+                  </span>
+                )}
                 {ricData.length > 0 && (
                   <button
                     type="button"
@@ -8759,6 +8824,14 @@ export default function TrendAnalyzer({
               {ricPasteError && (
                 <p className="mb-4 text-xs text-amber-400">{ricPasteError}</p>
               )}
+              <p
+                data-testid="mca-ric-windowing-note"
+                className="text-[11px] text-slate-500 mb-4"
+              >
+                Point-in-time rotor test — the toolbar window selects which
+                stored test is in view, not a continuous trend. Values are shown
+                in mH and degrees (no H² conversion).
+              </p>
 
               {ricShowGrid && (
                 <div className={`${CARD} mb-6 overflow-x-auto`}>
@@ -8877,10 +8950,59 @@ export default function TrendAnalyzer({
                       ? ricResult!.degradationFlagged
                         ? "Flagged · shift > 2%"
                         : "Within 2% band"
-                      : "Save baseline to compare"}
+                      : hasRicHistoricalBaseline
+                        ? "Enable Compare to Baseline"
+                        : "No historical RIC baseline stored"}
                   </p>
                 </div>
               </div>
+
+              {hasRicData &&
+                (ricResult!.inductanceRatio != null ||
+                  ricResult!.spatialSecondHarmonic != null) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                    {ricResult!.inductanceRatio != null && (
+                      <div className={CARD} data-testid="mca-ric-inductance-ratio">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                          Lmax/Lmin Inductance Ratio
+                        </p>
+                        <p className="text-2xl font-bold text-purple-400 font-mono">
+                          {ricResult!.inductanceRatio.ratio.toFixed(2)}×
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1 font-mono">
+                          Lmax {ricResult!.inductanceRatio.max.toFixed(3)} mH ·
+                          Lmin {ricResult!.inductanceRatio.min.toFixed(3)} mH
+                        </p>
+                        <p
+                          data-testid="mca-ric-ratio-source"
+                          className="text-[11px] text-slate-500 mt-2"
+                        >
+                          {MCA_RIC_RATIO_SOURCE}
+                        </p>
+                      </div>
+                    )}
+                    {ricResult!.spatialSecondHarmonic != null && (
+                      <div className={CARD} data-testid="mca-ric-spatial-fft">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                          Spatial FFT (2nd harmonic)
+                        </p>
+                        <p className="text-sm font-bold text-purple-300 font-mono">
+                          L12 {ricResult!.spatialSecondHarmonic.l12.toFixed(3)} mH
+                          · L23{" "}
+                          {ricResult!.spatialSecondHarmonic.l23.toFixed(3)} mH ·
+                          L31{" "}
+                          {ricResult!.spatialSecondHarmonic.l31.toFixed(3)} mH
+                        </p>
+                        <p
+                          data-testid="mca-ric-spatial-fft-source"
+                          className="text-[11px] text-slate-500 mt-2"
+                        >
+                          {MCA_RIC_SPATIAL_FFT_SOURCE}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
               <div className={`${CARD} mb-6`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
@@ -8908,6 +9030,14 @@ export default function TrendAnalyzer({
                     ? ricResult!.recommendation
                     : "Upload PDF or paste RIC clipboard data (Angle, L12, L23, L31)"}
                 </p>
+                {hasRicData && (
+                  <p
+                    data-testid="mca-ric-threshold-provenance"
+                    className="text-[11px] text-slate-500 mt-3 leading-relaxed"
+                  >
+                    {MCA_RIC_VARIATION_SOURCE}.
+                  </p>
+                )}
               </div>
 
               <div className={`${CARD} mb-6`}>
@@ -8964,7 +9094,7 @@ export default function TrendAnalyzer({
                           strokeWidth={2}
                           dot={false}
                         />
-                        {ricCompareBaseline && ricBaselineData.length > 0 && (
+                        {ricCompareBaseline && hasRicHistoricalBaseline && (
                           <>
                             <Line
                               type="monotone"
