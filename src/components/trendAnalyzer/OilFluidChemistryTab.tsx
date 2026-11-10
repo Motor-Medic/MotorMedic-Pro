@@ -5,14 +5,13 @@
  * "—"; nothing on this tab is generated, defaulted, or mocked.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Droplets } from "lucide-react";
 import {
   CartesianGrid,
   Legend,
   Line,
   LineChart,
-  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -22,11 +21,15 @@ import {
   formatIsoCode,
   formatSampleDate,
   getIsoTriplet,
-  noriaLifeExtensionFactor,
-  projectTanTbnCrossover,
+  tanTbnTrend,
   waterPhaseAlert
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
+import {
+  filterOilSamplesToWindow,
+  latestOilSample,
+  VISCOSITY_REFERENCE_LABEL_40C
+} from "../../lib/oilTribologyGuidance";
 import {
   ISO_CLEANLINESS_TARGET,
   type OilSample
@@ -36,6 +39,10 @@ export interface OilFluidChemistryTabProps {
   assetId: string;
   /** Bump from parent after Add Sample modal saves to re-fetch. */
   refreshKey?: number;
+  /** Toolbar From date (YYYY-MM-DD); null/empty means open start. */
+  windowStart?: string | null;
+  /** Toolbar To date (YYYY-MM-DD); null/empty means open end. */
+  windowEnd?: string | null;
 }
 
 /** Fields this tab renders — used to decide whether any data exists at all. */
@@ -106,7 +113,9 @@ function SummaryCard({
 
 export function OilFluidChemistryTab({
   assetId,
-  refreshKey = 0
+  refreshKey = 0,
+  windowStart = null,
+  windowEnd = null
 }: OilFluidChemistryTabProps) {
   const [samples, setSamples] = useState<OilSample[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +143,20 @@ export function OilFluidChemistryTab({
     void loadSamples();
   }, [loadSamples, refreshKey]);
 
+  // Same point-in-time window predicate as the AL OilResultsTab so a date range
+  // can never select different samples on the two oil surfaces.
+  const windowActive = Boolean(
+    (windowStart != null && windowStart !== "") ||
+      (windowEnd != null && windowEnd !== "")
+  );
+
+  const windowed = useMemo(
+    () => filterOilSamplesToWindow(samples, windowStart, windowEnd),
+    [samples, windowStart, windowEnd]
+  );
+
+  const latest = useMemo(() => latestOilSample(windowed), [windowed]);
+
   if (!assetId) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
@@ -157,35 +180,61 @@ export function OilFluidChemistryTab({
     return <div className="p-8 text-center text-red-500">Error: {error}</div>;
   }
 
-  if (samples.length === 0 || !hasAnyChemistry(samples)) {
+  if (samples.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
         <Droplets className="h-6 w-6 text-slate-600 mb-3" />
-        <p className="text-lg font-semibold">
-          {samples.length === 0
-            ? "No Oil Analysis Data"
-            : "No Fluid Chemistry Recorded"}
-        </p>
+        <p className="text-lg font-semibold">No Oil Analysis Data</p>
         <p className="text-sm mt-2 text-center max-w-md px-4">
-          {samples.length === 0
-            ? "Click “+ Add Sample” above to upload a lab report image or CSV."
-            : `${samples.length} sample${samples.length === 1 ? "" : "s"} on file, but none include viscosity, TAN/TBN, water, oxidation, or ISO particle counts. Add a report with fluid chemistry via “+ Add Sample”.`}
+          Click “+ Add Sample” above to upload a lab report image or CSV.
         </p>
       </div>
     );
   }
 
-  const latest = samples[samples.length - 1];
+  if (windowActive && windowed.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
+        <Droplets className="h-6 w-6 text-slate-600 mb-3" />
+        <p className="text-lg font-semibold">
+          No oil samples in the selected date range
+        </p>
+        <p className="text-sm mt-2 text-center max-w-md px-4">
+          Clear the From / To range to see all {samples.length} saved sample
+          {samples.length === 1 ? "" : "s"}.
+        </p>
+      </div>
+    );
+  }
+
+  if (!latest || !hasAnyChemistry(windowed)) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
+        <Droplets className="h-6 w-6 text-slate-600 mb-3" />
+        <p className="text-lg font-semibold">No Fluid Chemistry Recorded</p>
+        <p className="text-sm mt-2 text-center max-w-md px-4">
+          {`${windowed.length} sample${windowed.length === 1 ? "" : "s"} on file, but none include viscosity, TAN/TBN, water, oxidation, or ISO particle counts. Add a report with fluid chemistry via “+ Add Sample”.`}
+        </p>
+      </div>
+    );
+  }
+
   const waterAlert = waterPhaseAlert(latest.waterPpm);
-  const crossover = projectTanTbnCrossover(samples);
+  const trend = tanTbnTrend(windowed);
+  // The paired TAN/TBN reading is not necessarily on the newest sample (a lab
+  // report may report only water or viscosity). Say so instead of calling an
+  // older reading "latest".
+  const pairedIsLatest =
+    trend.deltaDate != null && trend.deltaDate === latest.sampleDate;
 
   const currentIso = getIsoTriplet(latest);
   const target = ISO_CLEANLINESS_TARGET;
-  const lifeExtension = currentIso
-    ? noriaLifeExtensionFactor(currentIso, target)
+  const worstOvershoot = currentIso
+    ? Math.max(...currentIso.map((code, i) => code - target[i]))
     : null;
+  const atTarget = worstOvershoot != null && worstOvershoot <= 0;
 
-  const chartData = samples.map((s) => ({
+  const chartData = windowed.map((s) => ({
     date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
     hours: s.operatingHours,
     viscosity: s.viscosity40C ?? null,
@@ -199,16 +248,6 @@ export function OilFluidChemistryTab({
     border: "1px solid #334155"
   };
 
-  // Anchor the crossover marker on the last point that has both TAN and TBN.
-  const lastTanTbnIndex = (() => {
-    for (let i = chartData.length - 1; i >= 0; i -= 1) {
-      if (chartData[i].tan != null && chartData[i].tbn != null) return i;
-    }
-    return -1;
-  })();
-  const showCrossoverDot =
-    crossover.status === "projected" && lastTanTbnIndex >= 0;
-
   return (
     <div className="space-y-6 p-4">
       <div>
@@ -219,6 +258,13 @@ export function OilFluidChemistryTab({
           Latest sample {formatSampleDate(latest.sampleDate)} ·{" "}
           {latest.operatingHours.toLocaleString()} operating hours
         </p>
+        {windowActive && (
+          <p className="text-xs text-slate-500 mt-1">
+            Window {windowStart || "open start"} &ndash;{" "}
+            {windowEnd || "open end"} · {windowed.length} of {samples.length}{" "}
+            samples in range
+          </p>
+        )}
       </div>
 
       {waterAlert && (
@@ -239,7 +285,7 @@ export function OilFluidChemistryTab({
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
         <SummaryCard
-          label="Viscosity @40°C"
+          label={VISCOSITY_REFERENCE_LABEL_40C}
           value={display(latest.viscosity40C, 1)}
           unit="cSt"
         />
@@ -263,14 +309,20 @@ export function OilFluidChemistryTab({
         />
       </div>
 
+      <p className="text-xs text-slate-500 italic">
+        Oxidation / nitration are shown as raw absorbance (Abs/cm). No stored
+        fresh-oil or base-stock FTIR baseline exists, so neither reading carries
+        a pass/fail verdict.
+      </p>
+
       {/* Viscosity vs Oxidation */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
         <h3 className="text-lg font-semibold text-white mb-1">
           Viscosity vs. Oxidation
         </h3>
         <p className="text-sm text-slate-400 mb-4">
-          Base oil degradation — viscosity (cSt @ 40°C) against oxidation
-          (Abs/cm)
+          Base oil degradation — viscosity at the fixed 40°C reference (cSt)
+          against oxidation (Abs/cm)
         </p>
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
@@ -298,7 +350,7 @@ export function OilFluidChemistryTab({
                     return ["—", String(name)];
                   }
                   const n = Number(value);
-                  if (name === "Viscosity @40°C") {
+                  if (name === VISCOSITY_REFERENCE_LABEL_40C) {
                     return [`${n.toFixed(1)} cSt`, String(name)];
                   }
                   if (name === "Oxidation") {
@@ -312,11 +364,10 @@ export function OilFluidChemistryTab({
                 yAxisId="left"
                 type="monotone"
                 dataKey="viscosity"
-                name="Viscosity @40°C"
+                name={VISCOSITY_REFERENCE_LABEL_40C}
                 stroke="#eab308"
                 strokeWidth={2}
                 dot={{ r: 3, fill: "#eab308" }}
-                connectNulls
               />
               <Line
                 yAxisId="right"
@@ -326,51 +377,82 @@ export function OilFluidChemistryTab({
                 stroke="#f97316"
                 strokeWidth={2}
                 dot={{ r: 3, fill: "#f97316" }}
-                connectNulls
               />
             </LineChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* TAN vs TBN with crossover projection */}
+      {/* TAN vs TBN — descriptive delta and gated slope, no projection */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
         <h3 className="text-lg font-semibold text-white mb-1">
           TAN vs. TBN
         </h3>
         <p className="text-sm text-slate-400 mb-4">
-          Acid buildup against remaining alkaline reserve (mg KOH/g)
+          Acid buildup against remaining alkaline reserve (mg KOH/g) —
+          descriptive only.
         </p>
 
-        {crossover.status === "exceeded" && (
-          <div className="mb-4 flex items-start gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-red-300">
-            <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
-            <p className="text-sm font-semibold">
-              TAN has crossed TBN — schedule fluid replacement.
-            </p>
+        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className={CARD_BASE}>
+            <div className="text-xs uppercase tracking-wide text-slate-500">
+              TAN − TBN (latest)
+            </div>
+            <div
+              className={`text-2xl font-bold font-mono ${trend.delta != null ? "text-white" : "text-slate-600"}`}
+            >
+              {display(trend.delta ?? undefined, 2)}
+              {trend.delta != null ? (
+                <span className="ml-1 text-sm font-normal text-slate-400">
+                  mg KOH/g
+                </span>
+              ) : null}
+            </div>
+            <div className="text-xs text-slate-500">
+              {trend.delta == null
+                ? "Needs a sample with both TAN and TBN"
+                : !pairedIsLatest
+                  ? `Measured ${formatSampleDate(trend.deltaDate)} — later sample(s) omit TAN or TBN`
+                  : trend.delta > 0
+                    ? "TAN exceeds TBN in the latest sample"
+                    : "Alkaline reserve remains in the latest sample"}
+            </div>
           </div>
-        )}
-        {crossover.status === "projected" && (
-          <p className="mb-4 text-sm text-yellow-300">
-            Projected crossover at approximately{" "}
-            <span className="font-bold">
-              {Math.round(crossover.projectedAtHours ?? 0).toLocaleString()}
-            </span>{" "}
-            operating hours (linear trend estimate).
-          </p>
-        )}
-        {crossover.status === "none" && (
-          <p className="mb-4 text-sm text-slate-400">
-            No crossover projected on current trend.
-          </p>
-        )}
+          <div className={CARD_BASE}>
+            <div className="text-xs uppercase tracking-wide text-slate-500">
+              TAN − TBN trend slope
+            </div>
+            <div
+              className={`text-2xl font-bold font-mono ${trend.slopePerSample != null ? "text-white" : "text-slate-600"}`}
+            >
+              {trend.slopePerSample != null
+                ? `${trend.slopePerSample > 0 ? "+" : ""}${trend.slopePerSample.toFixed(3)}`
+                : "—"}
+            </div>
+            <div className="text-xs text-slate-500">
+              {trend.slopePerSample != null
+                ? `mg KOH/g per sample date · ${trend.distinctDateCount} distinct dates`
+                : `Needs ≥3 distinct-date samples with TAN and TBN (${trend.distinctDateCount} on file)`}
+            </div>
+          </div>
+        </div>
+
+        <p className="mb-4 text-xs text-slate-500 italic">
+          Descriptive delta and slope only. Oil samples carry no load
+          telemetry, so no future date is inferred.
+        </p>
 
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 10, right: 40, left: 0, bottom: 0 }}>
+            <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
               <CartesianGrid stroke="rgba(148,163,184,0.1)" strokeDasharray="3 3" />
               <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} />
-              <YAxis stroke="#94a3b8" fontSize={12} width={48} />
+              <YAxis
+                stroke="#94a3b8"
+                fontSize={12}
+                width={72}
+                unit=" mg KOH/g"
+              />
               <Tooltip contentStyle={tooltipStyle} />
               <Legend />
               <Line
@@ -380,7 +462,6 @@ export function OilFluidChemistryTab({
                 stroke="#ef4444"
                 strokeWidth={2}
                 dot={{ r: 3, fill: "#ef4444" }}
-                connectNulls
               />
               <Line
                 type="monotone"
@@ -389,38 +470,25 @@ export function OilFluidChemistryTab({
                 stroke="#22c55e"
                 strokeWidth={2}
                 dot={{ r: 3, fill: "#22c55e" }}
-                connectNulls
               />
-              {showCrossoverDot && (
-                <ReferenceDot
-                  x={chartData[lastTanTbnIndex].date}
-                  y={chartData[lastTanTbnIndex].tan as number}
-                  r={6}
-                  fill="#facc15"
-                  stroke="#0f172a"
-                  strokeWidth={2}
-                  label={{
-                    value: "Projected Crossover",
-                    position: "top",
-                    fill: "#facc15",
-                    fontSize: 11
-                  }}
-                  ifOverflow="extendDomain"
-                />
-              )}
             </LineChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Noria cleanliness */}
+      {/* ISO 4406 cleanliness — descriptive, no life-extension model */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
-        <h3 className="text-lg font-semibold text-white mb-1">
-          ISO 4406 Cleanliness
-        </h3>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-lg font-semibold text-white">
+            ISO 4406 Cleanliness
+          </h3>
+          <span className="rounded-full border border-slate-600 px-2 py-0.5 text-[10px] text-slate-400">
+            Target basis: recalled Noria default — not a stored per-asset target
+          </span>
+        </div>
         <p className="text-sm text-slate-400 mb-4">
-          Current particle count against the Noria target for general
-          industrial service
+          Current particle count against a recalled Noria default for general
+          industrial service — descriptive comparison only.
         </p>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className={CARD_BASE}>
@@ -441,31 +509,28 @@ export function OilFluidChemistryTab({
             <div className="text-2xl font-bold font-mono text-cyan-300">
               {target.join("/")}
             </div>
-            <div className="text-xs text-slate-500">Noria recommended</div>
+            <div className="text-xs text-slate-500">Recalled Noria default</div>
           </div>
           <div className={CARD_BASE}>
             <div className="text-xs uppercase tracking-wide text-slate-500">
-              Est. Life Extension
+              Current vs. target
             </div>
             <div
-              className={`text-2xl font-bold ${lifeExtension != null ? "text-green-400" : "text-slate-600"}`}
+              className={`text-2xl font-bold ${currentIso != null ? (atTarget ? "text-green-400" : "text-yellow-300") : "text-slate-600"}`}
             >
-              {lifeExtension != null ? `${lifeExtension}×` : "—"}
+              {currentIso == null
+                ? "—"
+                : atTarget
+                  ? "At or below target"
+                  : `${worstOvershoot} notch${worstOvershoot === 1 ? "" : "es"} above`}
             </div>
             <div className="text-xs text-slate-500">
-              {lifeExtension != null
-                ? "Estimate if target reached"
-                : "ISO codes not reported"}
+              {currentIso == null
+                ? "ISO codes not reported"
+                : "Worst channel, descriptive comparison"}
             </div>
           </div>
         </div>
-        {lifeExtension != null && (
-          <p className="mt-3 text-xs text-slate-500">
-            Estimated life extension if target reached: {lifeExtension}× —
-            planning estimate based on Noria contamination-control research
-            (~1.25× component life per ISO code reduction), not a guarantee.
-          </p>
-        )}
       </div>
 
       {/* Chronological table */}
@@ -475,16 +540,16 @@ export function OilFluidChemistryTab({
             <tr>
               <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3">Hours</th>
-              <th className="px-4 py-3">Visc @40</th>
-              <th className="px-4 py-3">TAN</th>
-              <th className="px-4 py-3">TBN</th>
-              <th className="px-4 py-3">Water</th>
-              <th className="px-4 py-3">Oxidation</th>
+              <th className="px-4 py-3">{VISCOSITY_REFERENCE_LABEL_40C}</th>
+              <th className="px-4 py-3">TAN (mg KOH/g)</th>
+              <th className="px-4 py-3">TBN (mg KOH/g)</th>
+              <th className="px-4 py-3">Water (ppm)</th>
+              <th className="px-4 py-3">Oxidation (Abs/cm)</th>
               <th className="px-4 py-3">ISO 4406</th>
             </tr>
           </thead>
           <tbody>
-            {samples.map((s, idx) => (
+            {windowed.map((s, idx) => (
               <tr
                 key={s.id ?? `${s.sampleDate}-${idx}`}
                 className="border-b border-slate-700 hover:bg-slate-800/50"

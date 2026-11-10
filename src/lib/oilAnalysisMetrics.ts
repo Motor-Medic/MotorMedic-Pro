@@ -141,6 +141,11 @@ export interface CrossoverProjection {
 }
 
 /**
+ * PARKED (SLICE-AM): the Fluid Chemistry tab no longer renders a projected
+ * crossover. Oil samples carry no load telemetry, so an hours-based runway is
+ * not supported. Retained only for the standalone metrics verification script;
+ * do not wire this into UI without a load-telemetry basis.
+ *
  * Project when the rising TAN curve will meet the falling TBN curve.
  *
  * Rates are measured between the first and last samples that carry BOTH
@@ -185,7 +190,90 @@ export function projectTanTbnCrossover(
   };
 }
 
+export interface TanTbnTrend {
+  /** Latest distinct-date sample's TAN − TBN, or null when no sample has both. */
+  delta: number | null;
+  /**
+   * Sample date that produced `delta`, or null when no sample carries both.
+   * Lets the UI avoid calling an older paired reading "the latest sample".
+   */
+  deltaDate: string | null;
+  /**
+   * Least-squares slope of (TAN − TBN) per distinct-date sample, only at three
+   * or more distinct sample dates that carry a valid TAN and TBN. Descriptive
+   * only — never extrapolated to an hours/weeks runway.
+   */
+  slopePerSample: number | null;
+  /** Distinct sample dates that carry a valid TAN and TBN. */
+  distinctDateCount: number;
+}
+
 /**
+ * Descriptive TAN/TBN trend: the current TAN − TBN gap plus a regression
+ * slope once there are enough distinct-date samples to justify one.
+ *
+ * No crossover date is projected. Oil samples carry no load telemetry, so any
+ * "hours to crossover" figure would be an invented runway.
+ */
+export function tanTbnTrend(samples: OilSample[]): TanTbnTrend {
+  // Collapse duplicate sample dates to one gap so repeated lab uploads cannot
+  // overweight a single day in the regression.
+  const gapByDate = new Map<string, number>();
+  for (const sample of samples) {
+    const { acidNumber, tbn } = sample;
+    if (acidNumber == null || !Number.isFinite(acidNumber)) continue;
+    if (tbn == null || !Number.isFinite(tbn)) continue;
+    const dateKey = toSampleDateKey(sample.sampleDate);
+    if (!dateKey) continue;
+    gapByDate.set(dateKey, acidNumber - tbn);
+  }
+
+  const gaps = [...gapByDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  if (gaps.length === 0) {
+    return {
+      delta: null,
+      deltaDate: null,
+      slopePerSample: null,
+      distinctDateCount: 0
+    };
+  }
+
+  const [deltaDate, delta] = gaps[gaps.length - 1];
+  if (gaps.length < 3) {
+    return {
+      delta,
+      deltaDate,
+      slopePerSample: null,
+      distinctDateCount: gaps.length
+    };
+  }
+
+  const n = gaps.length;
+  const meanX = (n - 1) / 2;
+  const meanY = gaps.reduce((sum, [, gap]) => sum + gap, 0) / n;
+  let numerator = 0;
+  let denominator = 0;
+  gaps.forEach(([, gap], x) => {
+    numerator += (x - meanX) * (gap - meanY);
+    denominator += (x - meanX) ** 2;
+  });
+
+  return {
+    delta,
+    deltaDate,
+    slopePerSample: denominator === 0 ? null : numerator / denominator,
+    distinctDateCount: n
+  };
+}
+
+/**
+ * PARKED (SLICE-AM): the Fluid Chemistry tab ships a descriptive
+ * current-vs-target comparison only. This modeled multiplier is not rendered
+ * because no stored per-asset target and no in-repo ISO 281 factor table exist;
+ * the only target is the recalled Noria default.
+ *
  * Estimated component life multiplier from reaching a cleaner ISO 4406 target.
  *
  * Uses the worst-case (largest) code reduction across the three channels at
