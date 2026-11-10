@@ -7099,7 +7099,7 @@ export default function AnalysisReport({
                   return <McaResultsTab selectedAnalysis={selectedAnalysis} />;
                 }
                 if (modality === "oil") {
-                  return <OilResultsTab selectedAnalysis={selectedAnalysis} allAnalyses={loadedAnalyses} equipmentAssetId={equipmentAssetId} />;
+                  return <OilResultsTab selectedAnalysis={selectedAnalysis} allAnalyses={loadedAnalyses} equipmentAssetId={equipmentAssetId} windowStart={startDate} windowEnd={endDate} />;
                 }
                 return (
                   <div className="space-y-4">

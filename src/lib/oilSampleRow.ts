@@ -60,6 +60,8 @@ export type OilSampleDbRow = {
   morph_nonmetallic?: string | null;
   morph_fibers?: string | null;
   ferrograph_image_url?: string | null;
+  lubricant_grade?: string | null;
+  oil_grade?: string | null;
   baseline_iron?: number | string | null;
   baseline_copper?: number | string | null;
   baseline_chromium?: number | string | null;
@@ -148,6 +150,8 @@ export function mapOilSampleRow(
     ucRating: optNum(row.uc_rating),
     morphology: readMorphology(row),
     ferrographImageUrl: optStr(row.ferrograph_image_url),
+    lubricantGrade: optStr(row.lubricant_grade),
+    oilGrade: optStr(row.oil_grade),
 
     baselineIron: optNum(row.baseline_iron),
     baselineCopper: optNum(row.baseline_copper),

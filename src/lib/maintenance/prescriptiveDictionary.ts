@@ -1874,6 +1874,12 @@ export const OIL_WEAR_LIMIT_CITATION =
 export const OIL_VISCOSITY_CITATION =
   "kinematic viscosity per ASTM D445 - cited as a test method, not a rating";
 
+export const OIL_VISCOSITY_GRADE_CITATION =
+  "ISO 3448 viscosity grade bands (±10% of nominal at 40°C) - grade band guidance, not a measurement";
+
+export const OIL_ISO4406_RANGE_CITATION =
+  "ISO 4406 code ranges in particles per mL - published table decoded per channel, no interpolation";
+
 export const OIL_SPECTROSCOPY_CITATION =
   "elemental spectroscopy per ASTM D5185 - cited as a test method, not a rating";
 
