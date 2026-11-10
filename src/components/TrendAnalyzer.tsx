@@ -117,7 +117,9 @@ import {
   type RicDataPoint
 } from "../lib/mca/rotorInfluenceCalculator";
 import {
+  calculateSurgeDamping,
   calculateSurgeHealth,
+  evaluateSurgeTestVoltage,
   parseSurgeClipboardText,
   surgeHealthFromManualEar,
   type SurgeDataPoint
@@ -3049,6 +3051,29 @@ export default function TrendAnalyzer({
         V23: p.v23,
         V31: p.v31
       })),
+    [surgeData]
+  );
+
+  /**
+   * IEEE 522 voltage-ceiling guard. Gated on a STORED nameplate voltage
+   * (component kinematics or MCA groundwall telemetry) — never inferred from
+   * the entered test voltage. Omitted cleanly when the rating is absent.
+   */
+  const surgeVoltageGuard = useMemo(
+    () =>
+      evaluateSurgeTestVoltage({
+        testVoltageV: surgeTestVoltageV,
+        ratedVoltageV: mcaRatedVoltageV
+      }),
+    [surgeTestVoltageV, mcaRatedVoltageV]
+  );
+
+  /**
+   * Damping alpha is computed ONLY from stored multi-point decay samples.
+   * calculateSurgeDamping returns null otherwise, so the card is omitted.
+   */
+  const surgeDamping = useMemo(
+    () => calculateSurgeDamping(surgeData),
     [surgeData]
   );
 
@@ -9317,6 +9342,40 @@ export default function TrendAnalyzer({
                 )}
               </div>
 
+              {surgeVoltageGuard.applicable && (
+                <div
+                  data-testid="mca-surge-voltage-guard"
+                  className={`mb-6 rounded-xl border px-4 py-3 ${
+                    surgeVoltageGuard.overVoltage
+                      ? "border-red-500/40 bg-red-500/10"
+                      : "border-slate-700 bg-slate-900/60"
+                  }`}
+                >
+                  <p
+                    className={`text-sm font-semibold ${
+                      surgeVoltageGuard.overVoltage
+                        ? "text-red-200"
+                        : "text-slate-200"
+                    }`}
+                  >
+                    IEEE 522 surge test-voltage ceiling{" "}
+                    {surgeVoltageGuard.overVoltage ? "exceeded" : "check"}
+                  </p>
+                  <p
+                    className={`text-xs mt-1 ${
+                      surgeVoltageGuard.overVoltage
+                        ? "text-red-100/80"
+                        : "text-slate-400"
+                    }`}
+                  >
+                    {surgeVoltageGuard.message}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    {surgeVoltageGuard.provenance}
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -9332,6 +9391,14 @@ export default function TrendAnalyzer({
                         : "From manual area difference"
                       : "Awaiting Data"}
                   </p>
+                  {hasSurgeData && (
+                    <p
+                      data-testid="mca-surge-ear-source"
+                      className="text-[10px] text-slate-500 mt-1"
+                    >
+                      {surgeResult!.severitySource}
+                    </p>
+                  )}
                 </div>
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -9353,6 +9420,43 @@ export default function TrendAnalyzer({
                   </p>
                 </div>
               </div>
+
+              {surgeDamping && (
+                <div
+                  data-testid="mca-surge-damping"
+                  className={`${CARD} mb-6`}
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                    Damping — Log Decrement (δ per cycle)
+                  </p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div>
+                      <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                        Mean δ
+                      </p>
+                      <p className="text-xl font-bold text-emerald-300 font-mono">
+                        {surgeDamping.meanLogDecrement.toFixed(4)}
+                      </p>
+                    </div>
+                    {surgeDamping.perPhase.map((phase) => (
+                      <div key={phase.phase}>
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                          {phase.phase.toUpperCase()}
+                        </p>
+                        <p className="text-sm font-semibold text-slate-200 font-mono">
+                          {phase.logDecrement.toFixed(4)}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {phase.peakCount} peaks · {phase.cycles} cycles
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-3">
+                    {surgeDamping.provenance}
+                  </p>
+                </div>
+              )}
 
               {hasSurgeData && (
               <div className={`${CARD} mb-6`}>
