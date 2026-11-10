@@ -329,9 +329,9 @@ export interface ParticleRatioResult {
 }
 
 /**
- * Ratio of fine (>4µm) to coarse (>14µm) particles, which separates silt-type
- * ingress from fatigue spalling. Requires raw counts — ISO codes are
- * logarithmic and cannot substitute.
+ * Descriptive ratio of fine (>4µm) to coarse (>14µm) particles. Requires raw
+ * counts — ISO codes are logarithmic and cannot substitute. The wording is
+ * descriptive only: it does not diagnose a failure mode.
  */
 export function calculateParticleRatio(
   p4?: number | null,
@@ -355,14 +355,14 @@ export function calculateParticleRatio(
     return {
       ratio,
       diagnosis:
-        "Siltation risk — fine abrasive particles dominant. Inspect breathers, seals, and filtration."
+        "Consistent with fine silt ingress — fine abrasive particles dominant. Inspect breathers, seals, and filtration."
     };
   }
   if (ratio < 10) {
     return {
       ratio,
       diagnosis:
-        "Spalling/fatigue risk — coarse wear fragments present. Inspect bearings and gear surfaces."
+        "Consistent with coarse wear generation — coarse wear fragments present. Inspect bearings and gear surfaces."
     };
   }
   return {
@@ -371,24 +371,90 @@ export function calculateParticleRatio(
   };
 }
 
+/**
+ * Provenance for the overshoot → beta-ratio recommendation.
+ *
+ * ISO 16889 is a filter-element beta-ratio TEST standard. It does not prescribe
+ * which beta element to install for a given ISO 4406 overshoot; that selection
+ * is vendor guidance. Keep this label attached anywhere the table is rendered.
+ */
+export const FILTER_BETA_GUIDANCE_BASIS =
+  "ISO 16889 defines the filter beta-ratio test method only; mapping an ISO 4406 code overshoot to a Beta4(c) selection is vendor guidance, not an ISO 16889 requirement.";
+
+export interface FilterBetaGuidanceRow {
+  /** Inclusive minimum worst-channel overshoot, in ISO code steps. */
+  minOvershoot: number;
+  /** Inclusive maximum overshoot; null means unbounded. */
+  maxOvershoot: number | null;
+  /** Recommended Beta4(c), or null when no upgrade is indicated. */
+  beta: number | null;
+  recommendation: string;
+}
+
+/** In-repo, labeled guidance table. Not an ISO 16889 pass/fail requirement. */
+export const FILTER_BETA_GUIDANCE_TABLE: readonly FilterBetaGuidanceRow[] = [
+  {
+    minOvershoot: Number.NEGATIVE_INFINITY,
+    maxOvershoot: 0,
+    beta: null,
+    recommendation:
+      "At target cleanliness — maintain current filtration."
+  },
+  {
+    minOvershoot: 1,
+    maxOvershoot: 2,
+    beta: 200,
+    recommendation:
+      "Beta4(c) ≥ 200 filtration recommended to return to target."
+  },
+  {
+    minOvershoot: 3,
+    maxOvershoot: 4,
+    beta: 1000,
+    recommendation:
+      "Beta4(c) ≥ 1000 filtration recommended (consider kidney-loop)."
+  },
+  {
+    minOvershoot: 5,
+    maxOvershoot: null,
+    beta: 1000,
+    recommendation:
+      "Beta4(c) ≥ 1000 + offline kidney-loop recommended; investigate ingress sources."
+  }
+] as const;
+
+/** Worst-channel ISO overshoot against a target (negative = cleaner). */
+export function worstChannelOvershoot(
+  current: IsoCodeTriplet,
+  target: IsoCodeTriplet
+): number {
+  return Math.max(
+    current[0] - target[0],
+    current[1] - target[1],
+    current[2] - target[2]
+  );
+}
+
+/** Look up the labeled in-repo beta guidance row for an overshoot. */
+export function filterBetaGuidanceFor(
+  maxOvershoot: number
+): FilterBetaGuidanceRow {
+  return (
+    FILTER_BETA_GUIDANCE_TABLE.find(
+      (row) =>
+        maxOvershoot >= row.minOvershoot &&
+        (row.maxOvershoot == null || maxOvershoot <= row.maxOvershoot)
+    ) ?? FILTER_BETA_GUIDANCE_TABLE[FILTER_BETA_GUIDANCE_TABLE.length - 1]
+  );
+}
+
 /** Filtration recommendation sized to the worst ISO channel overshoot. */
 export function recommendedFilterBeta(
   current: IsoCodeTriplet,
   target: IsoCodeTriplet
 ): string {
-  const maxDelta = Math.max(
-    current[0] - target[0],
-    current[1] - target[1],
-    current[2] - target[2]
-  );
-  if (maxDelta <= 0) return "At target cleanliness — maintain current filtration.";
-  if (maxDelta <= 2) {
-    return "Beta4(c) ≥ 200 filtration recommended to return to target.";
-  }
-  if (maxDelta <= 4) {
-    return "Beta4(c) ≥ 1000 filtration recommended (consider kidney-loop).";
-  }
-  return "Beta4(c) ≥ 1000 + offline kidney-loop recommended; investigate ingress sources.";
+  return filterBetaGuidanceFor(worstChannelOvershoot(current, target))
+    .recommendation;
 }
 
 /** Per-channel ISO code change between two samples (positive = dirtier). */
@@ -418,6 +484,108 @@ export function getIsoTriplet(sample: OilSample): IsoCodeTriplet | null {
 /** Format an ISO 4406 triplet as "18/16/13". */
 export function formatIsoCode(triplet: IsoCodeTriplet | null): string {
   return triplet ? triplet.join("/") : "—";
+}
+
+/** Practical ISO 4406 display scale used by this app (codes 0–24). */
+export const ISO_CODE_SCALE_MIN = 0;
+export const ISO_CODE_SCALE_MAX = 24;
+
+export const ISO_TRIPLET_DATA_QUALITY_WARNING =
+  "ISO 4406 code physically inconsistent - verify lab entry";
+
+export interface IsoTripletValidation {
+  /** All three channels were reported (the triplet exists). */
+  present: boolean;
+  /** Present AND physically consistent AND on the ISO code scale. */
+  valid: boolean;
+  /** Human-readable reasons an invalid triplet failed the gate. */
+  issues: string[];
+}
+
+/**
+ * Validate a complete ISO 4406 triplet.
+ *
+ * A particle count for ">4 µm" must be at least the count for ">6 µm", which
+ * must be at least the count for ">14 µm". Each channel also has to be a whole
+ * code on the ISO 4406 scale. An incomplete triplet is "not reported" rather
+ * than "invalid", so it keeps the existing honest null state.
+ *
+ * This is a data-quality gate, not a reason to discard a lab entry: callers
+ * may still show the raw code alongside the warning, but must suppress every
+ * derived alert, equivalency, recommendation and classification.
+ */
+export function validateIsoTriplet(
+  triplet: IsoCodeTriplet | null | undefined
+): IsoTripletValidation {
+  if (triplet == null) {
+    return { present: false, valid: false, issues: [] };
+  }
+
+  const issues: string[] = [];
+  const [c4, c6, c14] = triplet;
+
+  if (![c4, c6, c14].every((code) => Number.isInteger(code))) {
+    issues.push("every channel must be a whole ISO 4406 code");
+  }
+  if (
+    [c4, c6, c14].some(
+      (code) =>
+        !Number.isFinite(code) ||
+        code < ISO_CODE_SCALE_MIN ||
+        code > ISO_CODE_SCALE_MAX
+    )
+  ) {
+    issues.push(
+      `every channel must sit on the ${ISO_CODE_SCALE_MIN}–${ISO_CODE_SCALE_MAX} ISO code scale`
+    );
+  }
+  if (c4 < c6) {
+    issues.push("the >4 μm code cannot be lower than the >6 μm code");
+  }
+  if (c6 < c14) {
+    issues.push("the >6 μm code cannot be lower than the >14 μm code");
+  }
+
+  return { present: true, valid: issues.length === 0, issues };
+}
+
+/** True only when a sample carries a complete, physically consistent triplet. */
+export function hasValidIsoTriplet(sample: OilSample): boolean {
+  return validateIsoTriplet(getIsoTriplet(sample)).valid;
+}
+
+/**
+ * Deterministic sample sequence comparison.
+ *
+ * Date alone is not an ordering key: two lab uploads can share a calendar day
+ * and the same DB read can return them in a different order. Sort by the
+ * calendar-day key first, then by the stored created_at timestamp, then by row
+ * id. Array.prototype.sort is stable, so identical keys retain fetch order.
+ */
+export function compareOilSampleSequence(a: OilSample, b: OilSample): number {
+  const dateCompare = toSampleDateKey(a.sampleDate).localeCompare(
+    toSampleDateKey(b.sampleDate)
+  );
+  if (dateCompare !== 0) return dateCompare;
+
+  const createdCompare = String(a.createdAt ?? "").localeCompare(
+    String(b.createdAt ?? "")
+  );
+  if (createdCompare !== 0) return createdCompare;
+
+  const idCompare = String(a.id ?? "").localeCompare(String(b.id ?? ""));
+  if (idCompare !== 0) return idCompare;
+
+  const hoursCompare = a.operatingHours - b.operatingHours;
+  if (Number.isFinite(hoursCompare) && hoursCompare !== 0) return hoursCompare;
+  return 0;
+}
+
+/** Stable oldest → newest sequence, tie-broken beyond the date string. */
+export function orderOilSamplesBySequence(
+  samples: readonly OilSample[]
+): OilSample[] {
+  return [...samples].sort(compareOilSampleSequence);
 }
 
 /**

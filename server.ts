@@ -2118,7 +2118,11 @@ app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_mo
       return res.status(result.status).json({ error: result.error });
     }
 
-    return res.json({ success: true, sample: result.sample });
+    return res.json({
+      success: true,
+      sample: result.sample,
+      warnings: result.warnings
+    });
   } catch (error: any) {
     console.error("[oil-analysis] POST error:", error);
     return res.status(500).json({ error: "Failed to save data" });

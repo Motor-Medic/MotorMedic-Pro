@@ -122,8 +122,8 @@ check("SAE from iso6 18", isoToSaeClass(18), 12);
 check("NAS floors at 0", isoToNasClass(3), 0);
 check("SAE floors at 0", isoToSaeClass(2), 0);
 
-check("ratio siltation", calculateParticleRatio(120000, 500).diagnosis.startsWith("Siltation"), true);
-check("ratio spalling", calculateParticleRatio(4000, 800).diagnosis.startsWith("Spalling"), true);
+check("ratio siltation", calculateParticleRatio(120000, 500).diagnosis.startsWith("Consistent with fine silt ingress"), true);
+check("ratio spalling", calculateParticleRatio(4000, 800).diagnosis.startsWith("Consistent with coarse wear generation"), true);
 check("ratio balanced", calculateParticleRatio(10000, 500).diagnosis.startsWith("Balanced"), true);
 check("ratio value", Number(calculateParticleRatio(10000, 500).ratio?.toFixed(1)), 20);
 check("ratio missing p14", calculateParticleRatio(10000, null).ratio, null);

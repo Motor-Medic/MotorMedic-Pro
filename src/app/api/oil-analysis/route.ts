@@ -70,7 +70,8 @@ export async function POST(request: Request) {
 
     return jsonResponse({
       success: true,
-      sample: result.sample
+      sample: result.sample,
+      warnings: result.warnings
     });
   } catch (error) {
     console.error("Error saving oil sample:", error);

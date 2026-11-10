@@ -11,6 +11,11 @@ import {
   type MorphSeverity,
   type MorphologyMap
 } from "../types/oilAnalysis";
+import {
+  ISO_TRIPLET_DATA_QUALITY_WARNING,
+  validateIsoTriplet,
+  type IsoCodeTriplet
+} from "./oilAnalysisMetrics";
 
 export const OIL_ANALYSIS_API_PATH = "/api/oil-analysis";
 
@@ -203,7 +208,7 @@ export async function fetchOilSamplesForAsset(
     `SELECT * FROM oil_samples
      WHERE oil_analysis_id = $1
        AND tenant_id = $2
-     ORDER BY sample_date ASC`,
+     ORDER BY sample_date ASC, created_at ASC, id ASC`,
     [analysisId, tenantId ?? -1]
   );
 
@@ -261,7 +266,7 @@ export async function saveOilSample(
   const existingSamples = await query(
     `SELECT id FROM oil_samples
      WHERE oil_analysis_id = $1
-     ORDER BY sample_date ASC
+     ORDER BY sample_date ASC, created_at ASC, id ASC
      LIMIT 1`,
     [analysisId]
   );
@@ -388,5 +393,18 @@ export async function saveOilSample(
     ]
   );
 
-  return { sample: result.rows[0], status: 200 as const };
+  // Save-time data-quality gate: an invalid triplet is still persisted raw
+  // (the lab entry is the record), but the caller receives a warning so the
+  // UI can suppress every derived value for that sample.
+  const savedTriplet: IsoCodeTriplet | null =
+    iso4um != null && iso6um != null && iso14um != null
+      ? [iso4um, iso6um, iso14um]
+      : null;
+  const validation = validateIsoTriplet(savedTriplet);
+  const warnings: string[] = [];
+  if (validation.present && !validation.valid) {
+    warnings.push(ISO_TRIPLET_DATA_QUALITY_WARNING, ...validation.issues);
+  }
+
+  return { sample: result.rows[0], status: 200 as const, warnings };
 }

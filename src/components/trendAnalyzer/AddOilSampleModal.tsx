@@ -5,7 +5,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { parseIsoCode } from "../../lib/oilAnalysisMetrics";
+import {
+  ISO_TRIPLET_DATA_QUALITY_WARNING,
+  parseIsoCode,
+  validateIsoTriplet,
+  type IsoCodeTriplet
+} from "../../lib/oilAnalysisMetrics";
 import {
   MORPH_CATEGORIES,
   MORPH_SEVERITIES,
@@ -73,6 +78,22 @@ const EMPTY_MORPHOLOGY = (): Record<MorphCategoryKey, MorphSeverity> =>
   Object.fromEntries(
     MORPH_CATEGORIES.map((c) => [c.key, "not_detected"])
   ) as Record<MorphCategoryKey, MorphSeverity>;
+
+/** Parse a manual ISO code field; blank/garbage stays absent. */
+function manualIsoCode(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Complete manual triplet, or null when any channel is still blank. */
+function manualIsoTriplet(form: ManualForm): IsoCodeTriplet | null {
+  const c4 = manualIsoCode(form.iso4um);
+  const c6 = manualIsoCode(form.iso6um);
+  const c14 = manualIsoCode(form.iso14um);
+  return c4 != null && c6 != null && c14 != null ? [c4, c6, c14] : null;
+}
 
 export function AddOilSampleModal({
   isOpen,
@@ -284,6 +305,12 @@ export function AddOilSampleModal({
 
   if (!isOpen) return null;
 
+  // Entry-time half of the triplet gate: warn before save, but never block the
+  // raw lab entry. The Cleanliness tab suppresses derived values on read.
+  const manualIsoValidation = validateIsoTriplet(manualIsoTriplet(manualForm));
+  const showManualIsoWarning =
+    manualIsoValidation.present && !manualIsoValidation.valid;
+
   return (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/70"
@@ -433,6 +460,23 @@ export function AddOilSampleModal({
                       </label>
                     ))}
                   </div>
+
+                  {showManualIsoWarning && (
+                    <div
+                      role="alert"
+                      className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-300"
+                    >
+                      <p className="font-semibold">
+                        {ISO_TRIPLET_DATA_QUALITY_WARNING}
+                      </p>
+                      <p className="mt-1">
+                        {manualIsoValidation.issues.join("; ")}. The raw code can
+                        still be saved, but degradation alerts, NAS/SAE
+                        equivalencies, filtration recommendations and fine/coarse
+                        classification will be suppressed for this sample.
+                      </p>
+                    </div>
+                  )}
 
                   <div>
                     <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">

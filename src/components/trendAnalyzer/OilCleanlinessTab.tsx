@@ -4,10 +4,15 @@
  * Reads saved oil_samples only. Raw counts are shown only when the lab
  * reported them; they are never back-calculated from ISO codes, and NAS/SAE
  * classes are derived on read rather than stored.
+ *
+ * Every derived value on this tab is gated on a physically consistent ISO 4406
+ * triplet. A stored code such as 12/34/8 is still shown raw (it is the lab
+ * record), but it cannot trigger a degradation alert, NAS/SAE equivalency,
+ * filtration recommendation, overshoot comparison, or fine/coarse profile.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Filter } from "lucide-react";
+import { AlertTriangle, Filter, ShieldAlert } from "lucide-react";
 import {
   CartesianGrid,
   Legend,
@@ -20,16 +25,27 @@ import {
 } from "recharts";
 import {
   calculateParticleRatio,
+  FILTER_BETA_GUIDANCE_BASIS,
+  filterBetaGuidanceFor,
   formatIsoCode,
   formatSampleDate,
   getIsoTriplet,
+  hasValidIsoTriplet,
+  ISO_CODE_SCALE_MAX,
+  ISO_CODE_SCALE_MIN,
+  ISO_TRIPLET_DATA_QUALITY_WARNING,
   isoNotchDelta,
   isoToNasClass,
   isoToSaeClass,
+  orderOilSamplesBySequence,
   recommendedFilterBeta,
-  type IsoCodeTriplet
+  validateIsoTriplet,
+  worstChannelOvershoot,
+  type IsoCodeTriplet,
+  type IsoTripletValidation
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
+import { filterOilSamplesToWindow } from "../../lib/oilTribologyGuidance";
 import {
   ISO_CLEANLINESS_TARGET,
   type OilSample
@@ -39,15 +55,32 @@ export interface OilCleanlinessTabProps {
   assetId: string;
   /** Bump from parent after Add Sample modal saves to re-fetch. */
   refreshKey?: number;
+  /** Toolbar From date (YYYY-MM-DD); null/empty means open start. */
+  windowStart?: string | null;
+  /** Toolbar To date (YYYY-MM-DD); null/empty means open end. */
+  windowEnd?: string | null;
 }
 
 const TARGET: IsoCodeTriplet = ISO_CLEANLINESS_TARGET;
 
-/** A notch jump this large between samples suggests an ingress/bypass event. */
+/**
+ * The only target available in-repo is a recalled Noria default. There is no
+ * stored per-asset cleanliness spec, so every target comparison says so.
+ */
+const TARGET_BASIS_LABEL =
+  "recalled Noria default — not a stored per-asset target";
+const TARGET_BASIS_SHORT = "recalled Noria default";
+
+/** A notch jump this large between valid samples suggests an ingress event. */
 const NOTCH_ALERT_THRESHOLD = 2;
 
 const CARD_BASE =
   "rounded-lg border border-slate-700 bg-slate-800/40 p-4 flex flex-col gap-1";
+
+const INSUFFICIENT_RATIO = {
+  ratio: null,
+  diagnosis: "Insufficient particle data for wear-mode ratio."
+} as const;
 
 function hasRawCounts(s: OilSample): boolean {
   return (
@@ -59,6 +92,10 @@ function hasRawCounts(s: OilSample): boolean {
 
 function hasAnyCleanlinessData(samples: OilSample[]): boolean {
   return samples.some((s) => getIsoTriplet(s) != null || hasRawCounts(s));
+}
+
+function validityFor(sample: OilSample): IsoTripletValidation {
+  return validateIsoTriplet(getIsoTriplet(sample));
 }
 
 /** Positive counts only — a log axis cannot plot 0 or null. */
@@ -73,7 +110,9 @@ function formatCount(value: number | undefined): string {
 
 export function OilCleanlinessTab({
   assetId,
-  refreshKey = 0
+  refreshKey = 0,
+  windowStart = null,
+  windowEnd = null
 }: OilCleanlinessTabProps) {
   const [samples, setSamples] = useState<OilSample[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,7 +140,33 @@ export function OilCleanlinessTab({
     void loadSamples();
   }, [loadSamples, refreshKey]);
 
-  const anyRawCounts = useMemo(() => samples.some(hasRawCounts), [samples]);
+  // Order once by sequence (date, created_at, id) so same-date uploads get a
+  // deterministic index instead of relying on a date-string collation.
+  const orderedSamples = useMemo(
+    () => orderOilSamplesBySequence(samples),
+    [samples]
+  );
+
+  const sequenceNumber = useMemo(() => {
+    const map = new Map<OilSample, number>();
+    orderedSamples.forEach((sample, index) => map.set(sample, index + 1));
+    return map;
+  }, [orderedSamples]);
+
+  const windowActive = Boolean(
+    (windowStart != null && windowStart !== "") ||
+      (windowEnd != null && windowEnd !== "")
+  );
+
+  const windowed = useMemo(
+    () => filterOilSamplesToWindow(orderedSamples, windowStart, windowEnd),
+    [orderedSamples, windowStart, windowEnd]
+  );
+
+  const anyRawCounts = useMemo(
+    () => windowed.some(hasRawCounts),
+    [windowed]
+  );
 
   if (!assetId) {
     return (
@@ -126,62 +191,133 @@ export function OilCleanlinessTab({
     return <div className="p-8 text-center text-red-500">Error: {error}</div>;
   }
 
-  if (samples.length === 0 || !hasAnyCleanlinessData(samples)) {
+  if (samples.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
         <Filter className="h-6 w-6 text-slate-600 mb-3" />
-        <p className="text-lg font-semibold">
-          {samples.length === 0
-            ? "No Oil Analysis Data"
-            : "No Cleanliness Data Recorded"}
-        </p>
+        <p className="text-lg font-semibold">No Oil Analysis Data</p>
         <p className="text-sm mt-2 text-center max-w-md px-4">
-          {samples.length === 0
-            ? "Click “+ Add Sample” above to upload a lab report image or CSV."
-            : `${samples.length} sample${samples.length === 1 ? "" : "s"} on file, but none include ISO 4406 codes or particle counts. Add a report with cleanliness data via “+ Add Sample”.`}
+          Click “+ Add Sample” above to upload a lab report image or CSV.
         </p>
       </div>
     );
   }
 
-  const latest = samples[samples.length - 1];
-  const latestIso = getIsoTriplet(latest);
+  if (windowActive && windowed.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
+        <Filter className="h-6 w-6 text-slate-600 mb-3" />
+        <p className="text-lg font-semibold">
+          No oil samples in the selected date range
+        </p>
+        <p className="text-sm mt-2 text-center max-w-md px-4">
+          Clear the From / To range to see all {samples.length} saved sample
+          {samples.length === 1 ? "" : "s"}.
+        </p>
+      </div>
+    );
+  }
 
-  // Compare against the most recent earlier sample that also has ISO codes.
+  if (!hasAnyCleanlinessData(windowed)) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
+        <Filter className="h-6 w-6 text-slate-600 mb-3" />
+        <p className="text-lg font-semibold">No Cleanliness Data Recorded</p>
+        <p className="text-sm mt-2 text-center max-w-md px-4">
+          {`${windowed.length} sample${windowed.length === 1 ? "" : "s"} on file, but none include ISO 4406 codes or particle counts. Add a report with cleanliness data via “+ Add Sample”.`}
+        </p>
+      </div>
+    );
+  }
+
+  // Sequence order is authoritative: the last in-window row is the latest
+  // sample even when two uploads share a calendar date.
+  const latest = windowed[windowed.length - 1];
+  const latestTriplet = getIsoTriplet(latest);
+  const latestValidation = validateIsoTriplet(latestTriplet);
+  const latestInvalid = latestValidation.present && !latestValidation.valid;
+  /** Only a valid triplet may feed any derived value below. */
+  const derivationTriplet: IsoCodeTriplet | null = latestValidation.valid
+    ? latestTriplet
+    : null;
+
+  const validTripletSamples = windowed.filter(hasValidIsoTriplet);
+  const invalidSamples = windowed.filter((sample) => {
+    const validation = validityFor(sample);
+    return validation.present && !validation.valid;
+  });
+
+  // Compare against the most recent earlier VALID sample. An invalid previous
+  // code cannot anchor a notch delta or an ingress alert.
   const previousIso = (() => {
-    for (let i = samples.length - 2; i >= 0; i -= 1) {
-      const triplet = getIsoTriplet(samples[i]);
-      if (triplet) return { triplet, sample: samples[i] };
+    for (let i = windowed.length - 2; i >= 0; i -= 1) {
+      const triplet = getIsoTriplet(windowed[i]);
+      if (validateIsoTriplet(triplet).valid) {
+        return { triplet: triplet as IsoCodeTriplet, sample: windowed[i] };
+      }
     }
     return null;
   })();
 
   const delta =
-    latestIso && previousIso ? isoNotchDelta(previousIso.triplet, latestIso) : null;
+    derivationTriplet && previousIso
+      ? isoNotchDelta(previousIso.triplet, derivationTriplet)
+      : null;
   const notchAlert =
     delta != null && delta.some((d) => d >= NOTCH_ALERT_THRESHOLD);
 
   const atTarget =
-    latestIso != null &&
-    latestIso[0] <= TARGET[0] &&
-    latestIso[1] <= TARGET[1] &&
-    latestIso[2] <= TARGET[2];
+    derivationTriplet != null &&
+    derivationTriplet[0] <= TARGET[0] &&
+    derivationTriplet[1] <= TARGET[1] &&
+    derivationTriplet[2] <= TARGET[2];
 
-  const particleRatio = calculateParticleRatio(
-    latest.particles4um,
-    latest.particles14um
-  );
+  const worstOvershoot = derivationTriplet
+    ? worstChannelOvershoot(derivationTriplet, TARGET)
+    : null;
 
-  const chartData = samples.map((s) => {
+  // Fine/coarse profiling needs at least two VALID multi-channel samples; a
+  // single upload (or an invalid code) keeps the honest insufficient state.
+  const canProfileFineCoarse =
+    derivationTriplet != null && validTripletSamples.length >= 2;
+  const particleRatio = canProfileFineCoarse
+    ? calculateParticleRatio(latest.particles4um, latest.particles14um)
+    : INSUFFICIENT_RATIO;
+
+  const ratioNote = latestInvalid
+    ? "Withheld - ISO 4406 code failed validity check"
+    : !derivationTriplet || validTripletSamples.length < 2
+      ? `Needs ≥2 valid multi-channel samples (${validTripletSamples.length} on file)`
+      : particleRatio.diagnosis;
+
+  const overshootRows = derivationTriplet
+    ? ([">4μm", ">6μm", ">14μm"] as const).map((channel, index) => {
+        const current = derivationTriplet[index];
+        const target = TARGET[index];
+        const steps = current - target;
+        return {
+          channel,
+          current,
+          target,
+          steps,
+          multiplier: steps > 0 ? 2 ** steps : 1
+        };
+      })
+    : [];
+
+  const chartData = windowed.map((s) => {
     const triplet = getIsoTriplet(s);
+    const valid = validateIsoTriplet(triplet).valid;
     return {
       date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
       p4: logSafe(s.particles4um),
       p6: logSafe(s.particles6um),
       p14: logSafe(s.particles14um),
-      iso4: triplet?.[0] ?? null,
-      iso6: triplet?.[1] ?? null,
-      iso14: triplet?.[2] ?? null
+      // Invalid codes stay visible in the table, but the trend line only plots
+      // physically consistent codes so a typo cannot invent a spike.
+      iso4: valid ? triplet?.[0] ?? null : null,
+      iso6: valid ? triplet?.[1] ?? null : null,
+      iso14: valid ? triplet?.[2] ?? null : null
     };
   });
 
@@ -189,6 +325,11 @@ export function OilCleanlinessTab({
     backgroundColor: "#0f172a",
     border: "1px solid #334155"
   };
+
+  const previousSequence = previousIso
+    ? sequenceNumber.get(previousIso.sample)
+    : undefined;
+  const latestSequence = sequenceNumber.get(latest);
 
   return (
     <div className="space-y-6 p-4">
@@ -199,8 +340,51 @@ export function OilCleanlinessTab({
         <p className="text-sm text-slate-400 mt-1">
           Latest sample {formatSampleDate(latest.sampleDate)} ·{" "}
           {latest.operatingHours.toLocaleString()} operating hours
+          {latestSequence != null ? ` · sample #${latestSequence}` : ""}
         </p>
+        {windowActive && (
+          <p className="text-xs text-slate-500 mt-1">
+            Window {windowStart || "open start"} &ndash;{" "}
+            {windowEnd || "open end"} · {windowed.length} of {samples.length}{" "}
+            samples in range
+          </p>
+        )}
       </div>
+
+      {invalidSamples.length > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-300"
+        >
+          <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold">
+              {ISO_TRIPLET_DATA_QUALITY_WARNING}
+            </p>
+            <p className="text-sm mt-0.5">
+              {latestInvalid
+                ? "The latest sample"
+                : `${invalidSamples.length} sample${invalidSamples.length === 1 ? "" : "s"} in range`}{" "}
+              failed the ISO 4406 triplet check
+              {latestInvalid ? " (shown raw below)" : ""}. Degradation alerts,
+              NAS/SAE equivalencies, filtration recommendations, overshoot
+              comparisons and fine/coarse classification are suppressed for
+              invalid samples. Re-check the lab report before acting.
+            </p>
+            {latestInvalid && latestValidation.issues.length > 0 && (
+              <ul className="mt-1 list-disc pl-5 text-xs text-amber-200/80">
+                {latestValidation.issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-1 text-xs text-amber-200/70">
+              Valid range for this gate: whole ISO codes {ISO_CODE_SCALE_MIN}–
+              {ISO_CODE_SCALE_MAX}, with &gt;4μm ≥ &gt;6μm ≥ &gt;14μm.
+            </p>
+          </div>
+        </div>
+      )}
 
       {notchAlert && (
         <div className="flex items-start gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-red-300">
@@ -211,8 +395,10 @@ export function OilCleanlinessTab({
             </p>
             <p className="text-sm mt-0.5">
               Cleanliness degraded by {NOTCH_ALERT_THRESHOLD}+ ISO notches since{" "}
-              {formatSampleDate(previousIso?.sample.sampleDate)}. Check filter
-              condition, seals, and breathers.
+              {previousSequence != null
+                ? `sample #${previousSequence} (${formatSampleDate(previousIso?.sample.sampleDate)})`
+                : formatSampleDate(previousIso?.sample.sampleDate)}
+              . Check filter condition, seals, and breathers.
             </p>
           </div>
         </div>
@@ -225,22 +411,35 @@ export function OilCleanlinessTab({
             ISO 4406 (Current)
           </div>
           <div
-            className={`text-3xl font-bold font-mono ${latestIso ? "text-white" : "text-slate-600"}`}
+            className={`text-3xl font-bold font-mono ${
+              latestTriplet
+                ? latestInvalid
+                  ? "text-amber-300"
+                  : "text-white"
+                : "text-slate-600"
+            }`}
           >
-            {formatIsoCode(latestIso)}
+            {formatIsoCode(latestTriplet)}
           </div>
           <div className="text-xs text-slate-500">
-            Target {TARGET.join("/")} · &gt;4μm / &gt;6μm / &gt;14μm
+            Target {TARGET.join("/")} · {TARGET_BASIS_LABEL} · &gt;4μm / &gt;6μm
+            / &gt;14μm
           </div>
-          {latestIso && (
+          {latestTriplet && (
             <div
               className={`mt-2 inline-flex w-fit rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                atTarget
-                  ? "border-green-500/40 bg-green-500/10 text-green-300"
-                  : "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
+                latestInvalid
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
+                  : atTarget
+                    ? "border-green-500/40 bg-green-500/10 text-green-300"
+                    : "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
               }`}
             >
-              {atTarget ? "At or below target" : "Above target"}
+              {latestInvalid
+                ? `${TARGET_BASIS_SHORT} comparison withheld`
+                : atTarget
+                  ? `At or below ${TARGET_BASIS_SHORT}`
+                  : `Above ${TARGET_BASIS_SHORT}`}
             </div>
           )}
         </div>
@@ -266,14 +465,23 @@ export function OilCleanlinessTab({
                   .join(" / ")}
               </div>
               <div className="text-xs text-slate-500">
-                notches vs {formatSampleDate(previousIso?.sample.sampleDate)}
+                notches vs{" "}
+                {previousSequence != null
+                  ? `sample #${previousSequence} `
+                  : ""}
+                ({formatSampleDate(previousIso?.sample.sampleDate)})
+                {previousIso?.sample.sampleDate === latest.sampleDate
+                  ? " · same-day earlier entry"
+                  : ""}
               </div>
             </>
           ) : (
             <>
               <div className="text-2xl font-bold text-slate-600">—</div>
               <div className="text-xs text-slate-500">
-                Needs two samples with ISO codes
+                {latestInvalid
+                  ? "Withheld - ISO 4406 code failed validity check"
+                  : "Needs two samples with valid ISO codes"}
               </div>
             </>
           )}
@@ -285,32 +493,36 @@ export function OilCleanlinessTab({
             Reference Equivalency
           </div>
           <div
-            className={`text-2xl font-bold ${latestIso ? "text-white" : "text-slate-600"}`}
+            className={`text-2xl font-bold ${
+              derivationTriplet ? "text-white" : "text-slate-600"
+            }`}
           >
-            {latestIso
-              ? `NAS 1638 ~ ${isoToNasClass(latestIso[1])} | SAE AS4059 ~ ${isoToSaeClass(latestIso[1])}`
+            {derivationTriplet
+              ? `NAS 1638 ~ ${isoToNasClass(derivationTriplet[1])} | SAE AS4059 ~ ${isoToSaeClass(derivationTriplet[1])}`
               : "—"}
           </div>
           <div className="text-xs text-slate-500">
-            Reference equivalency, not certified conversion
+            {latestInvalid
+              ? "Withheld - ISO 4406 code failed validity check"
+              : "Reference equivalency, not certified conversion"}
           </div>
         </div>
 
-        {/* Siltation vs spalling */}
+        {/* Fine / coarse descriptive profile */}
         <div className={CARD_BASE}>
           <div className="text-xs uppercase tracking-wide text-slate-500">
             Fine / Coarse Ratio
           </div>
           <div
-            className={`text-2xl font-bold ${particleRatio.ratio != null ? "text-white" : "text-slate-600"}`}
+            className={`text-2xl font-bold ${
+              particleRatio.ratio != null ? "text-white" : "text-slate-600"
+            }`}
           >
             {particleRatio.ratio != null
               ? `${particleRatio.ratio.toFixed(1)}:1`
               : "—"}
           </div>
-          <div className="text-xs text-slate-500">
-            {particleRatio.diagnosis}
-          </div>
+          <div className="text-xs text-slate-500">{ratioNote}</div>
         </div>
 
         {/* Filtration recommendation */}
@@ -319,19 +531,98 @@ export function OilCleanlinessTab({
             Recommended Filtration
           </div>
           <div
-            className={`text-base font-semibold ${latestIso ? "text-cyan-300" : "text-slate-600"}`}
+            className={`text-base font-semibold ${
+              derivationTriplet ? "text-cyan-300" : "text-slate-600"
+            }`}
           >
-            {latestIso ? recommendedFilterBeta(latestIso, TARGET) : "—"}
+            {derivationTriplet
+              ? recommendedFilterBeta(derivationTriplet, TARGET)
+              : "—"}
           </div>
           <div className="text-xs text-slate-500">
-            {latestIso
-              ? `Based on worst-channel overshoot against target ${TARGET.join("/")}`
-              : "ISO codes not reported"}
+            {latestInvalid
+              ? "Withheld - ISO 4406 code failed validity check"
+              : derivationTriplet
+                ? `Based on worst-channel overshoot against the ${TARGET_BASIS_SHORT} ${TARGET.join("/")} (not a stored per-asset spec). ${FILTER_BETA_GUIDANCE_BASIS}`
+                : "ISO codes not reported"}
           </div>
         </div>
       </div>
 
-      {/* Trend chart: raw counts when available, ISO codes otherwise */}
+      {/* Overshoot matrix — one row per channel, gated on a valid triplet */}
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Target Overshoot Matrix
+        </h3>
+        <p className="text-sm text-slate-400 mb-4">
+          Per-channel step deltas and 2^steps concentration multipliers against
+          the {TARGET_BASIS_LABEL} ({TARGET.join("/")}). Each ISO code step is
+          roughly a doubling of particle concentration.
+        </p>
+
+        {derivationTriplet ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left text-slate-300">
+              <thead className="text-xs uppercase bg-slate-800 text-slate-400">
+                <tr>
+                  <th className="px-4 py-3">Channel</th>
+                  <th className="px-4 py-3">Current code</th>
+                  <th className="px-4 py-3">
+                    {TARGET_BASIS_SHORT} target
+                  </th>
+                  <th className="px-4 py-3">Step delta</th>
+                  <th className="px-4 py-3">2^steps multiplier</th>
+                </tr>
+              </thead>
+              <tbody>
+                {overshootRows.map((row) => (
+                  <tr
+                    key={row.channel}
+                    className="border-b border-slate-700/70"
+                  >
+                    <td className="px-4 py-3 font-mono">{row.channel}</td>
+                    <td className="px-4 py-3 font-mono">{row.current}</td>
+                    <td className="px-4 py-3 font-mono">{row.target}</td>
+                    <td
+                      className={`px-4 py-3 font-mono ${
+                        row.steps > 0
+                          ? "text-yellow-300"
+                          : "text-green-400"
+                      }`}
+                    >
+                      {row.steps > 0 ? `+${row.steps}` : String(row.steps)}
+                    </td>
+                    <td className="px-4 py-3 font-mono">
+                      {row.steps > 0 ? `${row.multiplier.toLocaleString()}×` : "1×"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-3 text-xs text-slate-500">
+              Worst-channel guidance:{" "}
+              {filterBetaGuidanceFor(worstOvershoot ?? 0).recommendation}{" "}
+              {FILTER_BETA_GUIDANCE_BASIS}
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            <p className="font-semibold text-slate-400">
+              Overshoot comparison withheld
+            </p>
+            <p className="mt-1">
+              {latestInvalid
+                ? `${ISO_TRIPLET_DATA_QUALITY_WARNING}. No step delta or concentration multiplier is derived from an invalid code.`
+                : "No complete ISO 4406 triplet in the latest in-window sample."}
+            </p>
+          </div>
+        )}
+        <p className="mt-3 text-xs text-slate-500">
+          Target basis: {TARGET_BASIS_LABEL}. {FILTER_BETA_GUIDANCE_BASIS}
+        </p>
+      </div>
+
+      {/* Trend chart: raw counts when available, valid ISO codes otherwise */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
         <h3 className="text-lg font-semibold text-white mb-1">
           {anyRawCounts ? "Particle Count Trend" : "ISO 4406 Code Trend"}
@@ -484,6 +775,7 @@ export function OilCleanlinessTab({
         <table className="w-full text-sm text-left text-slate-300">
           <thead className="text-xs uppercase bg-slate-800 text-slate-400">
             <tr>
+              <th className="px-4 py-3">#</th>
               <th className="px-4 py-3">Date</th>
               <th className="px-4 py-3">Hours</th>
               <th className="px-4 py-3">ISO 4406</th>
@@ -495,25 +787,40 @@ export function OilCleanlinessTab({
             </tr>
           </thead>
           <tbody>
-            {samples.map((s, idx) => {
+            {windowed.map((s, idx) => {
               const triplet = getIsoTriplet(s);
+              const validation = validateIsoTriplet(triplet);
+              const invalid = validation.present && !validation.valid;
               return (
                 <tr
                   key={s.id ?? `${s.sampleDate}-${idx}`}
-                  className="border-b border-slate-700 hover:bg-slate-800/50"
+                  className={`border-b border-slate-700 hover:bg-slate-800/50 ${
+                    invalid ? "bg-amber-500/5" : ""
+                  }`}
                 >
+                  <td className="px-4 py-3 font-mono text-slate-500">
+                    {sequenceNumber.get(s) ?? idx + 1}
+                  </td>
                   <td className="px-4 py-3">{formatSampleDate(s.sampleDate)}</td>
                   <td className="px-4 py-3">
                     {s.operatingHours.toLocaleString()}
                   </td>
                   <td className="px-4 py-3 font-mono">
                     {formatIsoCode(triplet)}
+                    {invalid && (
+                      <span
+                        className="ml-1 text-amber-400"
+                        title={ISO_TRIPLET_DATA_QUALITY_WARNING}
+                      >
+                        ⚠
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 font-mono">
-                    {triplet ? isoToNasClass(triplet[1]) : "—"}
+                    {validation.valid ? isoToNasClass(triplet![1]) : "—"}
                   </td>
                   <td className="px-4 py-3 font-mono">
-                    {triplet ? isoToSaeClass(triplet[1]) : "—"}
+                    {validation.valid ? isoToSaeClass(triplet![1]) : "—"}
                   </td>
                   <td className="px-4 py-3 font-mono">
                     {formatCount(s.particles4um)}
@@ -531,7 +838,9 @@ export function OilCleanlinessTab({
         </table>
         <p className="px-4 py-3 text-xs text-slate-500 border-t border-slate-700">
           NAS 1638 and SAE AS4059 columns are reference equivalencies derived
-          from the ISO &gt;6μm code, not certified conversions.
+          from the ISO &gt;6μm code, not certified conversions. ISO 4406 codes
+          and NAS/SAE classes are dimensionless; particle counts are per mL.
+          Invalid triplets are shown raw with their equivalencies withheld.
         </p>
       </div>
     </div>

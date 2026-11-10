@@ -15,7 +15,10 @@ import {
   type MorphologyMap,
   type OilSample
 } from "../types/oilAnalysis";
-import { toSampleDateKey } from "./oilAnalysisMetrics";
+import {
+  orderOilSamplesBySequence,
+  toSampleDateKey
+} from "./oilAnalysisMetrics";
 
 export const OIL_ANALYSIS_API_PATH = "/api/oil-analysis";
 
@@ -24,6 +27,7 @@ export type OilSampleDbRow = {
   asset_id?: string;
   sample_date: string | Date;
   operating_hours: number | string;
+  created_at?: string | Date | null;
   iron?: number | string | null;
   copper?: number | string | null;
   chromium?: number | string | null;
@@ -90,6 +94,13 @@ function optStr(raw: unknown): string | undefined {
   return s === "" ? undefined : s;
 }
 
+/** Normalize a DB timestamp to an ISO string for deterministic ordering. */
+function optTimestamp(raw: unknown): string | undefined {
+  if (raw == null || raw === "") return undefined;
+  const date = raw instanceof Date ? raw : new Date(String(raw));
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 /** Only recognized severities survive; legacy/garbage values are dropped. */
 function optSeverity(raw: unknown): MorphSeverity | undefined {
   const s = optStr(raw)?.toLowerCase().replace(/[\s-]+/g, "_");
@@ -118,6 +129,7 @@ export function mapOilSampleRow(
     assetId: row.asset_id || assetId,
     sampleDate: toSampleDateKey(row.sample_date),
     operatingHours: num(row.operating_hours),
+    createdAt: optTimestamp(row.created_at),
 
     iron: optNum(row.iron),
     copper: optNum(row.copper),
@@ -183,8 +195,9 @@ export async function fetchOilSamples(assetId: string): Promise<OilSample[]> {
   if (!res.ok) throw new Error("Failed to fetch oil analysis history");
 
   const data = (await res.json()) as { samples?: OilSampleDbRow[] };
-  return (data.samples || [])
-    .map((row) => mapOilSampleRow(row, assetId))
-    .filter((s) => s.sampleDate !== "")
-    .sort((a, b) => a.sampleDate.localeCompare(b.sampleDate));
+  return orderOilSamplesBySequence(
+    (data.samples || [])
+      .map((row) => mapOilSampleRow(row, assetId))
+      .filter((s) => s.sampleDate !== "")
+  );
 }
