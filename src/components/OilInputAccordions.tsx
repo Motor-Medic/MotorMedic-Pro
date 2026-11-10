@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { OilReportData } from "../types/oilVision";
 import type { WearMetalKey } from "../types/oilAnalysis";
 import { oilWearMetalDef, OIL_TIN_PPM_LABEL, OIL_NICKEL_PPM_LABEL } from "../lib/maintenance/prescriptiveDictionary";
+import { parseIsoCode } from "../lib/oilAnalysisMetrics";
+import type { OilLabSnapshot } from "../lib/oilDiagnosticSave";
 import OilVisionDropzone from "./trendAnalyzer/OilVisionDropzone";
 
 type OilAccordionSection = "identity" | "telemetry" | "spectroscopy" | "degradation";
@@ -263,6 +265,11 @@ export interface OilInputAccordionsProps {
   };
   onExtractionStatusChange?: (isExtracting: boolean) => void;
   onSumpCapacityChange?: (gallons: number | null) => void;
+  /**
+   * Emits the current lab values so Run Diagnostics can persist them to the
+   * oil SSOT (`oil_samples`) — the same store the Trend Analyzer Oil tab reads.
+   */
+  onSnapshotChange?: (snapshot: OilLabSnapshot) => void;
 }
 
 function sanitizePpmOil(v: number | null | undefined): number | null {
@@ -282,7 +289,8 @@ export default function OilInputAccordions({
   onToast,
   equipment,
   onExtractionStatusChange,
-  onSumpCapacityChange
+  onSumpCapacityChange,
+  onSnapshotChange
 }: OilInputAccordionsProps) {
   const [openSections, setOpenSections] = useState<OilAccordionSection[]>([]);
   const [oilParsing, setOilParsing] = useState(false);
@@ -551,6 +559,52 @@ export default function OilInputAccordions({
     },
     [applyOilReportToForm, onToast, equipment?.assetTag, equipment?.assetLabel]
   );
+
+  const labSnapshot = useMemo<OilLabSnapshot>(() => {
+    const num = (raw: string): number | null => {
+      const trimmed = raw.trim();
+      if (trimmed === "") return null;
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const iso = parseIsoCode(iso4406Code);
+    return {
+      iron: num(ppm.fe ?? ""),
+      copper: num(ppm.cu ?? ""),
+      chromium: num(ppm.cr ?? ""),
+      lead: num(ppm.pb ?? ""),
+      aluminum: num(ppm.al ?? ""),
+      silicon: num(ppm.si ?? ""),
+      tin: num(ppm.sn ?? ""),
+      nickel: num(ppm.ni ?? ""),
+      viscosity40C: num(visc40),
+      viscosity100C: num(visc100),
+      acidNumber: num(tan),
+      tbn: num(tbn),
+      waterPpm: num(waterPpm),
+      oxidation: num(ftirOxidation),
+      nitration: num(ftirNitration),
+      iso4um: iso?.[0] ?? null,
+      iso6um: iso?.[1] ?? null,
+      iso14um: iso?.[2] ?? null,
+      operatingHours: num(assetHours)
+    };
+  }, [
+    ppm,
+    visc40,
+    visc100,
+    tan,
+    tbn,
+    waterPpm,
+    ftirOxidation,
+    ftirNitration,
+    iso4406Code,
+    assetHours
+  ]);
+
+  useEffect(() => {
+    onSnapshotChange?.(labSnapshot);
+  }, [labSnapshot, onSnapshotChange]);
 
   return (
     <FlagContext.Provider value={flaggedFields}>

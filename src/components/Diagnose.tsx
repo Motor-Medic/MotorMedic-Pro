@@ -88,6 +88,12 @@ import {
   isEstimatedExtractionMode
 } from "../lib/oilVisionExtractor";
 import {
+  buildOilSampleSavePayload,
+  hasOilLabData,
+  OIL_ANALYSIS_API_PATH,
+  type OilLabSnapshot
+} from "../lib/oilDiagnosticSave";
+import {
   SPECTRAL_EXTRACTION_FAILED_MSG,
   SPECTRAL_EXTRACTION_TIMEOUT_MSG,
   VISION_MODEL_CONFIG
@@ -1681,6 +1687,9 @@ export default function Diagnose({
   const [thermoExtracting, setThermoExtracting] = useState(false);
   const [ultrasoundExtracting, setUltrasoundExtracting] = useState(false);
   const [oilSumpGallons, setOilSumpGallons] = useState<number | null>(null);
+  const [oilLabSnapshot, setOilLabSnapshot] = useState<OilLabSnapshot | null>(
+    null
+  );
   const isAnyVisionExtracting =
     vibrationExtractStatus === "extracting" ||
     mcaExtracting ||
@@ -2180,6 +2189,7 @@ export default function Diagnose({
     setVibFlaggedFields([]);
     setUltrasoundSnapshot(null);
     setMcaSnapshot(null);
+    setOilLabSnapshot(null);
     setThermoTelemetry(null);
     setThermographyPeaks(null);
     setUltrasoundPeaks(null);
@@ -3561,6 +3571,95 @@ useEffect(() => {
       return;
     }
 
+    if (activeTech === "oil") {
+      // Oil is a lab sample, not a vibration run: persist it to the oil SSOT
+      // (`oil_samples`) that the Trend Analyzer Oil tab actually reads. Without
+      // this write the run renders in the dashboard but never reaches Wear
+      // Metals / Fluid Chemistry / Cleanliness / Ferrography.
+      setShowResults(false);
+      setAnalysisResult(null);
+      setGaugeScore(0);
+      setStepIdx(0);
+      setProgress(12);
+      setIsAnalyzing(true);
+      setAnalysisError(null);
+      clearAnalysisTimers();
+
+      ANALYSIS_STEPS.forEach((_, i) => {
+        if (i === 0) return;
+        analysisTimersRef.current.push(
+          window.setTimeout(() => {
+            setStepIdx((prev) => Math.max(prev, i));
+            setProgress((p) =>
+              Math.min(
+                90,
+                Math.max(p, Math.round(((i + 1) / ANALYSIS_STEPS.length) * 85))
+              )
+            );
+          }, Math.round(i * 700))
+        );
+      });
+
+      try {
+        // hasOil gate: a run with no measured lab value is dropped, but any
+        // real measurement (including a measured 0) is saved.
+        if (!hasOilLabData(oilLabSnapshot)) {
+          throw new Error(
+            "Enter or upload at least one oil lab measurement (wear metal, viscosity, TAN/TBN, water or particle count) before running Advanced Diagnostic."
+          );
+        }
+
+        // Same key Trend Analyzer uses for its oil fetch (tag first, then id).
+        const oilAssetKey =
+          (browseAssetTag && String(browseAssetTag).trim()) ||
+          (selectedAsset?.tag && String(selectedAsset.tag).trim()) ||
+          (selectedAsset?.id != null ? String(selectedAsset.id) : null) ||
+          selectedAsset?.label ||
+          "unknown-asset";
+        const sampleDate = new Date().toISOString().slice(0, 10);
+        const payload = buildOilSampleSavePayload(
+          oilLabSnapshot,
+          oilAssetKey,
+          sampleDate
+        );
+        if (!payload) {
+          throw new Error("Oil sample could not be prepared for saving.");
+        }
+
+        const res = await fetch(OIL_ANALYSIS_API_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data?.error || `Oil sample save failed (HTTP ${res.status})`);
+        }
+
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        setProgress(100);
+        setStepIdx(ANALYSIS_STEPS.length);
+        setShowResults(true);
+        window.setTimeout(() => {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }, 80);
+        toast("Oil sample saved — visible in Trend Analyzer.", "success");
+      } catch (err) {
+        clearAnalysisTimers();
+        setIsAnalyzing(false);
+        const message =
+          err instanceof Error ? err.message : "Failed to save oil analysis.";
+        setAnalysisError({
+          title: "Oil Analysis Error",
+          message,
+          errorType: "ANALYSIS_ERROR"
+        });
+        toast(message, "error");
+      }
+      return;
+    }
+
     if (activeTech !== "vibration") {
       // Other non-vibration techs keep the lightweight simulated path
       setUnit("velocity");
@@ -4684,6 +4783,7 @@ useEffect(() => {
               onToast={(msg, type) => toast(msg, type ?? "info")}
               onExtractionStatusChange={setOilExtracting}
               onSumpCapacityChange={setOilSumpGallons}
+              onSnapshotChange={setOilLabSnapshot}
               equipment={{
                 route: browseRoute || undefined,
                 assetTag: selectedAsset?.tag || browseAssetTag || undefined,
