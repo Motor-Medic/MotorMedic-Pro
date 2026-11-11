@@ -4,10 +4,15 @@
  * Reads saved oil_samples only. DR indices are derived from drLarge/drSmall at
  * render time; every unmeasured field renders as "—" rather than a placeholder
  * number.
+ *
+ * Every derived value is gated on the physical range of the readings it needs.
+ * A stored DL/DS/MPC/RULER/UC value outside that range is still shown raw (it
+ * is the lab record), but it cannot produce WPC/WSI/PLP, a band badge, the
+ * varnish risk index, an onset projection or a morphology transition alert.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ImageOff, Microscope } from "lucide-react";
+import { AlertTriangle, ImageOff, Microscope, ShieldAlert } from "lucide-react";
 import {
   CartesianGrid,
   Legend,
@@ -19,21 +24,30 @@ import {
   YAxis
 } from "recharts";
 import {
+  FERROGRAPHY_DATA_QUALITY_WARNING,
   MORPH_CATEGORIES,
   detectMorphologyTransitions,
+  distinctDatePoints,
   drFerroIndices,
   formatSampleDate,
+  isDrDensityValid,
+  isMpcDeltaEValid,
+  isRulerPercentValid,
+  isUcRatingValid,
   linearRatePerHour,
   mpcBand,
+  orderOilSamplesBySequence,
   primaryMorphology,
   projectHoursToThreshold,
   rulerBand,
+  validateFerrographySample,
   varnishRiskIndex,
   type MorphSeverity,
   type MpcBand,
   type RulerBand
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
+import { filterOilSamplesToWindow } from "../../lib/oilTribologyGuidance";
 import {
   MORPH_OBSERVATION_LABEL,
   type OilSample
@@ -43,11 +57,49 @@ export interface OilFerrographyVarnishTabProps {
   assetId: string;
   /** Bump from parent after Add Sample modal saves to re-fetch. */
   refreshKey?: number;
+  /** Toolbar From date (YYYY-MM-DD); null/empty means open start. */
+  windowStart?: string | null;
+  /** Toolbar To date (YYYY-MM-DD); null/empty means open end. */
+  windowEnd?: string | null;
 }
 
-/** Varnish onset thresholds used for the projection panel. */
+/**
+ * Varnish onset thresholds used for the projection panel. These are in-repo
+ * default bands, not an OEM or lab limit.
+ */
 const MPC_ONSET = 30;
 const RULER_ONSET = 25;
+
+/** A projection needs three distinct sample dates carrying the reading. */
+const MIN_PROJECTION_DATES = 3;
+
+const ONSET_THRESHOLD_BASIS =
+  "in-repo default band (MPC 30 ΔE / RULER 25%), not an OEM or lab limit";
+
+type SampleRange = "ALL" | "7D" | "30D" | "90D" | "1Y";
+
+const RANGE_DAYS: Record<Exclude<SampleRange, "ALL">, number> = {
+  "7D": 7,
+  "30D": 30,
+  "90D": 90,
+  "1Y": 365
+};
+
+const RANGE_OPTIONS: readonly SampleRange[] = [
+  "ALL",
+  "7D",
+  "30D",
+  "90D",
+  "1Y"
+] as const;
+
+/** Local calendar-day key N days ago; the window predicate reads YYYY-MM-DD. */
+function dateKeyDaysAgo(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
 
 const CARD_BASE =
   "rounded-lg border border-slate-700 bg-slate-800/40 p-4 flex flex-col gap-1";
@@ -82,6 +134,9 @@ const SEVERITY_LABELS: Record<MorphSeverity, string> = {
   severe: "Severe"
 };
 
+const OUT_OF_RANGE_NOTE =
+  "Out of range — see data-quality warning";
+
 function hasFerrographyData(s: OilSample): boolean {
   return (
     s.drLarge != null ||
@@ -115,11 +170,19 @@ function projectionText(
   unit: string,
   threshold: number,
   current: number | undefined,
+  fieldInvalid: boolean,
+  distinctDates: number,
   hoursToThreshold: number | null,
   latestHours: number
 ): string {
+  if (fieldInvalid) {
+    return `${label}: cannot project — reading failed the data-quality check (shown raw above).`;
+  }
   if (current == null || !Number.isFinite(current)) {
     return `${label}: not measured — cannot project.`;
+  }
+  if (distinctDates < MIN_PROJECTION_DATES) {
+    return `${label}: cannot project — insufficient dated samples (${distinctDates} of ${MIN_PROJECTION_DATES} required).`;
   }
   if (hoursToThreshold == null) {
     return `${label}: no onset projected on current trend (now ${current}${unit}).`;
@@ -133,11 +196,14 @@ function projectionText(
 
 export function OilFerrographyVarnishTab({
   assetId,
-  refreshKey = 0
+  refreshKey = 0,
+  windowStart = null,
+  windowEnd = null
 }: OilFerrographyVarnishTabProps) {
   const [samples, setSamples] = useState<OilSample[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [timeRange, setTimeRange] = useState<SampleRange>("ALL");
 
   const loadSamples = useCallback(async () => {
     if (!assetId) {
@@ -161,9 +227,27 @@ export function OilFerrographyVarnishTab({
     void loadSamples();
   }, [loadSamples, refreshKey]);
 
-  const anyDrData = useMemo(
-    () => samples.some((s) => s.drLarge != null && s.drSmall != null),
+  // Deterministic oldest → newest sequence (date, created_at, id) so two
+  // same-day uploads never swap the "latest" sample between reads.
+  const orderedSamples = useMemo(
+    () => orderOilSamplesBySequence(samples),
     [samples]
+  );
+
+  const parentWindowActive = Boolean(
+    (windowStart != null && windowStart !== "") ||
+      (windowEnd != null && windowEnd !== "")
+  );
+  const windowActive = parentWindowActive || timeRange !== "ALL";
+  const toolbarStart =
+    timeRange === "ALL" ? null : dateKeyDaysAgo(RANGE_DAYS[timeRange]);
+  const effectiveStart =
+    windowStart != null && windowStart !== "" ? windowStart : toolbarStart;
+
+  const windowed = useMemo(
+    () =>
+      filterOilSamplesToWindow(orderedSamples, effectiveStart, windowEnd),
+    [orderedSamples, effectiveStart, windowEnd]
   );
 
   if (!assetId) {
@@ -189,98 +273,228 @@ export function OilFerrographyVarnishTab({
     return <div className="p-8 text-center text-red-500">Error: {error}</div>;
   }
 
-  if (samples.length === 0 || !samples.some(hasFerrographyData)) {
+  if (samples.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
         <Microscope className="h-6 w-6 text-slate-600 mb-3" />
-        <p className="text-lg font-semibold">
-          {samples.length === 0
-            ? "No Oil Analysis Data"
-            : "No Ferrography or Varnish Data"}
-        </p>
+        <p className="text-lg font-semibold">No Oil Analysis Data</p>
         <p className="text-sm mt-2 text-center max-w-md px-4">
-          {samples.length === 0
-            ? "Click “+ Add Sample” above to upload a lab report image or CSV."
-            : `${samples.length} sample${samples.length === 1 ? "" : "s"} on file, but none include MPC, RULER, DR ferrography, or wear morphology. Add a report with these tests via “+ Add Sample”.`}
+          Click “+ Add Sample” above to upload a lab report image or CSV.
         </p>
       </div>
     );
   }
 
-  const latest = samples[samples.length - 1];
-  const dr = drFerroIndices(latest.drLarge, latest.drSmall);
-  const riskIndex = varnishRiskIndex(latest.mpcDeltaE, latest.rulerPercent);
+  if (windowActive && windowed.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
+        <Microscope className="h-6 w-6 text-slate-600 mb-3" />
+        <p className="text-lg font-semibold">
+          No oil samples in the selected date range
+        </p>
+        <p className="text-sm mt-2 text-center max-w-md px-4">
+          Clear the From / To range or choose “All” to see all{" "}
+          {samples.length} saved sample{samples.length === 1 ? "" : "s"}.
+        </p>
+      </div>
+    );
+  }
 
-  // Rates measured only across samples that actually carry the reading.
-  const mpcPoints = samples
-    .filter((s) => s.mpcDeltaE != null && Number.isFinite(s.mpcDeltaE))
-    .map((s) => ({ hours: s.operatingHours, value: s.mpcDeltaE as number }));
-  const rulerPoints = samples
-    .filter((s) => s.rulerPercent != null && Number.isFinite(s.rulerPercent))
-    .map((s) => ({ hours: s.operatingHours, value: s.rulerPercent as number }));
+  if (!windowed.some(hasFerrographyData)) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-400 border border-dashed border-slate-700 rounded-lg">
+        <Microscope className="h-6 w-6 text-slate-600 mb-3" />
+        <p className="text-lg font-semibold">No Ferrography or Varnish Data</p>
+        <p className="text-sm mt-2 text-center max-w-md px-4">
+          {`${windowed.length} sample${windowed.length === 1 ? "" : "s"} on file, but none include MPC, RULER, DR ferrography, or wear morphology. Add a report with these tests via “+ Add Sample”.`}
+        </p>
+      </div>
+    );
+  }
 
-  const mpcRate = linearRatePerHour(mpcPoints);
-  const rulerRate = linearRatePerHour(rulerPoints);
+  const latest = windowed[windowed.length - 1];
+  const latestValidation = validateFerrographySample(latest);
+  const latestInvalid = latestValidation.present && !latestValidation.valid;
+  const invalidSamples = windowed.filter((sample) => {
+    const validation = validateFerrographySample(sample);
+    return validation.present && !validation.valid;
+  });
+
+  // A field is only usable when it was measured AND sits in its physical range.
+  const mpcValid = isMpcDeltaEValid(latest.mpcDeltaE);
+  const rulerValid = isRulerPercentValid(latest.rulerPercent);
+  const ucValid = isUcRatingValid(latest.ucRating);
+  const drValid =
+    isDrDensityValid(latest.drLarge) && isDrDensityValid(latest.drSmall);
+  const drFieldInvalid =
+    (latest.drLarge != null && !isDrDensityValid(latest.drLarge)) ||
+    (latest.drSmall != null && !isDrDensityValid(latest.drSmall));
+  const riskFieldInvalid =
+    (latest.mpcDeltaE != null && !mpcValid) ||
+    (latest.rulerPercent != null && !rulerValid);
+
+  const dr = drValid
+    ? drFerroIndices(latest.drLarge, latest.drSmall)
+    : null;
+  const riskIndex =
+    mpcValid && rulerValid
+      ? varnishRiskIndex(latest.mpcDeltaE, latest.rulerPercent)
+      : null;
+
+  // Rates use one point per distinct date that actually carries the reading.
+  const mpcPoints = distinctDatePoints(windowed, (sample) =>
+    isMpcDeltaEValid(sample.mpcDeltaE) ? sample.mpcDeltaE! : null
+  );
+  const rulerPoints = distinctDatePoints(windowed, (sample) =>
+    isRulerPercentValid(sample.rulerPercent) ? sample.rulerPercent! : null
+  );
+
+  const mpcCanProject = mpcPoints.length >= MIN_PROJECTION_DATES;
+  const rulerCanProject = rulerPoints.length >= MIN_PROJECTION_DATES;
+
+  const mpcRate = mpcCanProject ? linearRatePerHour(mpcPoints) : null;
+  const rulerRate = rulerCanProject ? linearRatePerHour(rulerPoints) : null;
 
   const mpcHours =
-    latest.mpcDeltaE != null
-      ? projectHoursToThreshold(latest.mpcDeltaE, mpcRate, MPC_ONSET, "rising")
+    mpcCanProject && mpcValid
+      ? projectHoursToThreshold(
+          latest.mpcDeltaE as number,
+          mpcRate,
+          MPC_ONSET,
+          "rising"
+        )
       : null;
   const rulerHours =
-    latest.rulerPercent != null
+    rulerCanProject && rulerValid
       ? projectHoursToThreshold(
-          latest.rulerPercent,
+          latest.rulerPercent as number,
           rulerRate,
           RULER_ONSET,
           "falling"
         )
       : null;
 
-  // Morphology transitions compare against the previous sample that recorded any.
+  // Morphology transitions anchor to the nearest earlier VALID sample that
+  // recorded morphology. An invalid record cannot anchor a "NEW" alert.
   const previousMorphSample = (() => {
-    for (let i = samples.length - 2; i >= 0; i -= 1) {
-      const m = samples[i].morphology;
-      if (m && Object.keys(m).length > 0) return samples[i];
+    for (let i = windowed.length - 2; i >= 0; i -= 1) {
+      const candidate = windowed[i];
+      const morphology = candidate.morphology;
+      if (!morphology || Object.keys(morphology).length === 0) continue;
+      const validation = validateFerrographySample(candidate);
+      if (validation.present && !validation.valid) continue;
+      return candidate;
     }
     return null;
   })();
-  const transitions = latest.morphology
-    ? detectMorphologyTransitions(
-        previousMorphSample?.morphology ?? null,
-        latest.morphology
-      )
-    : [];
+  const transitions =
+    latest.morphology && !latestInvalid
+      ? detectMorphologyTransitions(
+          previousMorphSample?.morphology ?? null,
+          latest.morphology
+        )
+      : [];
 
-  const chartData = samples.map((s) => {
-    const indices = drFerroIndices(s.drLarge, s.drSmall);
+  const chartData = windowed.map((s) => {
+    const rowDrValid =
+      isDrDensityValid(s.drLarge) && isDrDensityValid(s.drSmall);
+    const indices = rowDrValid ? drFerroIndices(s.drLarge, s.drSmall) : null;
     return {
       date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
-      mpc: s.mpcDeltaE ?? null,
-      ruler: s.rulerPercent ?? null,
+      // Invalid readings stay in the table but never plot as a trend point.
+      mpc: isMpcDeltaEValid(s.mpcDeltaE) ? (s.mpcDeltaE as number) : null,
+      ruler: isRulerPercentValid(s.rulerPercent)
+        ? (s.rulerPercent as number)
+        : null,
       wpc: indices?.wpc ?? null,
       wsi: indices?.wsi ?? null
     };
   });
+
+  const anyDrData = windowed.some(
+    (s) => isDrDensityValid(s.drLarge) && isDrDensityValid(s.drSmall)
+  );
 
   const tooltipStyle = {
     backgroundColor: "#0f172a",
     border: "1px solid #334155"
   };
 
-  const imageSamples = samples.filter((s) => s.ferrographImageUrl);
+  const imageSamples = windowed.filter((s) => s.ferrographImageUrl);
   const compareImages = imageSamples.slice(-2);
 
   return (
     <div className="space-y-6 p-4">
-      <div>
-        <h2 className="text-xl font-bold text-white">
-          Ferrography &amp; Varnish
-        </h2>
-        <p className="text-sm text-slate-400 mt-1">
-          Latest sample {formatSampleDate(latest.sampleDate)} ·{" "}
-          {latest.operatingHours.toLocaleString()} operating hours
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="text-xl font-bold text-white">
+            Ferrography &amp; Varnish
+          </h2>
+          <p className="text-sm text-slate-400 mt-1">
+            Latest sample {formatSampleDate(latest.sampleDate)} ·{" "}
+            {latest.operatingHours.toLocaleString()} operating hours ·{" "}
+            {windowed.length} of {samples.length} samples in range
+          </p>
+          {windowActive && (
+            <p className="text-xs text-slate-500 mt-1">
+              Window {effectiveStart || "open start"} &ndash;{" "}
+              {windowEnd || "open end"} · {windowed.length} of {samples.length}{" "}
+              samples in range
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {RANGE_OPTIONS.map((range) => (
+            <button
+              key={range}
+              type="button"
+              onClick={() => setTimeRange(range)}
+              className={`px-3 py-1 rounded text-sm cursor-pointer ${
+                timeRange === range
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              }`}
+            >
+              {range === "ALL" ? "All" : range}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {invalidSamples.length > 0 && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-amber-300"
+        >
+          <ShieldAlert className="h-5 w-5 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold">
+              {FERROGRAPHY_DATA_QUALITY_WARNING}
+            </p>
+            <p className="text-sm mt-0.5">
+              {latestInvalid
+                ? "The latest sample"
+                : `${invalidSamples.length} sample${invalidSamples.length === 1 ? "" : "s"} in range`}{" "}
+              reported ferrography / varnish values outside their physical range
+              {latestInvalid ? " (shown raw below)" : ""}. WPC/WSI/PLP, band
+              badges, the varnish risk index, onset projection and morphology
+              transition alerts are suppressed for the affected readings.
+              Re-check the lab report before acting.
+            </p>
+            {latestInvalid && latestValidation.issues.length > 0 && (
+              <ul className="mt-1 list-disc pl-5 text-xs text-amber-200/80">
+                {latestValidation.issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-1 text-xs text-amber-200/70">
+              Valid ranges: DR densities ≥ 0, MPC ΔE ≥ 0, RULER 0–100%, UC
+              rating 0–8. A measured 0 stays valid.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Summary cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -289,15 +503,19 @@ export function OilFerrographyVarnishTab({
             MPC ΔE (ASTM D7843)
           </div>
           <div
-            className={`text-3xl font-bold ${latest.mpcDeltaE != null ? "text-white" : "text-slate-600"}`}
+            className={`text-3xl font-bold ${
+              latest.mpcDeltaE != null ? "text-white" : "text-slate-600"
+            }`}
           >
             {display(latest.mpcDeltaE, 1)}
           </div>
-          {latest.mpcDeltaE != null ? (
+          {mpcValid ? (
             <StatusBadge
-              text={mpcBand(latest.mpcDeltaE)}
-              styles={MPC_BAND_STYLES[mpcBand(latest.mpcDeltaE)]}
+              text={mpcBand(latest.mpcDeltaE as number)}
+              styles={MPC_BAND_STYLES[mpcBand(latest.mpcDeltaE as number)]}
             />
+          ) : latest.mpcDeltaE != null ? (
+            <div className="text-xs text-amber-300">{OUT_OF_RANGE_NOTE}</div>
           ) : (
             <div className="text-xs text-slate-500">Not measured</div>
           )}
@@ -308,15 +526,19 @@ export function OilFerrographyVarnishTab({
             RULER % (ASTM D6971)
           </div>
           <div
-            className={`text-3xl font-bold ${latest.rulerPercent != null ? "text-white" : "text-slate-600"}`}
+            className={`text-3xl font-bold ${
+              latest.rulerPercent != null ? "text-white" : "text-slate-600"
+            }`}
           >
             {display(latest.rulerPercent, 0, "%")}
           </div>
-          {latest.rulerPercent != null ? (
+          {rulerValid ? (
             <StatusBadge
-              text={rulerBand(latest.rulerPercent)}
-              styles={RULER_BAND_STYLES[rulerBand(latest.rulerPercent)]}
+              text={rulerBand(latest.rulerPercent as number)}
+              styles={RULER_BAND_STYLES[rulerBand(latest.rulerPercent as number)]}
             />
+          ) : latest.rulerPercent != null ? (
+            <div className="text-xs text-amber-300">{OUT_OF_RANGE_NOTE}</div>
           ) : (
             <div className="text-xs text-slate-500">Not measured</div>
           )}
@@ -328,7 +550,9 @@ export function OilFerrographyVarnishTab({
             <span className="normal-case text-slate-600">(0-8 scale)</span>
           </div>
           <div
-            className={`text-3xl font-bold ${latest.ucRating != null ? "text-white" : "text-slate-600"}`}
+            className={`text-3xl font-bold ${
+              latest.ucRating != null ? "text-white" : "text-slate-600"
+            }`}
           >
             {latest.ucRating != null ? latest.ucRating : "—"}
             {latest.ucRating != null && (
@@ -338,9 +562,11 @@ export function OilFerrographyVarnishTab({
             )}
           </div>
           <div className="text-xs text-slate-500">
-            {latest.ucRating != null
+            {ucValid
               ? "0-8 scale · 0 = clean, 8 = heavy insolubles"
-              : "Not measured (0-8 scale)"}
+              : latest.ucRating != null
+                ? `${OUT_OF_RANGE_NOTE} (0-8 scale)`
+                : "Not measured (0-8 scale)"}
           </div>
         </div>
 
@@ -378,6 +604,15 @@ export function OilFerrographyVarnishTab({
                 </div>
               </div>
             </div>
+          ) : latest.drLarge != null || latest.drSmall != null ? (
+            <>
+              <div className="text-2xl font-bold text-slate-600">—</div>
+              <div
+                className={`text-xs ${drFieldInvalid ? "text-amber-300" : "text-slate-500"}`}
+              >
+                {drFieldInvalid ? OUT_OF_RANGE_NOTE : "Needs both DL and DS densities"}
+              </div>
+            </>
           ) : (
             <>
               <div className="text-2xl font-bold text-slate-600">—</div>
@@ -428,6 +663,13 @@ export function OilFerrographyVarnishTab({
                 Equal weight MPC and RULER depletion
               </div>
             </>
+          ) : riskFieldInvalid ? (
+            <>
+              <div className="text-2xl font-bold text-slate-600">—</div>
+              <div className="text-xs text-amber-300">
+                Withheld — reading failed the data-quality check
+              </div>
+            </>
           ) : (
             <>
               <div className="text-2xl font-bold text-slate-600">—</div>
@@ -450,8 +692,8 @@ export function OilFerrographyVarnishTab({
           Varnish Onset Projection
         </h3>
         <p className="text-sm text-slate-400 mb-4">
-          Linear trend across samples carrying each reading — planning estimate,
-          not a guarantee
+          Linear trend across distinct-date samples carrying each reading —
+          planning estimate, not a guarantee
         </p>
         <ul className="space-y-2 text-sm">
           <li className="flex items-start gap-2 text-slate-300">
@@ -461,6 +703,8 @@ export function OilFerrographyVarnishTab({
               " ΔE",
               MPC_ONSET,
               latest.mpcDeltaE,
+              latest.mpcDeltaE != null && !mpcValid,
+              mpcPoints.length,
               mpcHours,
               latest.operatingHours
             )}
@@ -472,15 +716,17 @@ export function OilFerrographyVarnishTab({
               "%",
               RULER_ONSET,
               latest.rulerPercent,
+              latest.rulerPercent != null && !rulerValid,
+              rulerPoints.length,
               rulerHours,
               latest.operatingHours
             )}
           </li>
         </ul>
         <p className="mt-4 border-t border-slate-700/60 pt-3 text-xs leading-relaxed text-slate-500">
-          Projections use linear rates from stored samples; MPC target 30 ΔE =
-          varnish-onset threshold (default bands). No projection is shown when
-          the trend does not converge.
+          Projections use linear rates from stored samples; {ONSET_THRESHOLD_BASIS}.
+          No projection is shown without at least {MIN_PROJECTION_DATES}{" "}
+          distinct-date samples carrying the reading.
         </p>
       </div>
 
@@ -555,7 +801,7 @@ export function OilFerrographyVarnishTab({
         </div>
       </div>
 
-      {/* DR ferrograph trend — only when DL/DS exist */}
+      {/* DR ferrograph trend — only when valid DL/DS exist */}
       {anyDrData && (
         <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
           <h3 className="text-lg font-semibold text-white mb-1">
@@ -733,15 +979,34 @@ export function OilFerrographyVarnishTab({
             </tr>
           </thead>
           <tbody>
-            {samples.map((s, idx) => {
-              const indices = drFerroIndices(s.drLarge, s.drSmall);
+            {windowed.map((s, idx) => {
+              const rowDrValid =
+                isDrDensityValid(s.drLarge) && isDrDensityValid(s.drSmall);
+              const indices = rowDrValid
+                ? drFerroIndices(s.drLarge, s.drSmall)
+                : null;
               const primary = primaryMorphology(s.morphology);
+              const rowValidation = validateFerrographySample(s);
+              const rowInvalid =
+                rowValidation.present && !rowValidation.valid;
               return (
                 <tr
                   key={s.id ?? `${s.sampleDate}-${idx}`}
-                  className="border-b border-slate-700 hover:bg-slate-800/50"
+                  className={`border-b border-slate-700 hover:bg-slate-800/50 ${
+                    rowInvalid ? "bg-amber-500/5" : ""
+                  }`}
                 >
-                  <td className="px-3 py-3">{formatSampleDate(s.sampleDate)}</td>
+                  <td className="px-3 py-3">
+                    {formatSampleDate(s.sampleDate)}
+                    {rowInvalid && (
+                      <span
+                        className="ml-1 text-amber-400"
+                        title={FERROGRAPHY_DATA_QUALITY_WARNING}
+                      >
+                        ⚠
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-3">
                     {s.operatingHours.toLocaleString()}
                   </td>
@@ -785,6 +1050,11 @@ export function OilFerrographyVarnishTab({
             })}
           </tbody>
         </table>
+        <p className="px-4 py-3 text-xs text-slate-500 border-t border-slate-700">
+          Rows with an amber marker carry a reading outside its physical range;
+          their WPC, WSI and PLP columns are withheld while the raw lab values
+          stay visible.
+        </p>
       </div>
     </div>
   );

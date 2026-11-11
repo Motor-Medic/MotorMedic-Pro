@@ -621,6 +621,174 @@ export function morphSeverityRank(severity: MorphSeverity): number {
   return SEV_RANK[severity] ?? 0;
 }
 
+// ---------------------------------------------------------------------------
+// Ferrography / varnish validity gate
+// ---------------------------------------------------------------------------
+
+/** Physical display floors/ceilings for the Section 5 readings. */
+export const DR_DENSITY_MIN = 0;
+export const MPC_DELTA_E_MIN = 0;
+export const RULER_PERCENT_MIN = 0;
+export const RULER_PERCENT_MAX = 100;
+export const UC_RATING_MIN = 0;
+export const UC_RATING_MAX = 8;
+
+export const FERROGRAPHY_DATA_QUALITY_WARNING =
+  "Ferrography / varnish reading outside its physical range - verify lab entry";
+
+export type FerrographyField =
+  | "drLarge"
+  | "drSmall"
+  | "mpcDeltaE"
+  | "rulerPercent"
+  | "ucRating";
+
+export interface FerrographyFieldIssue {
+  field: FerrographyField;
+  label: string;
+  value: number;
+  message: string;
+}
+
+export interface FerrographyValidation {
+  /** At least one ferrography / varnish reading was reported. */
+  present: boolean;
+  /** Present AND every reported reading sits inside its physical range. */
+  valid: boolean;
+  /** Human-readable reasons a reported reading failed the gate. */
+  issues: string[];
+  /** Field-level detail so the UI can name raw values and gate one derivation. */
+  fieldIssues: FerrographyFieldIssue[];
+}
+
+export interface FerrographyReadings {
+  drLarge?: number | null;
+  drSmall?: number | null;
+  mpcDeltaE?: number | null;
+  rulerPercent?: number | null;
+  ucRating?: number | null;
+}
+
+const FERROGRAPHY_FIELD_LABELS: Record<FerrographyField, string> = {
+  drLarge: "DR Large (DL)",
+  drSmall: "DR Small (DS)",
+  mpcDeltaE: "MPC ΔE",
+  rulerPercent: "RULER %",
+  ucRating: "UC rating"
+};
+
+const FERROGRAPHY_FIELDS = Object.keys(
+  FERROGRAPHY_FIELD_LABELS
+) as FerrographyField[];
+
+function isMeasuredNumber(
+  value: number | null | undefined
+): value is number {
+  return value != null && Number.isFinite(value);
+}
+
+/** A DR density is physical only when reported and non-negative. */
+export function isDrDensityValid(value: number | null | undefined): boolean {
+  return isMeasuredNumber(value) && value >= DR_DENSITY_MIN;
+}
+
+/** MPC ΔE (varnish already formed) cannot be negative. */
+export function isMpcDeltaEValid(value: number | null | undefined): boolean {
+  return isMeasuredNumber(value) && value >= MPC_DELTA_E_MIN;
+}
+
+/** RULER is a remaining-antioxidant percentage, so 0–100. */
+export function isRulerPercentValid(value: number | null | undefined): boolean {
+  return (
+    isMeasuredNumber(value) &&
+    value >= RULER_PERCENT_MIN &&
+    value <= RULER_PERCENT_MAX
+  );
+}
+
+/** Ultra-Centrifuge rating lives on the declared 0–8 scale. */
+export function isUcRatingValid(value: number | null | undefined): boolean {
+  return (
+    isMeasuredNumber(value) &&
+    value >= UC_RATING_MIN &&
+    value <= UC_RATING_MAX
+  );
+}
+
+/**
+ * Validate the reported ferrography / varnish readings.
+ *
+ * An absent reading is "not measured" rather than invalid, so the honest null
+ * state survives. A measured 0 is a real result and stays valid.
+ *
+ * This is a data-quality gate, not a reason to discard the lab entry: callers
+ * still show the raw value alongside the warning, but must suppress every
+ * derived output (WPC/WSI/PLP, band badges, varnish risk index, onset
+ * projection) that depends on an invalid reading.
+ */
+export function validateFerrographyReadings(
+  readings: FerrographyReadings | null | undefined
+): FerrographyValidation {
+  if (!readings) {
+    return { present: false, valid: false, issues: [], fieldIssues: [] };
+  }
+
+  const reported = FERROGRAPHY_FIELDS.filter((field) =>
+    isMeasuredNumber(readings[field])
+  );
+  if (reported.length === 0) {
+    return { present: false, valid: false, issues: [], fieldIssues: [] };
+  }
+
+  const fieldIssues: FerrographyFieldIssue[] = [];
+  for (const field of reported) {
+    const value = readings[field] as number;
+    const label = FERROGRAPHY_FIELD_LABELS[field];
+    let message: string | null = null;
+
+    if (field === "drLarge" || field === "drSmall") {
+      if (!isDrDensityValid(value)) {
+        message = `${label} cannot be negative (reported ${value})`;
+      }
+    } else if (field === "mpcDeltaE") {
+      if (!isMpcDeltaEValid(value)) {
+        message = `${label} cannot be negative (reported ${value})`;
+      }
+    } else if (field === "rulerPercent") {
+      if (!isRulerPercentValid(value)) {
+        message = `${label} must sit between ${RULER_PERCENT_MIN} and ${RULER_PERCENT_MAX} (reported ${value})`;
+      }
+    } else if (field === "ucRating") {
+      if (!isUcRatingValid(value)) {
+        message = `${label} must sit on the ${UC_RATING_MIN}–${UC_RATING_MAX} scale (reported ${value})`;
+      }
+    }
+
+    if (message) {
+      fieldIssues.push({ field, label, value, message });
+    }
+  }
+
+  return {
+    present: true,
+    valid: fieldIssues.length === 0,
+    issues: fieldIssues.map((issue) => issue.message),
+    fieldIssues
+  };
+}
+
+/** Validate the Section 5 readings carried by a saved oil sample. */
+export function validateFerrographySample(
+  sample: OilSample
+): FerrographyValidation {
+  return validateFerrographyReadings(sample);
+}
+
+/** True only when a sample carries at least one valid Section 5 reading. */
+export function hasValidFerrographyReadings(sample: OilSample): boolean {
+  return validateFerrographySample(sample).valid;
+}
+
 export interface DrFerroIndices {
   /** Wear Particle Concentration: total ferrous density. */
   wpc: number;
@@ -654,6 +822,36 @@ export function drFerroIndices(
     plp,
     dlDsRatio: ds > 0 ? Math.round((dl / ds) * 100) / 100 : null
   };
+}
+
+/**
+ * One point per distinct sample date that carries a reading.
+ *
+ * Repeated lab uploads on the same calendar day must not overweight that day in
+ * a rate calculation, and a projection needs three distinct dated readings, not
+ * three rows. `samples` is expected in oldest → newest sequence; the last
+ * sample on a shared date wins.
+ */
+export function distinctDatePoints(
+  samples: readonly OilSample[],
+  read: (sample: OilSample) => number | null | undefined
+): { dateKey: string; hours: number; value: number }[] {
+  const byDate = new Map<string, { hours: number; value: number }>();
+
+  for (const sample of samples) {
+    const value = read(sample);
+    if (value == null || !Number.isFinite(value)) continue;
+    const dateKey = toSampleDateKey(sample.sampleDate);
+    if (!dateKey) continue;
+    const hours = Number.isFinite(sample.operatingHours)
+      ? sample.operatingHours
+      : 0;
+    byDate.set(dateKey, { hours, value });
+  }
+
+  return [...byDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([dateKey, point]) => ({ dateKey, ...point }));
 }
 
 /**

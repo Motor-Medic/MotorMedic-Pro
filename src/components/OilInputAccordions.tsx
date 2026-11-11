@@ -11,8 +11,14 @@ import {
   type WearMetalKey
 } from "../types/oilAnalysis";
 import { oilWearMetalDef, OIL_TIN_PPM_LABEL, OIL_NICKEL_PPM_LABEL } from "../lib/maintenance/prescriptiveDictionary";
-import { parseIsoCode } from "../lib/oilAnalysisMetrics";
-import type { OilLabSnapshot } from "../lib/oilDiagnosticSave";
+import {
+  FERROGRAPHY_DATA_QUALITY_WARNING,
+  parseIsoCode
+} from "../lib/oilAnalysisMetrics";
+import {
+  ferrographySaveWarnings,
+  type OilLabSnapshot
+} from "../lib/oilDiagnosticSave";
 import OilVisionDropzone from "./trendAnalyzer/OilVisionDropzone";
 
 type OilAccordionSection =
@@ -662,6 +668,13 @@ export default function OilInputAccordions({
     onSnapshotChange?.(labSnapshot);
   }, [labSnapshot, onSnapshotChange]);
 
+  // Save-side half of the Section 5 validity gate. Raw values remain editable
+  // and savable; the Ferrography tab suppresses their derivations on read.
+  const ferrographyWarnings = useMemo(
+    () => ferrographySaveWarnings(labSnapshot),
+    [labSnapshot]
+  );
+
   return (
     <FlagContext.Provider value={flaggedFields}>
     <div className="space-y-0">
@@ -1176,6 +1189,23 @@ export default function OilInputAccordions({
           Enter only values the lab reported. A blank field saves as “not
           reported” — never as 0, because 0 is a real measurement here.
         </p>
+
+        {ferrographyWarnings.length > 0 && (
+          <div
+            role="alert"
+            className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-300"
+          >
+            <p className="font-semibold">
+              {FERROGRAPHY_DATA_QUALITY_WARNING}
+            </p>
+            <p className="mt-1">
+              {ferrographyWarnings.join("; ")}. The raw values can still be
+              saved, but WPC/WSI/PLP, band badges, the varnish risk index, onset
+              projection and transition alerts will be suppressed for the
+              affected readings.
+            </p>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <label className="block min-w-0">

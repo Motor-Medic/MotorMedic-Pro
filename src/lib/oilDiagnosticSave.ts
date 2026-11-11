@@ -17,6 +17,7 @@ import {
   type MorphSeverity,
   type MorphologyMap
 } from "../types/oilAnalysis";
+import { validateFerrographyReadings } from "./oilAnalysisMetrics";
 
 /** Shared wire path for the oil_samples SSOT (keep off the eager bundle deps). */
 export const OIL_ANALYSIS_API_PATH = "/api/oil-analysis";
@@ -140,6 +141,24 @@ export function hasOilLabData(
     OIL_LAB_MEASUREMENT_KEYS.some((key) => isMeasured(snapshot[key])) ||
     hasMorphologyObservation(snapshot.morphology)
   );
+}
+
+/**
+ * Save-side half of the ferrography validity gate: warn before persisting but
+ * never drop the raw lab entry. The Ferrography tab suppresses derived values
+ * on read, so a corrected re-entry lands cleanly.
+ */
+export function ferrographySaveWarnings(
+  snapshot: OilLabSnapshot | null | undefined
+): string[] {
+  if (!snapshot) return [];
+  return validateFerrographyReadings({
+    drLarge: snapshot.drLarge,
+    drSmall: snapshot.drSmall,
+    mpcDeltaE: snapshot.mpcDeltaE,
+    rulerPercent: snapshot.rulerPercent,
+    ucRating: snapshot.ucRating
+  }).issues;
 }
 
 /** Body accepted by POST /api/oil-analysis (camelCase wire contract). */

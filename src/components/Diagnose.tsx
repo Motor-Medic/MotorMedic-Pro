@@ -89,6 +89,7 @@ import {
 } from "../lib/oilVisionExtractor";
 import {
   buildOilSampleSavePayload,
+  ferrographySaveWarnings,
   hasOilLabData,
   OIL_ANALYSIS_API_PATH,
   type OilLabSnapshot
@@ -3645,6 +3646,13 @@ useEffect(() => {
           window.scrollTo({ top: 0, behavior: "smooth" });
         }, 80);
         toast("Oil sample saved — visible in Trend Analyzer.", "success");
+        const ferrographyWarnings = ferrographySaveWarnings(oilLabSnapshot);
+        if (ferrographyWarnings.length > 0) {
+          toast(
+            `Saved with a data-quality warning — ${ferrographyWarnings.join("; ")}. Derived ferrography values are suppressed for this sample.`,
+            "warning"
+          );
+        }
       } catch (err) {
         clearAnalysisTimers();
         setIsAnalyzing(false);

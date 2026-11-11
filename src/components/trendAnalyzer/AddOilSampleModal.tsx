@@ -6,11 +6,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import {
+  FERROGRAPHY_DATA_QUALITY_WARNING,
   ISO_TRIPLET_DATA_QUALITY_WARNING,
   parseIsoCode,
   validateIsoTriplet,
   type IsoCodeTriplet
 } from "../../lib/oilAnalysisMetrics";
+import { ferrographySaveWarnings } from "../../lib/oilDiagnosticSave";
 import {
   MORPH_CATEGORIES,
   MORPH_OBSERVATION_LABEL,
@@ -333,6 +335,16 @@ export function AddOilSampleModal({
   const showManualIsoWarning =
     manualIsoValidation.present && !manualIsoValidation.valid;
 
+  // Save-side half of the Section 5 gate: name the out-of-range field but keep
+  // the raw lab entry savable. The Ferrography tab suppresses derivations.
+  const manualFerrographyWarnings = ferrographySaveWarnings({
+    drLarge: manualIsoCode(manualForm.drLarge),
+    drSmall: manualIsoCode(manualForm.drSmall),
+    mpcDeltaE: manualIsoCode(manualForm.mpcDeltaE),
+    rulerPercent: manualIsoCode(manualForm.rulerPercent),
+    ucRating: manualIsoCode(manualForm.ucRating)
+  });
+
   return (
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/70"
@@ -533,6 +545,23 @@ export function AddOilSampleModal({
                         still be saved, but degradation alerts, NAS/SAE
                         equivalencies, filtration recommendations and fine/coarse
                         classification will be suppressed for this sample.
+                      </p>
+                    </div>
+                  )}
+
+                  {manualFerrographyWarnings.length > 0 && (
+                    <div
+                      role="alert"
+                      className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-300"
+                    >
+                      <p className="font-semibold">
+                        {FERROGRAPHY_DATA_QUALITY_WARNING}
+                      </p>
+                      <p className="mt-1">
+                        {manualFerrographyWarnings.join("; ")}. The raw values
+                        can still be saved, but WPC/WSI/PLP, band badges, the
+                        varnish risk index, onset projection and transition
+                        alerts will be suppressed for the affected readings.
                       </p>
                     </div>
                   )}
