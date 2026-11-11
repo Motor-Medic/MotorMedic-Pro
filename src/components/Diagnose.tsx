@@ -3605,7 +3605,7 @@ useEffect(() => {
         // real measurement (including a measured 0) is saved.
         if (!hasOilLabData(oilLabSnapshot)) {
           throw new Error(
-            "Enter or upload at least one oil lab measurement (wear metal, viscosity, TAN/TBN, water or particle count) before running Advanced Diagnostic."
+            "Enter or upload at least one oil lab measurement (wear metal, viscosity, TAN/TBN, water, particle count, ferrography/varnish, or morphology observation) before running Advanced Diagnostic."
           );
         }
 

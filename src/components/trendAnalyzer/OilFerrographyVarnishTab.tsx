@@ -34,7 +34,10 @@ import {
   type RulerBand
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
-import type { OilSample } from "../../types/oilAnalysis";
+import {
+  MORPH_OBSERVATION_LABEL,
+  type OilSample
+} from "../../types/oilAnalysis";
 
 export interface OilFerrographyVarnishTabProps {
   assetId: string;
@@ -436,6 +439,11 @@ export function OilFerrographyVarnishTab({
         </div>
       </div>
 
+      <p className="text-xs leading-relaxed text-slate-500">
+        MPC ΔE and RULER % band labels are guidance from the in-repo rubric
+        (mpcBand / rulerBand), not an OEM or lab-specific limit.
+      </p>
+
       {/* Varnish onset projection */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
         <h3 className="text-lg font-semibold text-white mb-1">
@@ -614,8 +622,8 @@ export function OilFerrographyVarnishTab({
           Wear Particle Morphology
         </h3>
         <p className="text-sm text-slate-400 mb-4">
-          Particle types on the latest ferrogram (
-          {formatSampleDate(latest.sampleDate)})
+          {MORPH_OBSERVATION_LABEL} — particle types recorded on the latest
+          ferrogram ({formatSampleDate(latest.sampleDate)})
         </p>
 
         {transitions.length > 0 && (
@@ -635,15 +643,15 @@ export function OilFerrographyVarnishTab({
         {latest.morphology ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {MORPH_CATEGORIES.map((cat) => {
-              const severity = latest.morphology?.[cat.key] ?? "not_detected";
+              const severity = latest.morphology?.[cat.key];
               return (
                 <div
                   key={cat.key}
-                  className={`rounded-lg border p-3 ${SEVERITY_STYLES[severity]}`}
+                  className={`rounded-lg border p-3 ${severity ? SEVERITY_STYLES[severity] : SEVERITY_STYLES.not_detected}`}
                 >
                   <div className="text-sm font-semibold">{cat.label}</div>
                   <div className="mt-1 text-xs font-bold uppercase tracking-wide">
-                    {SEVERITY_LABELS[severity]}
+                    {severity ? SEVERITY_LABELS[severity] : "Not reported"}
                   </div>
                   <div className="mt-1.5 text-xs opacity-70">{cat.meaning}</div>
                 </div>

@@ -1,3 +1,10 @@
+/**
+ * Provenance label for morphology. Morphology is read off the ferrogram by the
+ * operator/lab, never inferred by vision extraction, so every UI surface that
+ * accepts or renders it says so.
+ */
+export const MORPH_OBSERVATION_LABEL = "Operator Observation";
+
 /** Wear particle morphology severity, ordered least to most severe. */
 export type MorphSeverity =
   | "not_detected"

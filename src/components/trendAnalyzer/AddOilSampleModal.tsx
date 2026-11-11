@@ -13,6 +13,7 @@ import {
 } from "../../lib/oilAnalysisMetrics";
 import {
   MORPH_CATEGORIES,
+  MORPH_OBSERVATION_LABEL,
   MORPH_SEVERITIES,
   type MorphCategoryKey,
   type MorphSeverity
@@ -57,10 +58,35 @@ const MANUAL_FIELDS = [
   { key: "particles14um", label: "Particles >14μm", unit: "/mL" },
   { key: "drLarge", label: "DR Large (DL)", unit: "" },
   { key: "drSmall", label: "DR Small (DS)", unit: "" },
-  { key: "mpcDeltaE", label: "MPC ΔE", unit: "ΔE" },
+  { key: "mpcDeltaE", label: "MPC (ΔE)", unit: "ΔE" },
   { key: "rulerPercent", label: "RULER", unit: "%" },
-  { key: "ucRating", label: "UC Rating", unit: "0-8 scale" }
+  { key: "ucRating", label: "UC Rating", unit: "0-8" }
 ] as const;
+
+/** Section 5 fields, rendered apart from the routine chemistry grid. */
+const FERROGRAPHY_FIELDS = [
+  { key: "mpcDeltaE", label: "MPC (ΔE)", unit: "ΔE" },
+  { key: "rulerPercent", label: "RULER", unit: "%" },
+  { key: "drLarge", label: "DR Large (DL)", unit: "" },
+  { key: "drSmall", label: "DR Small (DS)", unit: "" },
+  { key: "ucRating", label: "UC Rating", unit: "0-8" }
+] as const;
+
+const FERROGRAPHY_KEYS = new Set<string>(
+  FERROGRAPHY_FIELDS.map((field) => field.key)
+);
+
+const BASIC_MANUAL_FIELDS = MANUAL_FIELDS.filter(
+  (field) => !FERROGRAPHY_KEYS.has(field.key)
+);
+
+const MORPH_SEVERITY_LABELS: Record<MorphSeverity, string> = {
+  not_detected: "Not detected",
+  trace: "Trace",
+  mild: "Mild",
+  moderate: "Moderate",
+  severe: "Severe"
+};
 
 type ManualFieldKey = (typeof MANUAL_FIELDS)[number]["key"];
 type ManualTextKey = "sampleDate" | "operatingHours" | "ferrographImageUrl";
@@ -74,10 +100,9 @@ const EMPTY_MANUAL_FORM = (): ManualForm =>
     ...Object.fromEntries(MANUAL_FIELDS.map((f) => [f.key, ""]))
   }) as ManualForm;
 
-const EMPTY_MORPHOLOGY = (): Record<MorphCategoryKey, MorphSeverity> =>
-  Object.fromEntries(
-    MORPH_CATEGORIES.map((c) => [c.key, "not_detected"])
-  ) as Record<MorphCategoryKey, MorphSeverity>;
+const EMPTY_MORPHOLOGY = (): Partial<
+  Record<MorphCategoryKey, MorphSeverity>
+> => ({});
 
 /** Parse a manual ISO code field; blank/garbage stays absent. */
 function manualIsoCode(raw: string): number | null {
@@ -232,11 +257,7 @@ export function AddOilSampleModal({
       return;
     }
 
-    const morphology = Object.fromEntries(
-      Object.entries(manualMorphology).filter(
-        ([, severity]) => severity !== "not_detected"
-      )
-    );
+    const morphology = { ...manualMorphology };
 
     const hasAnyValue =
       MANUAL_FIELDS.some((f) => numeric(manualForm[f.key]) != null) ||
@@ -284,7 +305,8 @@ export function AddOilSampleModal({
           mpcDeltaE: numeric(manualForm.mpcDeltaE),
           rulerPercent: numeric(manualForm.rulerPercent),
           ucRating: numeric(manualForm.ucRating),
-          morphology,
+          morphology:
+            Object.keys(morphology).length > 0 ? morphology : undefined,
           ferrographImageUrl:
             manualForm.ferrographImageUrl.trim() || undefined
         })
@@ -433,7 +455,7 @@ export function AddOilSampleModal({
                   </div>
 
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                    {MANUAL_FIELDS.map((field) => (
+                    {BASIC_MANUAL_FIELDS.map((field) => (
                       <label key={field.key} className="block">
                         {/* normal-case: uppercase mangles the µm unit symbol */}
                         <span className="text-[11px] font-semibold normal-case tracking-wide text-slate-500">
@@ -461,6 +483,43 @@ export function AddOilSampleModal({
                     ))}
                   </div>
 
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-cyan-400 mb-2">
+                      5. Ferrography &amp; Varnish
+                    </p>
+                    <p className="text-[11px] text-slate-500 mb-2">
+                      Leave a field blank when the lab did not report it — blank
+                      stays “not reported”, never 0.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {FERROGRAPHY_FIELDS.map((field) => (
+                        <label key={field.key} className="block">
+                          <span className="text-[11px] font-semibold normal-case tracking-wide text-slate-500">
+                            {field.label}
+                          </span>
+                          <div className="relative mt-1">
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              step="any"
+                              value={manualForm[field.key]}
+                              onChange={(e) =>
+                                setManualForm((prev) => ({
+                                  ...prev,
+                                  [field.key]: e.target.value
+                                }))
+                              }
+                              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 pr-14 text-sm text-white focus:border-cyan-500 focus:outline-none"
+                            />
+                            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-500">
+                              {field.unit}
+                            </span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
                   {showManualIsoWarning && (
                     <div
                       role="alert"
@@ -479,8 +538,16 @@ export function AddOilSampleModal({
                   )}
 
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
-                      Wear Particle Morphology
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                      Wear Particle Morphology{" "}
+                      <span className="normal-case font-normal text-slate-600">
+                        ({MORPH_OBSERVATION_LABEL})
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-slate-500 mb-2">
+                      Select only categories observed on the ferrogram. “Not
+                      reported” leaves the category empty; “Not detected”
+                      records an explicit absence.
                     </p>
                     <div className="grid grid-cols-2 gap-3">
                       {MORPH_CATEGORIES.map((cat) => (
@@ -489,19 +556,25 @@ export function AddOilSampleModal({
                             {cat.label}
                           </span>
                           <select
-                            value={manualMorphology[cat.key]}
+                            value={manualMorphology[cat.key] ?? ""}
                             onChange={(e) =>
-                              setManualMorphology((prev) => ({
-                                ...prev,
-                                [cat.key as MorphCategoryKey]: e.target
-                                  .value as MorphSeverity
-                              }))
+                              setManualMorphology((prev) => {
+                                const next = { ...prev };
+                                if (e.target.value === "") {
+                                  delete next[cat.key as MorphCategoryKey];
+                                } else {
+                                  next[cat.key as MorphCategoryKey] = e.target
+                                    .value as MorphSeverity;
+                                }
+                                return next;
+                              })
                             }
                             className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white focus:border-cyan-500 focus:outline-none cursor-pointer"
                           >
+                            <option value="">Not reported</option>
                             {MORPH_SEVERITIES.map((sev) => (
                               <option key={sev} value={sev}>
-                                {sev.replace(/_/g, " ")}
+                                {MORPH_SEVERITY_LABELS[sev]}
                               </option>
                             ))}
                           </select>

@@ -1,13 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { OilReportData } from "../types/oilVision";
-import type { WearMetalKey } from "../types/oilAnalysis";
+import {
+  MORPH_CATEGORIES,
+  MORPH_OBSERVATION_LABEL,
+  MORPH_SEVERITIES,
+  type MorphCategoryKey,
+  type MorphSeverity,
+  type MorphologyMap,
+  type WearMetalKey
+} from "../types/oilAnalysis";
 import { oilWearMetalDef, OIL_TIN_PPM_LABEL, OIL_NICKEL_PPM_LABEL } from "../lib/maintenance/prescriptiveDictionary";
 import { parseIsoCode } from "../lib/oilAnalysisMetrics";
 import type { OilLabSnapshot } from "../lib/oilDiagnosticSave";
 import OilVisionDropzone from "./trendAnalyzer/OilVisionDropzone";
 
-type OilAccordionSection = "identity" | "telemetry" | "spectroscopy" | "degradation";
+type OilAccordionSection =
+  | "identity"
+  | "telemetry"
+  | "spectroscopy"
+  | "degradation"
+  | "ferrography";
 
 type BaseOilChemistry = "Mineral" | "Synthetic PAO" | "Synthetic PAG/Ester" | "Food-Grade H1";
 type OilAssetType = "Engine" | "Gearbox" | "Hydraulic System" | "Turbine";
@@ -87,6 +100,14 @@ const inputCompact =
   "bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-white focus:border-yellow-500 transition-all outline-none w-full";
 const selectCls = `${inputCls} appearance-none cursor-pointer pr-10`;
 const microLabel = "text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1 block";
+
+const MORPH_SEVERITY_OPTION_LABELS: Record<MorphSeverity, string> = {
+  not_detected: "Not detected",
+  trace: "Trace",
+  mild: "Mild",
+  moderate: "Moderate",
+  severe: "Severe"
+};
 
 // Maps the human-readable PpmField label (e.g. "Iron (Fe)") to the canonical
 // consensus flag key produced by the vision extractor.
@@ -335,6 +356,14 @@ export default function OilInputAccordions({
   const [waterPpm, setWaterPpm] = useState("");
   const [iso4406Code, setIso4406Code] = useState("");
 
+  // Section 5 — ferrography & varnish (operator/lab reported; blank = not reported)
+  const [mpcDeltaE, setMpcDeltaE] = useState("");
+  const [rulerPercent, setRulerPercent] = useState("");
+  const [drLarge, setDrLarge] = useState("");
+  const [drSmall, setDrSmall] = useState("");
+  const [ucRating, setUcRating] = useState("");
+  const [morphology, setMorphology] = useState<MorphologyMap>({});
+
   /** Engine → TBN; Gearbox / Hydraulic / Turbine → TAN */
   const showTbn = assetType === "Engine";
   const isEngineAsset = assetType === "Engine";
@@ -347,6 +376,15 @@ export default function OilInputAccordions({
 
   const setPpmKey = (key: string, value: string) => {
     setPpm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const setMorphKey = (key: MorphCategoryKey, value: string) => {
+    setMorphology((prev) => {
+      const next: MorphologyMap = { ...prev };
+      if (value === "") delete next[key];
+      else next[key] = value as MorphSeverity;
+      return next;
+    });
   };
 
   const applyOilReportToForm = useCallback(
@@ -537,6 +575,12 @@ export default function OilInputAccordions({
     setSootContent("");
     setWaterPpm("");
     setIso4406Code("");
+    setMpcDeltaE("");
+    setRulerPercent("");
+    setDrLarge("");
+    setDrSmall("");
+    setUcRating("");
+    setMorphology({});
     onSumpCapacityChange?.(null);
   }, [onSumpCapacityChange]);
 
@@ -587,6 +631,12 @@ export default function OilInputAccordions({
       iso4um: iso?.[0] ?? null,
       iso6um: iso?.[1] ?? null,
       iso14um: iso?.[2] ?? null,
+      drLarge: num(drLarge),
+      drSmall: num(drSmall),
+      mpcDeltaE: num(mpcDeltaE),
+      rulerPercent: num(rulerPercent),
+      ucRating: num(ucRating),
+      morphology: Object.keys(morphology).length > 0 ? morphology : undefined,
       operatingHours: num(assetHours)
     };
   }, [
@@ -599,6 +649,12 @@ export default function OilInputAccordions({
     ftirOxidation,
     ftirNitration,
     iso4406Code,
+    drLarge,
+    drSmall,
+    mpcDeltaE,
+    rulerPercent,
+    ucRating,
+    morphology,
     assetHours
   ]);
 
@@ -1107,6 +1163,115 @@ export default function OilInputAccordions({
             Format: &gt;4μm / &gt;6μm / &gt;14μm
           </p>
         </label>
+      </AccordionShell>
+
+      {/* SECTION 5 — Ferrography & Varnish */}
+      <AccordionShell
+        id="ferrography"
+        title="5. Ferrography & Varnish"
+        open={openSections.includes("ferrography")}
+        onToggle={toggleSection}
+      >
+        <p className="text-[11px] text-slate-500 leading-snug">
+          Enter only values the lab reported. A blank field saves as “not
+          reported” — never as 0, because 0 is a real measurement here.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <label className="block min-w-0">
+            <span className={fieldLabel}>MPC (ΔE)</span>
+            <input
+              type="number"
+              step="any"
+              value={mpcDeltaE}
+              onChange={(e) => setMpcDeltaE(e.target.value)}
+              placeholder="delta-E"
+              className={inputCls}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={fieldLabel}>RULER</span>
+            <input
+              type="number"
+              step="any"
+              value={rulerPercent}
+              onChange={(e) => setRulerPercent(e.target.value)}
+              placeholder="%"
+              className={inputCls}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={fieldLabel}>UC Rating (0-8)</span>
+            <input
+              type="number"
+              step="1"
+              min={0}
+              max={8}
+              value={ucRating}
+              onChange={(e) => setUcRating(e.target.value)}
+              placeholder="0-8"
+              className={inputCls}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={fieldLabel}>DR Large (DL)</span>
+            <input
+              type="number"
+              step="any"
+              value={drLarge}
+              onChange={(e) => setDrLarge(e.target.value)}
+              placeholder="large density"
+              className={inputCls}
+            />
+          </label>
+          <label className="block min-w-0">
+            <span className={fieldLabel}>DR Small (DS)</span>
+            <input
+              type="number"
+              step="any"
+              value={drSmall}
+              onChange={(e) => setDrSmall(e.target.value)}
+              placeholder="small density"
+              className={inputCls}
+            />
+          </label>
+        </div>
+
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-2">
+            Wear Particle Morphology{" "}
+            <span className="normal-case font-normal text-slate-500">
+              ({MORPH_OBSERVATION_LABEL})
+            </span>
+          </p>
+          <p className="text-[11px] text-slate-500 mb-3">
+            Select only categories observed on the ferrogram. “Not reported”
+            leaves the category empty; “Not detected” records an explicit
+            absence.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {MORPH_CATEGORIES.map((cat) => (
+              <label key={cat.key} className="block min-w-0">
+                <span className={microLabel}>{cat.label}</span>
+                <div className="relative">
+                  <select
+                    value={morphology[cat.key] ?? ""}
+                    onChange={(e) => setMorphKey(cat.key, e.target.value)}
+                    className={selectCls}
+                  >
+                    <option value="">Not reported</option>
+                    {MORPH_SEVERITIES.map((sev) => (
+                      <option key={sev} value={sev}>
+                        {MORPH_SEVERITY_OPTION_LABELS[sev]}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+                </div>
+              </label>
+            ))}
+          </div>
+        </div>
       </AccordionShell>
     </div>
     </FlagContext.Provider>
