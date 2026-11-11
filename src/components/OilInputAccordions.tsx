@@ -1200,9 +1200,8 @@ export default function OilInputAccordions({
             </p>
             <p className="mt-1">
               {ferrographyWarnings.join("; ")}. The raw values can still be
-              saved, but WPC/WSI/PLP, band badges, the varnish risk index, onset
-              projection and transition alerts will be suppressed for the
-              affected readings.
+              saved, but WPC/WSI/PLP, band badges, the varnish risk index and
+              transition alerts will be suppressed for the affected readings.
             </p>
           </div>
         )}

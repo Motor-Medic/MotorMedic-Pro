@@ -723,8 +723,8 @@ export function isUcRatingValid(value: number | null | undefined): boolean {
  *
  * This is a data-quality gate, not a reason to discard the lab entry: callers
  * still show the raw value alongside the warning, but must suppress every
- * derived output (WPC/WSI/PLP, band badges, varnish risk index, onset
- * projection) that depends on an invalid reading.
+ * derived output (WPC/WSI/PLP, band badges, varnish risk index) that depends on
+ * an invalid reading.
  */
 export function validateFerrographyReadings(
   readings: FerrographyReadings | null | undefined
@@ -825,6 +825,11 @@ export function drFerroIndices(
 }
 
 /**
+ * PARKED (SLICE-AQ): the Ferrography tab no longer renders an hours-to-onset
+ * projection, so this dedupe helper is retained only for its SLICE-AP unit test
+ * (AM precedent). Do not re-wire it into UI without a validated load-telemetry
+ * basis.
+ *
  * One point per distinct sample date that carries a reading.
  *
  * Repeated lab uploads on the same calendar day must not overweight that day in
@@ -870,6 +875,12 @@ export function linearRatePerHour(
 }
 
 /**
+ * PARKED (SLICE-AQ) — hours-to-limit extrapolation (AM precedent), not wired
+ * to the Ferrography UI. The generic diagnostics prognosis / RUL panel still
+ * consumes this helper, as does the standalone metrics verification script; do
+ * not re-wire the Ferrography onset forecast without a validated load-telemetry
+ * basis.
+ *
  * Hours until a value reaches a threshold at the given rate.
  * Returns 0 if already past it, or null if the trend never gets there.
  */

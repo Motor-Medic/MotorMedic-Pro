@@ -8,7 +8,11 @@
  * Every derived value is gated on the physical range of the readings it needs.
  * A stored DL/DS/MPC/RULER/UC value outside that range is still shown raw (it
  * is the lab record), but it cannot produce WPC/WSI/PLP, a band badge, the
- * varnish risk index, an onset projection or a morphology transition alert.
+ * varnish risk index or a morphology transition alert.
+ *
+ * There is no hours-to-onset projection here (SLICE-AQ): the panel was parked
+ * with the Fluid Chemistry crossover projection. Readings and trends are
+ * descriptive only.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -27,18 +31,15 @@ import {
   FERROGRAPHY_DATA_QUALITY_WARNING,
   MORPH_CATEGORIES,
   detectMorphologyTransitions,
-  distinctDatePoints,
   drFerroIndices,
   formatSampleDate,
   isDrDensityValid,
   isMpcDeltaEValid,
   isRulerPercentValid,
   isUcRatingValid,
-  linearRatePerHour,
   mpcBand,
   orderOilSamplesBySequence,
   primaryMorphology,
-  projectHoursToThreshold,
   rulerBand,
   validateFerrographySample,
   varnishRiskIndex,
@@ -62,19 +63,6 @@ export interface OilFerrographyVarnishTabProps {
   /** Toolbar To date (YYYY-MM-DD); null/empty means open end. */
   windowEnd?: string | null;
 }
-
-/**
- * Varnish onset thresholds used for the projection panel. These are in-repo
- * default bands, not an OEM or lab limit.
- */
-const MPC_ONSET = 30;
-const RULER_ONSET = 25;
-
-/** A projection needs three distinct sample dates carrying the reading. */
-const MIN_PROJECTION_DATES = 3;
-
-const ONSET_THRESHOLD_BASIS =
-  "in-repo default band (MPC 30 ΔE / RULER 25%), not an OEM or lab limit";
 
 type SampleRange = "ALL" | "7D" | "30D" | "90D" | "1Y";
 
@@ -162,36 +150,6 @@ function StatusBadge({ text, styles }: { text: string; styles: string }) {
       {text}
     </span>
   );
-}
-
-/** Human-readable projection line for one varnish indicator. */
-function projectionText(
-  label: string,
-  unit: string,
-  threshold: number,
-  current: number | undefined,
-  fieldInvalid: boolean,
-  distinctDates: number,
-  hoursToThreshold: number | null,
-  latestHours: number
-): string {
-  if (fieldInvalid) {
-    return `${label}: cannot project — reading failed the data-quality check (shown raw above).`;
-  }
-  if (current == null || !Number.isFinite(current)) {
-    return `${label}: not measured — cannot project.`;
-  }
-  if (distinctDates < MIN_PROJECTION_DATES) {
-    return `${label}: cannot project — insufficient dated samples (${distinctDates} of ${MIN_PROJECTION_DATES} required).`;
-  }
-  if (hoursToThreshold == null) {
-    return `${label}: no onset projected on current trend (now ${current}${unit}).`;
-  }
-  if (hoursToThreshold <= 0) {
-    return `${label}: already past ${threshold}${unit} (now ${current}${unit}).`;
-  }
-  const atHours = Math.round(latestHours + hoursToThreshold);
-  return `${label} projected to cross ${threshold}${unit} at ~${atHours.toLocaleString()} operating hours (in ~${Math.round(hoursToThreshold).toLocaleString()} h).`;
 }
 
 export function OilFerrographyVarnishTab({
@@ -341,39 +299,6 @@ export function OilFerrographyVarnishTab({
       ? varnishRiskIndex(latest.mpcDeltaE, latest.rulerPercent)
       : null;
 
-  // Rates use one point per distinct date that actually carries the reading.
-  const mpcPoints = distinctDatePoints(windowed, (sample) =>
-    isMpcDeltaEValid(sample.mpcDeltaE) ? sample.mpcDeltaE! : null
-  );
-  const rulerPoints = distinctDatePoints(windowed, (sample) =>
-    isRulerPercentValid(sample.rulerPercent) ? sample.rulerPercent! : null
-  );
-
-  const mpcCanProject = mpcPoints.length >= MIN_PROJECTION_DATES;
-  const rulerCanProject = rulerPoints.length >= MIN_PROJECTION_DATES;
-
-  const mpcRate = mpcCanProject ? linearRatePerHour(mpcPoints) : null;
-  const rulerRate = rulerCanProject ? linearRatePerHour(rulerPoints) : null;
-
-  const mpcHours =
-    mpcCanProject && mpcValid
-      ? projectHoursToThreshold(
-          latest.mpcDeltaE as number,
-          mpcRate,
-          MPC_ONSET,
-          "rising"
-        )
-      : null;
-  const rulerHours =
-    rulerCanProject && rulerValid
-      ? projectHoursToThreshold(
-          latest.rulerPercent as number,
-          rulerRate,
-          RULER_ONSET,
-          "falling"
-        )
-      : null;
-
   // Morphology transitions anchor to the nearest earlier VALID sample that
   // recorded morphology. An invalid record cannot anchor a "NEW" alert.
   const previousMorphSample = (() => {
@@ -477,9 +402,9 @@ export function OilFerrographyVarnishTab({
                 : `${invalidSamples.length} sample${invalidSamples.length === 1 ? "" : "s"} in range`}{" "}
               reported ferrography / varnish values outside their physical range
               {latestInvalid ? " (shown raw below)" : ""}. WPC/WSI/PLP, band
-              badges, the varnish risk index, onset projection and morphology
-              transition alerts are suppressed for the affected readings.
-              Re-check the lab report before acting.
+              badges, the varnish risk index and morphology transition alerts
+              are suppressed for the affected readings. Re-check the lab report
+              before acting.
             </p>
             {latestInvalid && latestValidation.issues.length > 0 && (
               <ul className="mt-1 list-disc pl-5 text-xs text-amber-200/80">
@@ -685,50 +610,6 @@ export function OilFerrographyVarnishTab({
         MPC ΔE and RULER % band labels are guidance from the in-repo rubric
         (mpcBand / rulerBand), not an OEM or lab-specific limit.
       </p>
-
-      {/* Varnish onset projection */}
-      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
-        <h3 className="text-lg font-semibold text-white mb-1">
-          Varnish Onset Projection
-        </h3>
-        <p className="text-sm text-slate-400 mb-4">
-          Linear trend across distinct-date samples carrying each reading —
-          planning estimate, not a guarantee
-        </p>
-        <ul className="space-y-2 text-sm">
-          <li className="flex items-start gap-2 text-slate-300">
-            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-yellow-400" />
-            {projectionText(
-              "MPC ΔE",
-              " ΔE",
-              MPC_ONSET,
-              latest.mpcDeltaE,
-              latest.mpcDeltaE != null && !mpcValid,
-              mpcPoints.length,
-              mpcHours,
-              latest.operatingHours
-            )}
-          </li>
-          <li className="flex items-start gap-2 text-slate-300">
-            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400" />
-            {projectionText(
-              "RULER",
-              "%",
-              RULER_ONSET,
-              latest.rulerPercent,
-              latest.rulerPercent != null && !rulerValid,
-              rulerPoints.length,
-              rulerHours,
-              latest.operatingHours
-            )}
-          </li>
-        </ul>
-        <p className="mt-4 border-t border-slate-700/60 pt-3 text-xs leading-relaxed text-slate-500">
-          Projections use linear rates from stored samples; {ONSET_THRESHOLD_BASIS}.
-          No projection is shown without at least {MIN_PROJECTION_DATES}{" "}
-          distinct-date samples carrying the reading.
-        </p>
-      </div>
 
       {/* Varnish potential trend */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">

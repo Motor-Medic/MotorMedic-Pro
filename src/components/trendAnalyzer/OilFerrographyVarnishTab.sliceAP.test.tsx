@@ -185,7 +185,7 @@ describe("OilFerrographyVarnishTab SLICE-AP validity gate", () => {
     expect(screen.queryByText("Needs both DL and DS densities")).toBeNull();
   });
 
-  it("warns on RULER=-5% and withholds the band badge, risk index and projection", async () => {
+  it("warns on RULER=-5% and withholds the band badge and risk index", async () => {
     mockRows([
       baseRow({ id: "bad-ruler", ruler_percent: -5, mpc_delta_e: 12 })
     ]);
@@ -201,10 +201,10 @@ describe("OilFerrographyVarnishTab SLICE-AP validity gate", () => {
       screen.getAllByText(/Withheld — reading failed the data-quality check/)
         .length
     ).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText(/cannot project — reading failed the data-quality check/)
-        .length
-    ).toBeGreaterThan(0);
+    // SLICE-AQ: the hours-to-onset projection family is parked, so no
+    // projection copy renders at all.
+    expect(screen.queryByText(/cannot project/i)).toBeNull();
+    expect(screen.queryByText(/projected to cross/i)).toBeNull();
   });
 
   it("renders derivations normally for in-range values", async () => {
@@ -228,68 +228,8 @@ describe("OilFerrographyVarnishTab SLICE-AP validity gate", () => {
   });
 });
 
-describe("OilFerrographyVarnishTab SLICE-AP projection gate", () => {
-  it("refuses to project below three distinct-date samples", async () => {
-    mockRows([
-      baseRow({
-        id: "a",
-        sample_date: "2026-01-01",
-        operating_hours: 100,
-        mpc_delta_e: 10
-      }),
-      baseRow({
-        id: "b",
-        sample_date: "2026-02-01",
-        operating_hours: 200,
-        mpc_delta_e: 20
-      })
-    ]);
-
-    render(<OilFerrographyVarnishTab assetId="asset-1" />);
-
-    expect(await screen.findByText("Ferrography & Varnish")).toBeTruthy();
-    expect(
-      screen.getAllByText(
-        /cannot project — insufficient dated samples \(2 of 3 required\)/
-      ).length
-    ).toBe(2);
-    expect(screen.queryByText(/projected to cross/)).toBeNull();
-    expect(screen.queryByText(/operating hours \(in ~/)).toBeNull();
-  });
-
-  it("does not count duplicate same-day uploads toward the three-date gate", async () => {
-    mockRows([
-      baseRow({
-        id: "a1",
-        sample_date: "2026-01-01",
-        operating_hours: 100,
-        mpc_delta_e: 10
-      }),
-      baseRow({
-        id: "a2",
-        sample_date: "2026-01-01",
-        operating_hours: 110,
-        mpc_delta_e: 12
-      }),
-      baseRow({
-        id: "b",
-        sample_date: "2026-02-01",
-        operating_hours: 200,
-        mpc_delta_e: 20
-      })
-    ]);
-
-    render(<OilFerrographyVarnishTab assetId="asset-1" />);
-
-    expect(await screen.findByText("Ferrography & Varnish")).toBeTruthy();
-    expect(
-      screen.getAllByText(
-        /cannot project — insufficient dated samples \(2 of 3 required\)/
-      ).length
-    ).toBe(2);
-  });
-
-  it("projects once three distinct dates carry the reading and labels the default band", async () => {
+describe("OilFerrographyVarnishTab SLICE-AQ projection parked", () => {
+  it("renders KPIs and trends but no onset-projection copy on a three-date history", async () => {
     mockRows([
       baseRow({
         id: "a",
@@ -314,13 +254,34 @@ describe("OilFerrographyVarnishTab SLICE-AP projection gate", () => {
     render(<OilFerrographyVarnishTab assetId="asset-1" />);
 
     expect(await screen.findByText("Ferrography & Varnish")).toBeTruthy();
-    expect(screen.getByText(/projected to cross 30 ΔE/)).toBeTruthy();
-    expect(
-      screen.getByText(/in-repo default band \(MPC 30 ΔE \/ RULER 25%\), not an OEM or lab limit/)
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/planning estimate,\s+not a guarantee/)
-    ).toBeTruthy();
+    // Descriptive readings and trends still render.
+    expect(screen.getAllByText("28.0").length).toBeGreaterThan(0);
+    expect(screen.getByText("Varnish Potential Trend")).toBeTruthy();
+
+    // No projection / onset-hours / runway copy anywhere in the tab.
+    expect(screen.queryByText("Varnish Onset Projection")).toBeNull();
+    expect(screen.queryByText(/projected to cross/i)).toBeNull();
+    expect(screen.queryByText(/cannot project/i)).toBeNull();
+    expect(screen.queryByText(/planning estimate/i)).toBeNull();
+    expect(screen.queryByText(/operating hours \(in ~/)).toBeNull();
+    expect(screen.queryByText(/runway/i)).toBeNull();
+  });
+
+  it("keeps the parked projection family out of the tab source (grep-level)", () => {
+    const source = readFileSync(
+      join(
+        process.cwd(),
+        "src/components/trendAnalyzer/OilFerrographyVarnishTab.tsx"
+      ),
+      "utf8"
+    );
+    expect(source).not.toContain("projectHoursToThreshold");
+    expect(source).not.toContain("distinctDatePoints");
+    expect(source).not.toContain("linearRatePerHour");
+    expect(source).not.toContain("Varnish Onset Projection");
+    expect(source).not.toContain("cannot project");
+    expect(source).not.toContain("projected to cross");
+    expect(source).not.toMatch(/runway/i);
   });
 });
 

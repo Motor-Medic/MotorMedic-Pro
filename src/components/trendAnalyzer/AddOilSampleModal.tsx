@@ -560,8 +560,8 @@ export function AddOilSampleModal({
                       <p className="mt-1">
                         {manualFerrographyWarnings.join("; ")}. The raw values
                         can still be saved, but WPC/WSI/PLP, band badges, the
-                        varnish risk index, onset projection and transition
-                        alerts will be suppressed for the affected readings.
+                        varnish risk index and transition alerts will be
+                        suppressed for the affected readings.
                       </p>
                     </div>
                   )}

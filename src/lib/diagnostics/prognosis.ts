@@ -55,7 +55,7 @@ export interface PrognosisResult {
   mixedBasis: boolean;
 }
 
-/** Varnish onset thresholds, matching the Ferrography & Varnish tab. */
+/** Varnish default-band thresholds used by the generic diagnostics prognosis. */
 export const MPC_THRESHOLD = 30;
 export const RULER_THRESHOLD = 25;
 
