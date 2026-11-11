@@ -27,8 +27,9 @@ export type SaveOilSampleInput = {
   copper?: number;
   chromium?: number;
   lead?: number;
-  aluminum?: number;
-  silicon?: number;
+  /** Nullable: an unreported element must not be coerced to a measured 0. */
+  aluminum?: number | null;
+  silicon?: number | null;
   tin?: number;
   nickel?: number;
   viscosity40C?: number | null;
@@ -140,8 +141,10 @@ export function coerceSaveOilSampleInput(
     copper: optNumeric(body.copper) ?? 0,
     chromium: optNumeric(body.chromium) ?? 0,
     lead: optNumeric(body.lead) ?? 0,
-    aluminum: optNumeric(body.aluminum) ?? 0,
-    silicon: optNumeric(body.silicon) ?? 0,
+    // Al/Si stay null when unreported: they feed Si:Al, where a fabricated
+    // zero would be indistinguishable from a measured zero.
+    aluminum: optNumeric(body.aluminum),
+    silicon: optNumeric(body.silicon),
     tin: optNumeric(body.tin) ?? 0,
     nickel: optNumeric(body.nickel) ?? 0,
     viscosity40C: optNumeric(body.viscosity40C),
@@ -231,8 +234,8 @@ export async function saveOilSample(
     copper = 0,
     chromium = 0,
     lead = 0,
-    aluminum = 0,
-    silicon = 0,
+    aluminum = null,
+    silicon = null,
     tin = 0,
     nickel = 0,
     viscosity40C = null,

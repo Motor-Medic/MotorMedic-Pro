@@ -53,8 +53,12 @@ export function ViscosityTanTrendChart({
       <h3 className="text-lg font-semibold text-white mb-1">
         Viscosity vs. TAN Trend
       </h3>
-      <p className="text-sm text-slate-400 mb-4">
+      <p className="text-sm text-slate-400 mb-1">
         Last {maxPoints} samples with fluid chemistry (cSt @ 40°C · mg KOH/g)
+      </p>
+      <p className="text-[11px] text-slate-500 mb-4">
+        Descriptive time trend of stored within-sample pairs; no projection or
+        extrapolation.
       </p>
 
       {chartData.length === 0 ? (

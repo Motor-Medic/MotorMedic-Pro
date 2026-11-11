@@ -5,6 +5,14 @@
  * Every reader (latest cards, charts, viscosity trend, table) and the in-range
  * count share one window predicate, `filterOilSamplesToWindow`, so the tab can
  * never show rows outside the selected range.
+ *
+ * Honesty boundaries:
+ *   * alarm limits come from in-repo DEFAULT_ALARM_LIMITS / lab-OEM guidance;
+ *     ASTM D5185 is the ICP test method, not a threshold source;
+ *   * generation rates require two samples with distinct non-zero operating
+ *     hours and are descriptive only (no hours-to-limit projection);
+ *   * alloy and Si:Al ratios are descriptive, present-if-stored, and never
+ *     attributed to a component because component metallurgy is not stored.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,15 +28,28 @@ import {
 } from "recharts";
 import {
   calculateBaselineDelta,
-  calculateWearRate,
+  calculateWearGenerationRate,
   formatSampleDate,
   getThresholdStatus,
   interpretWearPattern,
   orderOilSamplesBySequence
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
-import { filterOilSamplesToWindow } from "../../lib/oilTribologyGuidance";
-import type { OilSample, ThresholdStatus } from "../../types/oilAnalysis";
+import {
+  alloyCoElevationRatios,
+  filterOilSamplesToWindow,
+  METALLURGY_RATIOS_NOTE,
+  siliconAluminumRatio
+} from "../../lib/oilTribologyGuidance";
+import {
+  OIL_ALARM_LIMIT_CITATION,
+  OIL_SPECTROSCOPY_CITATION
+} from "../../lib/maintenance/prescriptiveDictionary";
+import type {
+  OilSample,
+  ThresholdStatus,
+  WearMetalKey
+} from "../../types/oilAnalysis";
 import ViscosityTanTrendChart from "./ViscosityTanTrendChart";
 
 export interface OilWearMetalsTabProps {
@@ -46,6 +67,8 @@ const STATUS_STYLES: Record<ThresholdStatus, string> = {
   warning: "text-yellow-400 bg-yellow-400/10 border-yellow-400/20",
   critical: "text-red-400 bg-red-400/10 border-red-400/20"
 };
+
+const NOT_MEASURED_STYLE = "text-slate-400 bg-slate-800/40 border-slate-700";
 
 type SampleRange = "ALL" | "7D" | "30D" | "90D" | "1Y";
 
@@ -70,6 +93,15 @@ function dateKeyDaysAgo(days: number): string {
   date.setDate(date.getDate() - days);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function ppmCell(value: number | undefined): string | number {
+  return value != null && Number.isFinite(value) ? value : "—";
+}
+
+interface BaselineAnchor {
+  value: number;
+  source: "stored" | "first-in-window";
 }
 
 export function OilWearMetalsTab({
@@ -180,12 +212,81 @@ export function OilWearMetalsTab({
 
   // Stored baseline_* columns are written on whichever row is inserted first,
   // which is not necessarily the oldest sample. Anchor to the chronologically
-  // first in-window sample so deltas stay correct for back-dated uploads.
+  // first in-window sample so deltas stay correct for back-dated uploads. When
+  // no stored baseline exists, the first in-window measured sample is used and
+  // the card says so; with one sample or no reading, no delta is shown.
   const baselineFor = (
     stored: number | undefined,
-    measured: number
-  ): number | undefined =>
-    windowed.length > 1 ? (stored ?? measured) : undefined;
+    measured: number | undefined
+  ): BaselineAnchor | null => {
+    if (windowed.length < 2) return null;
+    if (stored != null && Number.isFinite(stored)) {
+      return { value: stored, source: "stored" };
+    }
+    if (measured != null && Number.isFinite(measured)) {
+      return { value: measured, source: "first-in-window" };
+    }
+    return null;
+  };
+
+  const renderCard = (
+    label: string,
+    element: WearMetalKey,
+    value: number | undefined,
+    limit: number,
+    baselineAnchor: BaselineAnchor | null
+  ) => {
+    const measuredValue =
+      value != null && Number.isFinite(value) ? value : undefined;
+    const status =
+      measuredValue == null ? null : getThresholdStatus(measuredValue, limit);
+    const rate =
+      measuredValue == null
+        ? null
+        : calculateWearGenerationRate(windowed, (sample) => sample[element]);
+
+    return (
+      <div
+        className={`p-4 rounded-lg border ${
+          status == null ? NOT_MEASURED_STYLE : STATUS_STYLES[status]
+        }`}
+      >
+        <div className="text-sm opacity-80">{label}</div>
+        <div className="text-2xl font-bold mt-1 text-white">
+          {measuredValue == null ? (
+            "Not measured"
+          ) : (
+            <>
+              {measuredValue} <span className="text-sm font-normal">PPM</span>
+            </>
+          )}
+        </div>
+        <div className="text-xs mt-2 opacity-75">
+          <div>Limit: {limit} PPM</div>
+          {measuredValue != null && baselineAnchor != null && (
+            <div>
+              Δ{" "}
+              {calculateBaselineDelta(
+                measuredValue,
+                baselineAnchor.value
+              ).toFixed(1)}
+              % vs{" "}
+              {baselineAnchor.source === "stored"
+                ? "stored baseline"
+                : "first in-window sample (no stored baseline)"}
+            </div>
+          )}
+          {measuredValue != null && rate != null && (
+            <div>
+              {rate.status === "available" && rate.ppmPer100Hours != null
+                ? `Rate: ${rate.ppmPer100Hours.toFixed(2)} PPM/100h`
+                : "Rate: insufficient operating-hour data"}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   const chartData = windowed.map((s) => ({
     date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
@@ -195,42 +296,12 @@ export function OilWearMetalsTab({
     Silicon: s.silicon
   }));
 
-  const renderCard = (
-    label: string,
-    value: number,
-    limit: number,
-    baselineVal?: number
-  ) => (
-    <div
-      className={`p-4 rounded-lg border ${STATUS_STYLES[getThresholdStatus(value, limit)]}`}
-    >
-      <div className="text-sm opacity-80">{label}</div>
-      <div className="text-2xl font-bold mt-1 text-white">
-        {value} <span className="text-sm font-normal">PPM</span>
-      </div>
-      <div className="text-xs mt-2 opacity-75">
-        <div>Limit: {limit} PPM</div>
-        {baselineVal !== undefined && (
-          <>
-            <div>
-              Δ {calculateBaselineDelta(value, baselineVal).toFixed(1)}% vs
-              baseline
-            </div>
-            <div>
-              Rate:{" "}
-              {calculateWearRate(
-                value,
-                baselineVal,
-                latest.operatingHours,
-                baseline.operatingHours
-              ).toFixed(2)}{" "}
-              PPM/100h
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
+  const alloyRatios = alloyCoElevationRatios(latest);
+  const siAl = siliconAluminumRatio(latest);
+  const missingSiAlLabels = (missing: ("silicon" | "aluminum")[]): string =>
+    missing
+      .map((key) => (key === "silicon" ? "Silicon" : "Aluminum"))
+      .join(" and ");
 
   return (
     <div className="space-y-6 p-4">
@@ -269,30 +340,116 @@ export function OilWearMetalsTab({
         </div>
       </div>
 
+      <div className="rounded-lg border border-slate-700 bg-slate-800/30 p-3">
+        <p className="text-xs text-slate-400">
+          <span className="font-semibold text-slate-300">Limit source:</span>{" "}
+          {OIL_ALARM_LIMIT_CITATION}
+        </p>
+        <p className="text-[11px] text-slate-500 mt-1 break-words">
+          {OIL_SPECTROSCOPY_CITATION}
+        </p>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {renderCard(
           "Iron (Fe)",
-          latest.iron as number,
+          "iron",
+          latest.iron,
           latest.ironAlarmLimit,
-          baselineFor(baseline.baselineIron, baseline.iron as number)
+          baselineFor(baseline.baselineIron, baseline.iron)
         )}
         {renderCard(
           "Copper (Cu)",
-          latest.copper as number,
+          "copper",
+          latest.copper,
           latest.copperAlarmLimit,
-          baselineFor(baseline.baselineCopper, baseline.copper as number)
+          baselineFor(baseline.baselineCopper, baseline.copper)
         )}
         {renderCard(
           "Chromium (Cr)",
-          latest.chromium as number,
+          "chromium",
+          latest.chromium,
           latest.chromiumAlarmLimit,
-          baselineFor(baseline.baselineChromium, baseline.chromium as number)
+          baselineFor(baseline.baselineChromium, baseline.chromium)
         )}
         {renderCard(
           "Silicon (Si)",
-          latest.silicon as number,
+          "silicon",
+          latest.silicon,
           latest.siliconAlarmLimit,
-          undefined
+          baselineFor(baseline.baselineSilicon, baseline.silicon)
+        )}
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-[11px] text-slate-500">
+          Baseline: stored fresh-oil value when recorded; otherwise the first
+          in-window measured sample. No baseline is invented.
+        </p>
+        <p className="text-[11px] text-slate-500">
+          Generation rate: Δppm / Δoperating hours, shown only when at least two
+          samples carry distinct non-zero operating hours. Descriptive only; no
+          projection or extrapolation.
+        </p>
+      </div>
+
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Alloy co-elevation (descriptive)
+        </h3>
+        <p className="text-sm text-slate-400 mb-4">
+          Elemental ratios are shown only when both readings were stored.
+        </p>
+        {alloyRatios.length > 0 ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {alloyRatios.map((ratio) => (
+              <div
+                key={ratio.id}
+                className="rounded border border-slate-700 p-3"
+              >
+                <div className="text-xs text-slate-500">{ratio.label}</div>
+                <div className="font-mono text-slate-200">
+                  {ratio.value.toFixed(3)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500 italic">
+            No paired Cu/Pb/Sn/Fe/Cr readings in the latest sample — ratios
+            omitted rather than zero-filled.
+          </p>
+        )}
+        <p className="text-[11px] text-slate-500 mt-3 break-words">
+          {METALLURGY_RATIOS_NOTE}
+        </p>
+      </div>
+
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Si:Al (descriptive)
+        </h3>
+        {siAl.status === "measured" ? (
+          <>
+            <p className="text-2xl font-bold text-white mt-1">
+              Si:Al = {siAl.value.toFixed(3)}
+            </p>
+            <p className="text-[11px] text-slate-500 mt-2">
+              Stored readings: Si {siAl.silicon} ppm · Al {siAl.aluminum} ppm.
+              Raw ratio only — no sealant-vs-dust classification is applied
+              without an in-repo rubric and stored profile.
+            </p>
+          </>
+        ) : siAl.status === "not-measured" ? (
+          <p className="text-sm text-slate-400 mt-1">
+            {missingSiAlLabels(siAl.missing)}:{" "}
+            <span className="font-semibold text-slate-300">Not measured</span> —
+            Si:Al not computed.
+          </p>
+        ) : (
+          <p className="text-sm text-slate-400 mt-1">
+            Aluminum reported 0 ppm — Si:Al not computable (division by zero).
+          </p>
         )}
       </div>
 
@@ -373,10 +530,10 @@ export function OilWearMetalsTab({
               >
                 <td className="px-4 py-3">{formatSampleDate(s.sampleDate)}</td>
                 <td className="px-4 py-3">{s.operatingHours}</td>
-                <td className="px-4 py-3 font-mono">{s.iron}</td>
-                <td className="px-4 py-3 font-mono">{s.copper}</td>
-                <td className="px-4 py-3 font-mono">{s.chromium}</td>
-                <td className="px-4 py-3 font-mono">{s.silicon}</td>
+                <td className="px-4 py-3 font-mono">{ppmCell(s.iron)}</td>
+                <td className="px-4 py-3 font-mono">{ppmCell(s.copper)}</td>
+                <td className="px-4 py-3 font-mono">{ppmCell(s.chromium)}</td>
+                <td className="px-4 py-3 font-mono">{ppmCell(s.silicon)}</td>
                 <td className="px-4 py-3 font-mono">
                   {s.viscosity40C != null ? s.viscosity40C : "—"}
                 </td>

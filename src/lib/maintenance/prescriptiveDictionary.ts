@@ -1863,6 +1863,14 @@ export const OIL_NICKEL_PPM_LABEL = "Nickel (Ni)";
 export const OIL_ALARM_LIMIT_PRACTICE =
   "default alarm limits - lab and OEM practice (DEFAULT_ALARM_LIMITS), not a measured threshold; a stored per-sample lab limit is used when recorded";
 
+/**
+ * Alarm-limit provenance for the Wear Metals tab. ASTM D5185 is the ICP
+ * elemental-analysis test METHOD; it defines no alarm thresholds. Limits come
+ * from the in-repo DEFAULT_ALARM_LIMITS / lab and OEM guidance.
+ */
+export const OIL_ALARM_LIMIT_CITATION =
+  "wear-metal alarm limits are in-repo DEFAULT_ALARM_LIMITS / lab and OEM guidance, not a measured threshold; ASTM D5185 governs the ICP elemental-analysis method only and defines no alarm limits";
+
 export const OIL_ISO4406_STANDARD = "ISO 4406";
 
 export const OIL_ISO4406_CITATION =

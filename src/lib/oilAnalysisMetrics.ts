@@ -14,8 +14,10 @@ export { MORPH_CATEGORIES };
 export type { MorphCategoryKey, MorphSeverity, MorphologyMap };
 
 /**
- * Calculate wear rate in PPM per 100 operating hours.
- * Returns 0 if hours elapsed is 0 or negative.
+ * Legacy wear-rate helper: PPM per 100 operating hours.
+ * Returns 0 if hours elapsed is 0 or negative, so a caller can mistake
+ * "no usable hour span" for a measured zero. UI surfaces must use
+ * `calculateWearGenerationRate` instead.
  */
 export function calculateWearRate(
   currentPPM: number,
@@ -28,6 +30,78 @@ export function calculateWearRate(
 
   const ppmIncrease = Math.max(0, currentPPM - baselinePPM);
   return (ppmIncrease / hoursElapsed) * 100;
+}
+
+export interface WearGenerationRate {
+  /** "available" only when two distinct non-zero-hour readings exist. */
+  status: "available" | "insufficient";
+  /** PPM per 100 operating hours; null unless status is "available". */
+  ppmPer100Hours: number | null;
+  /** Samples carrying both a finite reading and a non-zero operating hour. */
+  pointCount: number;
+  /** Distinct non-zero operating-hour values across those samples. */
+  distinctHourCount: number;
+  /** Positive hour span used for the rate, or null when insufficient. */
+  hoursElapsed: number | null;
+}
+
+/**
+ * Descriptive generation rate: Δppm / Δoperating hours, scaled to 100 hours.
+ *
+ * Hard-gated: requires at least two samples that carry the element and have
+ * distinct non-zero operating hours. A sample with 0/absent hours contributes
+ * nothing, so an all-zero-hour demo cannot synthesize a rate. No acceleration
+ * or hours-to-limit extrapolation is produced — this is the AQ-parked family.
+ */
+export function calculateWearGenerationRate(
+  samples: readonly OilSample[],
+  read: (sample: OilSample) => number | null | undefined
+): WearGenerationRate {
+  const points = samples
+    .map((sample, index) => {
+      const value = read(sample);
+      const hours = sample.operatingHours;
+      if (value == null || !Number.isFinite(value)) return null;
+      if (!Number.isFinite(hours) || hours <= 0) return null;
+      return { hours, value, index };
+    })
+    .filter(
+      (point): point is { hours: number; value: number; index: number } =>
+        point != null
+    )
+    .sort((a, b) => a.hours - b.hours || a.index - b.index);
+
+  const distinctHourCount = new Set(points.map((point) => point.hours)).size;
+  if (points.length < 2 || distinctHourCount < 2) {
+    return {
+      status: "insufficient",
+      ppmPer100Hours: null,
+      pointCount: points.length,
+      distinctHourCount,
+      hoursElapsed: null
+    };
+  }
+
+  const first = points[0];
+  const last = points[points.length - 1];
+  const hoursElapsed = last.hours - first.hours;
+  if (!Number.isFinite(hoursElapsed) || hoursElapsed <= 0) {
+    return {
+      status: "insufficient",
+      ppmPer100Hours: null,
+      pointCount: points.length,
+      distinctHourCount,
+      hoursElapsed: null
+    };
+  }
+
+  return {
+    status: "available",
+    ppmPer100Hours: ((last.value - first.value) / hoursElapsed) * 100,
+    pointCount: points.length,
+    distinctHourCount,
+    hoursElapsed
+  };
 }
 
 /**
@@ -67,43 +141,43 @@ export function getAlarmLimitForMetal(metal: WearMetalKey): number {
 }
 
 /**
- * Interpret wear pattern based on multiple element concentrations.
- * Returns a human-readable string describing the likely wear mode.
+ * Descriptive wear-pattern headline for the tab.
+ *
+ * Reports co-elevation against the in-repo alarm limits only. It never names a
+ * component or wear origin: component metallurgy is not stored (SLICE-AL/AQ
+ * precedent), so an origin claim would be an invented attribution. Hard-coded
+ * contamination thresholds (for example "Si > 30") are deliberately absent.
  */
 export function interpretWearPattern(sample: OilSample): string {
-  const highIron = sample.iron > sample.ironAlarmLimit * 0.5;
-  const highChromium = sample.chromium > sample.chromiumAlarmLimit * 0.5;
-  const highCopper = sample.copper > sample.copperAlarmLimit * 0.5;
-  const highTin = (sample.tin || 0) > 10;
-  const highSilicon = sample.silicon > 30; // Typical dirt contamination threshold
-  const highAluminum = sample.aluminum > sample.aluminumAlarmLimit * 0.5;
+  const elevated = (value: number | undefined, limit: number): boolean =>
+    value != null &&
+    Number.isFinite(value) &&
+    Number.isFinite(limit) &&
+    limit > 0 &&
+    value > limit * 0.5;
 
-  // Steel component wear (gears, shafts, or bearing races)
+  const highIron = elevated(sample.iron, sample.ironAlarmLimit);
+  const highChromium = elevated(sample.chromium, sample.chromiumAlarmLimit);
+  const highCopper = elevated(sample.copper, sample.copperAlarmLimit);
+  const highSilicon = elevated(sample.silicon, sample.siliconAlarmLimit);
+
   if (highIron && highChromium) {
-    return "Steel component wear detected (gears, shafts, or bearing races).";
+    return "Iron and chromium are co-elevated relative to their in-repo alarm limits (descriptive; wear origin not identified).";
   }
 
-  // Bronze/brass component wear (bearings, bushings, or oil cooler)
-  if (highCopper && highTin) {
-    return "Bronze/brass component wear detected (bearings, bushings, or oil cooler).";
+  if (highCopper) {
+    return "Copper is elevated relative to its in-repo alarm limit (descriptive; wear origin not identified).";
   }
 
-  // Dirt contamination
-  if (highSilicon && highAluminum) {
-    return "Dirt contamination detected - check breather, seals, and filtration.";
+  if (highSilicon) {
+    return "Silicon is elevated relative to its in-repo alarm limit (descriptive; sealant vs dust origin not classified without a stored rubric).";
   }
 
-  // Abrasive wear
-  if (highIron && highSilicon) {
-    return "Abrasive wear pattern - dirt contamination accelerating mechanical wear.";
+  if (highIron) {
+    return "Iron is elevated relative to its in-repo alarm limit (descriptive; wear origin not identified).";
   }
 
-  // Single element spikes
-  if (highIron && !highChromium) {
-    return "Elevated iron without chromium suggests mild steel wear or rust.";
-  }
-
-  return "Normal wear pattern - no significant anomalies detected.";
+  return "No wear metal is above half its in-repo alarm limit in the latest sample.";
 }
 
 /**

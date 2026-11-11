@@ -182,6 +182,87 @@ export function wearMetalRatios(sample: OilSample): WearMetalRatio[] {
   });
 }
 
+export type AlloyCoElevationRatioId = "cuPb" | "cuSn" | "pbSn" | "feCr";
+
+export interface AlloyCoElevationRatio {
+  id: AlloyCoElevationRatioId;
+  label: string;
+  value: number;
+}
+
+/**
+ * Descriptive ratios among the alloy-indicator elements (Cu, Pb, Sn) plus
+ * Fe/Cr. A ratio is emitted only when both readings were stored and the
+ * denominator is positive — nothing is zero-filled. These are raw elemental
+ * ratios, not component metallurgy and not a wear-origin diagnosis.
+ */
+export function alloyCoElevationRatios(
+  sample: Pick<OilSample, "copper" | "lead" | "tin" | "iron" | "chromium">
+): AlloyCoElevationRatio[] {
+  const defs: {
+    id: AlloyCoElevationRatioId;
+    label: string;
+    numerator: unknown;
+    denominator: unknown;
+  }[] = [
+    { id: "cuPb", label: "Cu/Pb", numerator: sample.copper, denominator: sample.lead },
+    { id: "cuSn", label: "Cu/Sn", numerator: sample.copper, denominator: sample.tin },
+    { id: "pbSn", label: "Pb/Sn", numerator: sample.lead, denominator: sample.tin },
+    { id: "feCr", label: "Fe/Cr", numerator: sample.iron, denominator: sample.chromium }
+  ];
+
+  return defs.flatMap(({ id, label, numerator, denominator }) => {
+    const n = finiteNumber(numerator);
+    const d = finiteNumber(denominator);
+    if (n == null || d == null || d <= 0) return [];
+    return [{ id, label, value: roundTo(n / d, 3) }];
+  });
+}
+
+export type SiliconAluminumRatio =
+  | { status: "measured"; value: number; silicon: number; aluminum: number }
+  | { status: "not-measured"; missing: ("silicon" | "aluminum")[] }
+  | { status: "not-computable"; reason: "aluminum-zero"; silicon: number; aluminum: 0 };
+
+/**
+ * Si:Al ratio with explicit null-vs-zero discipline.
+ *
+ * An unreported element stays "not-measured" and never becomes a zero. A
+ * measured aluminum of 0 is a real reading, but it cannot be a denominator, so
+ * the ratio is reported as "not-computable" instead of dividing by zero. No
+ * sealant-vs-dust classification is applied: that would require an in-repo
+ * rubric plus a stored sample profile.
+ */
+export function siliconAluminumRatio(
+  sample: Pick<OilSample, "silicon" | "aluminum">
+): SiliconAluminumRatio {
+  const silicon = finiteNumber(sample.silicon);
+  const aluminum = finiteNumber(sample.aluminum);
+
+  const missing: ("silicon" | "aluminum")[] = [];
+  if (silicon == null) missing.push("silicon");
+  if (aluminum == null) missing.push("aluminum");
+  if (silicon == null || aluminum == null) {
+    return { status: "not-measured", missing };
+  }
+
+  if (aluminum === 0) {
+    return {
+      status: "not-computable",
+      reason: "aluminum-zero",
+      silicon,
+      aluminum: 0
+    };
+  }
+
+  return {
+    status: "measured",
+    value: roundTo(silicon / aluminum, 3),
+    silicon,
+    aluminum
+  };
+}
+
 export interface ComponentMetallurgy {
   bushing?: string | null;
   bearingOverlay?: string | null;

@@ -170,8 +170,9 @@ export interface OilSampleSavePayload {
   copper: number;
   chromium: number;
   lead: number;
-  aluminum: number;
-  silicon: number;
+  /** Optional: an unreported element stays absent instead of becoming 0. */
+  aluminum?: number;
+  silicon?: number;
   tin?: number;
   nickel?: number;
   viscosity40C?: number;
@@ -222,8 +223,10 @@ export function buildOilSampleSavePayload(
     copper: optional(s.copper) ?? 0,
     chromium: optional(s.chromium) ?? 0,
     lead: optional(s.lead) ?? 0,
-    aluminum: optional(s.aluminum) ?? 0,
-    silicon: optional(s.silicon) ?? 0,
+    // Al/Si are meaningful ratio inputs; keep an unreported element absent so
+    // Si:Al can say "Not measured" instead of treating it as zero aluminum.
+    aluminum: optional(s.aluminum),
+    silicon: optional(s.silicon),
     tin: optional(s.tin),
     nickel: optional(s.nickel),
     viscosity40C: optional(s.viscosity40C),
