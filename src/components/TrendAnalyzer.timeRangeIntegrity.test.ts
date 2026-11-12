@@ -52,7 +52,7 @@ describe("SLICE-N one shared window across all Trend Analyzer surfaces", () => {
       "const hasAnySpectralTrend"
     );
     expect(spectral).toContain(
-      "toSpectralHarmonicInputs(windowedVibAnalyses, machineSpecs.rpm)"
+      "toSpectralHarmonicInputs(spectralScopeRows)"
     );
     expect(spectral).not.toContain("[...vibAnalyses].reverse()");
   });
@@ -78,7 +78,7 @@ describe("SLICE-N one shared window across all Trend Analyzer surfaces", () => {
     expect(src).toContain("isSparseTrendSeries(velocityTrendSeries)");
     expect(src).toContain("spectralTrendIsSparse");
     expect(src).toContain(
-      "toSpectralHarmonicInputs(windowedVibAnalyses, machineSpecs.rpm)"
+      "vibrationRowsInScope(windowedVibAnalyses, runningOnly)"
     );
     expect(src).toContain("No spectral readings in the selected {timeRange} window.");
     expect(src).toContain("No enveloping history in the selected {timeRange} window.");

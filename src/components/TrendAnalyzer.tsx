@@ -169,12 +169,15 @@ import {
   VIBRATION_NOT_MEASURED,
   applyVibrationRunningStateFilter,
   latestVibrationRecordFromRows,
+  readStoredVibrationRpm,
   readVibrationOverallAcceleration,
   readVibrationOverallVelocity,
   readVibrationPerAxis,
   reconcileVibrationVerdict,
   sortVibrationRowsNewestFirst,
-  vibrationSampleState
+  vibrationRowsInScope,
+  vibrationSampleState,
+  vibrationStoppedSampleLabel
 } from "../lib/vibration/trendSsot";
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
 import {
@@ -202,8 +205,13 @@ import {
 } from "../lib/vibration/velocityThresholds";
 import {
   MISSING_RPM_ORDER_HELPER_TEXT,
+  SPECTRAL_ORDERS_RPM_GATE_NOTE,
+  SPECTRAL_ORDERS_STORED_FALLBACK_NOTE,
+  SPECTRAL_UNIT_PHYSICS_NOTE,
   buildSpectralHarmonicTrend,
-  spectralAmplitudeAxisLabel
+  spectralAmplitudeAxisLabel,
+  spectralOrderProvenanceLabel,
+  type HarmonicRatio
 } from "../lib/vibration/spectralTrend";
 import { useTenantDisplayUnits } from "../lib/tenantSettings";
 import { navigateToTab } from "../navigation";
@@ -1673,27 +1681,118 @@ function BroadbandTrendChartBody({
 
 type SpectralTrendChartPoint = {
   date: string;
+  /** Deterministic X-axis label; same-date points get a "· n" suffix. */
+  dateLabel: string;
   amp1X: number | null;
   amp2X: number | null;
   overall: number | null;
+  amp1XSource?: "stored" | "derived" | null;
+  amp2XSource?: "stored" | "derived" | null;
+  stoppedLabel?: string | null;
+  ratio?: HarmonicRatio | null;
 };
+
+interface SpectralTooltipEntry {
+  dataKey?: unknown;
+  value?: unknown;
+  payload?: unknown;
+}
+
+/**
+ * Public tooltip for the spectral series. It is the only place a per-point
+ * "stopped sample" label and the stored-vs-derived order provenance surface,
+ * matching the Broadband tooltip contract when Running State Only is OFF.
+ */
+function SpectralTrendTooltip({
+  active,
+  payload,
+  velocityUnit
+}: {
+  active?: boolean;
+  payload?: ReadonlyArray<SpectralTooltipEntry>;
+  velocityUnit: DisplayUnits["velocity"];
+}) {
+  if (!active || !payload?.length) return null;
+  const point = payload[0]?.payload as SpectralTrendChartPoint | undefined;
+  if (!point) return null;
+
+  const allRows: Array<{
+    key: "amp1X" | "amp2X" | "overall";
+    name: string;
+    color: string;
+    source?: "stored" | "derived" | null;
+  }> = [
+    {
+      key: "amp1X",
+      name: "1X Amplitude (Unbalance)",
+      color: "#38bdf8",
+      source: point.amp1XSource
+    },
+    {
+      key: "amp2X",
+      name: "2X Amplitude (Misalignment)",
+      color: "#f59e0b",
+      source: point.amp2XSource
+    },
+    { key: "overall", name: "Overall Vibration", color: "#94a3b8" }
+  ];
+  const rows = allRows.filter((row) => point[row.key] != null);
+
+  if (rows.length === 0 && !point.stoppedLabel) return null;
+
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] shadow-lg">
+      <div className="mb-1 text-slate-400">{point.dateLabel || point.date}</div>
+      {rows.map((row) => (
+        <div key={row.key} className="flex items-center gap-1.5">
+          <span
+            className="inline-block h-2 w-2 rounded-sm"
+            style={{ background: row.color }}
+          />
+          <span className="text-slate-300">{row.name}</span>
+          <span className="ml-3 font-mono text-white">
+            {Number(point[row.key]).toFixed(3)} {velocityUnit}
+          </span>
+          {spectralOrderProvenanceLabel(row.source) ? (
+            <span className="ml-2 text-[10px] text-slate-500">
+              {spectralOrderProvenanceLabel(row.source)}
+            </span>
+          ) : null}
+        </div>
+      ))}
+      {point.stoppedLabel ? (
+        <div className="mt-1 text-[10px] text-amber-300">
+          {point.stoppedLabel}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * Single renderer for the Spectral & Harmonics 1X/2X/overall series. Inline and
  * enlarged views share this body so guards and display units never diverge.
+ *
+ * `hasOrderSeries` is driven by actual amplitudes (stored or re-extracted), not
+ * by RPM availability: a stored 1X/2X measurement must never be hidden just
+ * because the sample has no running speed.
+ *
+ * Unit physics: data arrives as velocity values converted only by the
+ * frequency-independent mm/s <-> in/s display helper. No g conversion is
+ * applied here (that would need an order frequency).
  */
 function SpectralTrendChartBody({
   data,
   windowEmpty,
   isSparse,
-  ordersUnavailable,
+  hasOrderSeries,
   velocityUnit,
   timeRange
 }: {
   data: SpectralTrendChartPoint[];
   windowEmpty: boolean;
   isSparse: boolean;
-  ordersUnavailable: boolean;
+  hasOrderSeries: boolean;
   velocityUnit: DisplayUnits["velocity"];
   timeRange: TimeRange;
 }) {
@@ -1725,7 +1824,10 @@ function SpectralTrendChartBody({
             {velocityUnit} overall
           </span>
         </p>
-        <p className="text-xs text-slate-400">{data[0]?.date}</p>
+        <p className="text-xs text-slate-400">{data[0]?.dateLabel}</p>
+        {data[0]?.stoppedLabel ? (
+          <p className="text-xs text-amber-300">{data[0].stoppedLabel}</p>
+        ) : null}
         <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
       </div>
     );
@@ -1743,7 +1845,7 @@ function SpectralTrendChartBody({
       >
         <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
         <XAxis
-          dataKey="date"
+          dataKey="dateLabel"
           stroke="#94a3b8"
           tick={{ fontSize: 11 }}
           label={{
@@ -1766,16 +1868,12 @@ function SpectralTrendChartBody({
           }}
         />
         <Tooltip
-          contentStyle={tooltipStyle}
+          content={<SpectralTrendTooltip velocityUnit={velocityUnit} />}
           allowEscapeViewBox={{ x: true, y: true }}
           wrapperStyle={{ zIndex: 20 }}
-          formatter={(value: number, name: string) => [
-            `${value} ${velocityUnit}`,
-            name
-          ]}
         />
         <Legend />
-        {!ordersUnavailable && (
+        {hasOrderSeries && (
           <>
             <Line
               type="monotone"
@@ -1809,6 +1907,42 @@ function SpectralTrendChartBody({
         />
       </LineChart>
     </ResponsiveContainer>
+  );
+}
+
+/**
+ * One latest-in-window order readout. A stored amplitude is a measurement and
+ * renders even without RPM; an absent one says why instead of showing a
+ * fabricated zero.
+ */
+function SpectralOrderReadout({
+  order,
+  value,
+  unit,
+  source,
+  testId
+}: {
+  order: string;
+  value: number | null | undefined;
+  unit: DisplayUnits["velocity"];
+  source: "stored" | "derived" | null | undefined;
+  testId: string;
+}) {
+  const provenance =
+    value == null
+      ? "not stored \u2014 no stored RPM for bin re-extraction"
+      : spectralOrderProvenanceLabel(source) || "source unrecorded";
+  return (
+    <div data-testid={testId}>
+      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+        {order}
+      </p>
+      <p className="font-mono text-lg font-semibold text-white">
+        {value == null ? "\u2014" : Number(value).toFixed(3)}{" "}
+        <span className="text-[11px] font-normal text-slate-400">{unit}</span>
+      </p>
+      <p className="text-[10px] text-slate-500">{provenance}</p>
+    </div>
   );
 }
 
@@ -2198,23 +2332,25 @@ function peakAmplitudeFromAnalysis(row: SavedAnalysisResult): number | null {
 }
 
 function toSpectralHarmonicInputs(
-  analyses: readonly SavedAnalysisResult[],
-  fallbackRpm: number | null
+  analyses: readonly SavedAnalysisResult[]
 ) {
+  // Caller passes newest-first SSOT rows; reverse to chronological for writing.
   return [...analyses].reverse().map((analysis) => {
     const rec = extractVibrationRecordFromAnalysis(analysis);
     return {
       timestamp: rec?.timestamp || analysis.timestamp,
-      rpm:
-        rec?.rpm ??
-        rec?.context?.motorSpeedRPM ??
-        fallbackRpm ??
-        null,
+      /**
+       * STORED running speed for THIS sample only. We never fall back to the
+       * Equipment-DB rating here: an unmeasured RPM must not fabricate a 1X
+       * frequency or a re-extracted bin amplitude (SLICE-VS4).
+       */
+      rpm: readStoredVibrationRpm(analysis),
       peaks: rec?.spectral || [],
       overall:
         rec?.broadband?.overallVelocity ||
         peakAmplitudeFromAnalysis(analysis) ||
-        null
+        null,
+      stoppedLabel: vibrationStoppedSampleLabel(analysis)
     };
   });
 }
@@ -3140,37 +3276,66 @@ export default function TrendAnalyzer({
     [surgeData]
   );
 
+  /**
+   * SSOT lockstep (SLICE-VS4): the spectral series reads the same windowed,
+   * running-state-scoped, deterministically sorted rows as Broadband. No
+   * surface re-filters raw `vibAnalyses` or re-selects its own latest row.
+   */
+  const spectralScopeRows = useMemo(
+    () => vibrationRowsInScope(windowedVibAnalyses, runningOnly),
+    [windowedVibAnalyses, runningOnly]
+  );
+
   const spectralHarmonicTrendAll = useMemo(
-    () =>
-      buildSpectralHarmonicTrend(
-        toSpectralHarmonicInputs(vibAnalyses, machineSpecs.rpm)
-      ),
-    [vibAnalyses, machineSpecs.rpm]
+    () => buildSpectralHarmonicTrend(toSpectralHarmonicInputs(vibAnalyses)),
+    [vibAnalyses]
   );
 
   const spectralHarmonicTrend = useMemo(
-    () =>
-      buildSpectralHarmonicTrend(
-        toSpectralHarmonicInputs(windowedVibAnalyses, machineSpecs.rpm)
-      ),
-    [windowedVibAnalyses, machineSpecs.rpm]
+    () => buildSpectralHarmonicTrend(toSpectralHarmonicInputs(spectralScopeRows)),
+    [spectralScopeRows]
   );
 
   const hasAnySpectralTrend = spectralHarmonicTrendAll.rows.length > 0;
   const isUsingReferenceSpectralTrend = !hasAnySpectralTrend;
   const spectralWindowEmpty =
     hasAnySpectralTrend && spectralHarmonicTrend.rows.length === 0;
-  const spectralTrendChartData = isUsingReferenceSpectralTrend
-    ? REFERENCE_TREND_DATA
-    : spectralHarmonicTrend.rows;
+  const spectralTrendChartData: SpectralTrendChartPoint[] =
+    isUsingReferenceSpectralTrend
+      ? REFERENCE_TREND_DATA.map((point) => ({
+          ...point,
+          dateLabel: point.date
+        }))
+      : spectralHarmonicTrend.rows;
   const spectralOrdersUnavailable =
     !isUsingReferenceSpectralTrend && spectralHarmonicTrend.ordersUnavailable;
+  const spectralHasOrderSeries =
+    !isUsingReferenceSpectralTrend && spectralHarmonicTrend.hasOrderSeries;
+  const spectralHasStoredOrders =
+    !isUsingReferenceSpectralTrend && spectralHarmonicTrend.hasStoredOrders;
   const spectralTrendIsSparse =
     !isUsingReferenceSpectralTrend && spectralHarmonicTrend.isSparse;
+  const spectralHasStoppedSamples = useMemo(
+    () =>
+      spectralScopeRows.some(
+        (row) => vibrationStoppedSampleLabel(row) != null
+      ),
+    [spectralScopeRows]
+  );
+  const spectralWindowEmptyNote = spectralWindowEmpty
+    ? runningOnly
+      ? "No running-state samples in this range \u2014 turn off Running State Only to include stopped samples."
+      : "No spectral readings in this time range."
+    : null;
+
+  // Display-only projection: amplitudes keep the stored velocity dimension.
+  // Only mm/s <-> in/s is applied (frequency-independent). The g/Hz selectors
+  // never touch this series.
   const spectralTrendDisplayData = useMemo(
     () =>
       spectralTrendChartData.map((point) => ({
         ...point,
+        dateLabel: point.dateLabel || point.date,
         amp1X:
           point.amp1X == null
             ? null
@@ -3186,6 +3351,11 @@ export default function TrendAnalyzer({
       })),
     [spectralTrendChartData, displayUnits.velocity]
   );
+
+  /** Latest-in-window spectral row for the summary strip (never a raw pick). */
+  const spectralLatestPoint = isUsingReferenceSpectralTrend
+    ? null
+    : spectralTrendDisplayData[spectralTrendDisplayData.length - 1] ?? null;
 
   const vibExtractedEnvelopeChart = useMemo(() => {
     if (!latestVibrationRecord?.enveloping?.length) return [];
@@ -5149,9 +5319,107 @@ export default function TrendAnalyzer({
               )}
 
               {spectralOrdersUnavailable && (
-                <p className="text-xs text-amber-300 mb-3">
-                  {MISSING_RPM_ORDER_HELPER_TEXT}
+                <div
+                  data-testid="spectral-orders-rpm-gate"
+                  className="text-xs text-amber-300 mb-3 space-y-1"
+                >
+                  <p>{MISSING_RPM_ORDER_HELPER_TEXT}.</p>
+                  <p>{SPECTRAL_ORDERS_RPM_GATE_NOTE}.</p>
+                  {spectralHasStoredOrders && (
+                    <p>{SPECTRAL_ORDERS_STORED_FALLBACK_NOTE}</p>
+                  )}
+                </div>
+              )}
+
+              {spectralWindowEmptyNote && (
+                <p
+                  data-testid="spectral-window-empty-note"
+                  className="text-xs text-amber-300 mb-3"
+                >
+                  {spectralWindowEmptyNote}
                 </p>
+              )}
+
+              {!runningOnly && spectralHasStoppedSamples && (
+                <p
+                  data-testid="spectral-stopped-series-note"
+                  className="text-xs text-amber-300 mb-3"
+                >
+                  Includes stopped samples (load \u2264 80%) \u2014 labeled
+                  &ldquo;stopped sample&rdquo; in the tooltip.
+                </p>
+              )}
+
+              {spectralLatestPoint && (
+                <div
+                  data-testid="spectral-latest-summary"
+                  className="mb-4 rounded-lg border border-slate-700/70 bg-slate-950/60 p-3"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Latest in window \u00b7 {spectralLatestPoint.dateLabel}
+                    {spectralLatestPoint.stoppedLabel
+                      ? ` \u00b7 ${spectralLatestPoint.stoppedLabel}`
+                      : ""}
+                  </p>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <SpectralOrderReadout
+                      order="1X"
+                      value={spectralLatestPoint.amp1X}
+                      unit={displayUnits.velocity}
+                      source={spectralLatestPoint.amp1XSource}
+                      testId="spectral-1x-readout"
+                    />
+                    <SpectralOrderReadout
+                      order="2X"
+                      value={spectralLatestPoint.amp2X}
+                      unit={displayUnits.velocity}
+                      source={spectralLatestPoint.amp2XSource}
+                      testId="spectral-2x-readout"
+                    />
+                    <div data-testid="spectral-overall-readout">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                        Overall
+                      </p>
+                      <p className="font-mono text-lg font-semibold text-white">
+                        {spectralLatestPoint.overall == null
+                          ? "\u2014"
+                          : Number(spectralLatestPoint.overall).toFixed(3)}{" "}
+                        <span className="text-[11px] font-normal text-slate-400">
+                          {displayUnits.velocity}
+                        </span>
+                      </p>
+                      <p className="text-[10px] text-slate-500">
+                        stored overall broadband
+                      </p>
+                    </div>
+                    {spectralLatestPoint.ratio ? (
+                      <div data-testid="spectral-2x1x-ratio">
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                          2X:1X
+                        </p>
+                        <p className="font-mono text-lg font-semibold text-white">
+                          {Number(spectralLatestPoint.ratio.ratio).toFixed(2)}
+                        </p>
+                        <p className="text-[10px] text-slate-500">
+                          {spectralLatestPoint.ratio.basisNote}
+                        </p>
+                        {spectralLatestPoint.ratio.interpretation ? (
+                          <>
+                            <span
+                              data-testid="spectral-ratio-interpretation"
+                              className="mt-1 inline-flex rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-300"
+                            >
+                              {spectralLatestPoint.ratio.interpretation.label}
+                            </span>
+                            <p className="mt-1 text-[10px] text-slate-500">
+                              {spectralLatestPoint.ratio.interpretation.source}
+                            </p>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               )}
 
               <div className="h-[420px] bg-slate-950 rounded-xl border border-slate-700/80 p-3">
@@ -5159,11 +5427,17 @@ export default function TrendAnalyzer({
                   data={spectralTrendDisplayData}
                   windowEmpty={spectralWindowEmpty}
                   isSparse={spectralTrendIsSparse}
-                  ordersUnavailable={spectralOrdersUnavailable}
+                  hasOrderSeries={spectralHasOrderSeries}
                   velocityUnit={displayUnits.velocity}
                   timeRange={timeRange}
                 />
               </div>
+              <p
+                data-testid="spectral-unit-physics-note"
+                className="mt-2 text-[10px] leading-relaxed text-slate-500"
+              >
+                {SPECTRAL_UNIT_PHYSICS_NOTE}
+              </p>
             </div>
           )}
           {false && vibMode === "spectral" && (
@@ -5768,7 +6042,7 @@ export default function TrendAnalyzer({
                 data={spectralTrendDisplayData}
                 windowEmpty={spectralWindowEmpty}
                 isSparse={spectralTrendIsSparse}
-                ordersUnavailable={spectralOrdersUnavailable}
+                hasOrderSeries={spectralHasOrderSeries}
                 velocityUnit={displayUnits.velocity}
                 timeRange={timeRange}
               />

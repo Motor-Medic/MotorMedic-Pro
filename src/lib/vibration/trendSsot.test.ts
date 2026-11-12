@@ -9,6 +9,7 @@ import {
   VIBRATION_NOT_REPORTED,
   applyVibrationRunningStateFilter,
   latestVibrationRecordFromRows,
+  readStoredVibrationRpm,
   readVibrationLoadPercent,
   readVibrationOverallAcceleration,
   readVibrationOverallVelocity,
@@ -35,6 +36,9 @@ interface RowOptions {
   overallVelocity?: number | null;
   overallAcceleration?: number | null;
   loadFactorPercent?: number | null;
+  rpm?: number | null;
+  /** Place RPM at the telemetry root instead of the trend record. */
+  telemetryRootRpm?: number | null;
   peaks?: unknown[];
   consensus?: Record<string, unknown> | null;
 }
@@ -48,6 +52,8 @@ function row(options: RowOptions = {}): SavedAnalysisResult {
     overallVelocity,
     overallAcceleration,
     loadFactorPercent,
+    rpm,
+    telemetryRootRpm,
     peaks = [],
     consensus = null
   } = options;
@@ -56,11 +62,15 @@ function row(options: RowOptions = {}): SavedAnalysisResult {
   if (loadFactorPercent !== undefined) {
     trendContext.loadFactorPercent = loadFactorPercent;
   }
+  if (rpm !== undefined && rpm != null) {
+    trendContext.motorSpeedRPM = rpm;
+  }
 
   const telemetry: Record<string, unknown> = {
     vibration_trend_record: {
       assetId: "asset-1",
       timestamp,
+      ...(rpm !== undefined && rpm != null ? { rpm } : {}),
       context: trendContext,
       broadband: {
         overallVelocity: overallVelocity ?? 0,
@@ -78,6 +88,9 @@ function row(options: RowOptions = {}): SavedAnalysisResult {
   }
   if (overallAcceleration !== undefined) {
     telemetry.overall_acceleration = overallAcceleration;
+  }
+  if (telemetryRootRpm !== undefined && telemetryRootRpm != null) {
+    telemetry.rpm = telemetryRootRpm;
   }
 
   return {
@@ -190,6 +203,28 @@ describe("trend SSOT — running-state scope", () => {
       vibrationStoppedSampleLabel(
         row({ loadFactorPercent: 90, overallVelocity: 4 })
       )
+    ).toBeNull();
+  });
+
+  it("reads the running speed stored on the sample, never a spec fallback", () => {
+    expect(readStoredVibrationRpm(row({ rpm: 1790 }))).toBe(1790);
+    expect(readStoredVibrationRpm(row({ telemetryRootRpm: 1785 }))).toBe(1785);
+    expect(readStoredVibrationRpm(row())).toBeNull();
+    expect(readStoredVibrationRpm(null)).toBeNull();
+    expect(
+      readStoredVibrationRpm({
+        ...row(),
+        telemetry_data: {
+          vibration_trend_record: {
+            rpm: 0,
+            context: { motorSpeedRPM: null },
+            broadband: {},
+            spectral: [],
+            enveloping: [],
+            waveform: []
+          }
+        }
+      } as SavedAnalysisResult)
     ).toBeNull();
   });
 });

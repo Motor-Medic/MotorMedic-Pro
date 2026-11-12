@@ -83,6 +83,35 @@ export function readVibrationLoadPercent(
   return null;
 }
 
+/**
+ * SLICE-VS4 — running speed STORED on this sample.
+ *
+ * This is deliberately NOT `machineSpecs.rpm`: an Equipment-DB rating says how
+ * fast the machine may run, not how fast this capture ran. Re-extracting 1X/2X
+ * from raw FFT bins therefore requires this stored value; without it the
+ * spectral tab may only show order amplitudes that were stored at collection.
+ */
+export function readStoredVibrationRpm(
+  row: SavedAnalysisResult | null | undefined
+): number | null {
+  if (!row) return null;
+  const td = asRecord(row.telemetry_data);
+  const trend = asRecord(td.vibration_trend_record);
+  const trendContext = asRecord(trend.context);
+
+  const candidates: unknown[] = [
+    trend.rpm,
+    trendContext.motorSpeedRPM,
+    td.rpm
+  ];
+
+  for (const candidate of candidates) {
+    const value = finiteNumber(candidate);
+    if (value != null && value > 0) return value;
+  }
+  return null;
+}
+
 export interface VibrationSampleState {
   loadPercent: number | null;
   hasLoadTelemetry: boolean;

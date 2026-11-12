@@ -176,7 +176,7 @@ describe("SLICE-Q every series chart enlarges through the same bodies", () => {
     expect(spectral).toContain("data={spectralTrendDisplayData}");
     expect(spectral).toContain("windowEmpty={spectralWindowEmpty}");
     expect(spectral).toContain("isSparse={spectralTrendIsSparse}");
-    expect(spectral).toContain("ordersUnavailable={spectralOrdersUnavailable}");
+    expect(spectral).toContain("hasOrderSeries={spectralHasOrderSeries}");
     expect(spectral).toContain("velocityUnit={displayUnits.velocity}");
     expect(spectral).toContain("timeRange={timeRange}");
 
@@ -208,7 +208,12 @@ describe("SLICE-Q every series chart enlarges through the same bodies", () => {
     expect(spectral).toContain("No spectral readings in the selected {timeRange} window.");
     expect(spectral).toContain("SPARSE_TREND_HELPER_TEXT");
     expect(spectral).toContain("spectralAmplitudeAxisLabel(velocityUnit)");
-    expect(spectral).toContain("${value} ${velocityUnit}");
+    expect(spectral).toContain(
+      "<SpectralTrendTooltip velocityUnit={velocityUnit} />"
+    );
+    expect(
+      block("function SpectralTrendTooltip", "function SpectralTrendChartBody")
+    ).toContain("Number(point[row.key]).toFixed(3)} {velocityUnit}");
     expect(spectral).not.toContain("buildSpectralHarmonicTrend(");
 
     const ge = block(
