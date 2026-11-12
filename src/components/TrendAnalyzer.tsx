@@ -161,12 +161,21 @@ import {
   extractEnvelopingTrendPoint,
   extractVibrationRecordFromAnalysis,
   extractWaveformTrendPoint,
-  hasSpectralPeaks,
   hasVibrationTrendCharts,
-  readCachedVibrationRecord,
   type EnvelopingTrendPoint,
   type VibrationDiagnosticRecord
 } from "../lib/vibration/vibrationDiagnosticRecord";
+import {
+  VIBRATION_NOT_MEASURED,
+  applyVibrationRunningStateFilter,
+  latestVibrationRecordFromRows,
+  readVibrationOverallAcceleration,
+  readVibrationOverallVelocity,
+  readVibrationPerAxis,
+  reconcileVibrationVerdict,
+  sortVibrationRowsNewestFirst,
+  vibrationSampleState
+} from "../lib/vibration/trendSsot";
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
 import {
   ACCELERATION_DISPLAY_OPTIONS,
@@ -229,8 +238,7 @@ import AddOilSampleModal from "./trendAnalyzer/AddOilSampleModal";
 import {
   VibrationActionCard,
   VibrationIsoMatrix,
-  VibrationKpiSummary,
-  consensusContradicts
+  VibrationKpiSummary
 } from "./trendAnalyzer/VibrationSeverityPanels";
 import {
   KinematicSpecsEmptyState
@@ -278,6 +286,14 @@ type ExpandedTrendChartId =
   | "waveformImpact";
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
+
+function healthScoreTone(score: number | null): string {
+  if (score == null) return "text-slate-500";
+  if (score >= 85) return "text-emerald-400";
+  if (score >= 70) return "text-yellow-400";
+  if (score >= 50) return "text-orange-400";
+  return "text-red-400";
+}
 
 function TechEmptyState({ technology }: { technology: string }) {
   return (
@@ -1437,6 +1453,9 @@ interface BroadbandChartPoint {
   health?: number;
   peak?: number;
   timestamp?: string;
+  /** Included only when the running-state toggle is OFF. */
+  stopped?: boolean;
+  loadPercent?: number | null;
 }
 
 /**
@@ -1463,6 +1482,17 @@ function BroadbandTrendChartBody({
   thresholds: VelocityThresholdResolution;
   showThresholds: boolean;
 }) {
+  const pointLabel = (
+    label: unknown,
+    payload: ReadonlyArray<{ payload?: BroadbandChartPoint }> | undefined
+  ): string => {
+    const point = payload?.[0]?.payload;
+    const fault =
+      point?.fault && point.fault !== "\u2014" ? ` \u00b7 ${point.fault}` : "";
+    const stopped = point?.stopped ? " \u00b7 stopped sample" : "";
+    return `${String(label)}${fault}${stopped}`;
+  };
+
   if (isEmpty) {
     return (
       <div
@@ -1511,6 +1541,11 @@ function BroadbandTrendChartBody({
           {first?.date}
           {first?.fault && first.fault !== "\u2014" ? ` \u00b7 ${first.fault}` : ""}
         </p>
+        {first?.stopped ? (
+          <p className="text-xs font-semibold text-amber-300">
+            Stopped sample \u2014 no running-state measurement
+          </p>
+        ) : null}
         <p className="text-xs text-amber-300">{SPARSE_TREND_HELPER_TEXT}</p>
       </div>
     );
@@ -1542,11 +1577,11 @@ function BroadbandTrendChartBody({
             contentStyle={tooltipStyle}
             allowEscapeViewBox={{ x: true, y: true }}
             wrapperStyle={{ zIndex: 20 }}
-            formatter={(value: number) => [`${value}`, "Health score"]}
-            labelFormatter={(label, payload) => {
-              const fault = payload?.[0]?.payload?.fault;
-              return fault ? `${label} \u00b7 ${fault}` : String(label);
-            }}
+            formatter={(value: number) => [
+              `${value}`,
+              "Saved diagnostic health score"
+            ]}
+            labelFormatter={(label, payload) => pointLabel(label, payload)}
           />
           <Line
             type="monotone"
@@ -1591,10 +1626,7 @@ function BroadbandTrendChartBody({
             `${value} ${velocityUnit} (peak)`,
             "Peak amplitude"
           ]}
-          labelFormatter={(label, payload) => {
-            const fault = payload?.[0]?.payload?.fault;
-            return fault ? `${label} \u00b7 ${fault}` : String(label);
-          }}
+          labelFormatter={(label, payload) => pointLabel(label, payload)}
         />
         {showThresholds && (
           <ReferenceLine
@@ -2444,6 +2476,18 @@ export default function TrendAnalyzer({
     };
   }, [selectedAsset, selectedComp, displayUnits.frequency]);
 
+  /**
+   * Same condition the amber KinematicSpecsEmptyState uses. The ISO threshold
+   * basis note below is tied to it so the chart never presents a default zone
+   * band as a configured/OEM limit.
+   */
+  const kinematicSpecsUnconfigured = Boolean(
+    selectedAsset &&
+      (machineSpecs.rpm == null ||
+        machineSpecs.isoClass === "Not set" ||
+        machineSpecs.bearing === "Not set")
+  );
+
   // Prefer tag (Diagnose persists asset_id as tag), then id — never mix in stale nav props
   const analysisAssetQueryKey = useMemo(() => {
     if (!selectedAsset) return "";
@@ -2544,44 +2588,48 @@ export default function TrendAnalyzer({
   );
 
   /**
-   * One shared time window for every vibration trend surface (broadband,
-   * spectral, enveloping charts + table). All four derive from this filtered
-   * array so 7D/30D/90D/1Y can never drift between tabs, and the sparse /
-   * missing-RPM guards below evaluate the windowed rows — not the raw history.
+   * One shared window for every vibration trend surface (broadband, spectral,
+   * enveloping charts + table). The time predicate runs exactly once, then the
+   * running-state scope (load telemetry) and deterministic newest-first
+   * ordering are applied to that same array. No surface may re-filter or
+   * re-select from raw `vibAnalyses`.
    */
   const windowedVibAnalyses = useMemo(
-    () => filterTrendByTimeRange(vibAnalyses, timeRange),
-    [vibAnalyses, timeRange]
+    () =>
+      sortVibrationRowsNewestFirst(
+        applyVibrationRunningStateFilter(
+          filterTrendByTimeRange(vibAnalyses, timeRange),
+          runningOnly
+        )
+      ),
+    [vibAnalyses, timeRange, runningOnly]
   );
 
-  /** Latest unified vibration diagnostic record — prefer rows that include FFT peaks. */
-  const latestVibrationRecord = useMemo((): VibrationDiagnosticRecord | null => {
-    const fromDb = vibAnalyses
-      .map((row) => extractVibrationRecordFromAnalysis(row))
-      .filter((rec): rec is VibrationDiagnosticRecord => Boolean(rec));
-    const dbWithSpectral = fromDb.find((rec) => hasSpectralPeaks(rec));
-    if (dbWithSpectral) return dbWithSpectral;
+  /** Latest-in-window row — single selection shared by KPI/matrix/axes. */
+  const latestVibrationRow = windowedVibAnalyses[0] ?? null;
+  const latestVibrationSample = useMemo(
+    () => (latestVibrationRow ? vibrationSampleState(latestVibrationRow) : null),
+    [latestVibrationRow]
+  );
 
-    const candidateKeys = [
-      analysisAssetQueryKey,
-      selectedAsset?.tag,
-      selectedAsset?.id != null ? String(selectedAsset.id) : null
-    ].filter((k): k is string => Boolean(k && String(k).trim()));
-    for (const key of candidateKeys) {
-      const cached = readCachedVibrationRecord(key);
-      if (hasSpectralPeaks(cached)) return cached;
-    }
-    for (const key of candidateKeys) {
-      const cached = readCachedVibrationRecord(key);
-      if (cached && hasVibrationTrendCharts(cached)) return cached;
-    }
-    return fromDb.find((rec) => hasVibrationTrendCharts(rec)) || fromDb[0] || null;
-  }, [
-    vibAnalyses,
-    analysisAssetQueryKey,
-    selectedAsset?.tag,
-    selectedAsset?.id
-  ]);
+  /** Latest unified diagnostic record inside the shared window (no cache fallback). */
+  const latestVibrationRecord = useMemo(
+    (): VibrationDiagnosticRecord | null =>
+      latestVibrationRecordFromRows(windowedVibAnalyses),
+    [windowedVibAnalyses]
+  );
+
+  /**
+   * Waveform samples are one captured snapshot, not a windowed trend. The
+   * Waveform Metrics tab keeps its pre-VS1 latest-record behavior so an old
+   * capture is not erased by the broadband time window; the broadband KPI,
+   * matrix and axis cards never read this record.
+   */
+  const latestWaveformRecord = useMemo(
+    (): VibrationDiagnosticRecord | null =>
+      latestVibrationRecordFromRows(vibAnalyses),
+    [vibAnalyses]
+  );
 
   const hasVibrationDiagnosticRecord = hasVibrationTrendCharts(
     latestVibrationRecord
@@ -2693,17 +2741,22 @@ export default function TrendAnalyzer({
     return [...windowedVibAnalyses]
       .filter((r) => r.health_score != null)
       .reverse()
-      .map((r) => ({
-        date: r.timestamp
-          ? new Date(r.timestamp).toLocaleDateString(undefined, {
-              month: "short",
-              day: "numeric"
-            })
-          : "—",
-        health: Number(r.health_score) || 0,
-        fault: r.primary_fault || "—",
-        timestamp: r.timestamp
-      }));
+      .map((r) => {
+        const sample = vibrationSampleState(r);
+        return {
+          date: r.timestamp
+            ? new Date(r.timestamp).toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric"
+              })
+            : "—",
+          health: Number(r.health_score) || 0,
+          fault: r.primary_fault || "—",
+          timestamp: r.timestamp,
+          stopped: sample.stopped,
+          loadPercent: sample.loadPercent
+        };
+      });
   }, [windowedVibAnalyses]);
 
   const velocityTrendSeries = useMemo(() => {
@@ -2711,6 +2764,7 @@ export default function TrendAnalyzer({
       .map((r) => {
         const peak = peakAmplitudeFromAnalysis(r);
         if (peak == null) return null;
+        const sample = vibrationSampleState(r);
         return {
           date: r.timestamp
             ? new Date(r.timestamp).toLocaleDateString(undefined, {
@@ -2720,11 +2774,20 @@ export default function TrendAnalyzer({
             : "—",
           peak,
           fault: r.primary_fault || "—",
-          timestamp: r.timestamp
+          timestamp: r.timestamp,
+          stopped: sample.stopped,
+          loadPercent: sample.loadPercent
         };
       })
       .filter(Boolean)
-      .reverse() as { date: string; peak: number; fault: string; timestamp: string }[];
+      .reverse() as {
+      date: string;
+      peak: number;
+      fault: string;
+      timestamp: string;
+      stopped: boolean;
+      loadPercent: number | null;
+    }[];
   }, [windowedVibAnalyses]);
 
   const healthTrendIsSparse = useMemo(
@@ -2741,7 +2804,7 @@ export default function TrendAnalyzer({
     if (trendTech === "ultrasound") return ueAnalyses;
     if (trendTech === "mca") return windowedMcaAnalyses;
     if (trendTech === "oil_analysis") return oilAnalyses;
-    if (trendTech === "vibration") return vibAnalyses;
+    if (trendTech === "vibration") return windowedVibAnalyses;
     return dbAnalyses;
   }, [
     trendTech,
@@ -2749,7 +2812,7 @@ export default function TrendAnalyzer({
     ueAnalyses,
     windowedMcaAnalyses,
     oilAnalyses,
-    vibAnalyses,
+    windowedVibAnalyses,
     dbAnalyses
   ]);
 
@@ -3292,7 +3355,7 @@ export default function TrendAnalyzer({
   }, [windowedVibAnalyses]);
 
   const latestWaveformAnalysisMetrics = useMemo(() => {
-    const fromRecord = latestVibrationRecord?.waveformAnalysis;
+    const fromRecord = latestWaveformRecord?.waveformAnalysis;
     const fromTrend =
       waveformTrendSeriesAll.length > 0
         ? waveformTrendSeriesAll[waveformTrendSeriesAll.length - 1]
@@ -3301,7 +3364,7 @@ export default function TrendAnalyzer({
       fromRecord?.peakToPeak ?? fromTrend?.peakToPeak ?? null;
     const crestFactor =
       fromRecord?.crestFactor ??
-      latestVibrationRecord?.waveformMetrics?.crestFactor ??
+      latestWaveformRecord?.waveformMetrics?.crestFactor ??
       fromTrend?.crestFactor ??
       null;
     const impactCount =
@@ -3311,8 +3374,8 @@ export default function TrendAnalyzer({
       fromRecord?.modulation ?? fromTrend?.modulation ?? null;
     const timePerRevolutionMs =
       fromRecord?.timePerRevolutionMs ??
-      (latestVibrationRecord?.rpm && latestVibrationRecord.rpm > 0
-        ? 60000 / latestVibrationRecord.rpm
+      (latestWaveformRecord?.rpm && latestWaveformRecord.rpm > 0
+        ? 60000 / latestWaveformRecord.rpm
         : machineSpecs.rpm && machineSpecs.rpm > 0
           ? 60000 / machineSpecs.rpm
           : null);
@@ -3322,7 +3385,7 @@ export default function TrendAnalyzer({
       crestFactor == null &&
       impactCount == null &&
       !symmetry &&
-      !(latestVibrationRecord?.waveform?.length)
+      !(latestWaveformRecord?.waveform?.length)
     ) {
       return null;
     }
@@ -3336,24 +3399,24 @@ export default function TrendAnalyzer({
       timePerRevolutionMs
     };
   }, [
-    latestVibrationRecord,
+    latestWaveformRecord,
     waveformTrendSeriesAll,
     machineSpecs.rpm
   ]);
 
   const waveformRpm =
-    latestVibrationRecord?.rpm ||
-    latestVibrationRecord?.context?.motorSpeedRPM ||
+    latestWaveformRecord?.rpm ||
+    latestWaveformRecord?.context?.motorSpeedRPM ||
     machineSpecs.rpm ||
     null;
 
   const vibExtractedWaveformChart = useMemo(() => {
-    if (!latestVibrationRecord?.waveform?.length) return [];
-    return latestVibrationRecord.waveform.map((p) => ({
+    if (!latestWaveformRecord?.waveform?.length) return [];
+    return latestWaveformRecord.waveform.map((p) => ({
       time: p.time,
       amplitude: p.amplitude
     }));
-  }, [latestVibrationRecord]);
+  }, [latestWaveformRecord]);
 
   // One waveform model feeds the inline cards and every enlarged twin.
   const waveformChartModel = useMemo(
@@ -4194,25 +4257,55 @@ export default function TrendAnalyzer({
     () => healthTrendFromAnalyses(oilAnalyses),
     [oilAnalyses]
   );
-  const latestPeak =
-    velocityTrendSeries.length > 0
-      ? velocityTrendSeries[velocityTrendSeries.length - 1].peak
-      : null;
+  /**
+   * KPI/matrix value = latest-in-window overall RMS. A stopped latest sample
+   * (load telemetry below the running threshold) is blank, never a zero
+   * plotted as collapsed velocity.
+   */
   const latestOverallVelocity = useMemo((): number | null => {
-    const td =
-      latestDb?.telemetry_data && typeof latestDb.telemetry_data === "object"
-        ? (latestDb.telemetry_data as Record<string, unknown>)
-        : null;
-    const fromTelemetry = Number(td?.overall_velocity ?? td?.overallVelocity);
-    if (Number.isFinite(fromTelemetry) && fromTelemetry > 0) {
-      return fromTelemetry;
-    }
-    const fromRecord = latestVibrationRecord?.broadband?.overallVelocity;
-    if (fromRecord != null && Number.isFinite(fromRecord) && fromRecord > 0) {
-      return fromRecord;
-    }
-    return null;
-  }, [latestVibrationRecord, latestDb]);
+    if (!latestVibrationRow || latestVibrationSample?.stopped) return null;
+    const value = readVibrationOverallVelocity(latestVibrationRow);
+    return value != null && value > 0 ? value : null;
+  }, [latestVibrationRow, latestVibrationSample]);
+
+  const latestOverallAcceleration = useMemo((): number | null => {
+    if (!latestVibrationRow || latestVibrationSample?.stopped) return null;
+    const value = readVibrationOverallAcceleration(latestVibrationRow);
+    return value != null && value > 0 ? value : null;
+  }, [latestVibrationRow, latestVibrationSample]);
+
+  const latestOverallEmptyNote = !latestVibrationRow
+    ? VIBRATION_NOT_MEASURED
+    : latestVibrationSample?.stopped
+      ? "Stopped sample \u2014 no running-state overall velocity."
+      : VIBRATION_NOT_MEASURED;
+
+  /** Windowed series still carry stopped points when the toggle is OFF. */
+  const healthSeriesHasStoppedPoints = useMemo(
+    () => healthTrendSeries.some((point) => point.stopped),
+    [healthTrendSeries]
+  );
+  const velocitySeriesHasStoppedPoints = useMemo(
+    () => velocityTrendSeries.some((point) => point.stopped),
+    [velocityTrendSeries]
+  );
+
+  /**
+   * Honest empty-window copy. An empty chart must say whether the time range
+   * had no samples at all or whether the running-state filter removed them.
+   */
+  const vibrationWindowEmptyNote =
+    vibAnalyses.length > 0 && windowedVibAnalyses.length === 0
+      ? runningOnly
+        ? "No running-state samples in this range \u2014 turn off Running State Only to include stopped samples."
+        : "No vibration samples in this time range."
+      : null;
+
+  /** Reconciled KPI verdict — never a silent pick between disagreeing agents. */
+  const reconciledVerdict = useMemo(
+    () => reconcileVibrationVerdict(latestVibrationRow, machineSpecs.isoClass),
+    [latestVibrationRow, machineSpecs.isoClass]
+  );
   // Plant values (when set) win; otherwise ISO B/C and C/D zone edges apply.
   const velocityThresholds = useMemo(
     () =>
@@ -4238,6 +4331,16 @@ export default function TrendAnalyzer({
     ]
   );
 
+  /**
+   * ISO default-threshold basis. When kinematic specs are unconfigured the
+   * chart falls back to the standard ISO 20816 B/C and C/D zone edges; that is
+   * a published zone boundary, never an OEM/plant limit.
+   */
+  const isoDefaultThresholdBasis =
+    velocityThresholds.source === "iso" && kinematicSpecsUnconfigured
+      ? "ISO 20816 default zone bands apply because kinematics (RPM / ISO class / bearing) are unconfigured \u2014 these are standard zone boundaries, not an OEM or plant limit."
+      : null;
+
   // Display-only projection: the saved series stays canonical.
   const velocityTrendDisplaySeries = useMemo(
     () =>
@@ -4249,22 +4352,13 @@ export default function TrendAnalyzer({
   );
 
   const triaxialAxes = useMemo(() => {
-    const peaks = Array.isArray(latestDb?.peaks) ? latestDb!.peaks : [];
-    const byLabel = (re: RegExp) => {
-      for (const raw of peaks) {
-        if (!raw || typeof raw !== "object") continue;
-        const p = raw as Record<string, unknown>;
-        const label = String(p.label ?? p.axis ?? "");
-        const amp = Number(p.amplitude ?? p.amp ?? p.value);
-        if (re.test(label) && Number.isFinite(amp)) return amp;
-      }
-      return null;
-    };
-    const h = byLabel(/\bH\b|horiz/i);
-    const v = byLabel(/\bV\b|vert/i);
-    const a = byLabel(/\bA\b|axial/i);
-    // If axis-tagged peaks are missing, use overall peak for Horizontal only
-    const overall = latestPeak;
+    // Latest-in-window per-axis values. Stopped latest sample = blank axes;
+    // missing axis-tagged peaks stay null (never the overall peak under an
+    // axis label).
+    const axes =
+      latestVibrationSample?.stopped
+        ? { horizontal: null, vertical: null, axial: null }
+        : readVibrationPerAxis(latestVibrationRow);
     const peakUnit = `${displayUnits.velocity} peak`;
     const display = (valueMmS: number | null) =>
       valueMmS == null
@@ -4273,27 +4367,27 @@ export default function TrendAnalyzer({
     return [
       {
         axis: "Horizontal (H)",
-        value: h ?? overall,
-        display: display(h ?? overall),
-        unit: peakUnit,
+        value: axes.horizontal,
+        display: display(axes.horizontal),
+        unit: axes.horizontal == null ? VIBRATION_NOT_MEASURED : peakUnit,
         tone: "text-yellow-500"
       },
       {
         axis: "Vertical (V)",
-        value: v,
-        display: display(v),
-        unit: peakUnit,
+        value: axes.vertical,
+        display: display(axes.vertical),
+        unit: axes.vertical == null ? VIBRATION_NOT_MEASURED : peakUnit,
         tone: "text-green-400"
       },
       {
         axis: "Axial (A)",
-        value: a,
-        display: display(a),
-        unit: peakUnit,
+        value: axes.axial,
+        display: display(axes.axial),
+        unit: axes.axial == null ? VIBRATION_NOT_MEASURED : peakUnit,
         tone: "text-orange-400"
       }
     ];
-  }, [latestDb, latestPeak, displayUnits.velocity]);
+  }, [latestVibrationRow, latestVibrationSample, displayUnits.velocity]);
 
   const hasAnyAnalysisData = dbAnalyses.length > 0;
   const hasThermographyData = thermoAnalyses.length > 0;
@@ -4666,10 +4760,7 @@ export default function TrendAnalyzer({
             ))}
           </div>
 
-          {selectedAsset &&
-          (machineSpecs.rpm == null ||
-            machineSpecs.isoClass === "Not set" ||
-            machineSpecs.bearing === "Not set") ? (
+          {kinematicSpecsUnconfigured ? (
             <KinematicSpecsEmptyState className="mb-6" />
           ) : null}
 
@@ -4703,19 +4794,35 @@ export default function TrendAnalyzer({
         </div>
       ) : (
         <>
-      {latestVibrationRecord && (
+      {vibrationWindowEmptyNote ? (
+        <p
+          className="text-xs text-amber-300 mb-4"
+          data-testid="vibration-window-empty-note"
+        >
+          {vibrationWindowEmptyNote}
+        </p>
+      ) : null}
+      {latestVibrationRow && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className={CARD}>
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
               Overall Velocity
             </p>
-            <p className="text-2xl font-bold text-cyan-400 font-mono">
-              {latestVibrationRecord.broadband.overallVelocity > 0
+            <p
+              className="text-2xl font-bold text-cyan-400 font-mono"
+              data-testid="overall-velocity-kpi"
+            >
+              {latestOverallVelocity != null
                 ? formatVelocityDisplay(
-                    latestVibrationRecord.broadband.overallVelocity,
+                    latestOverallVelocity,
                     displayUnits.velocity
                   )
                 : "—"}
+            </p>
+            <p className="text-[10px] text-slate-500 mt-1">
+              {latestOverallVelocity != null
+                ? "Latest in-window overall RMS"
+                : latestOverallEmptyNote}
             </p>
           </div>
           <div className={CARD}>
@@ -4723,12 +4830,17 @@ export default function TrendAnalyzer({
               Overall Acceleration
             </p>
             <p className="text-2xl font-bold text-cyan-400 font-mono">
-              {latestVibrationRecord.broadband.overallAcceleration > 0
+              {latestOverallAcceleration != null
                 ? formatAccelerationDisplay(
-                    latestVibrationRecord.broadband.overallAcceleration,
+                    latestOverallAcceleration,
                     displayUnits.acceleration
                   )
                 : "—"}
+            </p>
+            <p className="text-[10px] text-slate-500 mt-1">
+              {latestOverallAcceleration != null
+                ? "Latest in-window acceleration"
+                : latestOverallEmptyNote}
             </p>
           </div>
           <div className={CARD}>
@@ -4736,17 +4848,33 @@ export default function TrendAnalyzer({
               Health Score
               <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(latestDb ?? null)} />
             </p>
-            <p className="text-2xl font-bold text-emerald-400 font-mono">
-              {latestVibrationRecord.broadband.healthScore}
+            <p
+              className={`text-2xl font-bold font-mono ${healthScoreTone(
+                reconciledVerdict.healthScore
+              )}`}
+              data-testid="health-score-kpi"
+            >
+              {reconciledVerdict.healthScore ?? "—"}
+            </p>
+            <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+              {reconciledVerdict.healthProvenance ?? VIBRATION_NOT_MEASURED}
             </p>
           </div>
           <div className={CARD}>
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
               Primary Fault
             </p>
-            <p className="text-sm font-semibold text-amber-300 leading-snug">
-              {latestVibrationRecord.broadband.primaryFault || "—"}
+            <p
+              className="text-sm font-semibold leading-snug text-amber-300"
+              data-testid="primary-fault-kpi"
+            >
+              {reconciledVerdict.primaryFault}
             </p>
+            {reconciledVerdict.status === "indeterminate" ? (
+              <p className="text-[10px] text-amber-200/80 mt-1">
+                Agents disagree — narrative panel retains both readings.
+              </p>
+            ) : null}
           </div>
         </div>
       )}
@@ -4756,22 +4884,15 @@ export default function TrendAnalyzer({
           valueMmS={latestOverallVelocity}
           velocityUnit={displayUnits.velocity}
           machineClass={machineSpecs.isoClass}
-          healthScore={
-            latestVibrationRecord?.broadband.healthScore ??
-            latestDb?.health_score ??
-            null
-          }
-          primaryFault={
-            latestVibrationRecord?.broadband.primaryFault ||
-            latestDb?.primary_fault ||
-            null
-          }
-          analysesCount={vibAnalyses.length}
+          healthScore={reconciledVerdict.healthScore}
+          healthProvenance={reconciledVerdict.healthProvenance}
+          verdictState={reconciledVerdict.status}
+          valueEmptyReason={latestOverallEmptyNote}
+          primaryFault={reconciledVerdict.primaryFault}
+          analysesCount={windowedVibAnalyses.length}
           source={
-            latestVibrationRecord
-              ? vibAnalyses.length
-                ? "PostgreSQL + Trend Record"
-                : "Local cache"
+            latestVibrationRow
+              ? "PostgreSQL · windowed record"
               : "PostgreSQL"
           }
           provenanceSlot={
@@ -4785,15 +4906,17 @@ export default function TrendAnalyzer({
           velocityUnit={displayUnits.velocity}
           machineClass={machineSpecs.isoClass}
           summary={
-            latestDb?.summary || latestDb?.primary_fault || null
+            latestVibrationRow?.summary ||
+            reconciledVerdict.primaryFault ||
+            null
           }
           recommendation={
-            Array.isArray(latestDb?.recommendations) &&
-            latestDb.recommendations.length > 0
-              ? String(latestDb.recommendations[0])
+            Array.isArray(latestVibrationRow?.recommendations) &&
+            latestVibrationRow.recommendations.length > 0
+              ? String(latestVibrationRow.recommendations[0])
               : null
           }
-          consensusConflict={consensusContradicts(latestDb?.consensus_details)}
+          consensusConflict={reconciledVerdict.conflict}
           onCreateWorkOrder={
             selectedAsset
               ? (resolvedAction, zone) => {
@@ -4855,6 +4978,15 @@ export default function TrendAnalyzer({
             {dbTrendError && (
               <p className="text-xs text-amber-400">{dbTrendError}</p>
             )}
+            {!runningOnly && healthSeriesHasStoppedPoints ? (
+              <p
+                className="text-xs text-amber-300"
+                data-testid="health-stopped-series-note"
+              >
+                Includes stopped samples (load \u2264 80%) \u2014 labeled
+                &ldquo;stopped sample&rdquo; in the tooltip.
+              </p>
+            ) : null}
           </div>
           <div className="h-64 bg-slate-950 rounded-lg border border-white/10 p-2">
             <BroadbandTrendChartBody
@@ -4885,6 +5017,23 @@ export default function TrendAnalyzer({
             <p className="text-xs text-slate-400">
               From analysis peaks · {velocityThresholds.provenance}
             </p>
+            {isoDefaultThresholdBasis ? (
+              <p
+                className="text-xs text-amber-300"
+                data-testid="iso-default-threshold-basis"
+              >
+                {isoDefaultThresholdBasis}
+              </p>
+            ) : null}
+            {!runningOnly && velocitySeriesHasStoppedPoints ? (
+              <p
+                className="text-xs text-amber-300"
+                data-testid="velocity-stopped-series-note"
+              >
+                Includes stopped samples (load \u2264 80%) \u2014 labeled
+                &ldquo;stopped sample&rdquo; in the tooltip.
+              </p>
+            ) : null}
           </div>
           <div className="h-64 bg-slate-950 rounded-lg border border-white/10 p-2">
             <BroadbandTrendChartBody
@@ -4926,6 +5075,14 @@ export default function TrendAnalyzer({
           subtitle={`From analysis peaks · ${velocityThresholds.provenance}`}
           onClose={closeExpandedChart}
         >
+          {isoDefaultThresholdBasis ? (
+            <p
+              className="text-xs text-amber-300 mb-2"
+              data-testid="iso-default-threshold-basis-expanded"
+            >
+              {isoDefaultThresholdBasis}
+            </p>
+          ) : null}
           <BroadbandTrendChartBody
             variant="velocity"
             data={velocityTrendDisplaySeries}
@@ -4943,6 +5100,7 @@ export default function TrendAnalyzer({
         valueMmS={latestOverallVelocity}
         velocityUnit={displayUnits.velocity}
         machineClass={machineSpecs.isoClass}
+        emptyNote={latestOverallEmptyNote}
       />
 
       {/* Triaxial Severity Breakdown */}

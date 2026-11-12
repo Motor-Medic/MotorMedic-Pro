@@ -12,6 +12,17 @@ import {
   velocityValueForDisplay,
   type VelocityDisplayUnit
 } from "../../lib/vibration/units";
+import {
+  VIBRATION_NOT_MEASURED,
+  consensusContradicts
+} from "../../lib/vibration/trendSsot";
+
+/**
+ * Re-exported for existing callers/tests. The implementation now lives in the
+ * shared vibration SSOT module so the KPI reconciliation and the action card
+ * read the same disagreement predicate.
+ */
+export { consensusContradicts };
 
 const CARD = "bg-slate-900/50 border border-white/10 rounded-xl p-6";
 
@@ -44,30 +55,6 @@ export function resolveActionCardAction({
   return recommendation || ZONE_ACTION[zone];
 }
 
-/**
- * Detect an unresolved multi-agent split from the persisted consensus detail
- * block. The consensus engine records its disagreement note in
- * `refereeDebateSummary`; a normal-vs-C/D split is also a contradiction even
- * when the note is absent.
- */
-export function consensusContradicts(details: unknown): boolean {
-  if (!details || typeof details !== "object" || Array.isArray(details)) {
-    return false;
-  }
-  const record = details as Record<string, unknown>;
-  const debate = String(record.refereeDebateSummary || "");
-  if (/agents?\s+disagree|disagreement|contradict|conflict/i.test(debate)) {
-    return true;
-  }
-  const a = String(record.modelA_Hypothesis || "");
-  const b = String(record.modelB_Hypothesis || "");
-  const aHealthy = /\bnormal\b|healthy/i.test(a);
-  const bHealthy = /\bnormal\b|healthy/i.test(b);
-  const aElevated = /zone\s*[cd]\b/i.test(a);
-  const bElevated = /zone\s*[cd]\b/i.test(b);
-  return (aHealthy && bElevated) || (bHealthy && aElevated);
-}
-
 export interface VibrationSeverityPanelProps {
   /** Overall velocity in canonical mm/s RMS. */
   valueMmS: number | null;
@@ -98,8 +85,9 @@ function bandEdgeLabel(
 export function VibrationIsoMatrix({
   valueMmS,
   velocityUnit,
-  machineClass
-}: VibrationSeverityPanelProps) {
+  machineClass,
+  emptyNote
+}: VibrationSeverityPanelProps & { emptyNote?: string | null }) {
   const bands = isoZoneBands(machineClass);
   const scaleMax = bands[bands.length - 1].to;
   const zone = classifyZone(valueMmS, machineClass);
@@ -119,7 +107,8 @@ export function VibrationIsoMatrix({
           ? `Current asset marker at ${velocityLabel(valueMmS, velocityUnit)} (Zone ${
               zone ?? "—"
             } — ${isoZoneLabel(zone)})`
-          : "No overall velocity available yet — run a diagnostic to place the severity marker."}
+          : emptyNote ||
+            `No overall velocity available yet — ${VIBRATION_NOT_MEASURED}.`}
         {machineClass && machineClass !== "Not set" ? ` · ${machineClass}` : ""}
       </p>
       <div className="relative">
@@ -172,6 +161,12 @@ export interface VibrationKpiSummaryProps extends VibrationSeverityPanelProps {
   analysesCount: number;
   source: string;
   provenanceSlot?: ReactNode;
+  /** Why health is blank / how it was derived (never a bare number). */
+  healthProvenance?: string | null;
+  /** Reconciled verdict state so the KPI cannot silently pick one agent. */
+  verdictState?: "reconciled" | "indeterminate" | "no-sample";
+  /** Why overall velocity is blank (Not measured / stopped sample). */
+  valueEmptyReason?: string | null;
 }
 
 export function VibrationKpiSummary({
@@ -182,28 +177,56 @@ export function VibrationKpiSummary({
   primaryFault,
   analysesCount,
   source,
-  provenanceSlot
+  provenanceSlot,
+  healthProvenance,
+  verdictState = "reconciled",
+  valueEmptyReason
 }: VibrationKpiSummaryProps) {
   const zone = classifyZone(valueMmS, machineClass);
+  const indeterminate = verdictState === "indeterminate";
   return (
     <div className={CARD}>
       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
         KPI Summary
       </p>
       <ul className="space-y-2.5">
-        <li className="text-sm font-bold text-white flex items-center gap-1.5">
-          Health Score: {healthScore ?? "—"}
+        <li className="text-sm font-bold text-white flex flex-wrap items-center gap-1.5">
+          <span data-testid="vibration-kpi-health">
+            Health Score: {healthScore ?? "—"}
+          </span>
           {provenanceSlot}
+          {healthProvenance ? (
+            <span className="block w-full text-[10px] font-normal text-slate-400">
+              {healthProvenance}
+            </span>
+          ) : null}
         </li>
         <li className="text-sm font-semibold text-cyan-300">
-          Overall Velocity:{" "}
-          {valueMmS != null ? velocityLabel(valueMmS, velocityUnit) : "—"}
+          <span data-testid="vibration-kpi-overall-velocity">
+            Overall Velocity:{" "}
+            {valueMmS != null ? velocityLabel(valueMmS, velocityUnit) : "—"}
+          </span>
+          {valueMmS == null && valueEmptyReason ? (
+            <span className="block text-[10px] font-normal text-slate-400">
+              {valueEmptyReason}
+            </span>
+          ) : null}
         </li>
         <li className="text-sm font-semibold text-slate-300">
           ISO Zone: {zone ? `Zone ${zone} — ${isoZoneLabel(zone)}` : "—"}
         </li>
-        <li className="text-sm font-semibold text-yellow-500">
-          Primary Fault: {primaryFault || "No saved analysis"}
+        <li
+          className={`text-sm font-semibold ${
+            indeterminate ? "text-amber-300" : "text-yellow-500"
+          }`}
+          data-testid="vibration-kpi-primary-fault"
+        >
+          Primary Fault: {primaryFault || "—"}
+          {indeterminate ? (
+            <span className="block text-[10px] font-normal text-amber-200/80">
+              Agents disagree — both readings remain in the narrative panel.
+            </span>
+          ) : null}
         </li>
         <li className="text-sm font-semibold text-slate-300">
           Analyses: {analysesCount}

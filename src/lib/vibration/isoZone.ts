@@ -73,6 +73,29 @@ export function classifyZone(
   return "D";
 }
 
+/**
+ * Health score derived from the canonical overall velocity zone. Used by the
+ * Trend Analyzer KPI so health can never be a bare stored confidence number
+ * beside a blank velocity reading.
+ */
+const ZONE_HEALTH_SCORE: Record<IsoZone, number> = {
+  A: 92,
+  B: 78,
+  C: 58,
+  D: 22
+};
+
+export function healthScoreFromVelocityMmS(
+  valueMmS: number | null | undefined,
+  machineClass?: string | null
+): number | null {
+  if (valueMmS == null || !Number.isFinite(valueMmS) || valueMmS <= 0) {
+    return null;
+  }
+  const zone = classifyZone(valueMmS, machineClass);
+  return zone ? ZONE_HEALTH_SCORE[zone] : null;
+}
+
 /** Health-score fallback used only when no stored velocity exists. */
 export function classifyZoneFromHealth(
   healthScore: number | null | undefined
