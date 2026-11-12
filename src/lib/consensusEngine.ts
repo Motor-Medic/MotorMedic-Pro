@@ -143,6 +143,29 @@ export interface ConsensusVibrationResult extends VibrationAnalysisResult {
   consensusDetails: ConsensusDetails;
 }
 
+/**
+ * VS-3 honesty — turn the engine's `single-model-degraded` tag into a
+ * user-visible statement instead of leaving degradation buried in logs.
+ * Returns null for multi-model runs so healthy results render as before.
+ */
+export function describeConsensusDegradation(details?: {
+  consensusMode?: ConsensusCascadeMode;
+  answeringModels?: string[];
+} | null): string | null {
+  if (!details || details.consensusMode !== "single-model-degraded") {
+    return null;
+  }
+  const providers = [
+    ...new Set(
+      (details.answeringModels ?? [])
+        .map((answered) => answered.split("/")[0]?.trim())
+        .filter((provider): provider is string => Boolean(provider))
+    )
+  ];
+  const only = providers.length > 0 ? providers.join(", ") : "one model";
+  return `Consensus degraded: only ${only} responded`;
+}
+
 export type ConsensusOutcome =
   | { success: true; data: ConsensusVibrationResult }
   | ConsensusDomainError;

@@ -80,16 +80,18 @@ describe("consensus cascade chains (AR-25 probe-verified ordering)", () => {
     expect(textModels).not.toContain("mistral-small-latest");
   });
 
-  it("withholds DashScope with the honest 401 probe skip, never as a chain entry", () => {
-    expect(CONSENSUS_WITHHELD_PROVIDERS).toHaveLength(1);
-    const withheld = CONSENSUS_WITHHELD_PROVIDERS[0];
-    expect(withheld?.id).toBe("dashscope");
-    expect(withheld?.probeStatus).toBe(401);
+  it("withholds DashScope and DeepSeek with honest 401 probe skips, never as chain entries", () => {
+    const withheldIds = CONSENSUS_WITHHELD_PROVIDERS.map((provider) => provider.id);
+    expect(withheldIds).toEqual(["dashscope", "deepseek"]);
+    expect(
+      CONSENSUS_WITHHELD_PROVIDERS.every((provider) => provider.probeStatus === 401)
+    ).toBe(true);
     const allChainIds = [
       ...chainIds(CONSENSUS_VISION_CHAIN),
       ...chainIds(CONSENSUS_TEXT_CHAIN)
     ];
     expect(allChainIds).not.toContain("dashscope");
+    expect(allChainIds).not.toContain("deepseek");
   });
 });
 
@@ -176,11 +178,17 @@ describe("key gating and withheld skip records", () => {
       "OPENAI_API_KEY",
       "OPENROUTER_API_KEY"
     ]);
-    const withheld = skips.find((s) => s.reason === "withheld");
-    expect(withheld?.providerLabel).toBe("DashScope");
-    expect(withheld?.detail).toContain("probe 401");
+    const withheld = skips.filter((s) => s.reason === "withheld");
+    expect(withheld.map((s) => s.providerLabel)).toEqual([
+      "DashScope",
+      "DeepSeek"
+    ]);
+    expect(withheld.every((s) => s.detail.includes("probe 401"))).toBe(true);
     expect(describeConsensusSkips(skips)).toContain(
       "DashScope skipped (probe 401"
+    );
+    expect(describeConsensusSkips(skips)).toContain(
+      "DeepSeek skipped (probe 401"
     );
   });
 

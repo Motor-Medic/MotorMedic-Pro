@@ -1,16 +1,13 @@
 /**
- * MCA analyzer screenshot → structured fields via multimodal vision
- * (OpenRouter GPT-4o / GPT-4-turbo / Qwen VL through same-origin proxy).
+ * MCA analyzer screenshot → structured fields via multimodal vision through
+ * the same-origin proxy. VS-3 legacy vision chain: Gemini gemini-3.5-flash
+ * -> Mistral pixtral-12b-2409 -> OpenAI gpt-4o-mini -> OpenRouter (LAST).
  */
 
 import {
+  LEGACY_VISION_CHAIN,
   VISION_MODEL_CONFIG
 } from "../vibration/visionModelConfig";
-import {
-  OPENROUTER_CONSENSUS_MODEL,
-  OPENROUTER_VISION_FALLBACK_MODEL,
-  OPENROUTER_VISION_MODEL
-} from "../openRouterModels";
 import {
   logPayloadSize,
   logPipelineFail,
@@ -33,13 +30,10 @@ import type {
 
 export const MCA_VISION_API_PATH = "/api/extract-vibration-image";
 
-export const MCA_VISION_MODELS = [
-  OPENROUTER_VISION_MODEL,
-  OPENROUTER_VISION_FALLBACK_MODEL,
-  OPENROUTER_CONSENSUS_MODEL,
-  /** Gemini vision via OpenRouter (when available on the account). */
-  "google/gemini-2.0-flash-001"
-] as const;
+/** Legacy vision chain in serving order (OpenRouter is always LAST). */
+export const MCA_VISION_MODELS = LEGACY_VISION_CHAIN.map(
+  (provider) => provider.model
+);
 
 const EXTRACTION_TIMEOUT_MS = 90_000;
 
@@ -392,7 +386,7 @@ export async function extractMcaDataFromImage(
     const msg =
       (typeof result.error === "string" && result.error) ||
       (typeof result.message === "string" && result.message) ||
-      `MCA vision extraction failed (${response.status}). Check OPENROUTER_API_KEY.`;
+      `MCA vision extraction failed (${response.status}). Check the configured Gemini/OpenAI/Mistral provider keys.`;
     logPipelineFail("mcaVisionExtractor", startTime, new Error(msg), response);
     throw new Error(msg);
   }

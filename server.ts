@@ -10,32 +10,32 @@ import Anthropic from "@anthropic-ai/sdk";
 import { generateMcMasterQuery } from "./src/lib/mcmaster";
 import { analyzeVibration } from "./src/lib/diagnosisEngine";
 import {
+  LEGACY_VISION_CHAIN,
   VIBRATION_VISION_PROMPT,
   VIBRATION_VISION_PROMPT_SIMPLE,
-  VISION_MODEL_CONFIG
+  VISION_MODEL_CONFIG,
+  resolveLegacyVisionChain
 } from "./src/lib/vibration/visionModelConfig";
+import { callLegacyVisionProvider } from "./src/lib/vibration/legacyVisionDispatch";
 import { synthesizeSpectrumFromPeaks, synthesizeEnvelopeFromRecord } from "./src/lib/vibration/synthesizeSpectrum";
 import {
   CANONICAL_DISPLAY_UNITS,
   normalizeDisplayUnits,
   type DisplayUnits
 } from "./src/lib/vibration/units";
-import {
-  MCA_VISION_MODELS,
-  MCA_VISION_PROMPT
-} from "./src/lib/mca/mcaVisionExtractor";
-import {
-  OPENROUTER_API_BASE,
-  OPENROUTER_VISION_MODELS,
-  isLmStudioDevMode,
-  openRouterRefererHeaders
-} from "./src/lib/openRouterModels";
+import { MCA_VISION_PROMPT } from "./src/lib/mca/mcaVisionExtractor";
+import { isLmStudioDevMode } from "./src/lib/openRouterModels";
 import {
   ANALYZE_VIBRATION_API_ALIAS,
   ANALYZE_VIBRATION_API_PATH,
   runConsensusVibrationAnalysis
 } from "./src/lib/consensusEngine";
 import { ConsensusCascadeExhaustedError } from "./src/lib/diagnostics/consensusCascade";
+import {
+  formatAiBootHealth,
+  formatAiBootHealthDetails,
+  probeAiBootHealth
+} from "./src/lib/ai/aiBootHealth";
 import {
   logPayloadSize,
   logPipelineFail,
@@ -470,7 +470,8 @@ app.get(
 
 /**
  * POST /api/extract-vibration-image
- * Production: OpenRouter GPT-4o vision for FFT spectrum extraction.
+ * Production: legacy vision chain — Gemini gemini-3.5-flash -> Mistral
+ * pixtral-12b-2409 -> OpenAI gpt-4o-mini -> OpenRouter (LAST, never promoted).
  * Dev-only: set USE_LM_STUDIO=true + LM_STUDIO_ENDPOINT for local testing.
  */
 app.post("/api/extract-vibration-image", async (req, res) => {
@@ -524,43 +525,38 @@ app.post("/api/extract-vibration-image", async (req, res) => {
           : VIBRATION_VISION_PROMPT);
 
     const useLmStudio = isLmStudioDevMode();
-    const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+    const attemptTimeoutMs = isMca ? 90_000 : 60_000;
+    const bodyModels = Array.isArray(body.models)
+      ? (body.models.filter(
+          (m: unknown): m is string => typeof m === "string" && Boolean(m.trim())
+        ) as string[])
+      : [];
+    const candidates = resolveLegacyVisionChain(bodyModels);
 
-    if (!useLmStudio && !openRouterKey) {
-      return res.status(503).json({
-        error: "OPENROUTER_API_KEY is not configured.",
-        message:
-          "Set OPENROUTER_API_KEY in .env for production vision extraction (openai/gpt-4o via OpenRouter)."
-      });
+    if (!useLmStudio) {
+      const hasAnyChainKey = LEGACY_VISION_CHAIN.some((spec) =>
+        Boolean(process.env[spec.envKey]?.trim())
+      );
+      if (!hasAnyChainKey) {
+        return res.status(503).json({
+          error: "No vision provider key is configured.",
+          message: `Set one of ${LEGACY_VISION_CHAIN.map((spec) => spec.envKey).join(", ")} in .env for production vision extraction (Gemini primary, OpenAI fallback, OpenRouter last).`
+        });
+      }
     }
 
-    const model =
-      (typeof body.model === "string" && body.model) ||
-      (useLmStudio
-        ? process.env.LM_STUDIO_MODEL || VISION_MODEL_CONFIG.model
-        : VISION_MODEL_CONFIG.model);
-
-    const upstreamUrl = useLmStudio
-      ? process.env.LM_STUDIO_ENDPOINT!
-      : `${OPENROUTER_API_BASE}/chat/completions`;
-
-    const upstreamHeaders: Record<string, string> = {
-      "Content-Type": "application/json"
-    };
-    if (useLmStudio) {
-      /* LM Studio local dev — no auth header */
-    } else {
-      upstreamHeaders.Authorization = `Bearer ${openRouterKey}`;
-      Object.assign(upstreamHeaders, openRouterRefererHeaders());
-    }
+    const lmStudioModel =
+      process.env.LM_STUDIO_MODEL || VISION_MODEL_CONFIG.model;
 
     console.log(
       isMca
         ? "🤖 [MCA] Forwarding screenshot to vision provider:"
         : "🤖 [VIBRATION] Forwarding to vision provider:",
       {
-        provider: useLmStudio ? "lm-studio-dev" : "openrouter",
-        model,
+        provider: useLmStudio
+          ? "lm-studio-dev"
+          : candidates.map((candidate) => candidate.id).join(" -> "),
+        model: useLmStudio ? lmStudioModel : candidates[0]?.model,
         fileName,
         mode,
         purpose: isMca ? "mca" : "vibration",
@@ -570,37 +566,27 @@ app.post("/api/extract-vibration-image", async (req, res) => {
     );
 
     logPipelineSend("extract-vibration-image", {
-      provider: useLmStudio ? "lm-studio-dev" : "openrouter",
-      model,
+      provider: useLmStudio
+        ? "lm-studio-dev"
+        : candidates.map((candidate) => candidate.id).join(" -> "),
+      model: useLmStudio ? lmStudioModel : candidates[0]?.model,
       mode,
       purpose: isMca ? "mca" : "vibration"
     });
 
     let upstreamJson: Record<string, unknown> = {};
     let lastUpstreamError: unknown;
+    let content: string | null = null;
+    let answeredBy: string | null = null;
 
-    const bodyModels = Array.isArray(body.models)
-      ? (body.models.filter(
-          (m: unknown): m is string => typeof m === "string" && Boolean(m.trim())
-        ) as string[])
-      : [];
-    const defaultModels: string[] = isMca
-      ? [...MCA_VISION_MODELS]
-      : [...OPENROUTER_VISION_MODELS];
-    const modelsToTry: string[] = useLmStudio
-      ? [model]
-      : (bodyModels.length > 0 ? bodyModels : defaultModels).filter(
-          (m: string, i: number, arr: string[]) => arr.indexOf(m) === i
-        );
-
-    for (const tryModel of modelsToTry) {
+    if (useLmStudio) {
       try {
-        const upstream = await fetch(upstreamUrl, {
+        const upstream = await fetch(process.env.LM_STUDIO_ENDPOINT!, {
           method: "POST",
-          headers: upstreamHeaders,
-          signal: AbortSignal.timeout(isMca ? 90_000 : 60_000),
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(attemptTimeoutMs),
           body: JSON.stringify({
-            model: tryModel,
+            model: lmStudioModel,
             max_tokens: maxTokens,
             messages: [
               {
@@ -613,38 +599,66 @@ app.post("/api/extract-vibration-image", async (req, res) => {
             ]
           })
         });
-
         upstreamJson = (await upstream.json().catch(() => ({}))) as Record<
           string,
           unknown
         >;
-
-        if (!upstream.ok) {
+        const choices = upstreamJson.choices;
+        const first =
+          Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
+            ? (choices[0] as { message?: { content?: string } })
+            : null;
+        content = first?.message?.content ?? null;
+        if (!upstream.ok || !content) {
           lastUpstreamError = new Error(
             (typeof upstreamJson.error === "string" && upstreamJson.error) ||
-              `Vision provider HTTP ${upstream.status} (${tryModel})`
+              `LM Studio HTTP ${upstream.status} (${lmStudioModel})`
           );
-          console.warn(
-            `[extract-vibration-image] Model ${tryModel} failed:`,
-            upstream.status,
-            upstreamJson
+        } else {
+          answeredBy = "lm-studio-dev";
+        }
+      } catch (fetchErr) {
+        lastUpstreamError = fetchErr;
+        console.warn("[extract-vibration-image] LM Studio fetch error:", fetchErr);
+      }
+    } else {
+      for (const candidate of candidates) {
+        if (!process.env[candidate.envKey]?.trim()) {
+          console.log(
+            `[extract-vibration-image] Skipping ${candidate.label} — ${candidate.envKey} not present`
           );
           continue;
         }
-
-        break;
-      } catch (fetchErr) {
-        lastUpstreamError = fetchErr;
-        console.warn(`[extract-vibration-image] Model ${tryModel} fetch error:`, fetchErr);
+        console.log(
+          `[extract-vibration-image] Trying ${candidate.label} ${candidate.model}...`
+        );
+        const result = await callLegacyVisionProvider(candidate, {
+          imageBase64,
+          prompt,
+          maxTokens,
+          timeoutMs: attemptTimeoutMs
+        });
+        if (result.ok && result.content) {
+          content = result.content;
+          upstreamJson = result.upstreamJson;
+          answeredBy = `${result.providerLabel} ${result.model}`;
+          console.log(
+            `[extract-vibration-image] ${result.providerLabel} ${result.model} ... OK (${result.httpStatus ?? 200})`
+          );
+          break;
+        }
+        lastUpstreamError = new Error(
+          `Vision provider ${candidate.label} ${candidate.model} ${
+            result.httpStatus ?? "no response"
+          }${result.error ? ` (${result.error})` : ""}`
+        );
+        console.warn(
+          `[extract-vibration-image] ${candidate.label} ${candidate.model} failed:`,
+          result.httpStatus,
+          result.error
+        );
       }
     }
-
-    const choices = upstreamJson.choices;
-    const first =
-      Array.isArray(choices) && choices[0] && typeof choices[0] === "object"
-        ? (choices[0] as { message?: { content?: string } })
-        : null;
-    const content = first?.message?.content;
 
     if (!content || typeof content !== "string") {
       logPipelineFail(
@@ -668,7 +682,7 @@ app.post("/api/extract-vibration-image", async (req, res) => {
     logPipelineSuccess("extract-vibration-image", startTime, {
       fileName,
       contentLength: content.length,
-      provider: useLmStudio ? "lm-studio-dev" : "openrouter",
+      provider: answeredBy ?? (useLmStudio ? "lm-studio-dev" : "unknown"),
       purpose: isMca ? "mca" : "vibration"
     });
     console.log(
@@ -702,7 +716,7 @@ app.post("/api/extract-vibration-image", async (req, res) => {
         : error?.message || "Failed to extract vibration data from image.",
       message: timedOut
         ? "Vision extraction timed out after 60 seconds."
-        : "Vision extraction failed. Verify OPENROUTER_API_KEY and credits at https://openrouter.ai"
+        : "Vision extraction failed. Verify the configured Gemini/OpenAI/Mistral provider keys and server logs."
     });
   }
 });
@@ -4253,8 +4267,13 @@ async function dispatchAutomatedAlerts(
 // MULTI-AGENT DEBATE SYSTEM HELPER FUNCTIONS
 // ============================================
 
+/**
+ * VS-3 dead-key hygiene: DeepSeek is deliberately absent from this provider
+ * union. Its key remains operator-owned in .env, but a probe returned 401
+ * invalid_api_key, so no code path here may route to it.
+ */
 async function callOpenAICompatibleAPI(
-  provider: "groq" | "deepseek" | "openrouter" | "openai",
+  provider: "groq" | "openrouter" | "openai",
   modelName: string,
   prompt: string,
   fileData?: string,
@@ -4267,10 +4286,6 @@ async function callOpenAICompatibleAPI(
     case "groq":
       apiKey = process.env.GROQ_API_KEY || "";
       baseURL = "https://api.groq.com/openai/v1";
-      break;
-    case "deepseek":
-      apiKey = process.env.DEEPSEEK_API_KEY || "";
-      baseURL = "https://api.deepseek.com/v1";
       break;
     case "openrouter":
       apiKey = process.env.OPENROUTER_API_KEY || "";
@@ -19056,17 +19071,18 @@ async function setupServer() {
     console.log(
       `Mounted: POST ${DETECT_SPECTRUM_REGIONS_API_PATH} → GPT-4o chart region detection`
     );
-    const hasOpenRouter = !!(process.env.OPENROUTER_API_KEY);
-    const hasGemini = !!(process.env.GEMINI_API_KEY);
-    const hasOpenAI = !!(process.env.OPENAI_API_KEY);
-    const hasAnthropic = !!(process.env.ANTHROPIC_API_KEY);
-    const hasDeepSeek = !!(
-      process.env.DEEPSEEK_API_KEY || process.env.OPENROUTER_API_KEY
-    );
-    console.log(
-      `AI Team Status: OpenRouter [${hasOpenRouter ? "OK" : "MISSING"}], Gemini [${hasGemini ? "OK" : "MISSING"}], OpenAI [${hasOpenAI ? "OK" : "MISSING"}], Anthropic [${hasAnthropic ? "OK" : "MISSING"}], DeepSeek/OpenRouter analyst [${hasDeepSeek ? "OK" : "MISSING"}]`
-    );
-    if (hasOpenRouter) {
+    // VS-3 — never print [OK] from key presence alone. A minimal real ping
+    // runs per provider in parallel (capped at 10s each); the server keeps
+    // serving while this non-blocking honesty check completes.
+    void probeAiBootHealth()
+      .then((reports) => {
+        console.log(`AI Team Status: ${formatAiBootHealth(reports)}`);
+        console.log(`AI Team Status detail:\n${formatAiBootHealthDetails(reports)}`);
+      })
+      .catch((err) => {
+        console.error("[boot] AI provider health probe failed:", err);
+      });
+    if (process.env.OPENROUTER_API_KEY) {
       console.log(
         `OpenRouter models: vision=${process.env.OPENROUTER_VISION_MODEL || "openai/gpt-4o"}, consensus=${process.env.OPENROUTER_CONSENSUS_MODEL || "qwen/qwen-2.5-vl-72b-instruct"}`
       );

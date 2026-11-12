@@ -1,23 +1,112 @@
 /**
- * Production vision extraction config — OpenRouter GPT-4o via same-origin proxy.
- * POST /api/extract-vibration-image → OpenRouter (server-side, no CORS).
+ * Production vision extraction config — same-origin proxy
+ * (POST /api/extract-vibration-image).
+ *
+ * VS-3 repoint: the legacy vision pipeline no longer depends on OpenRouter
+ * credit availability. The primary is Gemini gemini-3.5-flash (probe: 3 peaks
+ * extracted in 8.4s inside the cascade); OpenAI gpt-4o-mini is the fast
+ * fallback (probe: 1.35s, HTTP 200). Mistral pixtral-12b-2409 stays in the
+ * chain because its probe 429/rate-limit is transient capacity, not an auth
+ * failure. OpenRouter remains LAST and is never promoted; its production
+ * payloads hit HTTP 402 (credits exhausted) even though a minimal probe can
+ * return 200.
  */
 
-import {
-  OPENROUTER_VISION_FALLBACK_MODEL,
-  OPENROUTER_VISION_MODEL
-} from "../openRouterModels";
+import { OPENROUTER_VISION_MODEL } from "../openRouterModels";
+
+export type VisionProviderTransport = "gemini" | "openai-compatible";
+
+export interface VisionProviderSpec {
+  id: string;
+  label: string;
+  envKey: string;
+  transport: VisionProviderTransport;
+  url: string;
+  model: string;
+}
+
+export const GEMINI_VISION_MODEL = "gemini-3.5-flash";
+export const OPENAI_VISION_FALLBACK_MODEL = "gpt-4o-mini";
+
+/**
+ * Legacy vision provider chain. Order is probe-verified and strict:
+ * Gemini -> Mistral -> OpenAI -> OpenRouter (LAST, never promoted).
+ */
+export const LEGACY_VISION_CHAIN: readonly VisionProviderSpec[] = [
+  {
+    id: "gemini",
+    label: "Gemini",
+    envKey: "GEMINI_API_KEY",
+    transport: "gemini",
+    url: "https://generativelanguage.googleapis.com/v1beta/models",
+    model: GEMINI_VISION_MODEL
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    envKey: "MISTRAL_API_KEY",
+    transport: "openai-compatible",
+    url: "https://api.mistral.ai/v1/chat/completions",
+    model: "pixtral-12b-2409"
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    envKey: "OPENAI_API_KEY",
+    transport: "openai-compatible",
+    url: "https://api.openai.com/v1/chat/completions",
+    model: OPENAI_VISION_FALLBACK_MODEL
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    envKey: "OPENROUTER_API_KEY",
+    transport: "openai-compatible",
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    model: OPENROUTER_VISION_MODEL
+  }
+];
+
+/**
+ * Resolve the serving order for the legacy vision route. A caller may name a
+ * subset of models, but OpenRouter can never move ahead of the free-tier
+ * providers; an all-OpenRouter request falls back to the canonical chain.
+ */
+export function resolveLegacyVisionChain(
+  requestedModels: readonly string[] = []
+): VisionProviderSpec[] {
+  const requested = new Set(
+    requestedModels
+      .map((model) => model.trim().toLowerCase())
+      .filter((model) => model.length > 0)
+  );
+  if (requested.size === 0) return [...LEGACY_VISION_CHAIN];
+
+  const selected = LEGACY_VISION_CHAIN.filter(
+    (spec) =>
+      spec.id !== "openrouter" && requested.has(spec.model.toLowerCase())
+  );
+  const openRouterLast = LEGACY_VISION_CHAIN.filter(
+    (spec) => spec.id === "openrouter"
+  );
+  return selected.length > 0
+    ? [...selected, ...openRouterLast]
+    : [...LEGACY_VISION_CHAIN];
+}
 
 export const VISION_MODEL_CONFIG = {
-  /** Same-origin proxy; server forwards to OpenRouter with OPENROUTER_API_KEY. */
+  /** Same-origin proxy; server dispatches the provider chain below. */
   endpoint: "/api/extract-vibration-image",
-  /** OpenRouter slug — GPT-4o for FFT spectrum vision extraction. */
-  model: OPENROUTER_VISION_MODEL,
-  fallbackModel: OPENROUTER_VISION_FALLBACK_MODEL,
+  /** Primary model — Gemini gemini-3.5-flash (probe-verified vision). */
+  model: GEMINI_VISION_MODEL,
+  /** Fast fallback — OpenAI gpt-4o-mini (probe: 1.35s, HTTP 200). */
+  fallbackModel: OPENAI_VISION_FALLBACK_MODEL,
   /** Higher budget so vision models can return 10–20+ spectral peaks. */
   maxTokens: 4000,
   /** Lighter budget for timeout-retry "simple" extraction (top 3 peaks). */
-  maxTokensSimple: 1200
+  maxTokensSimple: 1200,
+  /** Canonical provider order (OpenRouter LAST). */
+  chain: LEGACY_VISION_CHAIN
 } as const;
 
 export type VibrationExtractionMode = "full" | "simple";

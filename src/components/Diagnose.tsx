@@ -146,6 +146,7 @@ import { mergeMcaOperatorSnapshots } from "../lib/mca/mcaSsot";
 import { buildBridgeContext, fetchPlanningBundle, type PlanningBundle } from "../lib/diagnostics/cmmsPayload";
 import type { SavedFaultItem } from "../lib/analysisPersistence";
 import DiagnosticsIntelligencePanel from "./diagnostics/DiagnosticsIntelligencePanel";
+import ConsensusDegradationBanner from "./diagnostics/ConsensusDegradationBanner";
 import VibrationScoreCards from "./diagnostics/VibrationScoreCards";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
 import HardwareRoiBar from "./diagnostics/HardwareRoiBar";
@@ -5333,6 +5334,11 @@ useEffect(() => {
                   </p>
                 </div>
               </div>
+
+              {/* VS-3 — surface single-model degradation from the engine tag. */}
+              <ConsensusDegradationBanner
+                details={analysisResult?.consensusDetails}
+              />
             </div>
 
           {/* PART 2 — Executive Control & Risk Analytics */}

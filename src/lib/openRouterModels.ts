@@ -1,5 +1,6 @@
 /**
- * Production AI model routing via OpenRouter.
+ * OpenRouter model slugs. OpenRouter is the LAST-resort provider in the
+ * probe-verified cascades (VS-3: credits exhausted, never promoted).
  * Vision: GPT-4o · Consensus validation: Qwen 2.5 VL 72B
  *
  * LM Studio (localhost:1234) is dev-only — set USE_LM_STUDIO=true explicitly.
@@ -13,7 +14,10 @@ function envStr(key: string): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
-/** GPT-4o vision — FFT spectrum image extraction (Stage 1 / extract-vibration-image). */
+/**
+ * OpenRouter vision slug — LAST-resort entry in both the consensus and legacy
+ * vision chains (VS-3: never promoted; production payloads hit HTTP 402).
+ */
 export const OPENROUTER_VISION_MODEL =
   envStr("OPENROUTER_VISION_MODEL") || "openai/gpt-4o";
 

@@ -16,6 +16,9 @@
  *  - DashScope qwen-plus + qwen-turbo (intl AND CN hosts): 401
  *    invalid_api_key -> provider WITHHELD; an honest skip-log carries the
  *    probe code so the omission is never silent
+ *  - DeepSeek (VS-3): 401 invalid_api_key while the key is still present in
+ *    .env -> WITHHELD in code (operator-owned key is never deleted).
+ *    Anthropic is present-but-unused: no chain references it.
  *  - Gemini gemini-flash-latest: persistent 503 UNAVAILABLE; Mistral
  *    mistral-small-latest: persistent 429 rate_limited -> strict-200 rule
  *    keeps the 200-probed ids above
@@ -139,6 +142,19 @@ export const CONSENSUS_WITHHELD_PROVIDERS: readonly ConsensusWithheldProvider[] 
     envKey: "DASHSCOPE_API_KEY",
     probeStatus: 401,
     reason: "invalid_api_key on intl + CN host variants during AR-25 Phase 1 probe"
+  },
+  {
+    /**
+     * VS-3 dead-key hygiene: the operator's DEEPSEEK_API_KEY is present in
+     * .env but its probe returned 401 invalid_api_key. It is withheld here
+     * (never deleted from .env — that is operator property) so no chain can
+     * silently route traffic to a dead key. Anthropic stays present-but-unused.
+     */
+    id: "deepseek",
+    label: "DeepSeek",
+    envKey: "DEEPSEEK_API_KEY",
+    probeStatus: 401,
+    reason: "invalid_api_key — probe returned 401; key withheld from every chain"
   }
 ];
 
