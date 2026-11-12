@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SPARSE_TREND_HELPER_TEXT,
+  applySameDateSequenceLabels,
   distinctTrendTimestampCount,
   filterTrendByTimeRange,
   isSparseTrendSeries,
@@ -46,6 +47,26 @@ describe("SLICE-J sparse trend guard", () => {
     expect(SPARSE_TREND_HELPER_TEXT).toBe(
       "Additional historical readings required to plot trend slope"
     );
+  });
+});
+
+describe("SLICE-VS5 deterministic same-date labels", () => {
+  it("suffixes repeated dates in input order and leaves singles clean", () => {
+    const rows = [
+      { date: "Oct 30", dateLabel: "Oct 30" },
+      { date: "Oct 30", dateLabel: "Oct 30" },
+      { date: "Oct 31", dateLabel: "Oct 31" }
+    ];
+    const first = applySameDateSequenceLabels(rows);
+    const second = applySameDateSequenceLabels(rows);
+    expect(first.map((row) => row.dateLabel)).toEqual([
+      "Oct 30 \u00b7 1",
+      "Oct 30 \u00b7 2",
+      "Oct 31"
+    ]);
+    expect(second).toEqual(first);
+    // Original rows are not mutated.
+    expect(rows[0].dateLabel).toBe("Oct 30");
   });
 });
 

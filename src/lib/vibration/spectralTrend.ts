@@ -6,9 +6,10 @@
  *      (spectral peaks labeled "1X" / "2X"). They render as stored, with a
  *      provenance label, even when the sample carries no RPM.
  *   2. DERIVED (re-extracted) order amplitudes are only computed from raw FFT
- *      bins when the SAMPLE itself stores a running speed. There is no
- *      Equipment-DB fallback here: without a stored RPM there is no 1X
- *      frequency, so no bin may be re-extracted.
+ *      bins when the SAMPLE itself stores a running speed AND that speed is
+ *      gating-quality (measured/configured). There is no Equipment-DB fallback
+ *      here: without a qualified stored RPM there is no 1X frequency, so no bin
+ *      may be re-extracted and no interpretation may be attached (SLICE-VS5).
  *   3. The 2X:1X ratio is pure math (2X / 1X) present only when both
  *      amplitudes exist and 1X > 0. Interpretation comes from the in-repo
  *      labeled descriptive rubric below; it is omitted when the rubric or the
@@ -32,6 +33,10 @@ import {
   hzToOrders,
   type VelocityDisplayUnit
 } from "./units";
+import {
+  isGatingQualityVibrationRpm,
+  type VibrationRpmSource
+} from "./rpmProvenance";
 
 export const MISSING_RPM_ORDER_HELPER_TEXT =
   "Running speed required to compute order harmonics";
@@ -81,6 +86,12 @@ export interface SpectralAnalysisInput {
    * re-extraction from raw bins is only honest when the sample carries RPM.
    */
   rpm?: number | null;
+  /**
+   * SLICE-VS5 — provenance of `rpm`. Re-extraction/interpretation is gated on
+   * a MEASURED or CONFIGURED speed; a capture default (or an unrecorded
+   * source) is not gating-quality even when a positive number is stored.
+   */
+  rpmSource?: VibrationRpmSource | null;
   peaks?: readonly SpectralPeakLike[] | null;
   overall?: number | null;
   /** Running-state label from the shared SSOT predicate ("stopped sample"). */
@@ -127,9 +138,9 @@ export interface SpectralHarmonicRow {
 export interface SpectralHarmonicTrend {
   rows: SpectralHarmonicRow[];
   /**
-   * True when readings exist but no row carries a usable stored running speed.
-   * This gates bin re-extraction and interpretation — it never suppresses a
-   * stored order amplitude.
+   * True when readings exist but no row carries a usable, gating-quality
+   * stored running speed (measured/configured). This gates bin re-extraction
+   * and interpretation — it never suppresses a stored order amplitude.
    */
   ordersUnavailable: boolean;
   /** At least one row has a stored (labeled) order amplitude. */
@@ -357,7 +368,14 @@ export function buildSpectralHarmonicTrend(
 
   for (const input of inputs) {
     const rpm = input.rpm;
-    const canComputeOrders = hzToOrders(1, rpm) != null;
+    /**
+     * SLICE-VS5 provenance gate: a positive RPM is not enough. The stored
+     * value must be measured/configured — the 1780 capture default is not
+     * gating-quality and may not drive bin re-extraction or interpretation.
+     */
+    const canComputeOrders =
+      isGatingQualityVibrationRpm(input.rpmSource) &&
+      hzToOrders(1, rpm) != null;
     if (canComputeOrders) sawUsableRpm = true;
 
     const shaftHz =

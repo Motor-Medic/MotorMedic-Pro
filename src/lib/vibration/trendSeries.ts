@@ -93,3 +93,31 @@ export function isSparseTrendSeries(
 ): boolean {
   return points.length > 0 && distinctTrendTimestampCount(points) < 2;
 }
+
+/**
+ * Deterministic same-date X-axis labels for trend surfaces.
+ *
+ * Rows arrive in the caller's SSOT (chronological) order; every row keeps its
+ * clean `date`, and a date shared by n rows gets a "· 1" … "· n" suffix so two
+ * captures on the same day never collapse onto one ambiguous tick.
+ */
+export function applySameDateSequenceLabels<
+  T extends { date: string; dateLabel?: string }
+>(points: readonly T[]): T[] {
+  const totals = new Map<string, number>();
+  for (const point of points) {
+    totals.set(point.date, (totals.get(point.date) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  return points.map((point) => {
+    const ordinal = (seen.get(point.date) ?? 0) + 1;
+    seen.set(point.date, ordinal);
+    return {
+      ...point,
+      dateLabel:
+        (totals.get(point.date) ?? 0) > 1
+          ? `${point.date} \u00b7 ${ordinal}`
+          : point.date
+    };
+  });
+}

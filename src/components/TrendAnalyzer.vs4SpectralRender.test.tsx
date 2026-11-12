@@ -29,6 +29,8 @@ function analysisRow(options: {
   loadFactorPercent: number | null;
   primaryFault?: string;
   rpm?: number | null;
+  rpmSource?: string | null;
+  enveloping?: Array<{ frequency: number; amplitude: number; label?: string }>;
 }) {
   return {
     id: options.id,
@@ -41,6 +43,7 @@ function analysisRow(options: {
     recommendations: [],
     peaks: [],
     telemetry_data: {
+      ...(options.rpmSource != null ? { rpm_source: options.rpmSource } : {}),
       vibration_trend_record: {
         assetId: "M-101",
         timestamp: options.timestamp,
@@ -63,7 +66,7 @@ function analysisRow(options: {
           { frequency: 30, amplitude: 1.2, label: "1X" },
           { frequency: 60, amplitude: 0.6, label: "2X" }
         ],
-        enveloping: [],
+        enveloping: options.enveloping ?? [],
         waveform: []
       }
     }
@@ -196,11 +199,39 @@ describe("SLICE-VS4 Spectral tab renders stored orders without RPM", () => {
     );
   });
 
-  it("adds the labeled descriptive interpretation only when RPM is stored", async () => {
+  it("adds the labeled descriptive interpretation only when a gating-quality RPM is stored", async () => {
     const now = new Date().toISOString();
     currentRows = [
       analysisRow({
         id: "row-rpm",
+        timestamp: now,
+        loadFactorPercent: 90,
+        rpm: 1780,
+        rpmSource: "vision-extracted"
+      })
+    ];
+
+    await renderSpectralTab();
+
+    const ratio = await screen.findByTestId("spectral-2x1x-ratio");
+    expect(ratio.textContent).toContain("0.50");
+    // Present, source-qualified RPM clears the gate: extraction is allowed.
+    expect(screen.queryByTestId("spectral-orders-rpm-gate")).toBeNull();
+    expect(screen.queryByTestId("spectral-rpm-provenance-note")).toBeNull();
+
+    const interpretation = await screen.findByTestId(
+      "spectral-ratio-interpretation"
+    );
+    expect(interpretation.textContent).toContain("consistent with");
+    expect(interpretation.textContent).not.toMatch(/confirmed|diagnosis/i);
+    expect(ratio.textContent).toContain("not an ISO 20816");
+  });
+
+  it("does NOT interpret on the untagged 1780 capture default (SLICE-VS5)", async () => {
+    const now = new Date().toISOString();
+    currentRows = [
+      analysisRow({
+        id: "row-default",
         timestamp: now,
         loadFactorPercent: 90,
         rpm: 1780
@@ -209,17 +240,21 @@ describe("SLICE-VS4 Spectral tab renders stored orders without RPM", () => {
 
     await renderSpectralTab();
 
+    // Stored orders and pure ratio survive.
     const ratio = await screen.findByTestId("spectral-2x1x-ratio");
     expect(ratio.textContent).toContain("0.50");
-    // Present RPM clears the gate: extraction is allowed, so no RPM note.
-    expect(screen.queryByTestId("spectral-orders-rpm-gate")).toBeNull();
-
-    const interpretation = await screen.findByTestId(
-      "spectral-ratio-interpretation"
+    // The default RPM fails the gate and confesses its provenance.
+    expect(screen.queryByTestId("spectral-ratio-interpretation")).toBeNull();
+    const gate = await screen.findByTestId("spectral-orders-rpm-gate");
+    expect(gate.textContent).toContain(
+      "1X/2X order extraction requires configured RPM in Equipment DB"
     );
-    expect(interpretation.textContent).toContain("consistent with");
-    expect(interpretation.textContent).not.toMatch(/confirmed|diagnosis/i);
-    expect(ratio.textContent).toContain("not an ISO 20816");
+    const provenance = await screen.findByTestId(
+      "spectral-rpm-provenance-note"
+    );
+    expect(provenance.textContent).toContain(
+      "RPM defaulted at capture \u2014 not measured"
+    );
   });
 
   it("excludes a stopped-only window when ON and labels it when OFF", async () => {

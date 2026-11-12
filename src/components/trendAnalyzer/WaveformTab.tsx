@@ -78,13 +78,19 @@ export type WaveformChartId = "time" | "crest" | "impact";
 export interface WaveformChartModel {
   crestTrend: Array<{
     date: string;
+    dateLabel: string;
+    timestamp: string;
     crestFactor: number;
     fault: string;
+    stoppedLabel: string | null;
   }>;
   impactTrend: Array<{
     date: string;
+    dateLabel: string;
+    timestamp: string;
     impactCount: number;
     fault: string;
+    stoppedLabel: string | null;
   }>;
   waveformChartData: Array<{
     time: number;
@@ -112,16 +118,22 @@ export function buildWaveformChartModel({
     .filter((p) => p.crestFactor != null && p.crestFactor > 0)
     .map((p) => ({
       date: p.date,
+      dateLabel: p.dateLabel || p.date,
+      timestamp: p.timestamp,
       crestFactor: p.crestFactor as number,
-      fault: p.primaryFault
+      fault: p.primaryFault,
+      stoppedLabel: p.stoppedLabel ?? null
     }));
 
   const impactTrend = trendPoints
     .filter((p) => p.impactCount != null)
     .map((p) => ({
       date: p.date,
+      dateLabel: p.dateLabel || p.date,
+      timestamp: p.timestamp,
       impactCount: p.impactCount as number,
-      fault: p.primaryFault
+      fault: p.primaryFault,
+      stoppedLabel: p.stoppedLabel ?? null
     }));
 
   let sampleWindowMs = 10000;
@@ -266,7 +278,7 @@ export function CrestFactorTrendChartBody({
             margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+            <XAxis dataKey="dateLabel" stroke="#94a3b8" tick={{ fontSize: 11 }} />
             <YAxis
               stroke="#22d3ee"
               tick={{ fontSize: 11 }}
@@ -276,6 +288,14 @@ export function CrestFactorTrendChartBody({
               contentStyle={tooltipStyle}
               allowEscapeViewBox={{ x: true, y: true }}
               wrapperStyle={{ zIndex: 20 }}
+              labelFormatter={(label, payload) => {
+                const stopped = (
+                  payload?.[0]?.payload as
+                    | { stoppedLabel?: string | null }
+                    | undefined
+                )?.stoppedLabel;
+                return stopped ? `${label} · ${stopped}` : label;
+              }}
               formatter={(value: number) => [
                 `${value.toFixed(2)} — ${interpretCrestFactor(value)}`,
                 "Crest Factor"
@@ -338,7 +358,7 @@ export function ImpactCountTrendChartBody({
             margin={{ top: 12, right: 16, bottom: 8, left: 8 }}
           >
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-            <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+            <XAxis dataKey="dateLabel" stroke="#94a3b8" tick={{ fontSize: 11 }} />
             <YAxis
               stroke="#f97316"
               tick={{ fontSize: 11 }}
@@ -348,6 +368,14 @@ export function ImpactCountTrendChartBody({
               contentStyle={tooltipStyle}
               allowEscapeViewBox={{ x: true, y: true }}
               wrapperStyle={{ zIndex: 20 }}
+              labelFormatter={(label, payload) => {
+                const stopped = (
+                  payload?.[0]?.payload as
+                    | { stoppedLabel?: string | null }
+                    | undefined
+                )?.stoppedLabel;
+                return stopped ? `${label} · ${stopped}` : label;
+              }}
             />
             <Line
               type="monotone"
@@ -388,6 +416,17 @@ export interface WaveformTabProps {
   analysesCount: number;
   /** Active tenant velocity display unit (slice H2); defaults to mm/s. */
   velocityUnit?: VelocityDisplayUnit;
+  /** Shared trendSsot window note; null when the window has readings. */
+  windowEmptyNote?: string | null;
+  /** True when stopped samples exist in the shared scope (OFF toggle). */
+  hasStoppedSamples?: boolean;
+  /** Running-state toggle state, used only for the stopped-series note. */
+  runningOnly?: boolean;
+  /** Latest point inside the shared trend window (never the raw snapshot). */
+  latestTrendPoint?: {
+    dateLabel: string;
+    stoppedLabel: string | null;
+  } | null;
   renderExpandButton?: (
     chart: WaveformChartId,
     label: string
@@ -403,6 +442,10 @@ export default function WaveformTab({
   emptyAlert,
   analysesCount,
   velocityUnit = "mm/s",
+  windowEmptyNote = null,
+  hasStoppedSamples = false,
+  runningOnly = true,
+  latestTrendPoint = null,
   renderExpandButton
 }: WaveformTabProps) {
   const [timeWaveformOpen, setTimeWaveformOpen] = React.useState(true);
@@ -458,6 +501,30 @@ export default function WaveformTab({
   return (
     <div className="space-y-6">
       <PhaseCapabilityNote />
+      <p
+        data-testid="waveform-snapshot-exception-note"
+        className="text-xs text-amber-300"
+      >
+        Raw waveform snapshot — not filtered by running-state or window. Trend
+        charts below use the shared time window.
+      </p>
+      {windowEmptyNote && (
+        <p
+          data-testid="waveform-window-empty-note"
+          className="text-xs text-amber-300"
+        >
+          {windowEmptyNote}
+        </p>
+      )}
+      {!runningOnly && hasStoppedSamples && (
+        <p
+          data-testid="waveform-stopped-series-note"
+          className="text-xs text-amber-300"
+        >
+          Includes stopped samples (load ≤ 80%) — labeled &ldquo;stopped
+          sample&rdquo; in the tooltip.
+        </p>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className={CARD}>
           <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -576,6 +643,18 @@ export default function WaveformTab({
             </div>
           )}
         </div>
+      )}
+
+      {latestTrendPoint && (
+        <p
+          data-testid="waveform-latest-trend-summary"
+          className="text-xs text-slate-400"
+        >
+          Latest in window · {latestTrendPoint.dateLabel}
+          {latestTrendPoint.stoppedLabel
+            ? ` · ${latestTrendPoint.stoppedLabel}`
+            : ""}
+        </p>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

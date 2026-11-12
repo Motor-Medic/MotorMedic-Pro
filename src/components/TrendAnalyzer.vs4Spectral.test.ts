@@ -68,7 +68,8 @@ describe("SLICE-VS4 spectral series reads the shared SSOT", () => {
 
 describe("SLICE-VS4 stored-vs-derived discipline", () => {
   it("uses only the sample's stored RPM — never the Equipment DB rating", () => {
-    expect(inputMapper).toContain("readStoredVibrationRpm(analysis)");
+    expect(inputMapper).toContain("readVibrationRpmProvenance(analysis)");
+    expect(inputMapper).toContain("rpmSource: rpmReading.source");
     expect(inputMapper).not.toContain("fallbackRpm");
     expect(inputMapper).not.toContain("machineSpecs.rpm");
     expect(inputMapper).toContain("STORED running speed for THIS sample only");

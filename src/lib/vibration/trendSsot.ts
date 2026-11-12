@@ -19,6 +19,10 @@
 import type { SavedAnalysisResult } from "../analysisPersistence";
 import { healthScoreFromVelocityMmS } from "./isoZone";
 import {
+  buildVibrationRpmReading,
+  type VibrationRpmReading
+} from "./rpmProvenance";
+import {
   extractVibrationRecordFromAnalysis,
   type VibrationDiagnosticRecord
 } from "./vibrationDiagnosticRecord";
@@ -110,6 +114,35 @@ export function readStoredVibrationRpm(
     if (value != null && value > 0) return value;
   }
   return null;
+}
+
+/**
+ * SLICE-VS5 — source-aware running speed.
+ *
+ * `readStoredVibrationRpm` answers "what number is stored"; this answers "may
+ * that number gate physics". Persisted `rpm_source` is only written when the
+ * capture pipeline actually knew the origin (Diagnose.tsx:2698-2699), so an
+ * untagged 1780 capture fallback is classified DEFAULT and never gates.
+ */
+export function readVibrationRpmProvenance(
+  row: SavedAnalysisResult | null | undefined
+): VibrationRpmReading {
+  const rpm = readStoredVibrationRpm(row);
+  if (!row) return buildVibrationRpmReading(null, null);
+
+  const td = asRecord(row.telemetry_data);
+  const trend = asRecord(td.vibration_trend_record);
+  const trendContext = asRecord(trend.context);
+  const rowContext = asRecord(td.context);
+
+  const rawSource =
+    td.rpm_source ??
+    trend.rpm_source ??
+    trendContext.rpm_source ??
+    rowContext.rpm_source ??
+    null;
+
+  return buildVibrationRpmReading(rpm, rawSource);
 }
 
 export interface VibrationSampleState {

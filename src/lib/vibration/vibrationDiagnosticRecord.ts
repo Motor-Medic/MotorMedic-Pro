@@ -53,6 +53,8 @@ export interface VibrationDiagnosticRecord {
   sourceImage?: string;
   extractionConfidence?: number;
   rpm?: number;
+  /** SLICE-VS5 provenance of `rpm` when the capture knew its origin. */
+  rpm_source?: "vision-extracted" | "configured" | null;
   component?: string | null;
   waveformMetrics?: {
     peakAmplitude: number;
@@ -70,7 +72,8 @@ export interface VibrationDiagnosticRecord {
     modulation?: "None" | "Amplitude" | "Frequency";
   };
   context?: {
-    motorSpeedRPM: number;
+    motorSpeedRPM: number | null;
+    rpm_source?: "vision-extracted" | "configured" | null;
     loadFactorPercent: number | null;
     analysisType: "vibration";
   };
@@ -149,12 +152,14 @@ export function buildVibrationDiagnosticRecord(params: {
           0
         )
       : undefined;
+  /**
+   * SLICE-VS5 — the envelope gE metric is stored envelope data only. Overall
+   * acceleration is a different unit and must never stand in for gE.
+   */
   const peakGe =
     peakGeFromEnvelope != null && peakGeFromEnvelope > 0
       ? peakGeFromEnvelope
-      : acceleration > 0
-        ? acceleration
-        : undefined;
+      : undefined;
   const kurtosis =
     extracted.waveformMetrics?.crestFactor != null &&
     Number.isFinite(extracted.waveformMetrics.crestFactor)
@@ -188,16 +193,21 @@ export function buildVibrationDiagnosticRecord(params: {
         }))
       : envelopingFromExtracted(extracted);
 
-  const motorSpeedRPM =
+  /**
+   * SLICE-VS5 — NO silent 1780 capture default. A missing running speed stays
+   * missing so downstream reads classify it ABSENT and refuse to gate orders
+   * or defect frequencies. Waveform KPIs that need RPM simply omit TPR.
+   */
+  const storedRpm =
     extracted.rpm != null && Number.isFinite(extracted.rpm) && extracted.rpm > 0
       ? extracted.rpm
-      : 1780;
+      : null;
 
   const timestamp = params.timestamp || new Date().toISOString();
 
   const derivedWaveform =
     waveform.length > 0
-      ? metricsFromWaveformSamples(waveform, motorSpeedRPM)
+      ? metricsFromWaveformSamples(waveform, storedRpm ?? undefined)
       : null;
   const fromExtractedMetrics = extracted.waveformMetrics
     ? normalizeWaveformMetrics(
@@ -210,7 +220,7 @@ export function buildVibrationDiagnosticRecord(params: {
           rmsValue: extracted.waveformMetrics.rmsValue,
           peakAmplitude: extracted.waveformMetrics.peakAmplitude
         },
-        motorSpeedRPM
+        storedRpm ?? undefined
       )
     : null;
   const waveformAnalysis = derivedWaveform || fromExtractedMetrics || undefined;
@@ -241,7 +251,12 @@ export function buildVibrationDiagnosticRecord(params: {
     waveform,
     sourceImage: extracted.sourceImage,
     extractionConfidence: extracted.extractionConfidence,
-    rpm: extracted.rpm ?? motorSpeedRPM,
+    ...(storedRpm != null ? { rpm: storedRpm } : {}),
+    /**
+     * The only RPM `buildVibrationDiagnosticRecord` receives is the vision
+     * extraction's running speed, so the provenance is measured.
+     */
+    ...(storedRpm != null ? { rpm_source: "vision-extracted" as const } : {}),
     component: params.component ?? null,
     ...(extracted.waveformMetrics
       ? { waveformMetrics: extracted.waveformMetrics }
@@ -275,7 +290,8 @@ export function buildVibrationDiagnosticRecord(params: {
         }
       : {}),
     context: {
-      motorSpeedRPM,
+      motorSpeedRPM: storedRpm,
+      ...(storedRpm != null ? { rpm_source: "vision-extracted" as const } : {}),
       loadFactorPercent: null,
       analysisType: "vibration"
     },
@@ -583,12 +599,16 @@ export function hasVibrationTrendCharts(
 export interface EnvelopingTrendPoint {
   analysisId: string;
   date: string;
+  /** Deterministic same-date X-axis label ("Oct 30 · 2"). */
+  dateLabel: string;
   timestamp: string;
   peakGe: number | null;
   kurtosis: number | null;
   overallAcceleration: number | null;
   healthScore: number | null;
   primaryFault: string;
+  /** SSOT running-state label ("stopped sample" / "no velocity recorded"). */
+  stoppedLabel: string | null;
   isBaseline: boolean;
   bpfoAmp: number | null;
   bpfiAmp: number | null;
@@ -608,7 +628,9 @@ function amplitudeForLabel(
 }
 
 export function extractEnvelopingTrendPoint(
-  r: SavedAnalysisResult
+  r: SavedAnalysisResult,
+  /** SSOT running-state label supplied by the caller (avoids an import cycle). */
+  stoppedLabel: string | null = null
 ): EnvelopingTrendPoint | null {
   const rec = extractVibrationRecordFromAnalysis(r);
   const td =
@@ -622,7 +644,6 @@ export function extractEnvelopingTrendPoint(
 
   const peakGeCandidates = [
     rec?.broadband.peakGe,
-    rec?.broadband.overallAcceleration,
     r.envelope_peak_amplitude,
     poly?.peakGe,
     poly?.gE,
@@ -649,11 +670,16 @@ export function extractEnvelopingTrendPoint(
 
   const peakGe = peakGeCandidates.length > 0 ? peakGeCandidates[0] : null;
   const kurtosis = kurtosisCandidates.length > 0 ? kurtosisCandidates[0] : null;
+  /**
+   * Acceleration is NOT a gE substitute: keep the stored acceleration value
+   * and leave it null when unrecorded. A missing gE never becomes acceleration
+   * and a missing acceleration never becomes gE.
+   */
   const overallAcceleration =
     rec?.broadband.overallAcceleration != null &&
     rec.broadband.overallAcceleration > 0
       ? rec.broadband.overallAcceleration
-      : peakGe;
+      : null;
   const enveloping = rec?.enveloping || [];
 
   // Skip rows with no enveloping-relevant measurement at all
@@ -667,14 +693,16 @@ export function extractEnvelopingTrendPoint(
   }
 
   const ts = r.timestamp || rec?.timestamp || "";
+  const date = ts
+    ? new Date(ts).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric"
+      })
+    : "—";
   return {
     analysisId: String(r.id),
-    date: ts
-      ? new Date(ts).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric"
-        })
-      : "—",
+    date,
+    dateLabel: date,
     timestamp: ts,
     peakGe,
     kurtosis,
@@ -686,6 +714,7 @@ export function extractEnvelopingTrendPoint(
     primaryFault: String(
       r.primary_fault || rec?.broadband.primaryFault || "—"
     ),
+    stoppedLabel,
     isBaseline: Boolean(r.is_baseline),
     bpfoAmp: amplitudeForLabel(enveloping, "BPFO"),
     bpfiAmp: amplitudeForLabel(enveloping, "BPFI"),
@@ -697,7 +726,10 @@ export function extractEnvelopingTrendPoint(
 /** Real waveform KPIs from a saved analysis row — null when unrecorded. */
 export interface WaveformTrendPoint {
   analysisId: string;
+  /** Clean display date (e.g. "Oct 30"). */
   date: string;
+  /** Deterministic X-axis label; same-date rows get a "· n" sequence. */
+  dateLabel: string;
   timestamp: string;
   peakToPeak: number | null;
   crestFactor: number | null;
@@ -707,10 +739,13 @@ export interface WaveformTrendPoint {
   healthScore: number | null;
   primaryFault: string;
   rpm: number | null;
+  /** Running-state label from the shared SSOT predicate, when present. */
+  stoppedLabel: string | null;
 }
 
 export function extractWaveformTrendPoint(
-  r: SavedAnalysisResult
+  r: SavedAnalysisResult,
+  stoppedLabel: string | null = null
 ): WaveformTrendPoint | null {
   const rec = extractVibrationRecordFromAnalysis(r);
   const td =
@@ -786,14 +821,16 @@ export function extractWaveformTrendPoint(
   if (!hasMetrics) return null;
 
   const ts = r.timestamp || rec?.timestamp || "";
+  const date = ts
+    ? new Date(ts).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric"
+      })
+    : "—";
   return {
     analysisId: String(r.id),
-    date: ts
-      ? new Date(ts).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric"
-        })
-      : "—",
+    date,
+    dateLabel: date,
     timestamp: ts,
     peakToPeak,
     crestFactor,
@@ -810,6 +847,7 @@ export function extractWaveformTrendPoint(
     rpm:
       rec?.rpm != null && rec.rpm > 0
         ? rec.rpm
-        : rec?.context?.motorSpeedRPM ?? null
+        : rec?.context?.motorSpeedRPM ?? null,
+    stoppedLabel
   };
 }

@@ -53,6 +53,7 @@ function point(overrides: Partial<WaveformTrendPoint>): WaveformTrendPoint {
   return {
     analysisId: "row-1",
     date: "Jan 1",
+    dateLabel: "Jan 1",
     timestamp: "2026-01-01T00:00:00.000Z",
     peakToPeak: null,
     crestFactor: null,
@@ -62,6 +63,7 @@ function point(overrides: Partial<WaveformTrendPoint>): WaveformTrendPoint {
     healthScore: null,
     primaryFault: "—",
     rpm: null,
+    stoppedLabel: null,
     ...overrides
   };
 }
@@ -138,8 +140,22 @@ describe("SLICE-S Impact Count empty-state parity (J2 reuse)", () => {
     render(
       <ImpactCountTrendChartBody
         data={[
-          { date: "Jan 1", impactCount: 0, fault: "—" },
-          { date: "Jan 2", impactCount: 0, fault: "—" }
+          {
+            date: "Jan 1",
+            dateLabel: "Jan 1",
+            timestamp: "2026-01-01T00:00:00.000Z",
+            impactCount: 0,
+            fault: "—",
+            stoppedLabel: null
+          },
+          {
+            date: "Jan 2",
+            dateLabel: "Jan 2",
+            timestamp: "2026-01-02T00:00:00.000Z",
+            impactCount: 0,
+            fault: "—",
+            stoppedLabel: null
+          }
         ]}
       />
     );
@@ -339,5 +355,72 @@ describe("SLICE-T Waveform Metrics name and capability branches", () => {
     expect(csv).toContain("Waveform Peak-to-Peak");
     expect(csv).toContain("Waveform Crest Factor");
     expect(csv).toContain("Waveform Impact Count");
+  });
+});
+
+describe("SLICE-VS6 waveform snapshot exception and trend labels", () => {
+  it("labels the raw latest-record snapshot in the UI", () => {
+    render(<WaveformTab {...BASE_PROPS} latestMetrics={LATEST} />);
+    const note = screen.getByTestId("waveform-snapshot-exception-note");
+    expect(note.textContent).toContain(
+      "Raw waveform snapshot — not filtered by running-state or window"
+    );
+    expect(note.textContent).toContain("shared time window");
+  });
+
+  it("carries same-date and stopped labels into the trend model", () => {
+    const model = buildWaveformChartModel({
+      rpm: 1800,
+      trendPoints: [
+        point({
+          date: "Jan 1",
+          dateLabel: "Jan 1 · 2",
+          crestFactor: 4.2,
+          impactCount: 1,
+          stoppedLabel: "stopped sample"
+        })
+      ],
+      waveformSamples: []
+    });
+    expect(model.crestTrend[0]).toMatchObject({
+      dateLabel: "Jan 1 · 2",
+      stoppedLabel: "stopped sample"
+    });
+    expect(model.impactTrend[0]).toMatchObject({
+      dateLabel: "Jan 1 · 2",
+      stoppedLabel: "stopped sample"
+    });
+  });
+
+  it("shows the shared window-empty and stopped-series notes", () => {
+    const { rerender } = render(
+      <WaveformTab
+        {...BASE_PROPS}
+        latestMetrics={LATEST}
+        windowEmptyNote="No running-state waveform samples in this range"
+      />
+    );
+    expect(screen.getByTestId("waveform-window-empty-note").textContent).toContain(
+      "No running-state waveform samples in this range"
+    );
+
+    rerender(
+      <WaveformTab
+        {...BASE_PROPS}
+        latestMetrics={LATEST}
+        runningOnly={false}
+        hasStoppedSamples
+        latestTrendPoint={{
+          dateLabel: "Jan 1 · 2",
+          stoppedLabel: "stopped sample"
+        }}
+      />
+    );
+    expect(screen.getByTestId("waveform-stopped-series-note").textContent).toContain(
+      "Includes stopped samples"
+    );
+    const latest = screen.getByTestId("waveform-latest-trend-summary");
+    expect(latest.textContent).toContain("Jan 1 · 2");
+    expect(latest.textContent).toContain("stopped sample");
   });
 });

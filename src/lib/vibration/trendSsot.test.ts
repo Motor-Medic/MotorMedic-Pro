@@ -14,6 +14,7 @@ import {
   readVibrationOverallAcceleration,
   readVibrationOverallVelocity,
   readVibrationPerAxis,
+  readVibrationRpmProvenance,
   reconcileVibrationVerdict,
   selectLatestVibrationRow,
   sortVibrationRowsNewestFirst,
@@ -39,6 +40,8 @@ interface RowOptions {
   rpm?: number | null;
   /** Place RPM at the telemetry root instead of the trend record. */
   telemetryRootRpm?: number | null;
+  /** Persisted provenance token at the telemetry root. */
+  rpmSource?: string | null;
   peaks?: unknown[];
   consensus?: Record<string, unknown> | null;
 }
@@ -54,6 +57,7 @@ function row(options: RowOptions = {}): SavedAnalysisResult {
     loadFactorPercent,
     rpm,
     telemetryRootRpm,
+    rpmSource,
     peaks = [],
     consensus = null
   } = options;
@@ -91,6 +95,9 @@ function row(options: RowOptions = {}): SavedAnalysisResult {
   }
   if (telemetryRootRpm !== undefined && telemetryRootRpm != null) {
     telemetry.rpm = telemetryRootRpm;
+  }
+  if (rpmSource != null) {
+    telemetry.rpm_source = rpmSource;
   }
 
   return {
@@ -226,6 +233,48 @@ describe("trend SSOT — running-state scope", () => {
         }
       } as SavedAnalysisResult)
     ).toBeNull();
+  });
+});
+
+describe("trend SSOT — RPM provenance (SLICE-VS5)", () => {
+  it("keeps an untagged 1780 as a non-gating capture default", () => {
+    const reading = readVibrationRpmProvenance(row({ rpm: 1780 }));
+    expect(reading.rpm).toBe(1780);
+    expect(reading.source).toBe("default");
+    expect(reading.gatingQuality).toBe(false);
+    expect(reading.warning).toBe("RPM defaulted at capture \u2014 not measured");
+  });
+
+  it("treats any other untagged speed as unknown, never measured", () => {
+    const reading = readVibrationRpmProvenance(row({ rpm: 1795 }));
+    expect(reading.source).toBe("unknown");
+    expect(reading.gatingQuality).toBe(false);
+    expect(reading.warning).toContain("RPM source not recorded");
+  });
+
+  it("accepts measured/configured provenance and reports absent honestly", () => {
+    const measured = readVibrationRpmProvenance(
+      row({ rpm: 1780, rpmSource: "vision-extracted" })
+    );
+    expect(measured.source).toBe("measured");
+    expect(measured.gatingQuality).toBe(true);
+    expect(measured.warning).toBeNull();
+
+    const configured = readVibrationRpmProvenance(
+      row({ rpm: 1780, rpmSource: "configured" })
+    );
+    expect(configured.source).toBe("configured");
+    expect(configured.gatingQuality).toBe(true);
+
+    const absent = readVibrationRpmProvenance(row());
+    expect(absent.source).toBe("absent");
+    expect(absent.rpm).toBeNull();
+    expect(absent.gatingQuality).toBe(false);
+  });
+
+  it("does not let the 1780 capture default pass the VS-4 interpretation gate", () => {
+    const reading = readVibrationRpmProvenance(row({ rpm: 1780 }));
+    expect(reading.gatingQuality).toBe(false);
   });
 });
 

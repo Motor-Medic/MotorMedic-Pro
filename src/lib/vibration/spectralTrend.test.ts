@@ -23,6 +23,7 @@ function completeInput(timestamp: string) {
   return {
     timestamp,
     rpm: RPM_1780,
+    rpmSource: "measured" as const,
     peaks: PEAKS,
     overall: 2.5
   };
@@ -107,12 +108,14 @@ describe("SLICE-J2 spectral trend guards", () => {
       {
         timestamp: "2026-01-01T00:00:00.000Z",
         rpm: RPM_1780,
+        rpmSource: "measured",
         peaks: [{ frequency: H1, amplitude: null }],
         overall: 2.5
       },
       {
         timestamp: "2026-01-02T00:00:00.000Z",
         rpm: RPM_1780,
+        rpmSource: "measured",
         peaks: [{ frequency: H1, amplitude: null }],
         overall: 2.8
       }
@@ -200,6 +203,7 @@ describe("SLICE-VS4 stored-vs-derived order discipline", () => {
       {
         timestamp: "2026-01-01T00:00:00.000Z",
         rpm: RPM_1780,
+        rpmSource: "measured",
         peaks: [
           { frequency: H1, amplitude: 1.2 },
           { frequency: H1 * 2, amplitude: 0.6 }
@@ -222,6 +226,7 @@ describe("SLICE-VS4 stored-vs-derived order discipline", () => {
       {
         timestamp: "2026-01-01T00:00:00.000Z",
         rpm: RPM_1780,
+        rpmSource: "measured",
         peaks: [
           { frequency: H1, amplitude: 9.9 },
           { frequency: H1, amplitude: 1.2, label: "1X" }
@@ -238,6 +243,7 @@ describe("SLICE-VS4 stored-vs-derived order discipline", () => {
       {
         timestamp: "2026-01-01T00:00:00.000Z",
         rpm: RPM_1780,
+        rpmSource: "measured",
         peaks: [
           { frequency: H1, amplitude: null, label: "1X" },
           { frequency: H1, amplitude: 9.9 }
@@ -247,6 +253,66 @@ describe("SLICE-VS4 stored-vs-derived order discipline", () => {
     ]);
     expect(trend.rows[0].amp1X).toBeNull();
     expect(trend.rows[0].amp1XSource).toBeNull();
+  });
+});
+
+describe("SLICE-VS5 RPM provenance gate", () => {
+  it("refuses to gate on a capture-default 1780 with no recorded source", () => {
+    const trend = buildSpectralHarmonicTrend([
+      {
+        timestamp: "2026-01-01T00:00:00.000Z",
+        rpm: RPM_1780,
+        rpmSource: "default",
+        peaks: [
+          { frequency: H1, amplitude: 1.2, label: "1X" },
+          { frequency: H1 * 2, amplitude: 0.6, label: "2X" }
+        ],
+        overall: 2.5
+      }
+    ]);
+
+    // Stored amplitudes still render; physics gating does not.
+    expect(trend.rows[0].amp1X).toBe(1.2);
+    expect(trend.rows[0].ratio?.ratio).toBe(0.5);
+    expect(trend.rows[0].ratio?.interpretation).toBeNull();
+    expect(trend.ordersUnavailable).toBe(true);
+  });
+
+  it("treats an untagged 1780 as default, not measured", () => {
+    const trend = buildSpectralHarmonicTrend([
+      {
+        timestamp: "2026-01-01T00:00:00.000Z",
+        rpm: RPM_1780,
+        peaks: [
+          { frequency: H1, amplitude: 1.2 },
+          { frequency: H1 * 2, amplitude: 0.6 }
+        ],
+        overall: 2.5
+      }
+    ]);
+    expect(trend.rows[0].amp1X).toBeNull();
+    expect(trend.ordersUnavailable).toBe(true);
+  });
+
+  it("accepts measured and configured sources as gating-quality", () => {
+    for (const rpmSource of ["measured", "configured"] as const) {
+      const trend = buildSpectralHarmonicTrend([
+        {
+          timestamp: "2026-01-01T00:00:00.000Z",
+          rpm: RPM_1780,
+          rpmSource,
+          peaks: [
+            { frequency: H1, amplitude: 1.2, label: "1X" },
+            { frequency: H1 * 2, amplitude: 0.6, label: "2X" }
+          ],
+          overall: 2.5
+        }
+      ]);
+      expect(trend.ordersUnavailable).toBe(false);
+      expect(trend.rows[0].ratio?.interpretation?.label).toContain(
+        "consistent with"
+      );
+    }
   });
 });
 
@@ -312,6 +378,7 @@ describe("SLICE-VS4 2X:1X ratio and labeled rubric", () => {
       {
         timestamp: "2026-01-01T00:00:00.000Z",
         rpm: RPM_1780,
+        rpmSource: "measured",
         peaks: [
           { frequency: H1, amplitude: 1.2, label: "1X" },
           { frequency: H1 * 2, amplitude: 0.6, label: "2X" }
