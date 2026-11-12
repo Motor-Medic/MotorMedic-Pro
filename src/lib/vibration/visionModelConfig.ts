@@ -189,6 +189,11 @@ Return ONLY valid JSON. No markdown. No explanations.
 export const SPECTRAL_EXTRACTION_FAILED_MSG =
   "Could not extract FFT peaks from this image. Please ensure the image contains a clear FFT spectrum with visible peaks.";
 
+/**
+ * SLICE-VS2 — factual timeout copy. A deadline expiry says nothing about the
+ * image; it says the upstream did not answer in time. Dynamic callers append
+ * the observed seconds via buildClientDeadlineMessage().
+ */
 export const SPECTRAL_EXTRACTION_TIMEOUT_MSG =
-  "AI analysis timed out. The spectrum image may be too complex. Please try a clearer image.";
+  "Upstream did not respond within the client deadline. No extraction result was received — retry, or check the server logs for the provider that stalled.";
 

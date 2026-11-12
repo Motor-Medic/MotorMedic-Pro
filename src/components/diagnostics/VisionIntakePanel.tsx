@@ -31,6 +31,12 @@ export interface VisionIntakePanelProps {
   } | null;
   currentMessageIndex: number;
   AI_LOADING_MESSAGES: string[];
+  /** SLICE-VS2 — honest stage + elapsed status after 10s. */
+  extractionStatusLabel?: string;
+  /** SLICE-VS2 — abort the in-flight extraction and reset state. */
+  onCancelExtraction?: () => void;
+  /** SLICE-VS2 — retry extraction from the existing preview after a deadline. */
+  onRetryExtraction?: () => void;
 }
 
 export default function VisionIntakePanel({
@@ -48,7 +54,10 @@ export default function VisionIntakePanel({
   vibrationExtractError,
   vibrationExtractSummary,
   currentMessageIndex,
-  AI_LOADING_MESSAGES
+  AI_LOADING_MESSAGES,
+  extractionStatusLabel,
+  onCancelExtraction,
+  onRetryExtraction
 }: VisionIntakePanelProps) {
   return (
     <section className="bg-slate-900/50 border border-white/80 rounded-xl p-4 space-y-3 hover:shadow-[0_0_15px_rgba(255,255,255,0.05)] transition-all">
@@ -97,7 +106,7 @@ export default function VisionIntakePanel({
           {vibrationExtractStatus === "extracting" && (
             <span className="inline-flex items-center gap-2">
               <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
-              {AI_LOADING_MESSAGES[currentMessageIndex]}
+              {extractionStatusLabel || AI_LOADING_MESSAGES[currentMessageIndex]}
             </span>
           )}
           {vibrationExtractStatus === "ready" && vibrationExtractSummary && (
@@ -116,9 +125,20 @@ export default function VisionIntakePanel({
               </span>
             )}
           {vibrationExtractStatus === "failed" && (
-            <span>
-              {vibrationExtractError ||
-                "Vision extraction failed. You can still run diagnostics."}
+            <span className="inline-flex flex-wrap items-center gap-2">
+              <span>
+                {vibrationExtractError ||
+                  "Vision extraction failed. You can still run diagnostics."}
+              </span>
+              {onRetryExtraction && (
+                <button
+                  type="button"
+                  onClick={onRetryExtraction}
+                  className="rounded-md border border-amber-400/50 bg-amber-500/15 px-2.5 py-1 text-[11px] font-bold text-amber-200 hover:bg-amber-500/25 cursor-pointer"
+                >
+                  Retry
+                </button>
+              )}
             </span>
           )}
         </div>
@@ -127,11 +147,22 @@ export default function VisionIntakePanel({
         <div className="p-6 bg-slate-800/50 rounded-xl border border-cyan-500/30 mt-6">
           <Loader2 className="animate-spin text-cyan-400 w-12 h-12 mx-auto mb-4" />
           <p className="text-cyan-400 font-semibold text-center">
-            {AI_LOADING_MESSAGES[currentMessageIndex]}
+            {extractionStatusLabel || AI_LOADING_MESSAGES[currentMessageIndex]}
           </p>
           <p className="text-xs text-slate-400 text-center mt-2">
             This may take up to 60 seconds for complex high-resolution spectra.
           </p>
+          {onCancelExtraction && (
+            <div className="mt-4 flex justify-center">
+              <button
+                type="button"
+                onClick={onCancelExtraction}
+                className="rounded-md border border-red-400/50 bg-red-500/15 px-3 py-1.5 text-xs font-bold text-red-200 hover:bg-red-500/25 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       )}
       <input

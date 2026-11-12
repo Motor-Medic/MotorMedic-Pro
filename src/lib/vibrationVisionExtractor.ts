@@ -21,6 +21,7 @@ import {
   type VisionExtractionMode,
   OIL_VISION_API_PATH
 } from "./oilVisionExtractor";
+import { withDeadline } from "./vision/clientDeadline";
 
 export type VibSeverity = "NORMAL" | "ALERT" | "CRITICAL" | null;
 
@@ -498,9 +499,17 @@ export async function extractVibrationReportFromImageBase64(input: {
   return finalizeVibrationFromParses(parses, lastError, input);
 }
 
+export interface VibrationExtractionRequestOptions {
+  /** Operator-cancel signal (SLICE-VS2). */
+  signal?: AbortSignal;
+  /** Override the 60s client deadline. */
+  timeoutMs?: number;
+}
+
 /** Browser helper — POST image to the unified vision endpoint and return vibration data. */
 export async function extractVibrationReportFromImage(
-  imageFile: File
+  imageFile: File,
+  options: VibrationExtractionRequestOptions = {}
 ): Promise<VibrationReportData> {
   if (
     !imageFile ||
@@ -515,47 +524,39 @@ export async function extractVibrationReportFromImage(
     reader.readAsDataURL(imageFile);
   });
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 180_000);
-  let response: Response;
-  try {
-    response = await fetch(OIL_VISION_API_PATH, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({ imageBase64: base64Image, fileName: imageFile.name })
-    });
-  } catch (err) {
-    clearTimeout(timeoutId);
-    const aborted =
-      (err instanceof DOMException && err.name === "AbortError") ||
-      (err instanceof Error && err.name === "AbortError");
-    if (aborted) throw new Error("Extraction timed out or failed. Please try again.");
-    throw err;
-  }
-  clearTimeout(timeoutId);
+  return withDeadline(
+    async (signal) => {
+      const response = await fetch(OIL_VISION_API_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+        body: JSON.stringify({ imageBase64: base64Image, fileName: imageFile.name })
+      });
 
-  console.info("[vision] client received");
+      console.info("[vision] client received");
 
-  const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) {
-    throw new Error(
-      (typeof result.error === "string" && result.error) ||
-        (typeof result.message === "string" && result.message) ||
-        `Vibration vision extraction failed (${response.status}).`
-    );
-  }
-  // The unified endpoint may fall through to another technology's finalizer.
-  // From the vibration tab we only accept a VIBRATION result.
-  const technology = typeof result.technology === "string" ? result.technology : null;
-  if (technology && technology !== "VIBRATION") {
-    throw new Error("Report type not recognized - enter values manually or re-upload.");
-  }
-  const data = result.data as VibrationReportData | undefined;
-  if (!data || typeof data !== "object") {
-    throw new Error("Vibration vision extraction returned no data.");
-  }
-  return data;
+      const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!response.ok) {
+        throw new Error(
+          (typeof result.error === "string" && result.error) ||
+            (typeof result.message === "string" && result.message) ||
+            `Vibration vision extraction failed (${response.status}).`
+        );
+      }
+      // The unified endpoint may fall through to another technology's finalizer.
+      // From the vibration tab we only accept a VIBRATION result.
+      const technology = typeof result.technology === "string" ? result.technology : null;
+      if (technology && technology !== "VIBRATION") {
+        throw new Error("Report type not recognized - enter values manually or re-upload.");
+      }
+      const data = result.data as VibrationReportData | undefined;
+      if (!data || typeof data !== "object") {
+        throw new Error("Vibration vision extraction returned no data.");
+      }
+      return data;
+    },
+    { timeoutMs: options.timeoutMs, externalSignal: options.signal }
+  );
 }
 
 /* Local logging shims. */

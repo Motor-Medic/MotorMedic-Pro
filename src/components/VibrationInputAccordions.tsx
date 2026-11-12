@@ -62,6 +62,10 @@ export interface VibrationInputAccordionsProps {
   onToggleSection: (id: VibAccordionSection) => void;
   isFanOrPump: boolean;
   isExtracting?: boolean;
+  /** SLICE-VS2 — honest stage + elapsed status while extracting. */
+  extractionStatusLabel?: string;
+  /** SLICE-VS2 — abort the in-flight extraction and reset state. */
+  onCancelExtraction?: () => void;
 
   vibRpm: string;
   setVibRpm: (v: string) => void;
@@ -215,6 +219,8 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
     onToggleSection,
     isFanOrPump,
     isExtracting = false,
+    extractionStatusLabel,
+    onCancelExtraction,
     vibRpm,
     setVibRpm,
     driveConfig,
@@ -384,7 +390,18 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
             {isExtracting && (
               <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2 text-xs font-bold text-cyan-300">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Extracting Telemetry Data...
+                <span className="flex-1">
+                  {extractionStatusLabel || "Extracting Telemetry Data..."}
+                </span>
+                {onCancelExtraction && (
+                  <button
+                    type="button"
+                    onClick={onCancelExtraction}
+                    className="shrink-0 rounded-md border border-red-400/50 bg-red-500/15 px-2.5 py-1 text-[11px] font-bold text-red-200 hover:bg-red-500/25 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
             )}
             <span className={vibFieldLabel}>Spectrum Chart Image (AI Vision)</span>
@@ -400,7 +417,7 @@ export default function VibrationInputAccordions(props: VibrationInputAccordions
                 <Upload className={`h-8 w-8 mx-auto mb-3 ${isExtracting ? "text-slate-500" : "text-yellow-400"}`} />
                 <p className={`text-sm font-bold flex items-center justify-center gap-2 ${isExtracting ? "text-slate-500" : "text-white"}`}>
                   {isExtracting && <Loader2 className="h-4 w-4 animate-spin text-cyan-400" />}
-                  {isExtracting ? "Extracting Telemetry Data..." : "Drop spectrum chart image here"}
+                  {isExtracting ? (extractionStatusLabel || "Extracting Telemetry Data...") : "Drop spectrum chart image here"}
                 </p>
                 <p className="text-xs text-slate-500 mt-1">
                   .png, .jpg, .webp — photo or screenshot of FFT / spectrum

@@ -96,9 +96,17 @@ import {
 } from "../lib/oilDiagnosticSave";
 import {
   SPECTRAL_EXTRACTION_FAILED_MSG,
-  SPECTRAL_EXTRACTION_TIMEOUT_MSG,
   VISION_MODEL_CONFIG
 } from "../lib/vibration/visionModelConfig";
+import {
+  ClientDeadlineError,
+  CONSENSUS_TIMEOUT_MS,
+  VISION_EXTRACTION_TIMEOUT_MS,
+  formatRunStatus,
+  isClientCancelledError,
+  withDeadline
+} from "../lib/vision/clientDeadline";
+import { useAbortableRun } from "../lib/vision/useAbortableRun";
 import {
   classifyPipelineFailure,
   logPayloadSize,
@@ -1367,37 +1375,6 @@ const AI_LOADING_MESSAGES = [
   "Finalizing diagnostic report..."
 ];
 
-const AI_FETCH_TIMEOUT_MS = 60_000;
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs = AI_FETCH_TIMEOUT_MS
-): Promise<Response> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    console.error(
-      `❌ [PIPELINE] Client AbortController firing after ${timeoutMs}ms for ${url}`
-    );
-    controller.abort();
-  }, timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (err) {
-    const aborted =
-      (err instanceof DOMException && err.name === "AbortError") ||
-      (err instanceof Error && err.name === "AbortError");
-    if (aborted) {
-      const timeoutErr = new Error(SPECTRAL_EXTRACTION_TIMEOUT_MSG);
-      timeoutErr.name = "AbortError";
-      throw timeoutErr;
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 /** Flip on when building fault list / recommendations in a later pass */
 const SHOW_EXTENDED_RESULTS = false;
 const BPFO_BAND = { x1: 145, x2: 160, hz: 152 };
@@ -1699,6 +1676,14 @@ export default function Diagnose({
     thermoExtracting ||
     ultrasoundExtracting;
   const isLoading = isAnalyzing || isAnyVisionExtracting;
+
+  /**
+   * SLICE-VS2 — observable, cancellable extraction/consensus runs.
+   * Each run owns a single-flight lock; Cancel aborts the fetch and clears it.
+   */
+  const extractionRun = useAbortableRun();
+  const analysisRun = useAbortableRun();
+  const chartRegionAbortRef = useRef<AbortController | null>(null);
 
   const [measurementLocation, setMeasurementLocation] = useState<string>("Motor DE");
   const [measurementPoint, setMeasurementPoint] = useState("1H");
@@ -3716,6 +3701,13 @@ useEffect(() => {
     setIsAnalyzing(true);
     clearAnalysisTimers();
 
+    // SLICE-VS2 — 60s client deadline + operator cancel for consensus.
+    const consensusSignal = analysisRun.begin("consensus");
+    if (!consensusSignal) {
+      setIsAnalyzing(false);
+      return;
+    }
+
     // Soft progress while waiting on Gemini / consensus pipeline
     ANALYSIS_STEPS.forEach((_, i) => {
       if (i === 0) return;
@@ -3784,16 +3776,24 @@ useEffect(() => {
 
       let res: Response;
       try {
-        res = await fetchWithTimeout(ANALYZE_VIBRATION_API_PATH, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageBase64,
-            componentSpecs,
-            telemetry,
-            mode: "full"
-          })
-        });
+        res = await withDeadline(
+          (signal) =>
+            fetch(ANALYZE_VIBRATION_API_PATH, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              signal,
+              body: JSON.stringify({
+                imageBase64,
+                componentSpecs,
+                telemetry,
+                mode: "full"
+              })
+            }),
+          {
+            timeoutMs: CONSENSUS_TIMEOUT_MS,
+            externalSignal: consensusSignal
+          }
+        );
       } catch (error) {
         const kind = logPipelineFail("frontend-analyze-vibration", startTime, error);
         console.error("❌ [PIPELINE FAIL] Frontend fetch threw:", {
@@ -3889,21 +3889,27 @@ useEffect(() => {
     } catch (err) {
       clearAnalysisTimers();
       setIsAnalyzing(false);
+      // Operator cancel: reset silently, never render an error banner.
+      if (isClientCancelledError(err) || analysisRun.wasCancelled()) {
+        setProgress(0);
+        setStepIdx(0);
+        return;
+      }
       const message =
         err instanceof Error ? err.message : "Failed to run consensus vibration analysis.";
-      const timedOut =
-        /timed out|timeout|abort/i.test(message) ||
-        (err instanceof DOMException && err.name === "AbortError");
+      const timedOut = err instanceof ClientDeadlineError;
       console.error("❌ [PIPELINE FAIL] handleRunAnalysis catch:", {
         kind: classifyPipelineFailure(err),
         ...pipelineErrorFields(err)
       });
       setAnalysisError({
         title: "Consensus Diagnostic Error",
-        message: timedOut ? SPECTRAL_EXTRACTION_TIMEOUT_MSG : message,
-        errorType: "GATEWAY_TIMEOUT"
+        message,
+        errorType: timedOut ? "GATEWAY_TIMEOUT" : "ANALYSIS_ERROR"
       });
-      toast(timedOut ? SPECTRAL_EXTRACTION_TIMEOUT_MSG : message, "error");
+      toast(message, "error");
+    } finally {
+      analysisRun.finish();
     }
   };
 
@@ -3956,6 +3962,9 @@ useEffect(() => {
   /** GPT-4o Vision → locate panels → Canvas crop (falls back to synthetic Recharts on failure). */
   const detectAndCropSpectrumCharts = async (previewUrl: string) => {
     const jobId = ++chartRegionJobRef.current;
+    const controller = new AbortController();
+    chartRegionAbortRef.current?.abort();
+    chartRegionAbortRef.current = controller;
     setChartRegionStatus("detecting");
     setChartRegionError(null);
     setCroppedCharts({});
@@ -3966,7 +3975,10 @@ useEffect(() => {
       if (jobId !== chartRegionJobRef.current) return;
 
       const detection = applyTickDensityRoleCorrection(
-        await requestSpectrumRegionDetection(imageBase64)
+        await requestSpectrumRegionDetection(imageBase64, {
+          signal: controller.signal,
+          timeoutMs: VISION_EXTRACTION_TIMEOUT_MS
+        })
       );
       if (jobId !== chartRegionJobRef.current) return;
 
@@ -3988,6 +4000,14 @@ useEffect(() => {
       }
     } catch (err) {
       if (jobId !== chartRegionJobRef.current) return;
+      // Operator cancel is not a detection failure: leave the UI idle.
+      if (controller.signal.aborted || isClientCancelledError(err)) {
+        setChartRegionStatus("idle");
+        setChartRegionError(null);
+        setCroppedCharts({});
+        setChartRegionDetection(null);
+        return;
+      }
       console.error("[Diagnose] Chart region detection failed:", err);
       setChartRegionStatus("failed");
       setChartRegionError(
@@ -3997,6 +4017,10 @@ useEffect(() => {
       );
       setCroppedCharts({});
       setChartRegionDetection(null);
+    } finally {
+      if (chartRegionAbortRef.current === controller) {
+        chartRegionAbortRef.current = null;
+      }
     }
   };
 
@@ -4058,7 +4082,10 @@ useEffect(() => {
   /** Unified master-vision vibration extract — only from Run Diagnostics spectrum upload. */
   const runVibrationVisionExtraction = async (file: File) => {
     const capturedAssetId = resolveVibrationAssetKey();
-    
+    // Single-flight lock: an in-flight extraction cannot be duplicated.
+    const extractionSignal = extractionRun.begin("vision");
+    if (!extractionSignal) return;
+
     // --- COMPREHENSIVE FORM RESET (Task 2) ---
     setVibrationExtractStatus("extracting");
     setVibrationExtractError(null);
@@ -4082,7 +4109,10 @@ useEffect(() => {
     });
     try {
       logPipelineSend("frontend-extract-vibration", { mode: "master-vision" });
-      const vr: VibrationReportData = await extractVibrationReportFromImage(file);
+      const vr: VibrationReportData = await extractVibrationReportFromImage(file, {
+        signal: extractionSignal,
+        timeoutMs: VISION_EXTRACTION_TIMEOUT_MS
+      });
 
       // --- STALE-EXTRACTION RACE GUARD ---
       if (capturedAssetId && resolveVibrationAssetKey() !== capturedAssetId) {
@@ -4178,6 +4208,13 @@ useEffect(() => {
         flagged.length ? "warning" : "success"
       );
     } catch (err) {
+      // Operator cancel: abort already reset the UI; do not report a failure.
+      if (isClientCancelledError(err) || extractionSignal.aborted) {
+        setVibrationExtractStatus("idle");
+        setVibrationExtractError(null);
+        setVibrationExtractSummary(null);
+        return;
+      }
       // Re-check race on error path as well
       if (capturedAssetId && resolveVibrationAssetKey() !== capturedAssetId) {
         toast("Extraction discarded - asset changed", "warning");
@@ -4190,14 +4227,14 @@ useEffect(() => {
         elapsedSec: pipelineElapsedSec(startTime),
         ...pipelineErrorFields(err)
       });
-      const aborted =
-        (err instanceof DOMException && err.name === "AbortError") ||
-        (err instanceof Error && err.name === "AbortError");
-      const message = aborted
-        ? "Extraction timed out or failed. Please try again."
-        : err instanceof Error
+      // Factual copy: a deadline names the elapsed seconds; it never guesses
+      // at image complexity.
+      const message =
+        err instanceof ClientDeadlineError
           ? err.message
-          : SPECTRAL_EXTRACTION_FAILED_MSG;
+          : err instanceof Error
+            ? err.message
+            : SPECTRAL_EXTRACTION_FAILED_MSG;
       vibrationExtractedRef.current = null;
       vibrationTrendRecordRef.current = null;
       setVibrationExtractSummary(null);
@@ -4205,11 +4242,61 @@ useEffect(() => {
       setVibrationExtractError(message);
       toast(message, "warning");
     } finally {
+      extractionRun.finish();
       // Safety: if status somehow still stuck at extracting (e.g. early return path missed), release it
       // Use a microtask to avoid overwriting the intentional ready/failed/idle just set
       setTimeout(() => {
         setVibrationExtractStatus((prev) => (prev === "extracting" ? "failed" : prev));
       }, 0);
+    }
+  };
+
+  /**
+   * SLICE-VS2 — Cancel during extraction/consensus.
+   * Aborts every in-flight request and fully resets the run state, including
+   * the UI lock, so the next upload/run starts cleanly.
+   */
+  const handleCancelExtraction = () => {
+    chartRegionAbortRef.current?.abort();
+    chartRegionAbortRef.current = null;
+    extractionRun.cancel();
+    analysisRun.cancel();
+    clearAnalysisTimers();
+    setVibrationExtractStatus("idle");
+    setVibrationExtractError(null);
+    setVibrationExtractSummary(null);
+    setVibFlaggedFields([]);
+    vibrationExtractedRef.current = null;
+    vibrationTrendRecordRef.current = null;
+    setChartRegionStatus("idle");
+    setChartRegionError(null);
+    setCroppedCharts({});
+    setChartRegionDetection(null);
+    setIsAnalyzing(false);
+    setProgress(0);
+    setStepIdx(0);
+    toast("Extraction cancelled.", "info");
+  };
+
+  /**
+   * SLICE-VS2 — retry the extraction from the already-uploaded preview after a
+   * client-deadline failure. No re-upload required.
+   */
+  const handleRetryVibrationExtraction = async () => {
+    if (!spectrumUpload?.preview) return;
+    try {
+      const blob = await fetch(spectrumUpload.preview).then((r) => r.blob());
+      const file = new File([blob], spectrumUpload.name || "spectrum.png", {
+        type: blob.type || "image/png"
+      });
+      void runVibrationVisionExtraction(file);
+    } catch (err) {
+      toast(
+        err instanceof Error
+          ? err.message
+          : "Retry failed — re-upload the spectrum image.",
+        "error"
+      );
     }
   };
 
@@ -4626,6 +4713,12 @@ useEffect(() => {
               onToggleSection={toggleVibSection}
               isFanOrPump={isFanOrPump}
               isExtracting={vibrationExtractStatus === "extracting"}
+              extractionStatusLabel={
+                vibrationExtractStatus === "extracting"
+                  ? formatRunStatus("vision", extractionRun.elapsedSec)
+                  : undefined
+              }
+              onCancelExtraction={handleCancelExtraction}
               vibRpm={vibRpm}
               setVibRpm={setVibRpm}
               driveConfig={driveConfig}
@@ -5106,6 +5199,13 @@ useEffect(() => {
                 vibrationExtractSummary={vibrationExtractSummary}
                 currentMessageIndex={currentMessageIndex}
                 AI_LOADING_MESSAGES={AI_LOADING_MESSAGES}
+                extractionStatusLabel={
+                  vibrationExtractStatus === "extracting"
+                    ? formatRunStatus("vision", extractionRun.elapsedSec)
+                    : undefined
+                }
+                onCancelExtraction={handleCancelExtraction}
+                onRetryExtraction={() => void handleRetryVibrationExtraction()}
               />
               </Suspense>
           </div>
@@ -5189,15 +5289,40 @@ useEffect(() => {
               >
                 <span className="absolute inset-0 bg-gradient-to-r from-transparent via-cyan-400/10 to-transparent animate-pulse" />
                 <Loader2 className="h-4 w-4 text-cyan-400 animate-spin shrink-0 relative z-10" />
-                <span className="relative z-10 min-w-0 break-words text-xs sm:text-sm font-semibold tracking-wide text-cyan-400">
-                  {AI_LOADING_MESSAGES[currentMessageIndex]}
+                <span className="relative z-10 min-w-0 flex-1 break-words text-xs sm:text-sm font-semibold tracking-wide text-cyan-400">
+                  {formatRunStatus(
+                    "consensus",
+                    analysisRun.elapsedSec,
+                    AI_LOADING_MESSAGES[currentMessageIndex]
+                  )}
                 </span>
+                <button
+                  type="button"
+                  onClick={handleCancelExtraction}
+                  className="relative z-10 shrink-0 rounded-md border border-red-400/50 bg-red-500/15 px-2.5 py-1 text-[11px] font-bold text-red-200 hover:bg-red-500/25 cursor-pointer"
+                >
+                  Cancel
+                </button>
               </div>
             )}
             {isAnyVisionExtracting && !isAnalyzing && (
               <div className="flex items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-3 py-2.5 text-xs font-bold text-cyan-300">
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Extracting Telemetry Data...
+                <span className="flex-1">
+                  {formatRunStatus(
+                    extractionRun.isRunning ? "vision" : null,
+                    extractionRun.elapsedSec
+                  )}
+                </span>
+                {vibrationExtractStatus === "extracting" && (
+                  <button
+                    type="button"
+                    onClick={handleCancelExtraction}
+                    className="shrink-0 rounded-md border border-red-400/50 bg-red-500/15 px-2.5 py-1 text-[11px] font-bold text-red-200 hover:bg-red-500/25 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                )}
               </div>
             )}
             <button
@@ -5218,7 +5343,9 @@ useEffect(() => {
               {isAnyVisionExtracting ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Extracting Telemetry Data...
+                  {vibrationExtractStatus === "extracting"
+                    ? formatRunStatus("vision", extractionRun.elapsedSec)
+                    : "Extracting Telemetry Data..."}
                 </>
               ) : isAnalyzing ? (
                 <>

@@ -712,10 +712,10 @@ app.post("/api/extract-vibration-image", async (req, res) => {
     console.error("[extract-vibration-image] Unhandled error:", error);
     return res.status(timedOut ? 504 : 503).json({
       error: timedOut
-        ? "AI analysis timed out. The spectrum image may be too complex. Please try a clearer image."
+        ? "Upstream vision provider did not respond within the server timeout. No extraction result was received."
         : error?.message || "Failed to extract vibration data from image.",
       message: timedOut
-        ? "Vision extraction timed out after 60 seconds."
+        ? "Vision extraction did not receive an upstream response within the server timeout. Check the provider status and server logs."
         : "Vision extraction failed. Verify the configured Gemini/OpenAI/Mistral provider keys and server logs."
     });
   }

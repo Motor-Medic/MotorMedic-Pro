@@ -4,6 +4,8 @@
  */
 
 /** Express + client path for GPT-4o chart-panel localization */
+import { withDeadline } from "./vision/clientDeadline";
+
 export const DETECT_SPECTRUM_REGIONS_API_PATH = "/api/detect-spectrum-regions";
 
 export type ChartRegionKind = "twf" | "fft" | "envelope";
@@ -311,23 +313,37 @@ export function peakYPercent(
   return Math.max(4, Math.min(96, top));
 }
 
+export interface SpectrumRegionDetectionOptions {
+  /** Operator-cancel signal (SLICE-VS2). */
+  signal?: AbortSignal;
+  /** Override the 60s client deadline. */
+  timeoutMs?: number;
+}
+
 export async function requestSpectrumRegionDetection(
-  imageBase64: string
+  imageBase64: string,
+  options: SpectrumRegionDetectionOptions = {}
 ): Promise<SpectrumRegionDetection> {
-  const res = await fetch(DETECT_SPECTRUM_REGIONS_API_PATH, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageBase64 })
-  });
+  return withDeadline(
+    async (signal) => {
+      const res = await fetch(DETECT_SPECTRUM_REGIONS_API_PATH, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal,
+        body: JSON.stringify({ imageBase64 })
+      });
 
-  const payload = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(
-      payload?.error ||
-        payload?.message ||
-        `Region detection failed (HTTP ${res.status}).`
-    );
-  }
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          payload?.error ||
+            payload?.message ||
+            `Region detection failed (HTTP ${res.status}).`
+        );
+      }
 
-  return payload as SpectrumRegionDetection;
+      return payload as SpectrumRegionDetection;
+    },
+    { timeoutMs: options.timeoutMs, externalSignal: options.signal }
+  );
 }
