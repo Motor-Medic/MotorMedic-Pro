@@ -61,10 +61,12 @@ import {
 } from "../lib/analysisPersistence";
 import TelemetryProvenanceBadge from "./diagnostics/TelemetryProvenanceBadge";
 import {
-  PROJECTION_LOW_LOAD_CAVEAT,
+  NOT_DETECTED,
+  NOT_MEASURED,
+  NOT_REPORTED,
   PROJECTION_MIN_VALID_LOAD_PERCENT,
+  THERMO_REF_TEMP_MISSING,
   buildThermoChartSeries,
-  formatTemperatureProjection,
   hottestPhaseFromPoint,
   mechanicalKpis,
   netaRepairWindowForStoredClass,
@@ -163,23 +165,30 @@ import {
   extractWaveformTrendPoint,
   hasVibrationTrendCharts,
   type EnvelopingTrendPoint,
-  type VibrationDiagnosticRecord
+  type VibrationDiagnosticRecord,
+  type WaveformTrendPoint
 } from "../lib/vibration/vibrationDiagnosticRecord";
 import {
   VIBRATION_NOT_MEASURED,
   applyVibrationRunningStateFilter,
   latestVibrationRecordFromRows,
-  readStoredVibrationRpm,
   readVibrationOverallAcceleration,
   readVibrationOverallVelocity,
   readVibrationPerAxis,
+  readVibrationRpmProvenance,
   reconcileVibrationVerdict,
   sortVibrationRowsNewestFirst,
   vibrationRowsInScope,
   vibrationSampleState,
   vibrationStoppedSampleLabel
 } from "../lib/vibration/trendSsot";
+import {
+  VIBRATION_RPM_ABSENT_WARNING,
+  vibrationRpmProvenanceLabel,
+  type VibrationRpmReading
+} from "../lib/vibration/rpmProvenance";
 import { resolveBearingFaultFrequencies } from "../lib/vibration/bearingFaultFrequencies";
+import type { BearingFaultFrequenciesHz } from "../lib/vibration/bearingFaultFrequencies";
 import {
   ACCELERATION_DISPLAY_OPTIONS,
   FREQUENCY_DISPLAY_OPTIONS,
@@ -253,6 +262,7 @@ import {
 } from "./KinematicSpecsNotice";
 import {
   SPARSE_TREND_HELPER_TEXT,
+  applySameDateSequenceLabels,
   filterTrendByTimeRange,
   isSparseTrendSeries,
   windowTrendByTimeRange,
@@ -1948,12 +1958,16 @@ function SpectralOrderReadout({
 
 type EnvelopingGeChartPoint = {
   date: string;
+  dateLabel?: string;
   peakGe: number;
+  stoppedLabel?: string | null;
 };
 
 type EnvelopingKurtosisChartPoint = {
   date: string;
+  dateLabel?: string;
   kurtosis: number;
+  stoppedLabel?: string | null;
 };
 
 /** Shared Peak gE body for the inline card and the enlarged modal. */
@@ -1961,12 +1975,14 @@ function EnvelopingGeChartBody({
   data,
   hasAnySeries,
   timeRange,
-  baselinePeakGe
+  baselinePeakGe,
+  isSparse = false
 }: {
   data: EnvelopingGeChartPoint[];
   hasAnySeries: boolean;
   timeRange: TimeRange;
   baselinePeakGe: number | null;
+  isSparse?: boolean;
 }) {
   if (data.length === 0) {
     return (
@@ -1992,45 +2008,61 @@ function EnvelopingGeChartBody({
   }
 
   return (
-    <ResponsiveContainer
-      width="100%"
-      height="100%"
-      data-testid="chart-body-envelopingGe"
-    >
-      <LineChart data={data} margin={chartMargin}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-        <YAxis stroke="#eab308" tick={{ fontSize: 11 }} />
-        <Tooltip
-          contentStyle={tooltipStyle}
-          allowEscapeViewBox={{ x: true, y: true }}
-          wrapperStyle={{ zIndex: 20 }}
-        />
-        {baselinePeakGe != null && baselinePeakGe > 0 && (
-          <ReferenceLine
-            y={baselinePeakGe}
-            stroke="#f59e0b"
-            strokeDasharray="6 4"
-            label={{
-              value: `Baseline ${baselinePeakGe.toFixed(2)} gE`,
-              fill: "#f59e0b",
-              fontSize: 10,
-              position: "insideTopRight"
-            }}
-          />
-        )}
-        <Line
-          type="monotone"
-          dataKey="peakGe"
-          stroke="#eab308"
-          strokeWidth={2.5}
-          name="Peak gE"
-          dot={{ r: 4 }}
-          connectNulls={false}
-          isAnimationActive={false}
-        />
-      </LineChart>
-    </ResponsiveContainer>
+    <div className="h-full flex flex-col" data-testid="chart-body-envelopingGe">
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={chartMargin}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+            <XAxis
+              dataKey="dateLabel"
+              stroke="#94a3b8"
+              tick={{ fontSize: 11 }}
+            />
+            <YAxis stroke="#eab308" tick={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              allowEscapeViewBox={{ x: true, y: true }}
+              wrapperStyle={{ zIndex: 20 }}
+              labelFormatter={(_label, payload) => {
+                const point = payload?.[0]?.payload as
+                  | EnvelopingGeChartPoint
+                  | undefined;
+                if (!point) return _label;
+                return point.stoppedLabel
+                  ? `${point.dateLabel ?? point.date} \u00b7 ${point.stoppedLabel}`
+                  : point.dateLabel ?? _label;
+              }}
+            />
+            {baselinePeakGe != null && baselinePeakGe > 0 && (
+              <ReferenceLine
+                y={baselinePeakGe}
+                stroke="#f59e0b"
+                strokeDasharray="6 4"
+                label={{
+                  value: `Baseline ${baselinePeakGe.toFixed(2)} gE`,
+                  fill: "#f59e0b",
+                  fontSize: 10,
+                  position: "insideTopRight"
+                }}
+              />
+            )}
+            <Line
+              type="monotone"
+              dataKey="peakGe"
+              stroke="#eab308"
+              strokeWidth={2.5}
+              name="Peak gE"
+              dot={{ r: 4 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {isSparse && (
+        <p className="text-xs text-amber-300 pt-1">{SPARSE_TREND_HELPER_TEXT}</p>
+      )}
+    </div>
   );
 }
 
@@ -2039,12 +2071,14 @@ function EnvelopingKurtosisChartBody({
   data,
   hasAnySeries,
   timeRange,
-  baselineKurtosis
+  baselineKurtosis,
+  isSparse = false
 }: {
   data: EnvelopingKurtosisChartPoint[];
   hasAnySeries: boolean;
   timeRange: TimeRange;
   baselineKurtosis: number | null;
+  isSparse?: boolean;
 }) {
   if (data.length === 0) {
     return (
@@ -2062,47 +2096,163 @@ function EnvelopingKurtosisChartBody({
   }
 
   return (
-    <ResponsiveContainer
-      width="100%"
-      height="100%"
+    <div
+      className="h-full flex flex-col"
       data-testid="chart-body-envelopingKurtosis"
     >
-      <LineChart data={data} margin={chartMargin}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-        <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-        <YAxis stroke="#22d3ee" tick={{ fontSize: 11 }} />
-        <Tooltip
-          contentStyle={tooltipStyle}
-          allowEscapeViewBox={{ x: true, y: true }}
-          wrapperStyle={{ zIndex: 20 }}
-        />
-        {baselineKurtosis != null && baselineKurtosis > 0 && (
-          <ReferenceLine
-            y={baselineKurtosis}
-            stroke="#22d3ee"
-            strokeDasharray="6 4"
-            label={{
-              value: "Baseline",
-              fill: "#22d3ee",
-              fontSize: 10,
-              position: "insideTopRight"
-            }}
-          />
-        )}
-        <Line
-          type="monotone"
-          dataKey="kurtosis"
-          stroke="#22d3ee"
-          strokeWidth={2.5}
-          name="Kurtosis"
-          dot={{ r: 4 }}
-          connectNulls={false}
-          isAnimationActive={false}
-        />
-      </LineChart>
-    </ResponsiveContainer>
+      <div className="flex-1 min-h-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={chartMargin}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+            <XAxis
+              dataKey="dateLabel"
+              stroke="#94a3b8"
+              tick={{ fontSize: 11 }}
+            />
+            <YAxis stroke="#22d3ee" tick={{ fontSize: 11 }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              allowEscapeViewBox={{ x: true, y: true }}
+              wrapperStyle={{ zIndex: 20 }}
+              labelFormatter={(_label, payload) => {
+                const point = payload?.[0]?.payload as
+                  | EnvelopingKurtosisChartPoint
+                  | undefined;
+                if (!point) return _label;
+                return point.stoppedLabel
+                  ? `${point.dateLabel ?? point.date} \u00b7 ${point.stoppedLabel}`
+                  : point.dateLabel ?? _label;
+              }}
+            />
+            {baselineKurtosis != null && baselineKurtosis > 0 && (
+              <ReferenceLine
+                y={baselineKurtosis}
+                stroke="#22d3ee"
+                strokeDasharray="6 4"
+                label={{
+                  value: "Baseline",
+                  fill: "#22d3ee",
+                  fontSize: 10,
+                  position: "insideTopRight"
+                }}
+              />
+            )}
+            <Line
+              type="monotone"
+              dataKey="kurtosis"
+              stroke="#22d3ee"
+              strokeWidth={2.5}
+              name="Kurtosis"
+              dot={{ r: 4 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {isSparse && (
+        <p className="text-xs text-amber-300 pt-1">{SPARSE_TREND_HELPER_TEXT}</p>
+      )}
+    </div>
   );
 }
+
+const ENVELOPING_UNIT_PHYSICS_NOTE =
+  "Envelope amplitudes stay in stored gE / gSE (and acceleration in g). The g and Hz display selectors never convert them: gE to velocity/acceleration is frequency-dependent and would need the demodulation band, not just stored RPM.";
+
+const ENVELOPING_ORDER_OVERLAY_NOTE =
+  "Expected bearing defect orders computed from stored bearing geometry and a gating-quality RPM.";
+
+export const ENVELOPING_BEARING_DORMANT_NOTE =
+  "Bearing geometry/RPM not configured \u2014 envelope trends shown without defect-frequency overlay.";
+
+/** Frequency-axis envelope order overlay (BPFO/BPFI/BSF/FTF reference lines). */
+function EnvelopeOrderOverlayChart({
+  data,
+  frequencies
+}: {
+  data: Array<{ frequency: number; amplitude: number | null; label: string }>;
+  frequencies: BearingFaultFrequenciesHz;
+}) {
+  const lines = [
+    { key: "BPFO", hz: frequencies.bpfo, color: "#f87171" },
+    { key: "BPFI", hz: frequencies.bpfi, color: "#c084fc" },
+    { key: "BSF", hz: frequencies.bsf, color: "#fb923c" },
+    { key: "FTF", hz: frequencies.ftf, color: "#22d3ee" }
+  ].filter((line) => Number.isFinite(line.hz) && line.hz > 0);
+
+  const measuredMax = Math.max(
+    0,
+    ...data.map((point) => (Number.isFinite(point.frequency) ? point.frequency : 0))
+  );
+  const expectedMax = Math.max(0, ...lines.map((line) => line.hz));
+  const xMax = Math.max(measuredMax, expectedMax) * 1.1 || 1;
+
+  return (
+    <div data-testid="enveloping-order-overlay">
+      <div className="flex flex-wrap gap-2 mb-2">
+        {lines.map((line) => (
+          <span
+            key={line.key}
+            data-testid={`enveloping-order-${line.key}`}
+            className="rounded-full border px-2 py-0.5 text-[10px] font-mono"
+            style={{ borderColor: line.color, color: line.color }}
+          >
+            {line.key} {line.hz.toFixed(2)} Hz
+          </span>
+        ))}
+      </div>
+      <div className="h-[300px] bg-slate-950 rounded-lg border border-white/10 p-2">
+        <ResponsiveContainer width="100%" height="100%">
+          <ComposedChart data={data} margin={{ top: 12, right: 16, bottom: 28, left: 48 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+            <XAxis
+              dataKey="frequency"
+              type="number"
+              domain={[0, xMax]}
+              stroke="#94a3b8"
+              tick={{ fontSize: 10 }}
+              label={{
+                value: "Frequency (Hz)",
+                position: "insideBottom",
+                offset: -12,
+                fill: "#94a3b8",
+                fontSize: 10
+              }}
+            />
+            <YAxis stroke="#f59e0b" tick={{ fontSize: 10 }} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              allowEscapeViewBox={{ x: true, y: true }}
+              wrapperStyle={{ zIndex: 20 }}
+            />
+            {lines.map((line) => (
+              <ReferenceLine
+                key={line.key}
+                x={line.hz}
+                stroke={line.color}
+                strokeDasharray="4 3"
+                label={{
+                  value: line.key,
+                  fill: line.color,
+                  fontSize: 10,
+                  position: "insideTop"
+                }}
+              />
+            ))}
+            <Bar
+              dataKey="amplitude"
+              fill="#f59e0b"
+              name="Stored envelope amplitude"
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
 
 /**
  * Dark-styled enlarge dialog. Focus is trapped while open, body scroll is
@@ -2337,14 +2487,19 @@ function toSpectralHarmonicInputs(
   // Caller passes newest-first SSOT rows; reverse to chronological for writing.
   return [...analyses].reverse().map((analysis) => {
     const rec = extractVibrationRecordFromAnalysis(analysis);
+    const rpmReading = readVibrationRpmProvenance(analysis);
     return {
       timestamp: rec?.timestamp || analysis.timestamp,
       /**
        * STORED running speed for THIS sample only. We never fall back to the
        * Equipment-DB rating here: an unmeasured RPM must not fabricate a 1X
        * frequency or a re-extracted bin amplitude (SLICE-VS4).
+       *
+       * SLICE-VS5: the number travels with its provenance; a capture-default /
+       * unrecorded source is not gating-quality downstream.
        */
-      rpm: readStoredVibrationRpm(analysis),
+      rpm: rpmReading.rpm,
+      rpmSource: rpmReading.source,
       peaks: rec?.spectral || [],
       overall:
         rec?.broadband?.overallVelocity ||
@@ -3357,6 +3512,16 @@ export default function TrendAnalyzer({
     ? null
     : spectralTrendDisplayData[spectralTrendDisplayData.length - 1] ?? null;
 
+  /**
+   * SLICE-VS5 — provenance of the running speed on the latest in-window
+   * spectral sample. A capture-default / untagged speed is surfaced wherever
+   * the gate is explained; it never clears the order gate.
+   */
+  const spectralLatestRpmReading = useMemo(
+    () => readVibrationRpmProvenance(spectralScopeRows[0] ?? null),
+    [spectralScopeRows]
+  );
+
   const vibExtractedEnvelopeChart = useMemo(() => {
     if (!latestVibrationRecord?.enveloping?.length) return [];
     const defaultLabels = ["BPFO", "BPFI", "BSF", "FTF"];
@@ -3371,7 +3536,10 @@ export default function TrendAnalyzer({
   const envelopingTrendSeries = useMemo(() => {
     const rows: EnvelopingTrendPoint[] = [];
     for (const analysis of [...vibAnalyses].reverse()) {
-      const point = extractEnvelopingTrendPoint(analysis);
+      const point = extractEnvelopingTrendPoint(
+        analysis,
+        vibrationStoppedSampleLabel(analysis)
+      );
       if (!point) continue;
       rows.push(point);
     }
@@ -3380,15 +3548,39 @@ export default function TrendAnalyzer({
 
   // Charts and the Enveloping History table share the same windowed analyses as
   // broadband and spectral — no second date predicate, no drift (Slice-H lesson).
+  // SLICE-VS5: same trendSsot contract as Spectral — window scope, running-state,
+  // deterministic newest-first sort, then deterministic same-date labels.
   const envelopingTrendWindow = useMemo(() => {
     const rows: EnvelopingTrendPoint[] = [];
     for (const analysis of [...windowedVibAnalyses].reverse()) {
-      const point = extractEnvelopingTrendPoint(analysis);
+      const point = extractEnvelopingTrendPoint(
+        analysis,
+        vibrationStoppedSampleLabel(analysis)
+      );
       if (!point) continue;
       rows.push(point);
     }
-    return rows;
+    return applySameDateSequenceLabels(rows);
   }, [windowedVibAnalyses]);
+
+  const envelopingHasStoppedSamples = useMemo(
+    () => envelopingTrendWindow.some((point) => point.stoppedLabel != null),
+    [envelopingTrendWindow]
+  );
+
+  const envelopingTrendIsSparse = useMemo(
+    () => isSparseTrendSeries(envelopingTrendWindow),
+    [envelopingTrendWindow]
+  );
+
+  const envelopingWindowEmpty =
+    envelopingTrendSeries.length > 0 && envelopingTrendWindow.length === 0;
+
+  const envelopingWindowEmptyNote = envelopingWindowEmpty
+    ? runningOnly
+      ? "No running-state enveloping samples in this range \u2014 turn off Running State Only to include stopped samples."
+      : "No enveloping readings in this time range."
+    : null;
 
   const envelopingGeChartData = useMemo(
     () =>
@@ -3396,10 +3588,12 @@ export default function TrendAnalyzer({
         .filter((p) => p.peakGe != null && p.peakGe > 0)
         .map((p) => ({
           date: p.date,
+          dateLabel: p.dateLabel,
           peakGe: p.peakGe as number,
           analysisId: p.analysisId,
           fault: p.primaryFault,
-          timestamp: p.timestamp
+          timestamp: p.timestamp,
+          stoppedLabel: p.stoppedLabel
         })),
     [envelopingTrendWindow]
   );
@@ -3410,35 +3604,63 @@ export default function TrendAnalyzer({
         .filter((p) => p.kurtosis != null && p.kurtosis > 0)
         .map((p) => ({
           date: p.date,
+          dateLabel: p.dateLabel,
           kurtosis: p.kurtosis as number,
           analysisId: p.analysisId,
-          fault: p.primaryFault
+          fault: p.primaryFault,
+          stoppedLabel: p.stoppedLabel
         })),
     [envelopingTrendWindow]
   );
 
+  /**
+   * SLICE-VS5 — source-aware running speed for bearing kinematics.
+   *
+   * A sample speed is used only when it is measured/configured. Otherwise the
+   * Equipment-DB nameplate (configured) may stand in; a capture default or an
+   * untagged speed never does. If neither exists the defect overlay is dormant.
+   */
+  const bearingRpmReading: VibrationRpmReading = useMemo(() => {
+    const stored = readVibrationRpmProvenance(latestVibrationRow);
+    if (stored.gatingQuality) return stored;
+    if (machineSpecs.rpm != null && machineSpecs.rpm > 0) {
+      return {
+        rpm: machineSpecs.rpm,
+        source: "configured",
+        rawSource: "equipment-db",
+        gatingQuality: true,
+        warning: null
+      };
+    }
+    return stored;
+  }, [latestVibrationRow, machineSpecs.rpm]);
+
+  const bearingGeometryConfigured =
+    machineSpecs.bearing.trim().length > 0 &&
+    machineSpecs.bearing !== "Not set";
+
   const calculatedBearingFaults = useMemo(() => {
+    if (!bearingGeometryConfigured) return null;
+    if (!bearingRpmReading.gatingQuality || bearingRpmReading.rpm == null) {
+      return null;
+    }
     const kin = (selectedComp?.kinematics || {}) as Record<string, unknown>;
-    const rpm =
-      latestVibrationRecord?.rpm ||
-      latestVibrationRecord?.context?.motorSpeedRPM ||
-      machineSpecs.rpm;
     return resolveBearingFaultFrequencies({
-      bearingLabel: machineSpecs.bearing !== "Not set" ? machineSpecs.bearing : null,
-      rpm,
+      bearingLabel: machineSpecs.bearing,
+      rpm: bearingRpmReading.rpm,
       kinematics: kin
     });
   }, [
     selectedComp?.kinematics,
-    latestVibrationRecord?.rpm,
-    latestVibrationRecord?.context?.motorSpeedRPM,
-    machineSpecs.rpm,
+    bearingGeometryConfigured,
+    bearingRpmReading,
     machineSpecs.bearing
   ]);
 
+  /** Latest IN-WINDOW enveloping point — never an out-of-window/raw pick. */
   const latestEnvelopingPoint =
-    envelopingTrendSeries.length > 0
-      ? envelopingTrendSeries[envelopingTrendSeries.length - 1]
+    envelopingTrendWindow.length > 0
+      ? envelopingTrendWindow[envelopingTrendWindow.length - 1]
       : null;
 
   const envelopeBaselineCompare = useMemo(() => {
@@ -3515,13 +3737,19 @@ export default function TrendAnalyzer({
 
   // Waveform charts share the single windowed analyses array (Slice N intent):
   // no second date predicate, so 7D/30D/90D/1Y matches every other tab.
+  // SLICE-VS6: same trendSsot contract as Spectral/Enveloping — window scope,
+  // running-state labels, deterministic newest-first sort, then deterministic
+  // same-date labels. The raw latest record stays snapshot-only (see above).
   const waveformTrendSeries = useMemo(() => {
-    const rows = [];
+    const rows: WaveformTrendPoint[] = [];
     for (const analysis of [...windowedVibAnalyses].reverse()) {
-      const point = extractWaveformTrendPoint(analysis);
+      const point = extractWaveformTrendPoint(
+        analysis,
+        vibrationStoppedSampleLabel(analysis)
+      );
       if (point) rows.push(point);
     }
-    return rows;
+    return applySameDateSequenceLabels(rows);
   }, [windowedVibAnalyses]);
 
   const latestWaveformAnalysisMetrics = useMemo(() => {
@@ -3530,11 +3758,15 @@ export default function TrendAnalyzer({
       waveformTrendSeriesAll.length > 0
         ? waveformTrendSeriesAll[waveformTrendSeriesAll.length - 1]
         : null;
+    // A 0 peak/crest is the normalizer's "not measured" placeholder, not a
+    // measurement. Keep it null so the snapshot cards render an em dash.
+    const positiveOrNull = (value: number | null | undefined) =>
+      value != null && Number.isFinite(value) && value > 0 ? value : null;
     const peakToPeak =
-      fromRecord?.peakToPeak ?? fromTrend?.peakToPeak ?? null;
+      positiveOrNull(fromRecord?.peakToPeak) ?? fromTrend?.peakToPeak ?? null;
     const crestFactor =
-      fromRecord?.crestFactor ??
-      latestWaveformRecord?.waveformMetrics?.crestFactor ??
+      positiveOrNull(fromRecord?.crestFactor) ??
+      positiveOrNull(latestWaveformRecord?.waveformMetrics?.crestFactor) ??
       fromTrend?.crestFactor ??
       null;
     const impactCount =
@@ -3573,6 +3805,27 @@ export default function TrendAnalyzer({
     waveformTrendSeriesAll,
     machineSpecs.rpm
   ]);
+
+  /**
+   * SLICE-VS6 — trend-window honesty, mirroring Spectral/Enveloping:
+   * empty-window note, stopped-sample note (OFF only), and latest-in-window.
+   * The snapshot cards above deliberately stay on the raw latest record.
+   */
+  const waveformWindowEmpty =
+    waveformTrendSeriesAll.length > 0 && waveformTrendSeries.length === 0;
+  const waveformWindowEmptyNote = waveformWindowEmpty
+    ? runningOnly
+      ? "No running-state waveform samples in this range \u2014 turn off Running State Only to include stopped samples."
+      : "No waveform readings in this time range."
+    : null;
+  const waveformHasStoppedSamples = useMemo(
+    () => waveformTrendSeries.some((point) => point.stoppedLabel != null),
+    [waveformTrendSeries]
+  );
+  const latestWaveformTrendPoint =
+    waveformTrendSeries.length > 0
+      ? waveformTrendSeries[waveformTrendSeries.length - 1]
+      : null;
 
   const waveformRpm =
     latestWaveformRecord?.rpm ||
@@ -4028,9 +4281,12 @@ export default function TrendAnalyzer({
     thermoStoredUnit
   );
   /**
-   * Display-only projection: convert absolute temperatures affinely and ΔT /
-   * rate fields by scale only. Equal units return the stored value untouched,
-   * so the default (no preference) can never silently convert real data.
+   * Display-only projection. SLICE-VS7 unit isolation: only MEASURED absolute
+   * temperatures convert affinely and ΔT / rates convert by scale. Reference
+   * temperatures (`ambientReferenceTemp`, `reflectedApparentTemp`) and the
+   * dimensionless `emissivity` are intentionally left in their stored units —
+   * they never enter the °C/°F conversion path. Concentration fields (ppm,
+   * e.g. H2) likewise have no route through this function.
    */
   const thermoDisplaySeries = useMemo<
     (ThermoChartPoint & { skinAmbientDelta: number | null })[]
@@ -4053,9 +4309,14 @@ export default function TrendAnalyzer({
             ) / 10;
     return thermoChartSeries.map((point) => {
       const from = point.tempUnit ?? thermoStoredUnit;
-      const projected: ThermoChartPoint & {
-        skinAmbientDelta: number | null;
-      } = {
+      // Reference temp stays raw, so subtract in the stored unit first and
+      // convert only the resulting difference by scale.
+      const rawSkinAmbientDelta = skinAmbientDelta({
+        refractorySkinTemp: point.refractorySkinTemp,
+        skinTemp: point.skinTemp,
+        ambientReferenceTemp: point.ambientReferenceTemp
+      });
+      return {
         ...point,
         hotspot: absolute(point.hotspot, from),
         reference: absolute(point.reference, from),
@@ -4064,77 +4325,50 @@ export default function TrendAnalyzer({
         phaseB: absolute(point.phaseB, from),
         phaseC: absolute(point.phaseC, from),
         i2rDelta: difference(point.i2rDelta, from),
-        i2rNormalizedDelta: difference(point.i2rNormalizedDelta, from),
         scaleMin: absolute(point.scaleMin, from),
         scaleMax: absolute(point.scaleMax, from),
         isothermThreshold: absolute(point.isothermThreshold, from),
         boxAverage: absolute(point.boxAverage, from),
-        reflectedApparentTemp: absolute(point.reflectedApparentTemp, from),
         deBearing: absolute(point.deBearing, from),
         odeBearing: absolute(point.odeBearing, from),
         skinTemp: absolute(point.skinTemp, from),
         refractorySkinTemp: absolute(point.refractorySkinTemp, from),
-        ambientReferenceTemp: absolute(point.ambientReferenceTemp, from),
         maxAllowable: absolute(point.maxAllowable, from),
         thermalGradient: difference(point.thermalGradient, from),
         thermalDissipationRate: difference(point.thermalDissipationRate, from),
-        // Derived only from stored columns already projected above: the
-        // subtraction of two absolute temps converts by scale only.
-        skinAmbientDelta: null
+        // Reference values and ε deliberately not projected above.
+        skinAmbientDelta:
+          rawSkinAmbientDelta == null
+            ? null
+            : difference(rawSkinAmbientDelta, from)
       };
-      projected.skinAmbientDelta = skinAmbientDelta({
-        refractorySkinTemp: projected.refractorySkinTemp,
-        skinTemp: projected.skinTemp,
-        ambientReferenceTemp: projected.ambientReferenceTemp
-      });
-      return projected;
     });
   }, [thermoChartSeries, thermoStoredUnit, thermoDisplayUnit]);
   const latestThermoChart: ThermoChartPoint | null =
     thermoDisplaySeries.length > 0
       ? thermoDisplaySeries[thermoDisplaySeries.length - 1]
       : null;
-  /**
-   * Raw (unprojected) latest scan: the pill converts absolute ambient from the
-   * stored unit, so it must not read the display-projected point.
-   */
+  /** Raw (unprojected) latest scan for stored-unit reference values. */
   const latestThermoRaw: ThermoChartPoint | null =
     thermoChartSeries.length > 0
       ? thermoChartSeries[thermoChartSeries.length - 1]
       : null;
+  /** Stored unit of the latest run — the basis for every ΔT/rate conversion. */
+  const thermoReferenceUnit = latestThermoRaw?.tempUnit ?? thermoStoredUnit;
   const thermoEmissivityPill = thermoEmissivityAmbientPill(
     latestThermoRaw,
-    thermoDisplayUnit,
     thermoStoredUnit
   );
+  /** Reference temps stay in stored units — surface them as a note, never on the axis. */
+  const thermoAmbientStoredNote =
+    latestThermoRaw?.ambientReferenceTemp != null
+      ? `Ambient reference: ${
+          Math.round(latestThermoRaw.ambientReferenceTemp * 10) / 10
+        }${latestThermoRaw.tempUnit ?? thermoStoredUnit} (stored units) — not plotted on the converted axis.`
+      : null;
   const netaRepairReference = netaRepairWindowForStoredClass(
     latestThermoChart?.severityClass ?? null
   );
-  /**
-   * Scale-aware I²R projection. Read from the RAW latest scan so a unit switch
-   * cannot round a sub-0.1 projection to 0.0 before formatting; convert by
-   * scale only (ΔT has no zero point) and let the adaptive formatter choose
-   * precision. Below the 40% validity floor the figure is suppressed.
-   */
-  const projectionStoredValue =
-    latestThermoRaw?.i2rNormalizedDelta ?? latestThermoRaw?.i2rDelta ?? null;
-  const projectionStoredUnit = latestThermoRaw?.tempUnit ?? thermoStoredUnit;
-  const projectionDisplayValue =
-    projectionStoredValue == null
-      ? null
-      : convertTemperatureDelta(
-          projectionStoredValue,
-          projectionStoredUnit,
-          thermoDisplayUnit
-        );
-  const projectionLoadPercent = latestThermoChart?.loadPercent ?? null;
-  const projectionBelowValidity =
-    projectionLoadPercent != null &&
-    projectionLoadPercent < PROJECTION_MIN_VALID_LOAD_PERCENT;
-  const projectionText =
-    projectionStoredValue == null || projectionBelowValidity
-      ? null
-      : formatTemperatureProjection(projectionDisplayValue, thermoDisplayUnit);
   const thermoAxisPlan = useMemo(
     () => planThermoTrendAxis(thermoChartSeries),
     [thermoChartSeries]
@@ -4151,25 +4385,23 @@ export default function TrendAnalyzer({
     "phaseB",
     "phaseC",
     "loadPercent",
-    "i2rDelta",
-    "i2rNormalizedDelta"
+    "i2rDelta"
   ]);
   const phaseHottest = hottestPhaseFromPoint(latestThermoChart);
   const phaseNfpaBadge = nfpaClassBadge(latestThermoChart);
   /**
-   * The left/right Radiometric axes are type-specific: left carries absolute
-   * temperatures only (already display-projected through the shared temp-unit
-   * resolver), right carries dimensionless ε. Render each axis only when a
-   * series of its own type exists, so an empty labelled axis never appears.
+   * The left/right Radiometric axes are type-specific: left carries measured
+   * absolute temperatures only (already display-projected), right carries
+   * dimensionless ε. Reference temps stay off the converted axis.
    */
   const hasRadiometricTempSeries = seriesHasAny(thermoDisplaySeries, [
     "scaleMin",
     "scaleMax",
     "isothermThreshold",
-    "boxAverage",
-    "reflectedApparentTemp"
+    "boxAverage"
   ]);
   const hasEmissivitySeries = seriesHasAny(thermoDisplaySeries, ["emissivity"]);
+  /** T_ref presence drives the radiometric gate; absence is stated verbatim. */
   const hasReflectedTempSeries = seriesHasAny(thermoDisplaySeries, [
     "reflectedApparentTemp"
   ]);
@@ -4187,9 +4419,40 @@ export default function TrendAnalyzer({
     "thermalGradient",
     "thermalDissipationRate"
   ]);
-  const mechKpis = mechanicalKpis(thermoDisplaySeries);
+  /** Raw fit: differences/rates are converted by scale for display below. */
+  const mechKpis = mechanicalKpis(thermoChartSeries);
+  const mechDeltaAmbientDE =
+    mechKpis.deDeltaAmbient == null
+      ? null
+      : Math.round(
+          convertTemperatureDelta(
+            mechKpis.deDeltaAmbient,
+            thermoReferenceUnit,
+            thermoDisplayUnit
+          ) * 10
+        ) / 10;
+  const mechDeltaAmbientODE =
+    mechKpis.odeDeltaAmbient == null
+      ? null
+      : Math.round(
+          convertTemperatureDelta(
+            mechKpis.odeDeltaAmbient,
+            thermoReferenceUnit,
+            thermoDisplayUnit
+          ) * 10
+        ) / 10;
+  const mechCreepRate =
+    mechKpis.creepRatePerDay == null
+      ? null
+      : Math.round(
+          convertTemperatureDelta(
+            mechKpis.creepRatePerDay,
+            thermoReferenceUnit,
+            thermoDisplayUnit
+          ) * 100
+        ) / 100;
   /** A safety threshold may only render when the run actually stored one. */
-  const hasStoredMaxAllowable = mechKpis.latest?.maxAllowable != null;
+  const hasStoredMaxAllowable = latestThermoChart?.maxAllowable != null;
   const hasSkinAmbientDeltaSeries = thermoDisplaySeries.some(
     (point) => point.skinAmbientDelta != null
   );
@@ -4833,23 +5096,33 @@ export default function TrendAnalyzer({
               ))}
             </select>
             {trendTech === "thermography" && (
-              <select
-                value={thermoDisplayUnit}
-                onChange={(e) =>
-                  void updateDisplayUnits({
-                    temperature: e.target.value as DisplayUnits["temperature"]
-                  })
-                }
-                aria-label="Temperature display unit"
-                title="Temperature display unit"
-                className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
-              >
-                {TEMPERATURE_DISPLAY_OPTIONS.map((unit) => (
-                  <option key={unit} value={unit}>
-                    {unit}
-                  </option>
-                ))}
-              </select>
+              <>
+                <select
+                  value={thermoDisplayUnit}
+                  onChange={(e) =>
+                    void updateDisplayUnits({
+                      temperature: e.target.value as DisplayUnits["temperature"]
+                    })
+                  }
+                  aria-label="Temperature display unit"
+                  title="Temperature display unit"
+                  className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+                >
+                  {TEMPERATURE_DISPLAY_OPTIONS.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+                <p
+                  data-testid="thermo-unit-isolation-note"
+                  className="text-[10px] text-slate-500 max-w-xs leading-snug"
+                >
+                  Applies to measured absolute temperatures only. Reference
+                  temps (ambient / T_ref) and ε stay in stored units;
+                  concentration fields (ppm) never convert.
+                </p>
+              </>
             )}
             <button
               type="button"
@@ -5331,6 +5604,15 @@ export default function TrendAnalyzer({
                 </div>
               )}
 
+              {spectralLatestRpmReading.warning && (
+                <p
+                  data-testid="spectral-rpm-provenance-note"
+                  className="text-xs text-amber-300 mb-3"
+                >
+                  {spectralLatestRpmReading.warning}
+                </p>
+              )}
+
               {spectralWindowEmptyNote && (
                 <p
                   data-testid="spectral-window-empty-note"
@@ -5683,6 +5965,23 @@ export default function TrendAnalyzer({
                 </div>
               ) : (
                 <>
+                  {envelopingWindowEmptyNote && (
+                    <p
+                      data-testid="enveloping-window-empty-note"
+                      className="text-xs text-amber-300 mb-3"
+                    >
+                      {envelopingWindowEmptyNote}
+                    </p>
+                  )}
+                  {!runningOnly && envelopingHasStoppedSamples && (
+                    <p
+                      data-testid="enveloping-stopped-series-note"
+                      className="text-xs text-amber-300 mb-3"
+                    >
+                      Includes stopped samples (load \u2264 80%) \u2014 labeled
+                      &ldquo;stopped sample&rdquo; in the tooltip and history.
+                    </p>
+                  )}
                   {envelopeBaselineCompare && (
                     <div className="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                       <div>
@@ -5727,9 +6026,41 @@ export default function TrendAnalyzer({
                         </h3>
                         <p className="text-xs text-slate-500">
                           {calculatedBearingFaults
-                            ? `${machineSpecs.bearing} @ ${calculatedBearingFaults.rpm} RPM · 1X = ${calculatedBearingFaults.shaftHz.toFixed(2)} Hz · source ${calculatedBearingFaults.geometry.source}`
+                            ? `${machineSpecs.bearing} @ ${calculatedBearingFaults.rpm} RPM · 1X = ${calculatedBearingFaults.shaftHz.toFixed(2)} Hz · geometry ${calculatedBearingFaults.geometry.source} · ${vibrationRpmProvenanceLabel(bearingRpmReading.source)}`
                             : "Configure DE bearing part # and RPM on the asset to calculate BPFO / BPFI / BSF / FTF"}
                         </p>
+                        {!calculatedBearingFaults && (
+                          <p
+                            data-testid="enveloping-bearing-dormant-note"
+                            className="text-xs text-amber-300 mt-1"
+                          >
+                            {ENVELOPING_BEARING_DORMANT_NOTE}
+                            {bearingRpmReading.warning
+                              ? ` ${bearingRpmReading.warning}.`
+                              : ""}
+                          </p>
+                        )}
+                        {calculatedBearingFaults && bearingRpmReading.warning && (
+                          <p
+                            data-testid="enveloping-rpm-provenance"
+                            className="text-xs text-amber-300 mt-1"
+                          >
+                            {bearingRpmReading.warning}
+                          </p>
+                        )}
+                        {!calculatedBearingFaults &&
+                          !bearingRpmReading.warning &&
+                          (bearingRpmReading.source === "absent" ||
+                            !bearingGeometryConfigured) && (
+                            <p
+                              data-testid="enveloping-rpm-provenance"
+                              className="text-xs text-amber-300 mt-1"
+                            >
+                              {bearingGeometryConfigured
+                                ? VIBRATION_RPM_ABSENT_WARNING
+                                : "Bearing geometry not configured"}
+                            </p>
+                          )}
                       </div>
                     </div>
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -5830,6 +6161,7 @@ export default function TrendAnalyzer({
                           hasAnySeries={envelopingTrendSeries.length > 0}
                           timeRange={timeRange}
                           baselinePeakGe={envelopeBaseline?.peakGe ?? null}
+                          isSparse={envelopingTrendIsSparse}
                         />
                       </div>
                     </div>
@@ -5853,6 +6185,7 @@ export default function TrendAnalyzer({
                           hasAnySeries={envelopingTrendSeries.length > 0}
                           timeRange={timeRange}
                           baselineKurtosis={envelopeBaseline?.kurtosis ?? null}
+                          isSparse={envelopingTrendIsSparse}
                         />
                       </div>
                     </div>
@@ -5863,7 +6196,7 @@ export default function TrendAnalyzer({
                       <h3 className="text-base font-bold text-white mb-1">
                         Measured Bearing Band Amplitudes
                       </h3>
-                      <p className="text-xs text-slate-500 mb-4">
+                      <p className="text-xs text-slate-500 mb-2">
                         From latest diagnostic enveloping peaks
                         {latestVibrationRecord?.extractionConfidence != null
                           ? ` · confidence ${latestVibrationRecord.extractionConfidence}%`
@@ -5871,6 +6204,14 @@ export default function TrendAnalyzer({
                         {calculatedBearingFaults
                           ? ` · match vs calc BPFO ${calculatedBearingFaults.bpfo.toFixed(1)} Hz / BPFI ${calculatedBearingFaults.bpfi.toFixed(1)} Hz`
                           : ""}
+                      </p>
+                      <p
+                        data-testid="enveloping-envelope-provenance"
+                        className="text-xs text-slate-500 mb-3"
+                      >
+                        Stored envelope peaks as extracted at collection — not
+                        re-derived from RPM, and not converted for the g / Hz
+                        display selectors.
                       </p>
                       <div className="h-[320px] bg-slate-950 rounded-lg border border-white/10 p-2">
                         <ResponsiveContainer width="100%" height="100%">
@@ -5917,6 +6258,32 @@ export default function TrendAnalyzer({
                     </div>
                   )}
 
+                  {/* SLICE-VS5 — envelope order overlay only with stored
+                      geometry AND gating-quality RPM. Dormant otherwise. */}
+                  {calculatedBearingFaults && vibExtractedEnvelopeChart.length > 0 && (
+                    <div className={`${CARD} mb-6`}>
+                      <h3 className="text-base font-bold text-white mb-1">
+                        Envelope Order Overlay
+                      </h3>
+                      <p className="text-xs text-slate-500 mb-3">
+                        {ENVELOPING_ORDER_OVERLAY_NOTE} Source:{" "}
+                        {vibrationRpmProvenanceLabel(bearingRpmReading.source)} ·
+                        geometry {calculatedBearingFaults.geometry.source}.
+                      </p>
+                      <EnvelopeOrderOverlayChart
+                        data={vibExtractedEnvelopeChart}
+                        frequencies={calculatedBearingFaults}
+                      />
+                    </div>
+                  )}
+
+                  <p
+                    data-testid="enveloping-unit-physics-note"
+                    className="text-[10px] leading-relaxed text-slate-500 mb-4"
+                  >
+                    {ENVELOPING_UNIT_PHYSICS_NOTE}
+                  </p>
+
                   {/* History table with Set as Baseline */}
                   <div className={`${CARD} mb-2`}>
                     <h3 className="text-base font-bold text-white mb-1">
@@ -5958,7 +6325,12 @@ export default function TrendAnalyzer({
                                   }`}
                                 >
                                   <td className="px-3 py-2.5 text-white font-medium">
-                                    {row.date}
+                                    {row.dateLabel}
+                                    {row.stoppedLabel ? (
+                                      <span className="block text-[10px] text-amber-300">
+                                        {row.stoppedLabel}
+                                      </span>
+                                    ) : null}
                                   </td>
                                   <td className="px-3 py-2.5 text-amber-300 font-mono text-xs">
                                     {row.peakGe != null
@@ -6015,6 +6387,10 @@ export default function TrendAnalyzer({
               emptyAlert={vibrationAwaitingRecordAlert}
               analysesCount={vibAnalyses.length}
               velocityUnit={displayUnits.velocity}
+              windowEmptyNote={waveformWindowEmptyNote}
+              hasStoppedSamples={waveformHasStoppedSamples}
+              runningOnly={runningOnly}
+              latestTrendPoint={latestWaveformTrendPoint}
               renderExpandButton={(chart: WaveformChartId, label: string) => (
                 <ChartExpandButton
                   onClick={() =>
@@ -6060,6 +6436,7 @@ export default function TrendAnalyzer({
                 hasAnySeries={envelopingTrendSeries.length > 0}
                 timeRange={timeRange}
                 baselinePeakGe={envelopeBaseline?.peakGe ?? null}
+                isSparse={envelopingTrendIsSparse}
               />
             </TrendChartExpandModal>
           )}
@@ -6075,6 +6452,7 @@ export default function TrendAnalyzer({
                 hasAnySeries={envelopingTrendSeries.length > 0}
                 timeRange={timeRange}
                 baselineKurtosis={envelopeBaseline?.kurtosis ?? null}
+                isSparse={envelopingTrendIsSparse}
               />
             </TrendChartExpandModal>
           )}
@@ -6158,25 +6536,26 @@ export default function TrendAnalyzer({
                           Hotspot:{" "}
                           {latestThermoChart?.hotspot != null
                             ? `${latestThermoChart.hotspot}${thermoDisplayUnit}`
-                            : "—"}
+                            : NOT_MEASURED}
                         </li>
                         <li className="text-sm font-semibold text-green-400">
                           Reference:{" "}
                           {latestThermoChart?.reference != null
                             ? `${latestThermoChart.reference}${thermoDisplayUnit}`
-                            : "—"}
+                            : NOT_MEASURED}
                         </li>
                         <li className="text-sm font-semibold text-yellow-400">
                           ΔT:{" "}
                           {latestThermoChart?.deltaT != null
                             ? `${latestThermoChart.deltaT}${thermoDisplayUnit}`
-                            : "—"}
+                            : NOT_MEASURED}
                         </li>
                         <li className="text-sm font-semibold text-white">
-                          Fault: {latestThermo?.primary_fault || "—"}
+                          Fault: {latestThermo?.primary_fault || NOT_REPORTED}
                         </li>
                         <li className="text-sm font-semibold text-slate-300">
-                          NETA: {latestThermoChart?.severityLabel || "—"}
+                          NETA:{" "}
+                          {latestThermoChart?.severityLabel || NOT_REPORTED}
                         </li>
                         {thermoEmissivityPill && (
                           <li className="pt-1">
@@ -6262,7 +6641,7 @@ export default function TrendAnalyzer({
                           dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
+                            value: thermoAxisPlan.sameDate ? "Date · run" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -6400,16 +6779,16 @@ export default function TrendAnalyzer({
                                     <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(r)} />
                                   </span>
                                 </td>
-                                <td className="py-2 pr-3">{r.primary_fault || "—"}</td>
+                                <td className="py-2 pr-3">{r.primary_fault || NOT_REPORTED}</td>
                                 <td className="py-2 pr-3 font-mono">
-                                  {pt?.hotspot != null ? pt.hotspot : "—"}
+                                  {pt?.hotspot != null ? pt.hotspot : NOT_MEASURED}
                                 </td>
                                 <td className="py-2 pr-3 font-mono">
-                                  {pt?.deltaT != null ? pt.deltaT : "—"}
+                                  {pt?.deltaT != null ? pt.deltaT : NOT_MEASURED}
                                 </td>
                                 <td className="py-2 pr-3">
                                   <span className="inline-flex items-center gap-1.5">
-                                    {pt?.severityLabel || "—"}
+                                    {pt?.severityLabel || NOT_REPORTED}
                                     <TelemetryProvenanceBadge provenance={telemetryProvenanceOf(r)} />
                                   </span>
                                 </td>
@@ -6434,12 +6813,12 @@ export default function TrendAnalyzer({
                       <p className="text-2xl font-bold text-red-400">
                         {phaseHottest
                           ? `Phase ${phaseHottest.phase}`
-                          : "N/A"}
+                          : NOT_MEASURED}
                       </p>
                       <p className="text-sm text-slate-400 mt-1 font-mono">
                         {phaseHottest != null
                           ? `${phaseHottest.temp}${thermoDisplayUnit}`
-                          : "—"}
+                          : NOT_MEASURED}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6449,7 +6828,7 @@ export default function TrendAnalyzer({
                       <p className="text-2xl font-bold text-cyan-400">
                         {latestThermoChart?.loadPercent != null
                           ? `${latestThermoChart.loadPercent}%`
-                          : "N/A"}
+                          : NOT_REPORTED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {latestThermoChart?.currentAmps != null &&
@@ -6457,27 +6836,20 @@ export default function TrendAnalyzer({
                           ? `${latestThermoChart.currentAmps} A / ${latestThermoChart.ratedAmps} A rated`
                           : latestThermoChart?.loadPercent != null
                             ? "Load % from saved scan"
-                            : "—"}
+                            : NOT_REPORTED}
                       </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                        Normalized ΔT Projection
+                        Current I²R ΔT
                       </p>
                       <p className="text-2xl font-bold text-yellow-400">
-                        {projectionText ??
-                          (projectionStoredValue == null ? "N/A" : "—")}
+                        {latestThermoChart?.deltaT != null
+                          ? `${latestThermoChart.deltaT}${thermoDisplayUnit}`
+                          : NOT_MEASURED}
                       </p>
-                      <p
-                        className={`text-xs mt-1 ${
-                          projectionBelowValidity
-                            ? "text-amber-300"
-                            : "text-slate-500"
-                        }`}
-                      >
-                        {projectionBelowValidity
-                          ? PROJECTION_LOW_LOAD_CAVEAT
-                          : "I²R-corrected rise @ 100% load"}
+                      <p className="text-xs mt-1 text-slate-500">
+                        Current operating point, not a projection
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6492,7 +6864,7 @@ export default function TrendAnalyzer({
                         </span>
                       ) : (
                         <p className="text-sm text-slate-500 mt-1">
-                          No stored severity class
+                          {NOT_REPORTED}
                         </p>
                       )}
                       <p className="text-xs text-slate-500 mt-2">Severity class badge</p>
@@ -6525,7 +6897,7 @@ export default function TrendAnalyzer({
                           dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
+                            value: thermoAxisPlan.sameDate ? "Date · run" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -6658,7 +7030,7 @@ export default function TrendAnalyzer({
                       >
                         {radioKpis.latest?.emissivity != null
                           ? `ε = ${radioKpis.latest.emissivity}`
-                          : "Not Configured"}
+                          : NOT_MEASURED}
                         {radioKpis.emissivityDrift && (
                           <AlertTriangle
                             className="h-5 w-5 text-amber-400 shrink-0"
@@ -6687,12 +7059,12 @@ export default function TrendAnalyzer({
                       >
                         {radioKpis.paletteConfigured
                           ? `Range: ${radioKpis.paletteSpan}${thermoDisplayUnit}`
-                          : "Not Configured"}
+                          : NOT_REPORTED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1 font-mono">
                         {radioKpis.paletteConfigured
                           ? `${radioKpis.latest!.scaleMin}${thermoDisplayUnit} → ${radioKpis.latest!.scaleMax}${thermoDisplayUnit}`
-                          : "Camera scale pending"}
+                          : "Camera scale not reported in saved scan"}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6708,12 +7080,12 @@ export default function TrendAnalyzer({
                       >
                         {radioKpis.isothermConfigured
                           ? `Active: >${radioKpis.latest!.isothermThreshold}${thermoDisplayUnit}`
-                          : "Not Configured"}
+                          : NOT_REPORTED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {radioKpis.isothermConfigured
                           ? "Isotherm filter engaged"
-                          : "Camera measurement settings pending"}
+                          : "Camera measurement settings not reported"}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6729,21 +7101,36 @@ export default function TrendAnalyzer({
                       >
                         {radioKpis.boxAverageConfigured
                           ? `Box Avg: ${radioKpis.latest!.boxAverage}${thermoDisplayUnit}`
-                          : "Awaiting AI Extraction"}
+                          : NOT_MEASURED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {radioKpis.latest?.reflectedApparentTemp != null
-                          ? `Reflected: ${radioKpis.latest.reflectedApparentTemp}${thermoDisplayUnit}`
+                          ? `Reflected: ${
+                              radioKpis.latest.reflectedApparentTemp
+                            }${
+                              radioKpis.latest.tempUnit ?? thermoStoredUnit
+                            } (stored units)`
                           : radioKpis.boxAverageConfigured
                             ? "Baseline thermal creep tracking"
-                            : "ROI statistics not yet available"}
+                            : "ROI statistics not measured"}
                       </p>
                     </div>
                   </div>
 
+                  {!hasReflectedTempSeries && (
+                    <div
+                      data-testid="thermo-tref-gate"
+                      className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 mb-6"
+                    >
+                      <p className="text-sm font-semibold text-amber-300">
+                        {THERMO_REF_TEMP_MISSING}
+                      </p>
+                    </div>
+                  )}
+
                   <ThermoChartFrame
-                    title="Radiometric & Isotherm — Temperature & emissivity over time (scale, isotherm, box avg, T_refl)"
-                    subtitle={`Left: ${thermoTempAxisLabel} · Right: Emissivity (ε) · Detect operator ε drift between scans`}
+                    title="Radiometric & Isotherm — Temperature & emissivity over time (scale, isotherm, box avg)"
+                    subtitle={`Left: ${thermoTempAxisLabel} · Right: Emissivity (ε) · T_refl is shown in stored units, not on the converted axis`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
@@ -6767,7 +7154,7 @@ export default function TrendAnalyzer({
                           dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
+                            value: thermoAxisPlan.sameDate ? "Date · run" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -6872,31 +7259,6 @@ export default function TrendAnalyzer({
                               }
                               connectNulls
                             />
-                            {hasReflectedTempSeries && (
-                              <Line
-                                yAxisId="temp"
-                                type="monotone"
-                                dataKey="reflectedApparentTemp"
-                                name="Reflected temp (T_refl)"
-                                stroke={
-                                  thermoAxisPlan.snapshot
-                                    ? "transparent"
-                                    : "#f472b6"
-                                }
-                                strokeWidth={2}
-                                strokeDasharray="2 3"
-                                dot={
-                                  thermoAxisPlan.snapshot
-                                    ? {
-                                        r: 4,
-                                        fill: "#f472b6",
-                                        stroke: "#f472b6"
-                                      }
-                                    : { r: 3 }
-                                }
-                                connectNulls
-                              />
-                            )}
                           </>
                         )}
                         {hasEmissivitySeries && (
@@ -6929,32 +7291,32 @@ export default function TrendAnalyzer({
                       <p className="text-sm font-semibold text-slate-300">
                         DE:{" "}
                         <span className="text-red-400 font-mono">
-                          {mechKpis.latest?.deBearing != null
-                            ? `${mechKpis.latest.deBearing}${thermoDisplayUnit}`
-                            : "—"}
+                          {latestThermoChart?.deBearing != null
+                            ? `${latestThermoChart.deBearing}${thermoDisplayUnit}`
+                            : NOT_MEASURED}
                         </span>
                         <span className="text-slate-600 mx-1">·</span>
                         ODE:{" "}
                         <span className="text-blue-400 font-mono">
-                          {mechKpis.latest?.odeBearing != null
-                            ? `${mechKpis.latest.odeBearing}${thermoDisplayUnit}`
-                            : "—"}
+                          {latestThermoChart?.odeBearing != null
+                            ? `${latestThermoChart.odeBearing}${thermoDisplayUnit}`
+                            : NOT_MEASURED}
                         </span>
                       </p>
                       <p className="text-xs text-slate-500 mt-2">
                         ΔT vs ambient:{" "}
-                        {mechKpis.deDeltaAmbient != null ||
-                        mechKpis.odeDeltaAmbient != null
+                        {mechDeltaAmbientDE != null ||
+                        mechDeltaAmbientODE != null
                           ? `DE ${
-                              mechKpis.deDeltaAmbient != null
-                                ? `${mechKpis.deDeltaAmbient}${thermoDisplayUnit}`
-                                : "—"
+                              mechDeltaAmbientDE != null
+                                ? `${mechDeltaAmbientDE}${thermoDisplayUnit}`
+                                : NOT_MEASURED
                             } / ODE ${
-                              mechKpis.odeDeltaAmbient != null
-                                ? `${mechKpis.odeDeltaAmbient}${thermoDisplayUnit}`
-                                : "—"
+                              mechDeltaAmbientODE != null
+                                ? `${mechDeltaAmbientODE}${thermoDisplayUnit}`
+                                : NOT_MEASURED
                             }`
-                          : "N/A"}
+                          : NOT_MEASURED}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6962,18 +7324,18 @@ export default function TrendAnalyzer({
                         Refractory Insulation Integrity
                       </p>
                       <p className="text-2xl font-bold text-orange-400">
-                        {mechKpis.latest?.refractorySkinTemp != null ||
-                        mechKpis.latest?.skinTemp != null
+                        {latestThermoChart?.refractorySkinTemp != null ||
+                        latestThermoChart?.skinTemp != null
                           ? `Skin: ${
-                              mechKpis.latest?.refractorySkinTemp ??
-                              mechKpis.latest?.skinTemp
+                              latestThermoChart?.refractorySkinTemp ??
+                              latestThermoChart?.skinTemp
                             }${thermoDisplayUnit}`
-                          : "N/A"}
+                          : NOT_MEASURED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1 font-mono">
-                        {mechKpis.latest?.maxAllowable != null
-                          ? `Max: ${mechKpis.latest.maxAllowable}${thermoDisplayUnit}`
-                          : "—"}
+                        {latestThermoChart?.maxAllowable != null
+                          ? `Max: ${latestThermoChart.maxAllowable}${thermoDisplayUnit}`
+                          : NOT_MEASURED}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -6987,15 +7349,20 @@ export default function TrendAnalyzer({
                         </span>
                       ) : (
                         <p className="text-2xl font-bold text-slate-400">
-                          {mechKpis.latest?.frictionalSeverity ?? "N/A"}
+                          {mechKpis.latest?.frictionalAnomaly === false
+                            ? NOT_DETECTED
+                            : mechKpis.latest?.frictionalSeverity ??
+                              NOT_REPORTED}
                         </p>
                       )}
                       <p className="text-xs text-slate-500 mt-2">
                         {mechKpis.latest?.frictionalSeverity
                           ? "Stored friction class"
-                          : mechKpis.latest?.frictionalAnomaly
+                          : mechKpis.latest?.frictionalAnomaly === true
                             ? "Stored friction anomaly flag — no class recorded"
-                            : "No stored friction class"}
+                            : mechKpis.latest?.frictionalAnomaly === false
+                              ? "Stored flag reports no friction anomaly"
+                              : "No stored friction flag reported"}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -7003,12 +7370,12 @@ export default function TrendAnalyzer({
                         Thermal Creep Velocity
                       </p>
                       <p className="text-2xl font-bold text-yellow-400">
-                        {mechKpis.creepRatePerDay != null
-                          ? `${mechKpis.creepRatePerDay}${thermoDisplayUnit}/day`
-                          : "N/A"}
+                        {mechCreepRate != null
+                          ? `${mechCreepRate}${thermoDisplayUnit}/day`
+                          : NOT_MEASURED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
-                        {mechKpis.creepRatePerDay != null
+                        {mechCreepRate != null
                           ? "Measured least-squares slope across stored skin temps"
                           : SPARSE_TREND_HELPER_TEXT}
                       </p>
@@ -7016,8 +7383,8 @@ export default function TrendAnalyzer({
                   </div>
 
                   <ThermoChartFrame
-                    title="Mechanical & Refractory — Bearing housing and refractory skin temps vs ambient and limits"
-                    subtitle={`DE / ODE housing · refractory lagging · ambient reference${hasStoredMaxAllowable ? " · max allowable threshold" : ""}${hasSkinAmbientDeltaSeries ? " · derived skin−ambient ΔT" : ""} (${thermoDisplayUnit})`}
+                    title="Mechanical & Refractory — Bearing housing and refractory skin temps vs limits"
+                    subtitle={`DE / ODE housing · refractory lagging${hasStoredMaxAllowable ? " · max allowable threshold" : ""}${hasSkinAmbientDeltaSeries ? " · derived skin−ambient ΔT" : ""} (${thermoDisplayUnit})`}
                     overlay={
                       !hasThermographyData
                         ? "No thermography scans for this asset"
@@ -7027,8 +7394,10 @@ export default function TrendAnalyzer({
                     }
                     note={
                       thermoAxisPlan.snapshot && hasMechanicalSeries
-                        ? SPARSE_TREND_HELPER_TEXT
-                        : null
+                        ? [SPARSE_TREND_HELPER_TEXT, thermoAmbientStoredNote]
+                            .filter(Boolean)
+                            .join(" ")
+                        : thermoAmbientStoredNote
                     }
                   >
                     <ResponsiveContainer width="100%" height="100%">
@@ -7041,7 +7410,7 @@ export default function TrendAnalyzer({
                           dataKey={thermoAxisDataKey}
                           tick={{ fill: "#94a3b8", fontSize: 11 }}
                           label={{
-                            value: thermoAxisPlan.sameDate ? "Time" : "Date",
+                            value: thermoAxisPlan.sameDate ? "Date · run" : "Date",
                             position: "insideBottom",
                             offset: -2,
                             fill: "#64748b",
@@ -7058,9 +7427,9 @@ export default function TrendAnalyzer({
                             fontSize: 11
                           }}
                         />
-                        {hasStoredMaxAllowable && mechKpis.latest?.maxAllowable != null && (
+                        {hasStoredMaxAllowable && latestThermoChart?.maxAllowable != null && (
                           <ReferenceLine
-                            y={mechKpis.latest.maxAllowable}
+                            y={latestThermoChart.maxAllowable}
                             stroke="#ef4444"
                             strokeDasharray="6 4"
                             strokeWidth={2}
@@ -7109,20 +7478,6 @@ export default function TrendAnalyzer({
                           dot={
                             thermoAxisPlan.snapshot
                               ? { r: 4, fill: "#f97316", stroke: "#f97316" }
-                              : { r: 3 }
-                          }
-                          connectNulls
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="ambientReferenceTemp"
-                          name="Ambient Reference Temp"
-                          stroke={thermoAxisPlan.snapshot ? "transparent" : "#94a3b8"}
-                          strokeWidth={2}
-                          strokeDasharray="6 4"
-                          dot={
-                            thermoAxisPlan.snapshot
-                              ? { r: 4, fill: "#94a3b8", stroke: "#94a3b8" }
                               : { r: 3 }
                           }
                           connectNulls

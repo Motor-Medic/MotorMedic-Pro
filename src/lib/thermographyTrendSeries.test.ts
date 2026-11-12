@@ -51,17 +51,22 @@ function localIso(
   return new Date(year, month, day, hour, minute).toISOString();
 }
 
-describe("SLICE-U same-date IR axis granularity", () => {
-  it("separates two runs on one date by HH:mm and refuses a fabricated slope", () => {
+describe("SLICE-VS7 same-date IR axis determinism", () => {
+  it("labels two runs on one date deterministically and refuses a fabricated slope", () => {
     const series = buildThermoChartSeries([
       thermoRow(localIso(2026, 9, 30, 16, 34)),
       thermoRow(localIso(2026, 9, 30, 16, 33))
     ]);
     expect(series.map((point) => point.time)).toEqual(["16:33", "16:34"]);
+    expect(series.map((point) => point.dateLabel)).toEqual([
+      "Oct 30 · 1",
+      "Oct 30 · 2"
+    ]);
+    expect(series.map((point) => point.sequence)).toEqual([1, 2]);
 
     const plan = planThermoTrendAxis(series);
     expect(plan.sameDate).toBe(true);
-    expect(plan.dataKey).toBe("time");
+    expect(plan.dataKey).toBe("dateLabel");
     expect(plan.snapshot).toBe(true);
     expect(plan.spanMs).toBe(60_000);
     expect(plan.spanMs).toBeLessThan(SAME_DATE_SNAPSHOT_SPAN_MS);
@@ -73,7 +78,7 @@ describe("SLICE-U same-date IR axis granularity", () => {
       thermoRow(localIso(2026, 9, 30, 8, 0))
     ]);
     const plan = planThermoTrendAxis(series);
-    expect(plan.dataKey).toBe("time");
+    expect(plan.dataKey).toBe("dateLabel");
     expect(plan.snapshot).toBe(false);
     expect(plan.spanMs).toBe(13 * 60 * 60 * 1000);
   });
@@ -87,9 +92,10 @@ describe("SLICE-U same-date IR axis granularity", () => {
     expect(plan.sameDate).toBe(false);
     expect(plan.dataKey).toBe("date");
     expect(plan.snapshot).toBe(false);
+    expect(series.map((point) => point.dateLabel)).toEqual(["Sep 15", "Oct 30"]);
   });
 
-  it("uses date+time when duplicates exist across multiple calendar dates", () => {
+  it("uses per-date sequence labels when duplicates exist across dates", () => {
     const series = buildThermoChartSeries([
       thermoRow(localIso(2026, 9, 30, 16, 34)),
       thermoRow(localIso(2026, 9, 30, 16, 33)),
@@ -97,9 +103,37 @@ describe("SLICE-U same-date IR axis granularity", () => {
     ]);
     const plan = planThermoTrendAxis(series);
     expect(plan.sameDate).toBe(true);
-    expect(plan.dataKey).toBe("dateTime");
+    expect(plan.dataKey).toBe("dateLabel");
     expect(plan.snapshot).toBe(false);
+    expect(series.map((point) => point.dateLabel)).toEqual([
+      "Sep 15",
+      "Oct 30 · 1",
+      "Oct 30 · 2"
+    ]);
     expect(series[2].dateTime).toContain("16:34");
+  });
+
+  it("breaks equal timestamps deterministically by created_at then id", () => {
+    const iso = localIso(2026, 9, 30, 16, 33);
+    const first = { ...thermoRow(iso, 111), id: "b" };
+    const second = { ...thermoRow(iso, 222), id: "a" };
+    // Same timestamp, same (absent) created_at -> id "a" precedes "b".
+    const byId = buildThermoChartSeries([first, second]);
+    expect(byId.map((point) => point.hotspot)).toEqual([222, 111]);
+
+    const earlyCreated = {
+      ...thermoRow(iso, 333),
+      id: "z",
+      created_at: "2026-09-30T16:32:00.000Z"
+    };
+    const lateCreated = {
+      ...thermoRow(iso, 444),
+      id: "a",
+      created_at: "2026-09-30T16:34:00.000Z"
+    };
+    // created_at wins before id when timestamps are equal.
+    const byCreated = buildThermoChartSeries([lateCreated, earlyCreated]);
+    expect(byCreated.map((point) => point.hotspot)).toEqual([333, 444]);
   });
 });
 

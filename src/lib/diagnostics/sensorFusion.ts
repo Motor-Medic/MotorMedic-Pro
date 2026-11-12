@@ -374,7 +374,7 @@ export function scoreThermography(
   if (!record) return base;
 
   const peak = peakOfType(record, "thermography");
-  const rawDelta = num(peak?.delta_t) ?? num(record.i2r_normalized_delta_t);
+  const rawDelta = num(peak?.delta_t);
   const unit = resolveTempUnit(record);
   const severityClass = String(peak?.severity_class ?? "")
     .trim()

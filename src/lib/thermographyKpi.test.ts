@@ -4,9 +4,13 @@ import { describe, expect, it } from "vitest";
 import type { SavedAnalysisResult } from "./analysisPersistence";
 import {
   NETA_STORED_CLASS_REPAIR_WINDOW,
+  NOT_DETECTED,
+  NOT_MEASURED,
+  NOT_REPORTED,
   PROJECTION_DISPLAY_FLOOR,
   PROJECTION_LOW_LOAD_CAVEAT,
   PROJECTION_MIN_VALID_LOAD_PERCENT,
+  THERMO_REF_TEMP_MISSING,
   buildThermoChartSeries,
   formatTemperatureProjection,
   netaRepairWindowForStoredClass,
@@ -45,9 +49,40 @@ const diagnoseSrc = readFileSync(
   "utf8"
 );
 
+const thermoReportSrc = readFileSync(
+  fileURLToPath(
+    new URL("../components/reports/ThermographyResultsTab.tsx", import.meta.url)
+  ),
+  "utf8"
+);
+
+const prognosticsSrc = readFileSync(
+  fileURLToPath(
+    new URL("../components/reports/prognosticsResolvers.ts", import.meta.url)
+  ),
+  "utf8"
+);
+
+const fusionSrc = readFileSync(
+  fileURLToPath(new URL("./diagnostics/sensorFusion.ts", import.meta.url)),
+  "utf8"
+);
+
+const summarySrc = readFileSync(
+  fileURLToPath(new URL("./reports/technologySummary.ts", import.meta.url)),
+  "utf8"
+);
+
+const exportSrc = readFileSync(
+  fileURLToPath(new URL("./reportExport.ts", import.meta.url)),
+  "utf8"
+);
+
 function point(overrides: Partial<ThermoChartPoint> = {}): ThermoChartPoint {
   return {
     date: "Oct 30",
+    sequence: 1,
+    dateLabel: "Oct 30",
     time: "12:00",
     dateTime: "Oct 30 12:00",
     timestamp: "2026-10-30T12:00:00.000Z",
@@ -125,8 +160,8 @@ function row(
   };
 }
 
-describe("SLICE-V emissivity + ambient pill", () => {
-  it("renders stored emissivity and converts absolute ambient affinely", () => {
+describe("SLICE-VS7 emissivity + ambient pill (stored units)", () => {
+  it("renders stored emissivity and reference temperature without conversion", () => {
     const pt = point({
       emissivity: 0.92,
       ambientReferenceTemp: 20,
@@ -134,22 +169,33 @@ describe("SLICE-V emissivity + ambient pill", () => {
       tempUnit: "°C"
     });
 
-    expect(thermoEmissivityAmbientPill(pt, "°C", "°C")).toBe(
+    expect(thermoEmissivityAmbientPill(pt, "°C")).toBe(
       "Emissivity: 0.92 | Ambient/Ref: 20°C"
     );
-    // 20°C absolute is 68°F — scale + offset, never the 36°F scale-only value.
-    const fahrenheit = thermoEmissivityAmbientPill(pt, "°F", "°C");
-    expect(fahrenheit).toBe("Emissivity: 0.92 | Ambient/Ref: 68°F");
-    expect(fahrenheit).not.toContain("36");
+    // The display preference never touches a reference temperature.
+    expect(thermoEmissivityAmbientPill(pt, "°F")).toBe(
+      "Emissivity: 0.92 | Ambient/Ref: 20°C"
+    );
   });
 
-  it("omits the pill cleanly when emissivity was never stored", () => {
-    expect(thermoEmissivityAmbientPill(point(), "°F", "°F")).toBeNull();
-    expect(thermoEmissivityAmbientPill(null, "°F", "°F")).toBeNull();
+  it("keeps a stored ambient even when emissivity is absent", () => {
+    const pt = point({
+      emissivity: null,
+      ambientReferenceTemp: 72,
+      tempUnit: "°F"
+    });
+    expect(thermoEmissivityAmbientPill(pt, "°F")).toBe(
+      "Emissivity: Not measured | Ambient/Ref: 72°F"
+    );
+    expect(thermoEmissivityAmbientPill(pt, "°F")).not.toContain("0.95");
+  });
+
+  it("omits the pill only when both emissivity and ambient are absent", () => {
+    expect(thermoEmissivityAmbientPill(point(), "°F")).toBeNull();
+    expect(thermoEmissivityAmbientPill(null, "°F")).toBeNull();
     expect(
       thermoEmissivityAmbientPill(
-        point({ emissivity: null, ambientReferenceTemp: 72, tempUnit: "°F" }),
-        "°F",
+        point({ emissivity: null, ambientReferenceTemp: null, reference: null }),
         "°F"
       )
     ).toBeNull();
@@ -167,18 +213,19 @@ describe("SLICE-V emissivity + ambient pill", () => {
     expect(seriesSrc).not.toMatch(/guessed|default material|assume material/i);
   });
 
-  it("falls back to the stored reference temperature, still converted absolutely", () => {
+  it("falls back to the stored reference temperature in its stored unit", () => {
     const pt = point({
       emissivity: 0.88,
       ambientReferenceTemp: null,
       reference: 72,
       tempUnit: "°F"
     });
-    expect(thermoEmissivityAmbientPill(pt, "°F", "°F")).toBe(
+    expect(thermoEmissivityAmbientPill(pt, "°F")).toBe(
       "Emissivity: 0.88 | Ambient/Ref: 72°F"
     );
-    expect(thermoEmissivityAmbientPill(pt, "°C", "°F")).toBe(
-      "Emissivity: 0.88 | Ambient/Ref: 22.2°C"
+    // Even with a °C fallback, the run was saved in °F and is shown as such.
+    expect(thermoEmissivityAmbientPill(pt, "°C")).toBe(
+      "Emissivity: 0.88 | Ambient/Ref: 72°F"
     );
   });
 });
@@ -269,7 +316,7 @@ describe("SLICE-V deepest temperature fallback", () => {
   });
 });
 
-describe("SLICE-W scale-aware projection formatter", () => {
+describe("SLICE-VS7 parked I²R projection formatter", () => {
   it("keeps real magnitude: no false 2-dp precision and no fake zero", () => {
     // (15/180)² × 2.3 = 0.015972… — a real computed projection.
     expect(formatTemperatureProjection(0.015972222222222222, "°C")).toBe(
@@ -290,19 +337,27 @@ describe("SLICE-W scale-aware projection formatter", () => {
     expect(formatTemperatureProjection(null, "°C")).toBeNull();
   });
 
-  it("converts the raw projection by scale only before formatting", () => {
-    expect(trendSrc).toContain("latestThermoRaw?.i2rNormalizedDelta");
-    expect(trendSrc).toMatch(
-      /convertTemperatureDelta\(\s*projectionStoredValue,\s*projectionStoredUnit,\s*thermoDisplayUnit\s*\)/
-    );
-    expect(trendSrc).toContain(
-      "formatTemperatureProjection(projectionDisplayValue, thermoDisplayUnit)"
-    );
-    // 0.01597 °C ΔT is 0.0287 °F — scale only, never +32.
-    expect(convertTemperatureDelta(0.015972222222222222, "°C", "°F")).toBeCloseTo(
-      0.02875,
-      10
-    );
+  it("is exported for verify scripts only — every UI/report consumer is parked", () => {
+    // The formatter and projection field still exist in the library…
+    expect(seriesSrc).toContain("formatTemperatureProjection");
+    expect(seriesSrc).toContain("PARKED (SLICE-VS7)");
+    // …but no rendered surface imports or renders the extrapolated figure.
+    expect(trendSrc).not.toContain("formatTemperatureProjection");
+    expect(trendSrc).not.toContain("i2rNormalizedDelta");
+    expect(thermoReportSrc).not.toContain("loadNorm");
+    expect(thermoReportSrc).not.toContain("i2r_normalized_delta_t");
+    expect(prognosticsSrc).not.toContain("ir-i2r");
+    expect(prognosticsSrc).not.toContain("i2r_normalized_delta_t");
+    expect(fusionSrc).not.toContain("i2r_normalized_delta_t");
+    expect(summarySrc).not.toContain("i2r_normalized_delta_t");
+    expect(exportSrc).not.toContain("i2r_normalized_delta_t");
+  });
+
+  it("describes only the current measured ΔT, never a 100%-load forecast", () => {
+    expect(trendSrc).toContain("Current I²R ΔT");
+    expect(trendSrc).toContain("Current operating point, not a projection");
+    expect(trendSrc).not.toContain("I²R-corrected rise @ 100% load");
+    expect(trendSrc).not.toContain("Normalized ΔT Projection");
   });
 });
 
@@ -356,15 +411,13 @@ describe("SLICE-W single NETA source", () => {
   });
 });
 
-describe("SLICE-W sub-40% projection honesty", () => {
-  it("suppresses the normalised figure below the validity floor with a caveat", () => {
+describe("SLICE-VS7 sub-40% adaptive projection is parked", () => {
+  it("keeps only the descriptive load band, never a projected figure", () => {
     expect(PROJECTION_MIN_VALID_LOAD_PERCENT).toBe(40);
-    expect(trendSrc).toContain("projectionBelowValidity");
-    expect(trendSrc).toContain("PROJECTION_LOW_LOAD_CAVEAT");
     expect(trendSrc).toContain("PROJECTION_MIN_VALID_LOAD_PERCENT");
-    expect(trendSrc).toContain(
-      "y1: PROJECTION_MIN_VALID_LOAD_PERCENT"
-    );
+    expect(trendSrc).toContain("y1: PROJECTION_MIN_VALID_LOAD_PERCENT");
+    expect(trendSrc).not.toContain("projectionBelowValidity");
+    expect(trendSrc).not.toContain("PROJECTION_LOW_LOAD_CAVEAT");
     expect(PROJECTION_LOW_LOAD_CAVEAT).toMatch(/below 40%/i);
   });
 });
@@ -433,8 +486,8 @@ describe("SLICE-X radiometric baseline provenance", () => {
   });
 });
 
-describe("SLICE-X ROI pending-state truth", () => {
-  it("keeps 'Awaiting AI Extraction' only because ROI mean has a write path", () => {
+describe("SLICE-VS7 ROI + camera-setting null honesty", () => {
+  it("keeps the ROI write path and shows Not measured without inventing a mean", () => {
     // Server mirrors the extracted ROI mean into ai_vision.
     expect(serverSrc).toMatch(/ai_vision:\s*\{/);
     expect(serverSrc).toMatch(
@@ -447,10 +500,11 @@ describe("SLICE-X ROI pending-state truth", () => {
     expect(diagnoseSrc).toContain(
       "roiStatisticalMean: radiometric.roiStatisticalMean"
     );
-    expect(trendSrc).toContain("Awaiting AI Extraction");
+    expect(trendSrc).toContain("NOT_MEASURED");
+    expect(trendSrc).not.toContain("Awaiting AI Extraction");
   });
 
-  it("'Not Configured' cards evaluate null DB state with no fallback default", () => {
+  it("renders the null trio for absent camera state with no fallback default", () => {
     const kpis = radiometricKpis([point()]);
     expect(kpis.latest?.emissivity).toBeNull();
     expect(kpis.baselineEmissivity).toBeNull();
@@ -464,6 +518,10 @@ describe("SLICE-X ROI pending-state truth", () => {
     expect(trendSrc).toContain("radioKpis.boxAverageConfigured");
     expect(trendSrc).not.toMatch(/radioKpis\.latest\?\.emissivity \?\? 0\./);
     expect(trendSrc).not.toMatch(/baselineEmissivity \?\? 0\.95/);
+    expect(new Set([NOT_MEASURED, NOT_REPORTED, NOT_DETECTED]).size).toBe(3);
+    expect(THERMO_REF_TEMP_MISSING).toBe(
+      "Reference temperature not recorded - radiometric analysis not available"
+    );
   });
 });
 
@@ -487,8 +545,8 @@ describe("SLICE-X radiometric axis clarity", () => {
   });
 });
 
-describe("SLICE-X reflected temperature trend", () => {
-  it("stores reflected/apparent temperature per run and plots only when present", () => {
+describe("SLICE-VS7 reflected temperature stays in stored units", () => {
+  it("stores T_ref per run and never routes it through the display conversion", () => {
     const series = buildThermoChartSeries([
       row({
         environmental: {
@@ -507,37 +565,48 @@ describe("SLICE-X reflected temperature trend", () => {
         .sort((a, b) => (a ?? 0) - (b ?? 0))
     ).toEqual([70, 75]);
 
-    expect(trendSrc).toMatch(
-      /\{hasReflectedTempSeries && \(\s*<Line[\s\S]{0,220}?dataKey="reflectedApparentTemp"/
-    );
-    expect(trendSrc).toContain(
+    // T_ref is shown in KPI/notes in its stored unit, never on the temp axis.
+    expect(trendSrc).toContain("Reflected: ${");
+    expect(trendSrc).toContain("radioKpis.latest.reflectedApparentTemp");
+    expect(trendSrc).toContain("(stored units)");
+    expect(trendSrc).not.toContain('dataKey="reflectedApparentTemp"');
+    expect(trendSrc).not.toContain(
       "reflectedApparentTemp: absolute(point.reflectedApparentTemp, from)"
     );
 
     const [absent] = buildThermoChartSeries([row()]);
     expect(absent.reflectedApparentTemp).toBeNull();
   });
+
+  it("gates radiometric analysis when no reference temperature was recorded", () => {
+    expect(trendSrc).toContain("THERMO_REF_TEMP_MISSING");
+    expect(trendSrc).toContain("thermo-tref-gate");
+    expect(THERMO_REF_TEMP_MISSING).toBe(
+      "Reference temperature not recorded - radiometric analysis not available"
+    );
+    expect(thermoReportSrc).toContain("THERMO_REF_TEMP_MISSING");
+  });
 });
 
-describe("SLICE-X radiometric temperature routing", () => {
-  it("routes ROI reflected, isotherm and box avg through the preference projection", () => {
+describe("SLICE-VS7 radiometric temperature routing", () => {
+  it("routes measured ROI temps through the preference projection, refs stay raw", () => {
     expect(trendSrc).toContain(
       "boxAverage: absolute(point.boxAverage, from)"
     );
     expect(trendSrc).toContain(
       "isothermThreshold: absolute(point.isothermThreshold, from)"
     );
-    expect(trendSrc).toContain(
+    expect(trendSrc).toContain("Box Avg: ${radioKpis.latest!.boxAverage}");
+    // Reference temps never take an absolute/difference projection route.
+    expect(trendSrc).not.toContain(
       "reflectedApparentTemp: absolute(point.reflectedApparentTemp, from)"
     );
-    expect(trendSrc).toContain(
-      "Reflected: ${radioKpis.latest.reflectedApparentTemp}"
+    expect(trendSrc).not.toContain(
+      "ambientReferenceTemp: absolute(point.ambientReferenceTemp, from)"
     );
-    expect(trendSrc).toContain(
-      "Active: >${radioKpis.latest!.isothermThreshold}"
-    );
-    expect(trendSrc).toContain("Box Avg: ${radioKpis.latest!.boxAverage}");
     // ε and all ratio fields stay raw (no absolute/difference projection).
     expect(trendSrc).not.toMatch(/emissivity:\s*(absolute|difference)\(/);
+    expect(trendSrc).toContain("thermo-unit-isolation-note");
+    expect(trendSrc).toContain("concentration fields (ppm) never convert");
   });
 });

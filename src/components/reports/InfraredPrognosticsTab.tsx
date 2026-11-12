@@ -1,6 +1,7 @@
 /**
  * InfraredPrognosticsTab — thermography P-F window (thin adapter over pfEngine).
- * Series: ΔT P-P at tracked hotspot (°C), hotspot temp, optional I²R ΔT.
+ * Series: ΔT P-P at tracked hotspot (°C) and hotspot temp. The I²R 100%-load
+ * projection is parked (SLICE-VS7) and no longer offered as a trend series.
  * Threshold: stored max_allowable_limit, else NFPA 70B/NETA Class 1 proxy,
  * else confess (slope only). G8/G9 via engine; comparison tools remain
  * vibration-only this slice (declared).

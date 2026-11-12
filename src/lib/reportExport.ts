@@ -341,10 +341,7 @@ export async function buildReportPdf(ctx: ReportExportContext): Promise<jsPDF> {
   const thermalPeak = thermographyPeakOf(analysis);
   const thermalHotspot = finiteNumber(thermalPeak.hotspot_temp);
   const thermalReference = finiteNumber(thermalPeak.reference_temp);
-  const thermalDeltaT = finiteNumber(
-    thermalPeak.delta_t,
-    analysis.i2r_normalized_delta_t
-  );
+  const thermalDeltaT = finiteNumber(thermalPeak.delta_t);
   if (
     thermalHotspot != null ||
     thermalReference != null ||

@@ -4,13 +4,34 @@
  */
 
 import type { SavedAnalysisResult } from "./analysisPersistence";
-import { convertAbsoluteTemperature } from "./vibration/units";
+
+/**
+ * SLICE-VS7 null-trio. These are deliberately distinct so an absent stored
+ * measurement is never blurred into "no fault found":
+ * - `NOT_MEASURED`   — the run was saved but the instrument field is absent.
+ * - `NOT_REPORTED`   — the analysis / camera never reported the field.
+ * - `NOT_DETECTED`   — the run explicitly stored a negative (e.g. no anomaly).
+ */
+export const NOT_MEASURED = "Not measured";
+export const NOT_REPORTED = "Not reported";
+export const NOT_DETECTED = "Not detected";
+
+/**
+ * Exact copy required by the radiometric T_ref gate. Emitted verbatim when no
+ * reference temperature was stored — never replaced with a fabricated default.
+ */
+export const THERMO_REF_TEMP_MISSING =
+  "Reference temperature not recorded - radiometric analysis not available";
 
 export type ThermoChartPoint = {
   date: string;
-  /** HH:mm in the viewer's local timezone — used when runs share a date. */
+  /** 1-based position in the deterministic oldest → newest series. */
+  sequence: number;
+  /** "Oct 30" (unique date) or "Oct 30 · 2" (nth run on that date). */
+  dateLabel: string;
+  /** HH:mm in the viewer's local timezone — retained for display/debug. */
   time: string;
-  /** "Oct 30 16:33" — used when a series has both multiple dates and same-day runs. */
+  /** "Oct 30 16:33" — retained for display/debug. */
   dateTime: string;
   timestamp: string;
   // Tab 1 — Hotspot & NETA
@@ -25,7 +46,11 @@ export type ThermoChartPoint = {
   phaseC: number | null;
   loadPercent: number | null;
   i2rDelta: number | null;
-  /** I²R-normalized ΔT projected to 100% load (when stored). */
+  /**
+   * PARKED (SLICE-VS7) — I²R-normalized ΔT extrapolated to 100% load. Stored
+   * data is still read for audit/verify scripts, but no UI or report surface
+   * renders it: it is a hypothetical future state, not a measured delta.
+   */
   i2rNormalizedDelta: number | null;
   currentAmps: number | null;
   ratedAmps: number | null;
@@ -205,25 +230,32 @@ function telemetryDataBlob(row: SavedAnalysisResult): {
 }
 
 /**
- * NFPA operational validity floor for I²R normalization. Below this load the
- * (rated/measured)² extrapolation to 100% load amplifies measurement error by
- * more than ~6×, so the projected figure is not a confident risk metric.
+ * NFPA operational validity floor for the *descriptive* load band. The parked
+ * I²R projection used this floor to suppress its extrapolated figure; the UI
+ * now keeps only the ≥40% operational-validity band on the measured load axis.
  */
 export const PROJECTION_MIN_VALID_LOAD_PERCENT = 40;
 
 /**
- * Honest caveat shown whenever a projection exists but the stored load is below
- * the validity floor. The normalised figure is suppressed rather than dressed
- * up as a confident number.
+ * PARKED (SLICE-VS7) — caveat that accompanied the sub-40% I²R projection.
+ * Kept exported for the verify script and historical tests; no UI renders it,
+ * because the projection card itself is parked.
  */
 export const PROJECTION_LOW_LOAD_CAVEAT =
   "Load below 40% — I²R projection suppressed; extrapolating to 100% load is unreliable.";
 
-/** Values below this are shown as a bound, never rounded to a fake zero. */
+/**
+ * PARKED (SLICE-VS7) — display floor for the I²R projection formatter.
+ */
 export const PROJECTION_DISPLAY_FLOOR = 0.0001;
 
 /**
- * Scale-aware formatter for the I²R-normalised ΔT projection.
+ * PARKED (SLICE-VS7) — scale-aware formatter for the I²R-normalised ΔT
+ * projection.
+ *
+ * This is a forecast of a hypothetical 100%-load state, not a measured delta.
+ * It is intentionally removed from every UI/report surface and kept only for
+ * verify-script consumers (mirrors AQ's `projectHoursToThreshold` treatment).
  *
  * A real projection from a small measured phase delta (e.g. (15/180)² × 2.3 =
  * 0.01597 °C) carries genuine magnitude. Blind `toFixed(2)` would round it to
@@ -313,31 +345,32 @@ export type ThermoEmissivityAmbientSource = Pick<
 >;
 
 /**
- * Emissivity + ambient/reference pill text. Returns null when emissivity was
- * never stored — callers omit the pill rather than invent a default. Ambient is
- * an ABSOLUTE temperature, so it converts affinely (scale + offset) via the
- * shared temperature unit resolver, never with a ΔT scale-only conversion.
+ * Emissivity + ambient/reference pill text.
+ *
+ * SLICE-VS7 unit isolation: `emissivity` is dimensionless and `ambient` /
+ * reference temperatures are stored reference values — none of them flow
+ * through the °C/°F conversion path. They are shown in the unit the run was
+ * saved in, with `NOT_MEASURED` for any absent part. Returns null only when
+ * BOTH emissivity and ambient/reference are absent, so a stored ambient is
+ * never silently dropped just because ε is missing.
  */
 export function thermoEmissivityAmbientPill(
   point: ThermoEmissivityAmbientSource | null,
-  displayUnit: "°C" | "°F",
   fallbackStoredUnit: "°C" | "°F"
 ): string | null {
-  if (!point || point.emissivity == null || !Number.isFinite(point.emissivity)) {
-    return null;
-  }
+  if (!point) return null;
+  const emissivity =
+    point.emissivity != null && Number.isFinite(point.emissivity)
+      ? String(point.emissivity)
+      : null;
   const ambient = point.ambientReferenceTemp ?? point.reference;
   const storedUnit = point.tempUnit ?? fallbackStoredUnit;
-  const ambientDisplay =
+  const ambientText =
     ambient == null
-      ? null
-      : Math.round(
-          convertAbsoluteTemperature(ambient, storedUnit, displayUnit) * 10
-        ) / 10;
-  const emissivity = point.emissivity;
-  return ambientDisplay == null
-    ? `Emissivity: ${emissivity}`
-    : `Emissivity: ${emissivity} | Ambient/Ref: ${ambientDisplay}${displayUnit}`;
+      ? NOT_MEASURED
+      : `${Math.round(ambient * 10) / 10}${storedUnit}`;
+  if (emissivity == null && ambient == null) return null;
+  return `Emissivity: ${emissivity ?? NOT_MEASURED} | Ambient/Ref: ${ambientText}`;
 }
 
 function deepNum(
@@ -433,6 +466,8 @@ export function extractThermoChartFields(
 
   return {
     date: formatDate(row.timestamp || row.created_at),
+    sequence: 0,
+    dateLabel: formatDate(row.timestamp || row.created_at),
     time: formatTime(row.timestamp || row.created_at),
     dateTime: formatDateTime(row.timestamp || row.created_at),
     timestamp: row.timestamp || row.created_at || "",
@@ -665,17 +700,61 @@ export function extractThermoChartFields(
   };
 }
 
-/** Chronological series for charts (oldest → newest). */
+/**
+ * Chronological series for charts (oldest → newest).
+ *
+ * SLICE-VS7 determinism: rows are sorted by parsed timestamp ascending, then
+ * `created_at`, then `id`, then their original array position — so equal
+ * timestamps can never reorder between renders. Within a date that has more
+ * than one run, `dateLabel` is suffixed with a deterministic `· n` ordinal
+ * (mirroring Vibration's same-date labels) and the axis reads that field.
+ */
 export function buildThermoChartSeries(
   rows: SavedAnalysisResult[]
 ): ThermoChartPoint[] {
-  return [...rows]
-    .slice()
-    .reverse()
-    .map(extractThermoChartFields);
+  const timestampMs = (row: SavedAnalysisResult): number => {
+    const ms = Date.parse(row.timestamp || row.created_at || "");
+    return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
+  };
+  const ordered = rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const at = timestampMs(a.row);
+      const bt = timestampMs(b.row);
+      if (at !== bt) return at - bt;
+      const ac = a.row.created_at ?? "";
+      const bc = b.row.created_at ?? "";
+      if (ac !== bc) return ac < bc ? -1 : 1;
+      const ai = String(a.row.id ?? "");
+      const bi = String(b.row.id ?? "");
+      if (ai !== bi) return ai < bi ? -1 : 1;
+      return a.index - b.index;
+    });
+
+  const dateCounts = new Map<string, number>();
+  for (const { row } of ordered) {
+    const key = localDateKey(row.timestamp || row.created_at);
+    if (!key) continue;
+    dateCounts.set(key, (dateCounts.get(key) ?? 0) + 1);
+  }
+
+  const seen = new Map<string, number>();
+  return ordered.map(({ row }, index) => {
+    const point = extractThermoChartFields(row);
+    const key = localDateKey(row.timestamp || row.created_at);
+    const ordinal = key ? (seen.get(key) ?? 0) + 1 : 0;
+    if (key) seen.set(key, ordinal);
+    const duplicateDate = key ? (dateCounts.get(key) ?? 0) > 1 : false;
+    return {
+      ...point,
+      sequence: index + 1,
+      dateLabel: duplicateDate ? `${point.date} · ${ordinal}` : point.date
+    };
+  });
 }
 
-export type ThermoAxisGranularity = "date" | "time" | "dateTime";
+/** Axis field: deterministic same-date labels, otherwise the calendar date. */
+export type ThermoAxisGranularity = "date" | "dateLabel";
 
 export interface ThermoAxisPlan {
   /** Field on ThermoChartPoint the X axis should read. */
@@ -701,8 +780,8 @@ export const SAME_DATE_SNAPSHOT_SPAN_MS = 60 * 60 * 1000;
 /**
  * Decide how to label the IR X axis honestly:
  * - no same-date duplicates → calendar DATE (unchanged behaviour)
- * - same-date duplicates on a single date → HH:mm (points separate)
- * - same-date duplicates across multiple dates → "MMM d HH:mm" (no collisions)
+ * - same-date duplicates (one or many dates) → deterministic `dateLabel`
+ *   (`"Oct 30 · 1"`, `"Oct 30 · 2"`), never an ambiguous HH:mm collision.
  */
 export function planThermoTrendAxis(
   points: readonly Pick<ThermoChartPoint, "timestamp">[]
@@ -728,11 +807,7 @@ export function planThermoTrendAxis(
   }
 
   const singleDate = groups.size === 1;
-  const dataKey: ThermoAxisGranularity = sameDate
-    ? singleDate
-      ? "time"
-      : "dateTime"
-    : "date";
+  const dataKey: ThermoAxisGranularity = sameDate ? "dateLabel" : "date";
   const snapshot =
     sameDate &&
     singleDate &&
@@ -756,8 +831,10 @@ export function seriesHasAny(
 
 /**
  * Derived (skin − ambient) difference for one run. Both operands must be
- * stored; a missing ambient yields null rather than an assumed reference.
- * Callers pass display-projected values, so the difference is scale-only.
+ * stored and in the SAME stored unit; a missing ambient yields null rather
+ * than an assumed reference. Because the reference temperature is never
+ * unit-converted, callers compute this from raw values and then convert the
+ * resulting difference by scale only.
  */
 export function skinAmbientDelta(point: {
   refractorySkinTemp: number | null;
@@ -860,9 +937,10 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Ordinary least-squares slope in value-units per day. The caller supplies
- * already display-projected values, so an absolute temperature preference
- * changes the slope by scale only (the affine offset cancels in regression).
+ * Ordinary least-squares slope in value-units per day. Accepts values in one
+ * consistent unit; a day-to-day difference is scale-only, so `mechanicalKpis`
+ * fits on raw stored skin temperatures and the caller converts the resulting
+ * °/day slope by ratio (never by an affine offset).
  */
 export function linearSlopePerDay(
   points: readonly { ms: number; value: number }[]
@@ -885,7 +963,13 @@ export function linearSlopePerDay(
   return Number.isFinite(slope) ? Math.round(slope * 100) / 100 : null;
 }
 
-/** Mechanical / refractory KPI helpers — only from real series points. */
+/** Mechanical / refractory KPI helpers — only from real series points.
+ *
+ * Pass the RAW stored series (one consistent stored unit). `deDeltaAmbient` /
+ * `odeDeltaAmbient` subtract two same-unit stored temperatures, and the creep
+ * slope is in stored °/day; the caller converts those differences by scale
+ * only before display. Absolute readings come from the display-projected
+ * latest point instead. */
 export function mechanicalKpis(series: ThermoChartPoint[]): {
   latest: ThermoChartPoint | null;
   deDeltaAmbient: number | null;

@@ -189,7 +189,6 @@ export function thermographyRuns(
 export function thermographyCandidates(runs: SavedAnalysisResult[]): SeriesCandidate[] {
   const dT: { value: number; date: string }[] = [];
   const hs: { value: number; date: string }[] = [];
-  const i2r: { value: number; date: string }[] = [];
   let maxSev = 0;
   for (const r of runs) {
     const peak = peakOfType(r, "thermography") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
@@ -198,14 +197,11 @@ export function thermographyCandidates(runs: SavedAnalysisResult[]): SeriesCandi
     if (dTRaw != null) dT.push({ value: toC(dTRaw, unit), date: r.timestamp });
     const hsRaw = num(peak?.hotspot_temp ?? peak?.hotspotTemp);
     if (hsRaw != null) hs.push({ value: unit === "°F" ? (hsRaw - 32) * (5 / 9) : hsRaw, date: r.timestamp });
-    const i2rRaw = num(r.i2r_normalized_delta_t);
-    if (i2rRaw != null) i2r.push({ value: i2rRaw, date: r.timestamp });
     if (num(r.max_allowable_limit) != null) maxSev = Math.max(maxSev, 1);
   }
   const out: SeriesCandidate[] = [];
   if (dT.length) out.push({ id: "ir-delta-t", label: "ΔT P-P at tracked hotspot", unit: "°C", points: dT, severityRank: 3 + maxSev, worsening: "increase" });
   if (hs.length) out.push({ id: "ir-hotspot", label: "Hotspot temperature", unit: "°C", points: hs, severityRank: 2, worsening: "increase" });
-  if (i2r.length) out.push({ id: "ir-i2r", label: "I²R normalized ΔT", unit: "°C", points: i2r, severityRank: 1, worsening: "increase" });
   return out;
 }
 

@@ -38,6 +38,8 @@ const mechanicalBlock = trendSrc.slice(
 function point(overrides: Partial<ThermoChartPoint> = {}): ThermoChartPoint {
   return {
     date: "Oct 30",
+    sequence: 1,
+    dateLabel: "Oct 30",
     time: "12:00",
     dateTime: "Oct 30 12:00",
     timestamp: "2026-10-30T12:00:00.000Z",
@@ -129,12 +131,12 @@ describe("SLICE-Y refractory threshold provenance", () => {
     expect(seriesSrc).not.toMatch(/maxAllowable[\s\S]{0,80}\?\?\s*\d/);
     expect(seriesSrc).not.toMatch(/max_allowable_limit[\s\S]{0,60}\?\?\s*\d/);
     expect(trendSrc).toContain(
-      "const hasStoredMaxAllowable = mechKpis.latest?.maxAllowable != null;"
+      "const hasStoredMaxAllowable = latestThermoChart?.maxAllowable != null;"
     );
   });
 
   it("renders the threshold line and subtitle claim only when a limit is stored", () => {
-    expect(trendSrc).toContain("{hasStoredMaxAllowable && (");
+    expect(trendSrc).toContain("{hasStoredMaxAllowable && latestThermoChart?.maxAllowable != null && (");
     expect(trendSrc).toContain(
       'hasStoredMaxAllowable ? " · max allowable threshold" : ""'
     );
@@ -152,16 +154,17 @@ describe("SLICE-Y unit routing on the mechanical tab", () => {
     expect(mechanicalBlock).not.toContain("(°C)");
     expect(mechanicalBlock).toContain("(${thermoDisplayUnit})");
     expect(mechanicalBlock).toContain(
-      "${mechKpis.creepRatePerDay}${thermoDisplayUnit}/day"
+      "${mechCreepRate}${thermoDisplayUnit}/day"
     );
   });
 
-  it("projects absolutes affinely and ΔT/rates by scale only", () => {
+  it("projects measured absolutes affinely and ΔT/rates by scale only", () => {
     expect(trendSrc).toContain("maxAllowable: absolute(point.maxAllowable, from)");
     expect(trendSrc).toContain(
       "refractorySkinTemp: absolute(point.refractorySkinTemp, from)"
     );
-    expect(trendSrc).toContain(
+    // Reference temps are intentionally raw: they never enter this path.
+    expect(trendSrc).not.toContain(
       "ambientReferenceTemp: absolute(point.ambientReferenceTemp, from)"
     );
     expect(trendSrc).toContain(
@@ -173,6 +176,10 @@ describe("SLICE-Y unit routing on the mechanical tab", () => {
     expect(trendSrc).toContain(
       "convertTemperatureDelta(value, from, thermoDisplayUnit)"
     );
+    // Mechanical deltas are fitted on raw stored values, then scaled.
+    expect(trendSrc).toContain("mechKpis.deDeltaAmbient");
+    expect(trendSrc).toContain("thermoReferenceUnit");
+    expect(trendSrc).toContain("const mechKpis = mechanicalKpis(thermoChartSeries);");
   });
 });
 
@@ -278,9 +285,10 @@ describe("SLICE-Y friction class provenance", () => {
     expect(faultOnly.frictionalAnomaly).toBeNull();
   });
 
-  it("keeps N/A absent a stored class and never reuses the inverted IR brackets", () => {
-    expect(mechanicalBlock).toContain('mechKpis.latest?.frictionalSeverity ?? "N/A"');
-    expect(mechanicalBlock).toContain("No stored friction class");
+  it("keeps the null trio absent a stored class and never reuses the inverted IR brackets", () => {
+    expect(mechanicalBlock).toContain("NOT_REPORTED");
+    expect(mechanicalBlock).toContain("NOT_DETECTED");
+    expect(mechanicalBlock).toContain("No stored friction flag reported");
     expect(mechanicalBlock).not.toContain("IR_PP_BRACKETS");
     expect(mechanicalBlock).not.toContain("IR_PA_BRACKETS");
     expect(mechanicalBlock).not.toContain("evaluateIrSeverity");
@@ -347,8 +355,9 @@ describe("SLICE-Y KPI null honesty", () => {
     expect(kpis.latest?.frictionalAnomaly).toBeNull();
   });
 
-  it("renders N/A rather than a numeric or text fallback", () => {
-    expect(mechanicalBlock).toContain('"N/A"');
+  it("renders the explicit null trio rather than a numeric or text fallback", () => {
+    expect(mechanicalBlock).toContain("NOT_MEASURED");
+    expect(mechanicalBlock).toContain("NOT_REPORTED");
     expect(mechanicalBlock).not.toMatch(/mechKpis\.[A-Za-z]+\s*\?\?\s*0/);
     expect(seriesSrc).not.toMatch(/frictionalSeverity[\s\S]{0,80}\|\|\s*"/);
     expect(seriesSrc).not.toContain("bearing defect|lubrication|binding|misalignment");
@@ -367,7 +376,7 @@ describe("SLICE-Y regression guardrails", () => {
     ];
     const plan = planThermoTrendAxis(series);
     expect(plan.sameDate).toBe(true);
-    expect(plan.dataKey).toBe("time");
+    expect(plan.dataKey).toBe("dateLabel");
     expect(plan.snapshot).toBe(true);
   });
 });

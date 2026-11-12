@@ -40,8 +40,8 @@ describe("SLICE-U IR trend resilience", () => {
       'thermoAxisPlan.snapshot ? "transparent"'
     );
     expect(thermoSeriesSrc).toContain("SAME_DATE_SNAPSHOT_SPAN_MS");
-    expect(thermoSeriesSrc).toContain('? "time"');
-    expect(thermoSeriesSrc).toContain('"dateTime"');
+    expect(thermoSeriesSrc).toContain('sameDate ? "dateLabel" : "date"');
+    expect(thermoSeriesSrc).toContain("dateLabel");
   });
 
   it("reuses J2's sparse helper constant instead of a second empty-state string", () => {

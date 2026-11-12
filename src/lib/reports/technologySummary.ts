@@ -226,7 +226,7 @@ function thermographyReadings(record: SavedAnalysisResult): ReportReading[] {
   pushReading(
     readings,
     "ΔT",
-    num(peak?.delta_t) ?? num(record.i2r_normalized_delta_t),
+    num(peak?.delta_t),
     { unit }
   );
   pushReading(readings, "Hotspot", num(peak?.hotspot_temp), { unit });

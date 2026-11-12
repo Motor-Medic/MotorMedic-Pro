@@ -11,19 +11,29 @@ import { SEVERITY_LABEL, SEVERITY_STYLE, faultSeverityBadgeInfo } from "./report
 import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import { evaluateIrSeverity, IR_PP_BRACKETS, IR_PA_BRACKETS, type IrSeverityBracket } from "../../lib/maintenance/prescriptiveDictionary";
+import { NOT_MEASURED, NOT_REPORTED, THERMO_REF_TEMP_MISSING } from "../../lib/thermographyTrendSeries";
 
 export interface ThermographyResultsTabProps { selectedAnalysis: SavedAnalysisResult; }
 
 function extractMeta(r: SavedAnalysisResult) {
   const td = (r.telemetry_data ?? {}) as Record<string, unknown>;
+  // Diagnose writes these under telemetry_data.environmental; older rows may
+  // have them at the root. Read both so a stored value is never silently lost.
+  const env =
+    td.environmental && typeof td.environmental === "object"
+      ? (td.environmental as Record<string, unknown>)
+      : {};
+  const pick = (...values: unknown[]): unknown =>
+    values.find((value) => value != null && value !== "") ?? null;
   return {
-    emissivity: td.emissivity ?? null, reflectedTemp: td.reflectedTemp ?? null,
-    ambientTemp: td.ambient_temp ?? td.ambientTemp ?? null,
+    emissivity: pick(env.emissivity, env.emissivitySetting, env.emissivity_setting, td.emissivity),
+    reflectedTemp: pick(env.reflected_temp, env.reflectedTemp, td.reflectedTemp, td.reflected_temp),
+    ambientTemp: pick(env.ambient_temp, env.ambientTemp, td.ambient_temp, td.ambientTemp),
     measuredAmps: r.measured_amps ?? null, ratedAmps: r.rated_amps ?? null,
-    distance: td.distance ?? null, humidity: td.humidity ?? null,
-    tempUnit: (td.tempUnit ?? "°F") as string,
+    distance: pick(env.distance, td.distance),
+    humidity: pick(env.humidity, td.humidity),
+    tempUnit: String(pick(env.temp_unit, env.tempUnit, td.tempUnit, td.temp_unit) ?? "°F"),
     phaseA: r.phase_a_temp ?? null, phaseB: r.phase_b_temp ?? null, phaseC: r.phase_c_temp ?? null,
-    storedNorm: r.i2r_normalized_delta_t ?? null,
   };
 }
 
@@ -33,9 +43,9 @@ function extractPeaks(r: SavedAnalysisResult) {
 }
 
 const dTtoC = (dT: number, unit: string) => unit === "°F" ? dT * (5 / 9) : dT;
-const fmtTemp = (v: number | null, u: string) => v == null ? "—" : `${v.toFixed(1)}${u}`;
+const fmtTemp = (v: number | null, u: string) => v == null ? NOT_MEASURED : `${v.toFixed(1)}${u}`;
 const fmtDeltaT = (dT: number | null, u: string) => {
-  if (dT == null) return "—";
+  if (dT == null) return NOT_MEASURED;
   const s = `${dT.toFixed(1)}${u}`;
   return u === "°F" ? `${s} (Δ ${(dT * 5 / 9).toFixed(1)}°C)` : `${s} (Δ ${(dT * 9 / 5).toFixed(1)}°F)`;
 };
@@ -48,10 +58,10 @@ const sevClass = (r: SavedAnalysisResult): ReportSeverity => {
 };
 const netaClass = (r: SavedAnalysisResult): string => {
   const p = r.peaks?.[0];
-  if (p == null || typeof p !== "object") return "not recorded";
-  if (!("severity_class" in p)) return "not recorded";
+  if (p == null || typeof p !== "object") return NOT_REPORTED;
+  if (!("severity_class" in p)) return NOT_REPORTED;
   const v = p.severity_class;
-  return typeof v === "string" && v.trim() !== "" ? v : "not recorded";
+  return typeof v === "string" && v.trim() !== "" ? v : NOT_REPORTED;
 };
 
 function Field({ label, value, unit }: { label: string; value: unknown; unit?: string }) {
@@ -59,7 +69,7 @@ function Field({ label, value, unit }: { label: string; value: unknown; unit?: s
     <div className="rounded-lg border border-white/10 bg-slate-900/50 p-2.5">
       <p className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</p>
       <p className={`text-sm font-mono mt-0.5 ${value != null ? "text-white" : "text-slate-500 italic"}`}>
-        {value != null ? `${value}${unit ? ` ${unit}` : ""}` : "not recorded"}
+        {value != null ? `${value}${unit ? ` ${unit}` : ""}` : NOT_MEASURED}
       </p>
     </div>
   );
@@ -95,23 +105,6 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
     return pp;
   }, [pp, pa]);
   const govAxis = pp && pa ? (IR_PP_BRACKETS.indexOf(pp) <= IR_PA_BRACKETS.indexOf(pa) ? "P-P" : "P-A") : pa ? "P-A" : "P-P";
-
-  const loadNorm = useMemo(() => {
-    const rawM = meta.measuredAmps, rawR = meta.ratedAmps;
-    const hasMeasured = rawM != null && !isNaN(Number(rawM));
-    const hasRated = rawR != null && !isNaN(Number(rawR));
-    const m = hasMeasured ? Number(rawM) : null;
-    const r = hasRated ? Number(rawR) : null;
-    if (dTC == null) return { ok: false, msg: "load normalization unavailable - delta-T not recorded" };
-    if (!hasMeasured && !hasRated) return { ok: false, msg: "load normalization unavailable - amps not recorded" };
-    if (!hasMeasured) return { ok: false, msg: "load normalization unavailable - measured amps not recorded" };
-    if (!hasRated) return { ok: false, msg: "load normalization unavailable - rated amps not recorded (square-law needs both)" };
-    if (m === 0) return { ok: false, msg: "load normalization unavailable - measured amps is zero" };
-    const dR = dTC * (r! / m!) ** 2;
-    const sC = meta.storedNorm != null ? dTtoC(meta.storedNorm, meta.tempUnit) : null;
-    const match = sC != null ? Math.abs(sC - dR) < 0.5 : null;
-    return { ok: true, dR, msg: match === true ? "stored matches square-law" : match === false ? "stored uses different definition" : "no stored value to audit against" };
-  }, [meta, dTC]);
 
   const eps = useMemo(() => { const e = meta.emissivity as number | null; return e == null ? "absent" : e < 0.6 ? "low" : "normal"; }, [meta.emissivity]);
 
@@ -184,8 +177,6 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
           <Field label="Emissivity (ε)" value={meta.emissivity} />
           <Field label="Reflected Temp (T_refl)" value={meta.reflectedTemp} unit={meta.tempUnit} />
           <Field label="Ambient Temp (T_amb)" value={meta.ambientTemp} unit={meta.tempUnit} />
-          <Field label="Measured Amps (I_measured)" value={meta.measuredAmps} unit="A" />
-          <Field label="Rated Amps (I_rated)" value={meta.ratedAmps} unit="A" />
           <Field label="Distance" value={meta.distance} unit="m" />
           <Field label="Relative Humidity (RH)" value={meta.humidity} unit="%" />
         </div>
@@ -204,15 +195,19 @@ export default function ThermographyResultsTab({ selectedAnalysis }: Thermograph
       </div>
 
       <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4">
-        <div className="flex items-center gap-2 mb-3"><Zap className="h-4 w-4 text-cyan-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Load Normalization</h4></div>
-        {loadNorm.ok ? (
-          <div className="space-y-2">
-            <p className="text-xs text-slate-300"><span className="text-slate-500">dT_rated (I²R model, P-P / P-A basis): </span><span className="font-mono font-bold text-white">{loadNorm.dR!.toFixed(1)}°C</span></p>
-            <p className="text-[11px] text-slate-400 italic">Projection for resistive connections — model, not measurement.</p>
-            <p className="text-[11px] text-slate-500"><span className="font-semibold">Audit: </span>{loadNorm.msg}</p>
-          </div>
-        ) : <p className="text-xs text-slate-400 italic">{loadNorm.msg}</p>}
+        <div className="flex items-center gap-2 mb-3"><Zap className="h-4 w-4 text-cyan-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Load Context</h4></div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          <Field label="Measured Amps (I_measured)" value={meta.measuredAmps} unit="A" />
+          <Field label="Rated Amps (I_rated)" value={meta.ratedAmps} unit="A" />
+        </div>
+        <p className="text-[11px] text-slate-500 mt-3 italic">Current operating point only — no 100%-load extrapolation is reported.</p>
       </div>
+
+      {meta.reflectedTemp == null && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+          <p className="text-xs font-semibold text-amber-300">{THERMO_REF_TEMP_MISSING}</p>
+        </div>
+      )}
 
       {eps !== "normal" && (
         <div className={`rounded-xl border p-4 ${eps === "low" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-600 bg-slate-800/30"}`}>
