@@ -75,6 +75,12 @@ export type GroundwallResult = {
   piStatus: PiStatus;
   piIeeeMin: number;
   piIeeePass: boolean | null;
+  /** Insulation class actually used for the PI minimum (A/B/F/H). */
+  insulationClass: InsulationClass;
+  /** True when no class was stored and Class F was assumed (disclosed in UI). */
+  insulationClassAssumed: boolean;
+  /** Provenance for the PI minimum — discloses the assumed-class fallback. */
+  piIeeeMinProvenance: string;
   leakageCurrentUA: number;
   fault: string;
   severity: GroundwallFaultSeverity;
@@ -184,6 +190,19 @@ export function ieee43MinIrMOmega(ratedVoltageV?: number): number | null {
   }
   const kv = ratedVoltageV / 1000;
   return kv >= 10 ? 100 : round3(kv + 1);
+}
+
+/** Human-readable provenance for the PI minimum, disclosing assumed classes. */
+export function piIeeeMinProvenance(
+  insulationClass: InsulationClass,
+  assumed: boolean
+): string {
+  const min = ieeePiMinimum(insulationClass);
+  return assumed
+    ? `IEEE 43 PI minimum ${min} — no insulation class stored, Class F assumed (Class A would allow ${ieeePiMinimum(
+        "A"
+      )})`
+    : `IEEE 43 PI minimum ${min} (stored Class ${insulationClass})`;
 }
 
 /** Human-readable provenance for the IR compliance threshold. */
@@ -448,13 +467,20 @@ export function calculateGroundwallInsulation(
     Number.isFinite(Number(params.windingTempC));
   const windingTempC = hasWindingTemp ? Number(params.windingTempC) : null;
 
-  const insulationClass: InsulationClass =
+  const storedInsulationClass: InsulationClass | null =
     params.insulationClass === "A" ||
     params.insulationClass === "B" ||
     params.insulationClass === "F" ||
     params.insulationClass === "H"
       ? params.insulationClass
-      : "F";
+      : null;
+
+  // Class absence is NOT silently rebranded as stored data (slice VS9): when no
+  // class is stored, Class F is assumed for the IEEE 43 PI minimum and the
+  // assumption is disclosed via piIeeeMinProvenance. Class A would allow 1.5,
+  // so assuming F can only raise the bar, never hide a failing PI.
+  const insulationClass: InsulationClass = storedInsulationClass ?? "F";
+  const insulationClassAssumed = storedInsulationClass == null;
 
   const ratedVoltageV =
     params.ratedVoltageV != null &&
@@ -465,6 +491,10 @@ export function calculateGroundwallInsulation(
 
   const irIeeeMinMOmega = ieee43MinIrMOmega(ratedVoltageV);
   const irIeeeMinProvenance = ieee43ThresholdProvenance(ratedVoltageV);
+  const piMinProvenance = piIeeeMinProvenance(
+    insulationClass,
+    insulationClassAssumed
+  );
 
   const hasData =
     ir1mMOmega > 0 ||
@@ -503,6 +533,9 @@ export function calculateGroundwallInsulation(
       piStatus: "N/A",
       piIeeeMin: ieeePiMinimum(insulationClass),
       piIeeePass: null,
+      insulationClass,
+      insulationClassAssumed,
+      piIeeeMinProvenance: piMinProvenance,
       leakageCurrentUA: 0,
       fault: "Awaiting Data",
       severity: "NORMAL",
@@ -592,6 +625,9 @@ export function calculateGroundwallInsulation(
     piStatus,
     piIeeeMin,
     piIeeePass,
+    insulationClass,
+    insulationClassAssumed,
+    piIeeeMinProvenance: piMinProvenance,
     leakageCurrentUA,
     fault: isolated.fault,
     severity: isolated.severity,

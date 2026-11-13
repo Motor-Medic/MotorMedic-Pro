@@ -4091,13 +4091,14 @@ export default function TrendAnalyzer({
   ) => {
     const domainKey = gwFieldToDomain[key];
     if (key === "insulationClass") {
+      // "Not stored" option is a no-op — the SSOT merge never wipes a stored
+      // class, and an absent class must never be back-filled with "F" here
+      // (the calculator's disclosed assumption carries the fallback, slice VS9).
+      if (value === "") return;
       const c = value.toUpperCase();
-      const insulation_class =
-        c === "A" || c === "B" || c === "F" || c === "H"
-          ? (c as InsulationClass)
-          : mcaRecord.groundwall.insulation_class || "F";
+      if (c !== "A" && c !== "B" && c !== "F" && c !== "H") return;
       mergeMcaRecord({
-        groundwall: { insulation_class },
+        groundwall: { insulation_class: c as InsulationClass },
         meta: { source: "manual" }
       });
       return;
@@ -8947,12 +8948,15 @@ export default function TrendAnalyzer({
                       Insulation Class
                     </span>
                     <select
-                      value={mcaGwSnapshot.insulationClass || "F"}
+                      value={mcaGwSnapshot.insulationClass ?? ""}
                       onChange={(e) =>
                         updateMcaGwField("insulationClass", e.target.value)
                       }
                       className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:border-amber-500 outline-none"
                     >
+                      <option value="">
+                        Not stored — Class F assumed for PI minimum
+                      </option>
                       <option value="A">Class A (PI ≥ 1.5)</option>
                       <option value="B">Class B (PI ≥ 2.0)</option>
                       <option value="F">Class F (PI ≥ 2.0)</option>
@@ -9095,7 +9099,11 @@ export default function TrendAnalyzer({
                         ? "Suppressed — IR data quality"
                         : `${mcaGwResult.piStatus}${
                             mcaGwResult.pi != null
-                              ? ` · min ${mcaGwResult.piIeeeMin}`
+                              ? ` · min ${mcaGwResult.piIeeeMin}${
+                                  mcaGwResult.insulationClassAssumed
+                                    ? " (no class stored — F assumed)"
+                                    : ""
+                                }`
                               : " · needs IR 10m"
                           }`
                       : "Awaiting Data"}

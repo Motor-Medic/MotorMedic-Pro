@@ -387,7 +387,20 @@ export default function McaInputAccordions({
       reportPi,
       reportDar,
       ricData: ricData && ricData.length > 0 ? ricData : null,
-      extractMeta
+      extractMeta,
+      // Online PQ (energized mode only) — collected, labeled online, and never
+      // fed into offline winding thresholds (slice VS9 four-mode gate).
+      ...(isOnline
+        ? {
+            onlinePq: {
+              voltageUnbalancePct: optionalNum(voltageUnbalance),
+              currentUnbalancePct: optionalNum(currentUnbalance),
+              voltageThdPct: optionalNum(voltageThd),
+              currentThdPct: optionalNum(currentThd),
+              powerFactor: optionalNum(powerFactor)
+            }
+          }
+        : {})
     });
   }, [
     onSnapshotChange,
@@ -410,7 +423,13 @@ export default function McaInputAccordions({
     reportPi,
     reportDar,
     ricData,
-    extractMeta
+    extractMeta,
+    // Online PQ states — must re-emit when edited (slice VS9)
+    voltageUnbalance,
+    currentUnbalance,
+    voltageThd,
+    currentThd,
+    powerFactor
   ]);
 
   const ratedVoltageVolts = useMemo(() => {
@@ -1507,18 +1526,38 @@ export default function McaInputAccordions({
                   />
                 </label>
               </div>
+              <p className="mt-4 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-2.5 text-[11px] text-slate-400 leading-snug">
+                Stored with the MCA record as energized (online) readings.
+                Offline winding tests — phase resistance / impedance, Megger IR
+                and PI — are de-energized measurements: no offline threshold is
+                applied to these online values.
+              </p>
             </>
           )}
         </div>
       </AccordionShell>
 
-      {/* SECTION 4 — Insulation */}
+      {/* SECTION 4 — Insulation (de-energized test; disclosure replaces inputs online) */}
       <AccordionShell
         id="insulation"
-        title="4. Insulation to Ground"
+        title="4. Insulation to Ground (De-Energized)"
         open={openSections.includes("insulation")}
         onToggle={toggleSection}
       >
+        {isOnline ? (
+          <div>
+            <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
+              Insulation to Ground (Megger)
+            </p>
+            <p className="rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2.5 text-xs text-yellow-200/90 leading-snug">
+              Insulation-to-ground testing (Megger IR, PI / DAR) is a
+              de-energized measurement — it cannot be taken while the motor is
+              energized. Switch to De-Energized (Static) mode to record these
+              values. No insulation data is collected in online mode.
+            </p>
+          </div>
+        ) : (
+        <>
         <div>
           <p className="text-xs font-bold uppercase tracking-wider text-yellow-500/90 mb-3">
             Insulation to Ground (Megger)
@@ -1769,6 +1808,8 @@ export default function McaInputAccordions({
             )}
           </div>
         </div>
+        </>
+        )}
       </AccordionShell>
       </div>
     </McaFlagContext.Provider>

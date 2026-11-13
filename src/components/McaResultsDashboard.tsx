@@ -252,7 +252,9 @@ export default function McaResultsDashboard({
               Winding Contamination
             </p>
             <p className="text-[11px] text-slate-400 leading-relaxed break-words">
-              Logic: Phase Angle stable, but IR &lt; 100 MΩ.
+              Logic: Phase Angle stable, but IR below the IEEE 43 voltage-rated
+              minimum (kV + 1 MΩ from the stored nameplate; never a flat 100 MΩ
+              constant). Verdict omitted when no nameplate voltage is stored.
             </p>
             <p className="text-sm font-bold text-slate-400 break-words">
               {DIAGNOSE_NOT_RECORDED_FOR_ASSET}

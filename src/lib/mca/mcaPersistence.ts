@@ -83,6 +83,18 @@ export type McaOperatorSnapshot = {
   surgeData?: SurgeDataPoint[] | null;
   surgeTestVoltageV?: number | string | null;
   surgeEar?: number | string | null;
+  /**
+   * Energized (online) power-quality readings — online mode only. Stored
+   * present-if-stored; NO offline winding threshold (phase R/L/Z, Megger
+   * IR/PI) is computed from energized values (slice VS9, four-mode gate).
+   */
+  onlinePq?: {
+    voltageUnbalancePct?: number | string | null;
+    currentUnbalancePct?: number | string | null;
+    voltageThdPct?: number | string | null;
+    currentThdPct?: number | string | null;
+    powerFactor?: number | string | null;
+  } | null;
   extractMeta?: {
     fileName?: string | null;
     formatDetected?: string | null;
@@ -104,7 +116,10 @@ export const MCA_GROUNDWALL_EMPTY: McaGroundwallSnapshot = {
   ir1mMOmega: 0,
   ir10mMOmega: 0,
   testVoltageV: 0,
-  insulationClass: "F"
+  // No fabricated default class: absent stays absent. Class F is applied by
+  // groundwallCalculator as a DISCLOSED assumption (slice VS9), never stored
+  // as if the operator had selected it.
+  insulationClass: undefined
 };
 
 function finiteNum(v: unknown): number | null {
@@ -692,7 +707,9 @@ export function extractMcaGroundwallFromSaved(
         consensus.insulationClass ??
         consensusGw.insulationClass ??
         consensusGw.insulation_class
-    ) ?? "F";
+    );
+    // Absent class stays absent (slice VS9) — no fabricated "F". The calculator
+    // applies Class F as a disclosed assumption when nothing is stored.
 
   const reportPi = pickAny(
     nestedGw.reportPi,
@@ -831,8 +848,9 @@ export function mergeGroundwallPreferPositive(
   );
   const reportPi = pickOpt(preferred?.reportPi, fallback.reportPi);
   const reportDar = pickOpt(preferred?.reportDar, fallback.reportDar);
-  const insulationClass =
-    preferred?.insulationClass || fallback.insulationClass || "F";
+  // Absent class stays absent (slice VS9) — no fabricated "F" default; the
+  // calculator's assumed-class fallback carries the disclosure instead.
+  const insulationClass = preferred?.insulationClass || fallback.insulationClass;
 
   const fromTelemetry =
     Boolean(fallback.fromTelemetry) ||
@@ -950,7 +968,8 @@ export function normalizeMcaOperatorSnapshot(
       testVoltageV,
       ratedVoltageV,
       windingTempC,
-      insulationClass: parseInsulationClass(s.insulationClass) ?? "F",
+      // Absent class stays absent (slice VS9) — no fabricated "F" default.
+      insulationClass: parseInsulationClass(s.insulationClass),
       reportPi: finiteNum(s.reportPi) ?? undefined,
       reportDar: finiteNum(s.reportDar) ?? undefined
     }
@@ -987,6 +1006,13 @@ export function mcaPayloadForSave(
     snapRec.extractMeta && typeof snapRec.extractMeta === "object"
       ? snapRec.extractMeta
       : null;
+  const onlinePq =
+    snapRec.onlinePq && typeof snapRec.onlinePq === "object"
+      ? snapRec.onlinePq
+      : null;
+  // Collection mode rides with the record so consumers can tell which of the
+  // four gates (offline static / dynamic / online / ESA) produced it.
+  const mcaMode = snapRec.mode ?? null;
   const phases = {
     uv: {
       resistance: winding.phaseR[0],
@@ -1135,6 +1161,16 @@ export function mcaPayloadForSave(
         }
       : {}),
     ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {}),
+    ...(onlinePq
+      ? {
+          onlinePq,
+          online_pq: onlinePq,
+          // Energized (online) readings — present-if-stored. No offline winding
+          // threshold is computed from these values (slice VS9 four-mode gate).
+          measurement_mode: "online"
+        }
+      : {}),
+    mca_mode: mcaMode,
     ...(extras?.unbalance ? { unbalance: extras.unbalance } : {}),
     ...(extras?.primaryFault ? { primary_fault: extras.primaryFault } : {}),
     ...(extras?.healthScore != null ? { health_score: extras.healthScore } : {})
@@ -1230,7 +1266,15 @@ export function mcaPayloadForSave(
           surge_waveform: surgeData
         }
       : {}),
-    ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {})
+    ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {}),
+    ...(onlinePq
+      ? {
+          onlinePq,
+          online_pq: onlinePq,
+          measurement_mode: "online"
+        }
+      : {}),
+    mca_mode: mcaMode
   };
 
   return { peaks: [peak], telemetry_data };

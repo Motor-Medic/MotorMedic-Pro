@@ -1734,12 +1734,9 @@ export default function Diagnose({
   const [usGain, setUsGain] = useState("30");
   const [usMeasType, setUsMeasType] = useState("dBuV");
 
-  const [mcaParamVoltage, setMcaParamVoltage] = useState("460V");
-  const [mcaHp, setMcaHp] = useState("50");
-  const [mcaResistance, setMcaResistance] = useState("");
-  const [mcaInductance, setMcaInductance] = useState("");
-  const [mcaPhaseAngle, setMcaPhaseAngle] = useState("");
-  const [mcaInsulation, setMcaInsulation] = useState("");
+  // Legacy MCA parameter states removed (slice VS9): never read by any
+  // diagnostic path — MCA inputs are collected in McaInputAccordions via the
+  // mcaOperatorSnapshot (see McaInputAccordions.tsx / mcaPersistence.ts).
 
   const [oilViscosity, setOilViscosity] = useState("ISO VG 46");
   const [oilWater, setOilWater] = useState("");
@@ -4995,18 +4992,6 @@ useEffect(() => {
             setUsGain={setUsGain}
             usMeasType={usMeasType}
             setUsMeasType={setUsMeasType}
-            mcaParamVoltage={mcaParamVoltage}
-            setMcaParamVoltage={setMcaParamVoltage}
-            mcaHp={mcaHp}
-            setMcaHp={setMcaHp}
-            mcaResistance={mcaResistance}
-            setMcaResistance={setMcaResistance}
-            mcaInductance={mcaInductance}
-            setMcaInductance={setMcaInductance}
-            mcaPhaseAngle={mcaPhaseAngle}
-            setMcaPhaseAngle={setMcaPhaseAngle}
-            mcaInsulation={mcaInsulation}
-            setMcaInsulation={setMcaInsulation}
             oilViscosity={oilViscosity}
             setOilViscosity={setOilViscosity}
             oilWater={oilWater}

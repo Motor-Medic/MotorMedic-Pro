@@ -15,6 +15,9 @@ import {
   type MasterVisionParse,
   OIL_VISION_API_PATH
 } from "./oilVisionExtractor";
+// SLICE-THERMO-RAD: type-only import (erased at runtime) — the deterministic
+// FLIR decoder itself runs server-side inside /api/extract-thermal-metadata.
+import type { RadiometricDecodeResult } from "./radiometricDecoder";
 
 export interface ThermographyReportData {
   maxTempC: number | null;
@@ -32,6 +35,11 @@ export interface ThermographyReportData {
   flaggedFields?: string[];
   extractionMode?: "consensus" | "single";
   consensusModels?: string[];
+  /** SLICE-THERMO-RAD: set when the deterministic FLIR radiometric decoder
+   * contributed values — provenance is shown in the intake UI. */
+  radiometricProvenance?: "flir-metadata" | null;
+  /** Labels of fields sourced from the file's radiometric metadata. */
+  radiometricFilled?: string[];
 }
 
 interface ThermographyTranscriptionRow {
@@ -125,13 +133,15 @@ type ThermographyMetric =
 
 function resolveThermographyMetric(h: string): ThermographyMetric | null {
   const n = normalizeHeader(h);
-  if (/^(max|tmax|hottest|spot max|area max|max temp|hot spot)$/.test(n)) return "max_temp_c";
-  if (/^(ref|reference|tref|ref temp|cool spot)$/.test(n)) return "reference_temp_c";
+  // SLICE-THERMO-RAD badge fallback additions are purely additive — the
+  // original labeled synonyms below are unchanged.
+  if (/^(max|tmax|t-?max|hottest|spot max|area max|max temp|max value|temp max|peak temp|hot spot)$/.test(n)) return "max_temp_c";
+  if (/^(ref|reference|tref|t-?ref|ref temp|cool spot|reflected|reflected temp|t ?-?min|min temp|scale min)$/.test(n)) return "reference_temp_c";
   if (/^(dt|delta t|Δt|temp rise|rise|difference|deltat)$/.test(n)) return "delta_t_k";
   if (/^(avg|average|area avg|mean)$/.test(n)) return "avg_temp_c";
   if (/^(emissivity|e-value|epsilon)$/.test(n)) return "emissivity";
-  if (/^(ambient|ta|room temp)$/.test(n)) return "ambient_temp_c";
-  if (/^(humidity|rh|rel humidity)$/.test(n)) return "relative_humidity_pct";
+  if (/^(ambient|ta|room temp|ambient temp|tamb|t-?amb|air temp)$/.test(n)) return "ambient_temp_c";
+  if (/^(humidity|rh|rel humidity|relative humidity|rh %|humidity %)$/.test(n)) return "relative_humidity_pct";
   if (/^(severity|class|rating|neta|iso 18436|priority)$/.test(n)) return "severity_class";
   return null;
 }
@@ -450,6 +460,90 @@ function mapVisionJsonToThermographyReportData(
   }
 
   return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* SLICE-THERMO-RAD — deterministic radiometric merge                  */
+/* ------------------------------------------------------------------ */
+
+function emptyThermographyReport(fileName?: string | null): ThermographyReportData {
+  return {
+    maxTempC: null,
+    referenceTempC: null,
+    deltaTK: null,
+    avgTempC: null,
+    emissivity: null,
+    ambientTempC: null,
+    relativeHumidityPct: null,
+    severityClass: null,
+    confidenceScore: 0,
+    sourceFileName: fileName ?? null,
+    detectedTechnology: "THERMOGRAPHY"
+  };
+}
+
+/**
+ * Merge the deterministic FLIR radiometric decode into a thermography
+ * report. Values come from the file's own calibration metadata and
+ * Planck-decoded raw counts — NEVER guessed. A field is only filled when
+ * the file actually carries that channel; otherwise it stays null and the
+ * honesty gate ("Not measured" / no readable fields) stands untouched.
+ *
+ * Badge-OCR fallback pairing: when the vision pass transcribed burned-in
+ * badge overlays, OCR values already in `report` win (they describe the
+ * specific spot badges); the decoder only backfills fields the vision pass
+ * could not read.
+ */
+export function mergeRadiometricIntoThermographyReport(
+  report: ThermographyReportData | null,
+  radiometric: RadiometricDecodeResult | null | undefined,
+  fileName?: string | null
+): { report: ThermographyReportData | null; radiometricFilled: string[] } {
+  if (!radiometric || !radiometric.found) {
+    return { report, radiometricFilled: [] };
+  }
+
+  const merged: ThermographyReportData = report
+    ? { ...report }
+    : emptyThermographyReport(fileName);
+  const radiometricFilled: string[] = [];
+
+  const fill = (
+    key: "maxTempC" | "referenceTempC" | "ambientTempC" | "relativeHumidityPct" | "emissivity",
+    value: number | null,
+    label: string
+  ) => {
+    if (value == null || !Number.isFinite(value)) return;
+    if ((merged[key] as number | null) == null) {
+      (merged[key] as number | null) = value;
+      radiometricFilled.push(label);
+    }
+  };
+
+  fill("maxTempC", radiometric.tMaxC, THERMO_FIELD_LABELS.maxTempC);
+  // T_ref = the camera's ReflectedApparentTemperature metadata channel.
+  fill("referenceTempC", radiometric.reflectedTempC, THERMO_FIELD_LABELS.referenceTempC);
+  fill("ambientTempC", radiometric.atmosphericTempC, THERMO_FIELD_LABELS.ambientTempC);
+  fill("relativeHumidityPct", radiometric.relativeHumidityPct, THERMO_FIELD_LABELS.relativeHumidityPct);
+  fill("emissivity", radiometric.emissivity, THERMO_FIELD_LABELS.emissivity);
+
+  // ΔT derived strictly from two decoded values (max − ref). Both come from
+  // the file; nothing is invented. Flagged for the verify chip.
+  if (
+    (merged.deltaTK as number | null) == null &&
+    merged.maxTempC != null &&
+    merged.referenceTempC != null
+  ) {
+    merged.deltaTK = Number((merged.maxTempC - merged.referenceTempC).toFixed(2));
+    radiometricFilled.push(`${THERMO_FIELD_LABELS.deltaTK} (derived: T_max − T_ref)`);
+  }
+
+  if (radiometricFilled.length > 0) {
+    merged.radiometricProvenance = "flir-metadata";
+    merged.radiometricFilled = radiometricFilled;
+  }
+
+  return { report: merged, radiometricFilled };
 }
 
 /* ------------------------------------------------------------------ */

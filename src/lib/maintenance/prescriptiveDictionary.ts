@@ -1698,8 +1698,12 @@ export const MCA_TEST_CONDITIONS_CONFESSION =
 export const MCA_INTERVAL_PRACTICE_SOURCE =
   "IEEE 43 / NETA MTS test-interval practice - practice, not a rule";
 
+// Winding resistance: IEEE 286 is a power-factor tip-up practice, NOT a
+// winding-resistance standard — relabelled (slice VS9) to IEEE 118, the test
+// code for electrical measurement of winding resistance of rotating
+// machinery. Cited for test method only; no severity class exists.
 export const MCA_WINDING_RESISTANCE_CITATION =
-  "Winding resistance measurement per IEEE 286.";
+  "Winding resistance measurement per IEEE 118 (Test Code for Electrical Measurement of Resistance of Windings of Rotating Machinery) — test method only, not a severity class.";
 
 export const MCA_MAINTENANCE_TESTING_CITATION =
   "Maintenance testing per NETA MTS.";

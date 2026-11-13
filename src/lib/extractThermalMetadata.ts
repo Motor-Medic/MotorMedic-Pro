@@ -6,6 +6,10 @@
  */
 
 import exifr from "exifr";
+// SLICE-THERMO-RAD: type-only import (erased at runtime) — the deterministic
+// FLIR decoder implementation is server-side (node:zlib); the client only
+// consumes the decoded `radiometric` block from the API response.
+import type { RadiometricDecodeResult } from "./radiometricDecoder";
 
 export const EXTRACT_THERMAL_METADATA_API_PATH = "/api/extract-thermal-metadata";
 
@@ -23,6 +27,8 @@ export interface ThermalImageMetadata {
   rawTags?: Record<string, unknown>;
   found: boolean;
   sourceTags: string[];
+  /** SLICE-THERMO-RAD: deterministic FLIR radiometric decode (server-side). */
+  radiometric?: RadiometricDecodeResult | null;
 }
 
 function asFiniteNumber(value: unknown): number | null {

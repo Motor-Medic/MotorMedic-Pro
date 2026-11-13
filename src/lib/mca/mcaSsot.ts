@@ -333,7 +333,9 @@ export function mcaGroundwallFromSsot(
     testVoltageV: gw.test_voltage ?? 0,
     ratedVoltageV: gw.rated_voltage_v,
     windingTempC: gw.winding_temp_c,
-    insulationClass: gw.insulation_class ?? "F",
+    // Absent class stays absent (slice VS9) — no fabricated "F" default; the
+    // calculator's assumed-class fallback carries the disclosure instead.
+    insulationClass: gw.insulation_class,
     reportPi: gw.pi,
     reportDar: gw.dar
   };

@@ -14,6 +14,7 @@ import {
 } from "../lib/extractThermalMetadata";
 import {
   extractThermographyReportFromImage,
+  mergeRadiometricIntoThermographyReport,
   type ThermographyReportData
 } from "../lib/thermographyVisionExtractor";
 
@@ -895,6 +896,48 @@ export default function ThermographyInputAccordions({
     );
   };
 
+  /**
+   * SLICE-THERMO-RAD — one metadata fetch shared by both upload consumers
+   * (thermal-engine EXIF fill + master-vision OCR merge). The response now
+   * carries `radiometric` (deterministic FLIR decode: T_max/T_min/T_ref/RH).
+   */
+  const thermalMetadataRequestRef = useRef<{
+    fileName: string;
+    promise: Promise<ThermalImageMetadata | null>;
+  } | null>(null);
+
+  const requestThermalMetadata = (file: File): Promise<ThermalImageMetadata | null> => {
+    const cached = thermalMetadataRequestRef.current;
+    if (cached && cached.fileName === file.name) return cached.promise;
+    const promise = new Promise<ThermalImageMetadata | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const res = await fetch(EXTRACT_THERMAL_METADATA_API_PATH, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              imageBase64: String(reader.result || ""),
+              fileName: file.name
+            })
+          });
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok || payload?.success === false) {
+            resolve(null);
+            return;
+          }
+          resolve((payload?.metadata || payload) as ThermalImageMetadata);
+        } catch {
+          resolve(null);
+        }
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(file);
+    });
+    thermalMetadataRequestRef.current = { fileName: file.name, promise };
+    return promise;
+  };
+
   const extractExifFromFile = async (file: File) => {
     const requestId = ++exifRequestId.current;
     const capturedAssetId = equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
@@ -903,22 +946,8 @@ export default function ThermographyInputAccordions({
     setExifExtractStatus("reading");
     setExifSources({});
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ""));
-        reader.onerror = () => reject(new Error("Failed to read image file."));
-        reader.readAsDataURL(file);
-      });
+      const meta = await requestThermalMetadata(file);
 
-      const res = await fetch(EXTRACT_THERMAL_METADATA_API_PATH, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64: dataUrl,
-          fileName: file.name
-        })
-      });
-      const payload = await res.json().catch(() => ({}));
       if (requestId !== exifRequestId.current) return;
       const currentAssetId = equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
       if (capturedAssetId && currentAssetId !== capturedAssetId) {
@@ -927,13 +956,12 @@ export default function ThermographyInputAccordions({
         return;
       }
 
-      if (!res.ok || payload?.success === false) {
+      if (!meta) {
         setExifExtractStatus("error");
         onToast?.("Vision extraction failed — Verify manually.", "warning");
         return;
       }
 
-      const meta = (payload?.metadata || payload) as ThermalImageMetadata;
       if (!meta?.found) {
         setExifExtractStatus("none");
         setExifSources({});
@@ -987,7 +1015,7 @@ export default function ThermographyInputAccordions({
     void runThermoVisionOcr(file);
   };
 
-  const runThermoVisionOcr = (file?: File | null) => {
+  const runThermoVisionOcr = async (file?: File | null) => {
     if (!file) return;
     // Proactive reset of OCR state only — never touches the thermal preview / engine state
     setThermoOcrData(null);
@@ -997,71 +1025,124 @@ export default function ThermographyInputAccordions({
     const capturedAssetId =
       equipmentRef.current?.assetTag || equipmentRef.current?.assetLabel || "";
     setThermoOcrParsing(true);
-    extractThermographyReportFromImage(file)
-      .then((report) => {
-        const currentAssetId =
-          equipmentRef.current?.assetTag ||
-          equipmentRef.current?.assetLabel ||
-          "";
-        if (capturedAssetId && currentAssetId !== capturedAssetId) {
-          onToast?.("Extraction discarded - asset changed", "warning");
-          return;
-        }
-        // Map overlapping physics fields into the form
-        if (report.emissivity != null) {
-          setEmissivityPreset("custom");
-          setEmissivityManual(String(report.emissivity));
-        }
-        if (report.ambientTempC != null) {
-          const ambC = report.ambientTempC;
-          const ambDisplay =
-            tempUnit === "°F" ? ambC * 9 / 5 + 32 : ambC;
-          setAmbientTemp(String(Math.round(ambDisplay * 10) / 10));
-        }
-        if (report.relativeHumidityPct != null) {
-          setHumidity(String(report.relativeHumidityPct));
-        }
-        setThermoOcrData(report);
-        setThermoOcrFlagged(report.flaggedFields ?? []);
 
-        const filled = [
-          report.maxTempC,
-          report.referenceTempC,
-          report.deltaTK,
-          report.avgTempC,
-          report.emissivity,
-          report.ambientTempC,
-          report.relativeHumidityPct,
-          report.severityClass
-        ].filter((v) => v != null && v !== "").length;
-        const flagged = report.flaggedFields?.length ?? 0;
-        onToast?.(`${filled} auto-filled, ${flagged} flagged`, "success");
-      })
-      .catch((err) => {
-        const currentAssetId =
-          equipmentRef.current?.assetTag ||
-          equipmentRef.current?.assetLabel ||
-          "";
-        if (capturedAssetId && currentAssetId !== capturedAssetId) {
-          onToast?.("Extraction discarded - asset changed", "warning");
-          return;
+    // SLICE-THERMO-RAD: the deterministic decode (FLIR APP1 FFF / .rjf /
+    // radiometric .ir.webp) runs server-side inside the same metadata fetch
+    // the thermal-engine consumer already triggers — no extra round trip.
+    const metaPromise = requestThermalMetadata(file).catch(() => null);
+
+    const applyMerged = (
+      report: ThermographyReportData | null,
+      radiometricFilled: string[]
+    ) => {
+      setThermoOcrData(report);
+      setThermoOcrFlagged(report?.flaggedFields ?? []);
+      const visionFilled = report
+        ? [
+            report.maxTempC,
+            report.referenceTempC,
+            report.deltaTK,
+            report.avgTempC,
+            report.emissivity,
+            report.ambientTempC,
+            report.relativeHumidityPct,
+            report.severityClass
+          ].filter((v) => v != null && v !== "").length
+        : 0;
+      const flagged = report?.flaggedFields?.length ?? 0;
+      if (radiometricFilled.length > 0) {
+        onToast?.(
+          `${visionFilled} auto-filled, ${flagged} flagged · ${radiometricFilled.length} decoded from FLIR radiometric metadata`,
+          "success"
+        );
+      } else {
+        onToast?.(`${visionFilled} auto-filled, ${flagged} flagged`, "success");
+      }
+    };
+
+    try {
+      const report = await extractThermographyReportFromImage(file);
+      const currentAssetId =
+        equipmentRef.current?.assetTag ||
+        equipmentRef.current?.assetLabel ||
+        "";
+      if (capturedAssetId && currentAssetId !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
+      // Map overlapping physics fields into the form
+      if (report.emissivity != null) {
+        setEmissivityPreset("custom");
+        setEmissivityManual(String(report.emissivity));
+      }
+      if (report.ambientTempC != null) {
+        const ambC = report.ambientTempC;
+        const ambDisplay =
+          tempUnit === "°F" ? ambC * 9 / 5 + 32 : ambC;
+        setAmbientTemp(String(Math.round(ambDisplay * 10) / 10));
+      }
+      if (report.relativeHumidityPct != null) {
+        setHumidity(String(report.relativeHumidityPct));
+      }
+
+      // Radiometric backfill: real T_max / T_ref / RH from the file's own
+      // FLIR calibration data fill fields the vision pass could not read.
+      const meta = await metaPromise;
+      const merged = mergeRadiometricIntoThermographyReport(report, meta?.radiometric, file.name);
+      if (merged.radiometricFilled.length > 0) {
+        if (merged.report?.emissivity != null) {
+          setEmissivityPreset("custom");
+          setEmissivityManual(String(merged.report.emissivity));
         }
-        const raw =
-          err instanceof Error ? err.message : "Thermography OCR failed. Verify manually.";
-        // TASK 2: honest empty-image message on non-oil (thermography) tab —
-        // map server "no parse / unknown technology" to a clear, non-oil message.
-        const honestEmpty =
-          raw === "TECHNOLOGY_NOT_OIL" ||
-          /TECHNOLOGY_NOT_OIL|returned no data|empty raw_table|no readable/i.test(raw);
-        const display = honestEmpty
-          ? "No readable report fields found - verify manually."
-          : raw;
-        setThermoOcrError(display);
-        onToast?.(display, "error");
-      })
-      .finally(() => {
-        setThermoOcrParsing(false);
-      });
+        if (merged.report?.relativeHumidityPct != null) {
+          setHumidity(String(merged.report.relativeHumidityPct));
+        }
+      }
+      applyMerged(merged.report, merged.radiometricFilled);
+    } catch (err) {
+      const currentAssetId =
+        equipmentRef.current?.assetTag ||
+        equipmentRef.current?.assetLabel ||
+        "";
+      if (capturedAssetId && currentAssetId !== capturedAssetId) {
+        onToast?.("Extraction discarded - asset changed", "warning");
+        return;
+      }
+      const raw =
+        err instanceof Error ? err.message : "Thermography OCR failed. Verify manually.";
+      // TASK 2: honest empty-image message on non-oil (thermography) tab —
+      // map server "no parse / unknown technology" to a clear, non-oil message.
+      const honestEmpty =
+        raw === "TECHNOLOGY_NOT_OIL" ||
+        /TECHNOLOGY_NOT_OIL|returned no data|empty raw_table|no readable/i.test(raw);
+
+      // SLICE-THERMO-RAD badge-OCR fallback: when the vision pass yields
+      // nothing, the deterministic FLIR decode still fills what the FILE
+      // carries. Only when BOTH channels are empty does the honesty gate
+      // fire — and nothing is ever guessed.
+      const meta = await metaPromise;
+      const merged = mergeRadiometricIntoThermographyReport(null, meta?.radiometric, file.name);
+      if (merged.report && merged.radiometricFilled.length > 0) {
+        if (merged.report.emissivity != null) {
+          setEmissivityPreset("custom");
+          setEmissivityManual(String(merged.report.emissivity));
+        }
+        if (merged.report.relativeHumidityPct != null) {
+          setHumidity(String(merged.report.relativeHumidityPct));
+        }
+        applyMerged(merged.report, merged.radiometricFilled);
+        setThermoOcrError(null);
+        return;
+      }
+
+      const display = honestEmpty
+        ? "No readable report fields found - verify manually."
+        : raw;
+      setThermoOcrError(display);
+      onToast?.(display, "error");
+    } finally {
+      setThermoOcrParsing(false);
+    }
   };
 
   const handleVisualUpload = (file?: File | null) => {
@@ -1227,7 +1308,14 @@ export default function ThermographyInputAccordions({
                 </p>
               )}
               {thermoOcrData && (
-                <div className="mt-1 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="mt-1 space-y-1">
+                  {thermoOcrData.radiometricProvenance === "flir-metadata" && (
+                    <p className="text-[10px] font-semibold text-cyan-300">
+                      {thermoOcrData.radiometricFilled?.length ?? 0} value(s) decoded from the file's
+                      FLIR radiometric metadata (Planck-calibrated, deterministic — not read from colors).
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {(
                     [
                       ["Max Temp (°C)", thermoOcrData.maxTempC],
@@ -1265,6 +1353,7 @@ export default function ThermographyInputAccordions({
                       </div>
                     );
                   })}
+                  </div>
                 </div>
               )}
             </div>

@@ -64,6 +64,9 @@ import {
   EXTRACT_THERMAL_METADATA_API_PATH,
   extractThermalMetadata
 } from "./src/lib/extractThermalMetadata";
+// SLICE-THERMO-RAD: deterministic FLIR radiometric decoder (APP1 FFF / .rjf /
+// radiometric .ir.webp) — real T_max/T_min/T_ref/RH from the file, not vision.
+import { decodeRadiometric, describeRadiometricContainer } from "./src/lib/radiometricDecoder";
 import {
   OIL_ANALYSIS_API_PATH,
   coerceSaveOilSampleInput,
@@ -909,7 +912,7 @@ app.get(
       ok: true,
       method: "POST",
       path: ANALYZE_THERMOGRAPHY_API_PATH,
-      service: "OpenAI GPT-4o Vision — Thermography Analysis Engine"
+      service: "Thermography Analysis Engine — fast-first vision chain (Gemini gemini-3.5-flash → Mistral pixtral-12b-2409 → OpenAI gpt-4o-mini → gpt-4o legacy)"
     });
   }
 );
@@ -946,6 +949,43 @@ app.post(EXTRACT_THERMAL_METADATA_API_PATH, async (req, res) => {
     }
 
     const metadata = await extractThermalMetadata(buffer);
+
+    // SLICE-THERMO-RAD: deterministic FLIR radiometric decode — the file's own
+    // Planck-calibrated data. Runs regardless of exifr EXIF success so a
+    // radiometric image with burned badges still yields REAL temperatures.
+    const radiometric = decodeRadiometric(new Uint8Array(buffer));
+
+    // Metadata merge — decoded CameraInfo values backfill exifr gaps so the
+    // client physics auto-fill gets emissivity / RH / reflected even when the
+    // EXIF/XMP aliases are absent. Decoder (calibration metadata) wins only
+    // where exifr found nothing; exifr values are never overwritten.
+    if (radiometric.found) {
+      if (metadata.emissivity == null && radiometric.emissivity != null) {
+        metadata.emissivity = radiometric.emissivity;
+        metadata.sourceTags.push("FLIR CameraInfo:Emissivity");
+      }
+      if (metadata.humidity == null && radiometric.relativeHumidityPct != null) {
+        metadata.humidity = radiometric.relativeHumidityPct;
+        metadata.sourceTags.push("FLIR CameraInfo:RelativeHumidity");
+      }
+      if (metadata.reflectedTemp == null && radiometric.reflectedTempC != null) {
+        metadata.reflectedTemp = radiometric.reflectedTempC;
+        metadata.sourceTags.push("FLIR CameraInfo:ReflectedApparentTemperature");
+      }
+      if (metadata.ambientTemp == null && radiometric.atmosphericTempC != null) {
+        metadata.ambientTemp = radiometric.atmosphericTempC;
+        metadata.sourceTags.push("FLIR CameraInfo:AtmosphericTemperature");
+      }
+      if (metadata.distance == null && radiometric.objectDistanceM != null) {
+        metadata.distance = radiometric.objectDistanceM;
+        metadata.sourceTags.push("FLIR CameraInfo:ObjectDistance");
+      }
+      if (radiometric.emissivity != null || radiometric.relativeHumidityPct != null || radiometric.reflectedTempC != null || radiometric.atmosphericTempC != null || radiometric.objectDistanceM != null) {
+        metadata.found = true;
+      }
+      if (metadata.tempUnit == null) metadata.tempUnit = "°C";
+    }
+
     console.log("[extract-thermal-metadata]", {
       found: metadata.found,
       sourceTags: metadata.sourceTags,
@@ -953,13 +993,26 @@ app.post(EXTRACT_THERMAL_METADATA_API_PATH, async (req, res) => {
       ambientTemp: metadata.ambientTemp,
       reflectedTemp: metadata.reflectedTemp,
       distance: metadata.distance,
-      humidity: metadata.humidity
+      humidity: metadata.humidity,
+      radiometric: radiometric.found
+        ? {
+            container: describeRadiometricContainer(radiometric.container),
+            tMaxC: radiometric.tMaxC,
+            tMinC: radiometric.tMinC,
+            reflectedTempC: radiometric.reflectedTempC,
+            humidityPct: radiometric.relativeHumidityPct,
+            hotspot: radiometric.hotspot
+          }
+        : null
     });
 
     return res.json({
       success: true,
       found: metadata.found,
-      metadata
+      metadata: {
+        ...metadata,
+        radiometric
+      }
     });
   } catch (error: any) {
     console.error("[extract-thermal-metadata] Error:", error);
@@ -976,7 +1029,8 @@ app.get(EXTRACT_THERMAL_METADATA_API_PATH, (_req, res) => {
     ok: true,
     method: "POST",
     path: EXTRACT_THERMAL_METADATA_API_PATH,
-    service: "Thermal image EXIF / XMP radiometric metadata extractor (exifr)"
+    service:
+      "Thermal image EXIF / XMP radiometric metadata extractor (exifr) + deterministic FLIR radiometric decoder (APP1 FFF / .rjf / radiometric .ir.webp)"
   });
 });
 

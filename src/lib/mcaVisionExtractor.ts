@@ -118,21 +118,28 @@ export function parseMcaValueAndUnit(rawStr: unknown): { value: number | null; u
   if (!s) return { value: null, unit: null };
   const numMatch = s.match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/);
   let value: number | null = numMatch ? Number(numMatch[0]) : null;
-  const lower = s.toLowerCase();
 
+  // SI case convention decides mega vs milli (slice VS9): a CAPITAL "M"
+  // prefix (MΩ / Mohm / MOHM) is megaohm; a lowercase "m" prefix
+  // (mΩ / mOhm / mohm) is milliohm. The previous /mohm/i rule ran first and
+  // case-insensitively, turning "12 MOhm" of insulation into 12 milliOhm —
+  // a 10^6 error. The word "megohm" (any case) is always mega — it cannot be
+  // milli because it has the "meg" stem. Ohm rules test the ORIGINAL string
+  // (not a lowercased copy) so case information survives.
   const UNIT_RULES: [RegExp, string, number][] = [
     [/µh|\bu\s*h\b|micro/i, "mH", 1 / 1000], // microhenry -> mH
-    [/mohm/i, "Ohm", 1 / 1000], // milliOhm -> Ohm
+    [/megohms?/i, "Mohm", 1], // the word megohm (any case) -> Mohm
+    [/M(Ω|ω|[Oo]hms?|OHMS?)/, "Mohm", 1], // capital-M megaOhm -> Mohm
+    [/m(Ω|ω|[Oo]hms?)/, "Ohm", 1 / 1000], // lowercase-m milliOhm -> Ohm
     [/kohm/i, "Mohm", 1 / 1000], // kiloOhm -> Mohm
     [/gohm/i, "Mohm", 1000], // gigaOhm -> Mohm
-    [/mω|mΩ|megohm/i, "Mohm", 1], // megaOhm -> Mohm
     [/mh\b/i, "mH", 1], // milliHenry -> mH
     [/ohm|ω/i, "Ohm", 1] // Ohm
   ];
 
   let unit: string | null = null;
   for (const [re, baseUnit, factor] of UNIT_RULES) {
-    if (re.test(lower)) {
+    if (re.test(s)) {
       unit = baseUnit;
       if (value != null) value = value * factor;
       break;

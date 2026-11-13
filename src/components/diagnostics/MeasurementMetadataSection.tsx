@@ -32,7 +32,6 @@ const MOUNTING_METHODS = ["Stud Mount", "Magnetic Base", "Handheld Probe"] as co
 
 const ULTRASOUND_FREQ_OPTIONS = ["20 kHz", "30 kHz", "40 kHz", "60 kHz", "100 kHz"] as const;
 const ULTRASOUND_MEAS_TYPES = ["dBuV", "RMS", "Peak", "Time Waveform"] as const;
-const MCA_VOLTAGE_OPTIONS = ["230V", "380V", "460V", "575V", "4160V"] as const;
 const OIL_VG_OPTIONS = ["ISO VG 32", "ISO VG 46", "ISO VG 68", "ISO VG 100", "ISO VG 150", "ISO VG 220", "ISO VG 320"] as const;
 
 export interface MeasurementMetadataSectionProps {
@@ -83,18 +82,9 @@ export interface MeasurementMetadataSectionProps {
   setUsGain: (value: string) => void;
   usMeasType: string;
   setUsMeasType: (value: string) => void;
-  mcaParamVoltage: string;
-  setMcaParamVoltage: (value: string) => void;
-  mcaHp: string;
-  setMcaHp: (value: string) => void;
-  mcaResistance: string;
-  setMcaResistance: (value: string) => void;
-  mcaInductance: string;
-  setMcaInductance: (value: string) => void;
-  mcaPhaseAngle: string;
-  setMcaPhaseAngle: (value: string) => void;
-  mcaInsulation: string;
-  setMcaInsulation: (value: string) => void;
+  // MCA is collected through McaInputAccordions (mcaOperatorSnapshot) — the
+  // legacy parallel MCA parameter inputs here were never read by any
+  // diagnostic path and were removed (slice VS9).
   oilViscosity: string;
   setOilViscosity: (value: string) => void;
   oilWater: string;
@@ -153,18 +143,6 @@ export default function MeasurementMetadataSection({
   setUsGain,
   usMeasType,
   setUsMeasType,
-  mcaParamVoltage,
-  setMcaParamVoltage,
-  mcaHp,
-  setMcaHp,
-  mcaResistance,
-  setMcaResistance,
-  mcaInductance,
-  setMcaInductance,
-  mcaPhaseAngle,
-  setMcaPhaseAngle,
-  mcaInsulation,
-  setMcaInsulation,
   oilViscosity,
   setOilViscosity,
   oilWater,
@@ -555,45 +533,9 @@ export default function MeasurementMetadataSection({
             </div>
           )}
 
-          {activeTech === "mca" && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <label className="block min-w-0">
-                <span className={paramLabel}>Voltage</span>
-                <div className="relative">
-                  <select
-                    value={mcaParamVoltage}
-                    onChange={(e) => setMcaParamVoltage(e.target.value)}
-                    className={paramSelect}
-                  >
-                    {MCA_VOLTAGE_OPTIONS.map((v) => (
-                      <option key={v} value={v}>{v}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
-                </div>
-              </label>
-              <label className="block min-w-0">
-                <span className={paramLabel}>Horsepower (HP)</span>
-                <input type="number" value={mcaHp} onChange={(e) => setMcaHp(e.target.value)} className={paramInput} />
-              </label>
-              <label className="block min-w-0">
-                <span className={paramLabel}>Resistance (Ohms)</span>
-                <input type="number" value={mcaResistance} onChange={(e) => setMcaResistance(e.target.value)} className={paramInput} />
-              </label>
-              <label className="block min-w-0">
-                <span className={paramLabel}>Inductance (mH)</span>
-                <input type="number" value={mcaInductance} onChange={(e) => setMcaInductance(e.target.value)} className={paramInput} />
-              </label>
-              <label className="block min-w-0">
-                <span className={paramLabel}>Phase Angle (Degrees)</span>
-                <input type="number" value={mcaPhaseAngle} onChange={(e) => setMcaPhaseAngle(e.target.value)} className={paramInput} />
-              </label>
-              <label className="block min-w-0">
-                <span className={paramLabel}>Insulation Resistance (Megohms)</span>
-                <input type="number" value={mcaInsulation} onChange={(e) => setMcaInsulation(e.target.value)} className={paramInput} />
-              </label>
-            </div>
-          )}
+          // MCA params removed (slice VS9): MCA inputs live in
+          // McaInputAccordions; this parallel panel was never read by any
+          // diagnostic path (dead-end inputs).
 
           {activeTech === "oil" && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
