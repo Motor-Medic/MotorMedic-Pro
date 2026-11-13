@@ -425,60 +425,85 @@ async function guardTarget(client: pg.PoolClient): Promise<void> {
   }
 }
 
-async function resolveTenant(
+export async function resolveTenant(
   client: pg.PoolClient
 ): Promise<{ companyId: number; userId: number; createdUser: boolean }> {
-  const existing = await client.query(
-    `SELECT id, company_id, username, email, role
+  // AUTHFIX: POST /api/auth/login authenticates strictly by LOWER(username)
+  // (server.ts:11571-11574) — it never falls back to email and is not
+  // tenant-scoped. The demo row therefore must carry username="demo", and its
+  // password_hash must always be re-stamped with the same bcrypt helper login
+  // verifies against (hashPasswordSync -> verifyPassword), otherwise a stale
+  // hash on a pre-existing row permanently blocks demo/demo123 even after a
+  // re-seed.
+  const byUsername = await client.query(
+    `SELECT id, company_id
        FROM users
       WHERE LOWER(username) = LOWER($1)
-         OR (email IS NOT NULL AND LOWER(email) = LOWER($2))
       ORDER BY id ASC
       LIMIT 1`,
-    [DEMO_USERNAME, DEMO_EMAIL]
+    [DEMO_USERNAME]
   );
 
-  if (existing.rows.length > 0) {
-    const user = existing.rows[0];
-    if (user.company_id != null) {
-      return {
-        companyId: Number(user.company_id),
-        userId: Number(user.id),
-        createdUser: false
-      };
-    }
+  let existing: { id: number | string; company_id: number | null } | undefined =
+    byUsername.rows[0];
+
+  if (existing == null) {
+    // No "demo" username yet — adopt an email-matched account (renamed to
+    // "demo" in the UPDATE below) before falling back to a fresh insert.
+    const byEmail = await client.query(
+      `SELECT id, company_id
+         FROM users
+        WHERE email IS NOT NULL AND LOWER(email) = LOWER($1)
+        ORDER BY id ASC
+        LIMIT 1`,
+      [DEMO_EMAIL]
+    );
+    existing = byEmail.rows[0];
   }
 
   let companyId: number;
-  const companyByName = await client.query(
-    "SELECT id FROM companies WHERE LOWER(name) = LOWER($1) LIMIT 1",
-    [DEMO_COMPANY_NAME]
-  );
-  if (companyByName.rows.length > 0) {
-    companyId = Number(companyByName.rows[0].id);
+  if (existing != null && existing.company_id != null) {
+    companyId = Number(existing.company_id);
   } else {
-    const createdCompany = await client.query(
-      `INSERT INTO companies (name, subscription_plan)
-       VALUES ($1, 'module_entitlements')
-       RETURNING id`,
+    const companyByName = await client.query(
+      "SELECT id FROM companies WHERE LOWER(name) = LOWER($1) LIMIT 1",
       [DEMO_COMPANY_NAME]
     );
-    companyId = Number(createdCompany.rows[0].id);
+    if (companyByName.rows.length > 0) {
+      companyId = Number(companyByName.rows[0].id);
+    } else {
+      const createdCompany = await client.query(
+        `INSERT INTO companies (name, subscription_plan)
+         VALUES ($1, 'module_entitlements')
+         RETURNING id`,
+        [DEMO_COMPANY_NAME]
+      );
+      companyId = Number(createdCompany.rows[0].id);
+    }
   }
 
-  if (existing.rows.length > 0) {
-    const user = existing.rows[0];
+  if (existing != null) {
+    // Always repair the credential: username, bcrypt hash of DEMO_PASSWORD and
+    // account flags. A pre-existing row (e.g. created by register or an older
+    // seed) keeps its company and data but gets a sign-in-able form.
     const updated = await client.query(
       `UPDATE users
           SET company_id = $1,
-              password_hash = $2,
-              role = $3,
+              username = $2,
+              password_hash = $3,
+              role = $4,
               is_temp_password = FALSE,
               is_disabled = FALSE,
               terms_accepted_at = NOW()
-        WHERE id = $4
+        WHERE id = $5
         RETURNING id`,
-      [companyId, hashPasswordSync(DEMO_PASSWORD), DEMO_ROLE, user.id]
+      [
+        companyId,
+        DEMO_USERNAME,
+        hashPasswordSync(DEMO_PASSWORD),
+        DEMO_ROLE,
+        existing.id
+      ]
     );
     return {
       companyId,
@@ -1279,4 +1304,7 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// Allow the module to be imported by unit tests without executing the seed.
+if (!process.env.VITEST) {
+  void main();
+}
