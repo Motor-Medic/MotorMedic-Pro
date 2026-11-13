@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { crestFactorFromPeakRmsDb } from "../lib/ultrasoundAnalysis";
 import { evaluateUsSeverity } from "../lib/maintenance/prescriptiveDictionary";
+import { normalizeProbeType, resolveProbeType } from "../lib/ultrasound/probeType";
+import type { UsLadderContext } from "../lib/maintenance/prescriptiveDictionary";
 
 const src = readFileSync(
   fileURLToPath(new URL("./TrendAnalyzer.tsx", import.meta.url)),
@@ -140,10 +142,53 @@ describe("SLICE-Z ultrasound Bearings & Mechanical honesty", () => {
     expect(src).toContain("US_DDB_SOURCE");
     expect(src).toContain('data-testid="ue-ddb-rubric"');
     expect(src).toContain("Static in-repo reference");
-    // The ladder is a real rubric, so a delta can be classified honestly.
-    expect(evaluateUsSeverity(20).clazz).toBe("Class 1 — Critical");
-    expect(evaluateUsSeverity(16).clazz).toBe("Class 2 — Moderate");
-    expect(evaluateUsSeverity(10).clazz).toBe("Class 3 — Minor");
+    // The ladder is a real rubric, so a delta can be classified honestly —
+    // but only for contact / structure-borne mechanical readings.
+    const contactMechanical: UsLadderContext = {
+      probeType: "contact",
+      domain: "structure-borne-mechanical"
+    };
+    expect(evaluateUsSeverity(20, contactMechanical)?.clazz).toBe("Class 1 — Critical");
+    expect(evaluateUsSeverity(16, contactMechanical)?.clazz).toBe("Class 2 — Moderate");
+    expect(evaluateUsSeverity(10, contactMechanical)?.clazz).toBe("Class 3 — Minor");
+  });
+
+  it("keeps the ladder probe-type/domain aware — airborne and electrical never receive a severity class", () => {
+    const airborneLeak: UsLadderContext = {
+      probeType: "airborne",
+      domain: "airborne-leak"
+    };
+    const contactElectrical: UsLadderContext = {
+      probeType: "contact",
+      domain: "electrical"
+    };
+    const contactValve: UsLadderContext = {
+      probeType: "contact",
+      domain: "valve"
+    };
+    for (const context of [airborneLeak, contactElectrical, contactValve]) {
+      expect(evaluateUsSeverity(40, context)).toBeNull();
+      expect(evaluateUsSeverity(0, context)).toBeNull();
+    }
+    expect(prescriptiveSrc).toContain(
+      "never applied to airborne leak or electrical scans"
+    );
+  });
+
+  it("resolves probe type without misreading non-contact as contact", () => {
+    // The airborne branch must be evaluated before the contact branch:
+    // "non-contact" contains the substring "contact" but is an airborne method.
+    expect(normalizeProbeType("non-contact")).toBe("airborne");
+    expect(normalizeProbeType("non contact")).toBe("airborne");
+    expect(normalizeProbeType("airborne")).toBe("airborne");
+    expect(normalizeProbeType("parabolic dish")).toBe("airborne");
+    expect(normalizeProbeType("contact stethoscope")).toBe("contact");
+    expect(normalizeProbeType("structure-borne magnet mount")).toBe("contact");
+    expect(normalizeProbeType("")).toBe("unknown");
+    // Legacy rows without a stored coupling fall back to the transducer label.
+    expect(resolveProbeType("", "Contact Stethoscope Module")).toBe("contact");
+    expect(resolveProbeType("", "Airborne Parabolic Dish")).toBe("airborne");
+    expect(resolveProbeType("", "RAS-100")).toBe("unknown");
   });
 
   it("keeps the three KPI cards null-honest with no substitution or regex inference", () => {

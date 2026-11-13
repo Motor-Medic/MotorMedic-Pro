@@ -13,7 +13,6 @@ vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({
 
 import TrendAnalyzer from "./TrendAnalyzer";
 import { saveEquipmentStore, type EquipmentStore } from "../data/equipmentDb";
-import { calculateLeakImpact, formatLeakUsdPerYear } from "../lib/ultrasound/leakCalculator";
 
 const NOW = new Date().toISOString();
 
@@ -114,8 +113,8 @@ async function openLeaksTab() {
   });
 }
 
-describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
-  it("shows the persisted per-run pressure/hours/coefficient and uses them for economics", async () => {
+describe("SLICE-VS8 per-run basis is parked, not priced", () => {
+  it("never renders per-run basis economics — legacy stored $/CFM/orifice are ignored", async () => {
     rows = [
       baseRow({
         peaks: [
@@ -126,10 +125,15 @@ describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
             baseline_dbmv: 28,
             delta_db: 27,
             mode: "leak",
+            probe_type: "airborne",
+            baseline_source: "stored",
+            // Legacy per-run basis + model output from before SLICE-VS8.
             system_pressure: 150,
             operating_hours: 4000,
             discharge_coefficient: 0.65,
-            baseline_source: "stored"
+            annual_cost: 1234.56,
+            estimated_cfm: 3.21,
+            orifice_size: 0.1
           }
         ]
       })
@@ -138,72 +142,28 @@ describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
     await openLeaksTab();
 
     const pill = await screen.findByTestId("ue-leak-basis-pill");
-    expect(pill.textContent).toContain("Per-run basis");
-    expect(pill.textContent).toContain("150 psi");
-    expect(pill.textContent).toContain("4,000 h/yr");
-    expect(pill.textContent).toContain("Cd 0.65");
-    expect(screen.queryByTestId("ue-leak-baseline-fallback-note")).toBeNull();
+    // The pill confesses the parked model; it no longer prices per run.
+    expect(pill.textContent).toContain("Measured dBµV readings only");
+    expect(pill.textContent).toContain("parked (SLICE-VS8)");
+    expect(pill.textContent).not.toContain("Per-run basis");
+    expect(pill.textContent).not.toContain("150 psi");
+    expect(pill.textContent).not.toContain("4,000 h/yr");
+    expect(pill.textContent).not.toContain("Cd 0.65");
 
-    const expected = calculateLeakImpact({
-      peakDb: 55,
-      baselineDb: 28,
-      systemPressure: 150,
-      operatingHours: 4000,
-      dischargeCoefficient: 0.65
-    });
-    await waitFor(() => {
-      expect(
-        screen.getAllByText(formatLeakUsdPerYear(expected.annualCost)).length
-      ).toBeGreaterThanOrEqual(1);
-    });
+    expect(screen.getAllByText("Parked").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText("$1,235")).toBeNull();
+    expect(screen.queryByText("$1,234.56")).toBeNull();
+    expect(screen.queryByText(/3\.21 CFM/)).toBeNull();
+    expect(screen.queryByText(/0\.1 in/)).toBeNull();
+    expect(screen.queryByText(/Derived daily savings/)).toBeNull();
+    expect(screen.queryByText(/payback/i)).toBeNull();
+
+    // The measured cells still render honestly.
+    expect(screen.getAllByText("55.0 dBµV").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("27.0 dB").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("leaves stored historical economics untouched when per-run basis is present", async () => {
-    const storedAnnualCost = 1234.56;
-    rows = [
-      baseRow({
-        peaks: [
-          {
-            type: "ultrasound",
-            peak_dbmv: 55,
-            rms_dbmv: 39,
-            baseline_dbmv: 28,
-            delta_db: 27,
-            mode: "leak",
-            annual_cost: storedAnnualCost,
-            estimated_cfm: 3.21,
-            orifice_size: 0.1,
-            system_pressure: 150,
-            operating_hours: 4000,
-            discharge_coefficient: 0.65,
-            baseline_source: "stored"
-          }
-        ]
-      })
-    ];
-
-    await openLeaksTab();
-
-    expect(
-      screen.getAllByText(formatLeakUsdPerYear(storedAnnualCost)).length
-    ).toBeGreaterThanOrEqual(1);
-
-    const recomputed = calculateLeakImpact({
-      peakDb: 55,
-      baselineDb: 28,
-      systemPressure: 150,
-      operatingHours: 4000,
-      dischargeCoefficient: 0.65
-    });
-    expect(formatLeakUsdPerYear(recomputed.annualCost)).not.toBe(
-      formatLeakUsdPerYear(storedAnnualCost)
-    );
-    expect(
-      screen.queryByText(formatLeakUsdPerYear(recomputed.annualCost))
-    ).toBeNull();
-  });
-
-  it("discloses the 28 dBµV fallback when a run has no stored baseline", async () => {
+  it("discloses the 28 dBµV modeled fallback when a run has no stored baseline", async () => {
     rows = [
       baseRow({
         peaks: [
@@ -213,7 +173,9 @@ describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
             rms_dbmv: 39,
             delta_db: 27,
             mode: "leak",
+            probe_type: "airborne",
             baseline_source: "fallback",
+            baseline_fallback: true,
             baseline_fallback_db: 28,
             operating_hours: 8760
           }
@@ -223,14 +185,14 @@ describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
 
     await openLeaksTab();
 
-    const pill = await screen.findByTestId("ue-leak-basis-pill");
-    expect(pill.textContent).toContain("8760 h/yr");
     const fallback = await screen.findByTestId("ue-leak-baseline-fallback-note");
-    expect(fallback.textContent).toContain("28 dBµV");
     expect(fallback.textContent).toContain("no stored baseline");
+    expect(fallback.textContent).toContain("28 dBµV applied");
+    expect(fallback.textContent).toContain("modeled, not measured");
+    expect(screen.getAllByText("Modeled fallback").length).toBeGreaterThanOrEqual(1);
   });
 
-  it("does not show a fallback note for a run with a stored baseline", async () => {
+  it("shows no fallback note for a run with a stored baseline", async () => {
     rows = [
       baseRow({
         peaks: [
@@ -240,7 +202,9 @@ describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
             rms_dbmv: 39,
             baseline_dbmv: 28,
             delta_db: 27,
-            mode: "leak"
+            mode: "leak",
+            probe_type: "airborne",
+            baseline_source: "stored"
           }
         ]
       })
@@ -248,9 +212,74 @@ describe("SLICE-AB per-run basis in the Compressed Air Leaks pill", () => {
 
     await openLeaksTab();
 
-    const pill = await screen.findByTestId("ue-leak-basis-pill");
-    expect(pill.textContent).toContain("100 psi");
-    expect(pill.textContent).toContain("8760 h/yr");
+    await screen.findByTestId("ue-leak-basis-pill");
     expect(screen.queryByTestId("ue-leak-baseline-fallback-note")).toBeNull();
+    expect(screen.getAllByText("Stored baseline").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps the probe column labelled so airborne and contact never pool unlabeled", async () => {
+    rows = [
+      baseRow({
+        id: "r-air",
+        peaks: [
+          {
+            type: "ultrasound",
+            peak_dbmv: 55,
+            baseline_dbmv: 28,
+            delta_db: 27,
+            mode: "leak",
+            probe_type: "airborne",
+            baseline_source: "stored"
+          }
+        ]
+      }),
+      baseRow({
+        id: "r-contact",
+        peaks: [
+          {
+            type: "ultrasound",
+            peak_dbmv: 60,
+            baseline_dbmv: 28,
+            delta_db: 32,
+            mode: "leak",
+            probe_type: "contact",
+            baseline_source: "stored"
+          }
+        ]
+      })
+    ];
+
+    await openLeaksTab();
+
+    const table = await screen.findByRole("table");
+    expect(table.textContent).toContain("Airborne");
+    expect(table.textContent).toContain("Contact / structure-borne");
+    // The bearing ladder must not classify an airborne leak delta.
+    expect(table.textContent).not.toContain("Class 1");
+    expect(table.textContent).not.toContain("Class 2");
+    expect(table.textContent).not.toContain("Class 3");
+  });
+
+  it("renders the parked provenance footer and honest N/A when no delta exists", async () => {
+    rows = [
+      baseRow({
+        peaks: [
+          {
+            type: "ultrasound",
+            peak_dbmv: 55,
+            mode: "leak",
+            probe_type: "airborne",
+            baseline_source: "stored"
+          }
+        ]
+      })
+    ];
+
+    await openLeaksTab();
+
+    const provenance = await screen.findByTestId("ue-leak-status-provenance");
+    expect(provenance.textContent).toContain("descriptive subtraction");
+    expect(provenance.textContent).toContain("No CFM");
+    expect(screen.getByText("N/A")).toBeTruthy();
   });
 });

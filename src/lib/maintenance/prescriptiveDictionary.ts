@@ -7,6 +7,11 @@
  */
 
 import type { OilSample, WearMetalKey } from "../../types/oilAnalysis";
+import {
+  bearingLadderApplicable,
+  type UltrasoundProbeType,
+  type UsAcousticDomain,
+} from "../ultrasound/probeType";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1463,15 +1468,18 @@ export function getPrescription(diagnosis: string): PrescriptivePackage {
 
 // ---------------------------------------------------------------------------
 // Ultrasound severity ladder — UE Systems bearing-condition delta-dB over
-// baseline. No ISO severity standard exists for ultrasound. Applied as
-// program practice to survey delta-dB. Exclusive lower, inclusive upper.
+// baseline. No ISO severity standard exists for ultrasound. This ladder is
+// structure-borne *bearing* guidance only: it is gated to contact (or
+// unclassified legacy) mechanical readings and must never be applied to
+// airborne leak or electrical scans. Exclusive lower, inclusive upper.
 // Values are stated in whole dB in the source practice; a rounding gap is
 // intentional — a delta landing on a boundary (e.g. exactly 8 dB)
 // classifies into the higher bracket, matching the inclusive-upper
 // convention. Never interpolate between brackets.
 // ---------------------------------------------------------------------------
 
-export const US_DDB_SOURCE = "UE Systems bearing-condition ladder (structure-borne delta-dB over baseline): +8 lube/pre-failure, +12 incipient, +16 advanced, +35-50 catastrophic; applied as program practice to survey delta-dB";
+export const US_DDB_SOURCE =
+  "UE Systems bearing-condition ladder (structure-borne delta-dB over baseline, contact/mechanical readings only): +8 lube/pre-failure, +12 incipient, +16 advanced, +35-50 catastrophic; applied as in-repo program guidance to survey delta-dB — not an ISO severity standard and never applied to airborne leak or electrical scans";
 
 export interface UsDeltaDbBracket {
   readonly minDb: number;
@@ -1490,7 +1498,22 @@ export const US_DDB_BRACKETS: readonly UsDeltaDbBracket[] = [
 
 export const US_CATASTROPHIC_DB = 35;
 
-export function evaluateUsSeverity(deltaDb: number): UsDeltaDbBracket {
+export interface UsLadderContext {
+  probeType: UltrasoundProbeType;
+  domain: UsAcousticDomain;
+}
+
+/**
+ * Structure-borne bearing ladder lookup. Returns null when the reading is
+ * airborne, electrical, valve, or otherwise outside the bearing domain — the
+ * caller must then show a descriptive-only reading rather than a severity
+ * class. The ladder is never re-applied to a different quantity.
+ */
+export function evaluateUsSeverity(
+  deltaDb: number,
+  context: UsLadderContext
+): UsDeltaDbBracket | null {
+  if (!bearingLadderApplicable(context)) return null;
   for (const b of US_DDB_BRACKETS) {
     if (deltaDb > b.minDb && deltaDb <= b.maxDb) return b;
   }

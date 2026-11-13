@@ -13,6 +13,11 @@ import {
   evaluateUsCrestBand,
 } from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
+import {
+  resolveProbeType,
+  ULTRASOUND_PROBE_LABEL,
+  type UltrasoundProbeType,
+} from "../../lib/ultrasound/probeType";
 
 export interface UltrasoundPatternDossierTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
@@ -28,6 +33,7 @@ interface SurveyRow {
   family: string;
   pattern: string;
   primaryFault: string | null;
+  probeType: UltrasoundProbeType;
 }
 
 const num = (v: unknown): number | null =>
@@ -51,12 +57,16 @@ function patternFromCrest(crest: number | null, family: string): string {
 function rowFor(r: SavedAnalysisResult): SurveyRow {
   const p = peakOfType(r, "ultrasound") ??
     (Array.isArray(r.peaks) ? (r.peaks[0] as Record<string, unknown>) : null);
-  const peakDb = num(p?.peak_dbmv);
-  const rmsDb = num(p?.rms_dbmv);
+  const peakDb = num(p?.peak_dbmv ?? p?.peak_dbuv);
+  const rmsDb = num(p?.rms_dbmv ?? p?.rms_dbuv);
   const crest = num(p?.crest_factor) ?? num(r.waveform_crest_factor);
   const primaryFault = r.primary_fault ?? r.fault_list?.[0]?.title ?? null;
   const family = classifyFaultFamily(primaryFault);
   const pattern = patternFromCrest(crest, family);
+  const probeType = resolveProbeType(
+    p?.probe_type ?? p?.probeType ?? p?.sensor_mount_type ?? p?.mount_type,
+    p?.transducer ?? p?.sensor_type,
+  );
   return {
     date: new Date(r.timestamp).toLocaleDateString("en-US", {
       month: "short",
@@ -70,6 +80,7 @@ function rowFor(r: SavedAnalysisResult): SurveyRow {
     family,
     pattern,
     primaryFault,
+    probeType,
   };
 }
 
@@ -168,6 +179,9 @@ export default function UltrasoundPatternDossierTab({
                 <span className="text-slate-500 w-28 shrink-0">
                   {r.date}
                 </span>
+                <span className="text-[10px] text-slate-400">
+                  {ULTRASOUND_PROBE_LABEL[r.probeType]}
+                </span>
                 <span className="font-mono text-white">
                   {r.crest != null ? `crest ${r.crest}` : "crest \u2014"}
                 </span>
@@ -222,8 +236,9 @@ export default function UltrasoundPatternDossierTab({
               <thead>
                 <tr className="text-slate-500">
                   <th className="text-left font-normal">Date</th>
-                  <th className="text-right font-normal">RMS dB</th>
-                  <th className="text-right font-normal">Peak dB</th>
+                  <th className="text-left font-normal">Probe</th>
+                  <th className="text-right font-normal">RMS dBµV</th>
+                  <th className="text-right font-normal">Peak dBµV</th>
                   <th className="text-right font-normal">Crest</th>
                 </tr>
               </thead>
@@ -234,6 +249,9 @@ export default function UltrasoundPatternDossierTab({
                     className="text-slate-300 border-t border-slate-800"
                   >
                     <td className="py-1">{r.date}</td>
+                    <td className="py-1 text-[10px] text-slate-400">
+                      {ULTRASOUND_PROBE_LABEL[r.probeType]}
+                    </td>
                     <td className="py-1 text-right font-mono">
                       {r.rmsDb != null ? r.rmsDb.toFixed(1) : "\u2014"}
                     </td>

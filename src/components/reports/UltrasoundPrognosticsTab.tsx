@@ -1,7 +1,8 @@
 /**
  * UltrasoundPrognosticsTab — acoustic P-F window (thin adapter over pfEngine).
- * Series: peak dB, delta-dB over baseline, RMS dB at tracked channel.
- * Threshold: UE Systems Class 1 proxy on delta-dB; peak/RMS confess if
+ * Series: peak dBµV, delta-dB over baseline, RMS dBµV at tracked channel,
+ * one per probe+domain group. Threshold: UE Systems Class 1 proxy on
+ * structure-borne delta-dB only; airborne/electrical and peak/RMS confess if
  * no stored limit. G8/G9 via engine; comparison remains vibration-only.
  */
 import React, { useEffect, useMemo, useState } from "react";

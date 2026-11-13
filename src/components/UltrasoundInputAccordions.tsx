@@ -10,6 +10,12 @@ import {
   Zap
 } from "lucide-react";
 import type { UltrasoundMetadata } from "../lib/ultrasoundAnalysis";
+import {
+  deriveProbeTypeFromTransducer,
+  ULTRASOUND_PROBE_OPTIONS,
+  ULTRASOUND_PROBE_LABEL,
+  type UltrasoundProbeType
+} from "../lib/ultrasound/probeType";
 import { analyzeUltrasoundWav } from "../lib/ultrasound/audioAnalyzer";
 
 type UeAccordionSection = "mode" | "hardware" | "specific" | "ingestion";
@@ -180,6 +186,10 @@ export default function UltrasoundInputAccordions({
 
   // Hardware
   const [transducer, setTransducer] = useState<string>("Airborne Probe (Standard)");
+  const [probeType, setProbeType] = useState<UltrasoundProbeType>(() =>
+    deriveProbeTypeFromTransducer("Airborne Probe (Standard)")
+  );
+  const [probeManual, setProbeManual] = useState(false);
   const [hardwareBrandProfile, setHardwareBrandProfile] = useState<string>(
     HARDWARE_BRAND_PROFILES[0]
   );
@@ -237,6 +247,13 @@ export default function UltrasoundInputAccordions({
   const equipmentRefUltra = useRef(equipment);
   useEffect(() => { equipmentRefUltra.current = equipment; }, [equipment]);
   useEffect(() => { onExtractionStatusChange?.(wavAnalyzing); }, [wavAnalyzing, onExtractionStatusChange]);
+
+  // Keep the coupling in step with the transducer choice until the operator
+  // explicitly overrides it. An explicit choice is never overwritten.
+  useEffect(() => {
+    if (probeManual) return;
+    setProbeType(deriveProbeTypeFromTransducer(transducer));
+  }, [transducer, probeManual]);
 
   /**
    * Crest Factor from Peak/RMS dB fields:
@@ -403,6 +420,7 @@ export default function UltrasoundInputAccordions({
       location: equipment?.location,
       mode: ultrasoundMode,
       transducer,
+      probeType,
       hardwareBrand: hardwareBrandProfile,
       heterodyneKhz,
       gainDb,
@@ -437,6 +455,7 @@ export default function UltrasoundInputAccordions({
     equipment?.rpm,
     ultrasoundMode,
     transducer,
+    probeType,
     hardwareBrandProfile,
     heterodyneKhz,
     gainDb,
@@ -597,8 +616,9 @@ export default function UltrasoundInputAccordions({
           )}
           {ultrasoundMode === "leak" && !wavName && (
             <p className="text-xs text-cyan-400 italic">
-              Optional for Leak Detection. If no audio file is provided, AI can calculate CFM loss
-              using manual Peak/RMS decibel inputs in the accordion below.
+              Optional for Leak Detection. If no audio file is provided, enter Peak/RMS
+              dBµV manually in the accordion below. Leak-rate/CFM estimates are parked
+              and are not reported.
             </p>
           )}
           <input
@@ -782,6 +802,34 @@ export default function UltrasoundInputAccordions({
           </label>
 
           <label className="block min-w-0 sm:col-span-2 max-w-xl">
+            <span className={fieldLabel}>Probe Coupling (airborne vs contact)</span>
+            <div className="relative">
+              <select
+                value={probeType}
+                onChange={(e) => {
+                  setProbeManual(true);
+                  setProbeType(e.target.value as UltrasoundProbeType);
+                }}
+                className={selectCls}
+                aria-label="Probe Coupling"
+              >
+                {ULTRASOUND_PROBE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
+            </div>
+            <p className={helperCls}>
+              Airborne and contact readings are separate quantities and are trended
+              on separate series. Current:{" "}
+              <span className="text-slate-300">{ULTRASOUND_PROBE_LABEL[probeType]}</span>.
+              Legacy rows without a stored coupling stay unclassified.
+            </p>
+          </label>
+
+          <label className="block min-w-0 sm:col-span-2 max-w-xl">
             <span className={fieldLabel}>Hardware Brand Profile</span>
             <div className="relative">
               <select
@@ -878,11 +926,13 @@ export default function UltrasoundInputAccordions({
             <div className="mb-4">
               <span className={fieldLabel}>Database Baseline Reference</span>
               <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-xs bg-slate-800 text-cyan-400 border border-cyan-500/30">
-                12 dBµV
+                baseline dBµV as recorded
               </div>
               <p className={helperCls}>
-                Mechanical bearing ultrasound is evaluated on delta over baseline. (+8 dB = Needs
-                Lube, +24 dB = Severe Failure).
+                In-repo UE bearing-condition guidance applies only to contact /
+                structure-borne mechanical readings (+8 dB lube/pre-failure, +16 dB
+                advanced, ≥35 dB catastrophic). It is not an ISO severity standard and
+                is never applied to airborne leak or electrical scans.
               </p>
             </div>
           )}
@@ -929,7 +979,8 @@ export default function UltrasoundInputAccordions({
                     <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
                   </div>
                   <p className={helperCls}>
-                    Required for accurate annualized leak cost calculation
+                    Recorded as survey context; leak-rate/CFM modeling is parked and
+                    not reported.
                   </p>
                 </label>
               </div>
@@ -972,7 +1023,8 @@ export default function UltrasoundInputAccordions({
                       <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
                     </div>
                     <p className={helperCls}>
-                      Affects CFM flow rate calculation accuracy by up to 30%
+                      Recorded leak geometry context; parked CFM/orifice estimates are
+                      not reported.
                     </p>
                   </label>
                   {customOrifice && (

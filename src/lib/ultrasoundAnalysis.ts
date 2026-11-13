@@ -11,6 +11,8 @@
  */
 
 import type { VibrationAnalysisResult } from "./consensusEngine";
+import type { UltrasoundProbeType } from "./ultrasound/probeType";
+import { resolveProbeType } from "./ultrasound/probeType";
 
 /** Canonical Express + client path — keep in sync with server.ts */
 export const ANALYZE_ULTRASOUND_API_PATH = "/api/analyze-ultrasound";
@@ -55,6 +57,16 @@ export interface UltrasoundResult {
      */
     crest_factor?: number;
     mode?: string;
+    /**
+     * Airborne vs contact / structure-borne coupling. Required for honest
+     * trend separation; legacy rows omit it and resolve to "unknown".
+     */
+    probe_type?: UltrasoundProbeType;
+    /**
+     * PARKED (SLICE-VS8) — leak-rate/orifice/energy fields are retained only
+     * for reading historical rows. New analysis never populates them; the
+     * derived CFM model lives in `leakCalculator.ts` for verify scripts only.
+     */
     /** Leak mode — equivalent orifice diameter (inches). */
     orifice_size?: number;
     /** Leak mode — continuous flow loss (CFM). */
@@ -104,6 +116,7 @@ export interface UltrasoundResult {
 export interface UltrasoundDetailedAnalysis {
   mode?: string;
   transducer?: string;
+  probe_type?: UltrasoundProbeType;
   heterodyne_khz?: number;
   gain_db?: number;
   analysis?: Record<string, unknown>;
@@ -119,6 +132,11 @@ export interface UltrasoundMetadata {
   location?: string;
   mode?: "leak" | "mechanical" | "electrical" | "valve" | string;
   transducer?: string;
+  /**
+   * Explicit probe coupling. When omitted the server derives it from the
+   * transducer label; "unknown" is preserved as an honest gap.
+   */
+  probeType?: UltrasoundProbeType | string;
   hardwareBrand?: string;
   heterodyneKhz?: number | string;
   gainDb?: number | string;
@@ -186,7 +204,7 @@ Return ONLY valid JSON matching the UltrasoundResult schema:
   "health_score": 0-100,
   "primary_fault": string,
   "fault_list": [{ "fault", "severity", "confidence", "description" }],
-  "peaks": { "peak_dbmv", "rms_dbmv", "baseline_dbmv?", "delta_db?", "crest_factor?", "mode?", "orifice_size?", "estimated_cfm?", "annual_kwh?", "annual_cost?", "co2_emissions?", "prpd_data?", "environmental_context?", "confidence_score?" },
+  "peaks": { "peak_dbmv", "rms_dbmv", "baseline_dbmv?", "delta_db?", "crest_factor?", "mode?", "probe_type?", "prpd_data?", "environmental_context?", "confidence_score?" },
   "financial_impact": { "preventive_cost", "failure_cost", "roi_percentage", "downtime_loss", "annual_cost?" },
   "recommendations": string[]
 }
@@ -337,39 +355,21 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
       ? (obj.detailed as UltrasoundDetailedAnalysis)
       : null;
 
-  const orificeSize = optionalFinite(
-    peaksRaw.orifice_size ?? peaksRaw.orificeSize ?? obj.orifice_size
+  // Probe coupling is a first-class measurement dimension. Prefer an explicit
+  // stored value, then the transducer label; legacy rows resolve to "unknown".
+  const probeType = resolveProbeType(
+    peaksRaw.probe_type ??
+      peaksRaw.probeType ??
+      obj.probe_type ??
+      obj.probeType ??
+      detailedRaw?.probe_type,
+    detailedRaw?.transducer ?? obj.transducer
   );
-  const estimatedCfm = optionalFinite(
-    peaksRaw.estimated_cfm ?? peaksRaw.estimatedCfm ?? obj.estimated_cfm
-  );
-  const annualKwh = optionalFinite(
-    peaksRaw.annual_kwh ?? peaksRaw.annualKwh ?? obj.annual_kwh
-  );
-  const annualCostLeak = optionalFinite(
-    peaksRaw.annual_cost ??
-      peaksRaw.annualCost ??
-      finRaw.annual_cost ??
-      obj.annual_cost
-  );
-  const co2Emissions = optionalFinite(
-    peaksRaw.co2_emissions ?? peaksRaw.co2Emissions ?? obj.co2_emissions
-  );
-  const systemPressure = optionalFinite(
-    peaksRaw.system_pressure ?? peaksRaw.systemPressure
-  );
-  const electricityCost = optionalFinite(
-    peaksRaw.electricity_cost ?? peaksRaw.electricityCost
-  );
-  const operatingHours = optionalFinite(
-    peaksRaw.operating_hours ?? peaksRaw.operatingHours
-  );
-  const compressorEfficiency = optionalFinite(
-    peaksRaw.compressor_efficiency ?? peaksRaw.compressorEfficiency
-  );
-  const dischargeCoefficient = optionalFinite(
-    peaksRaw.discharge_coefficient ?? peaksRaw.dischargeCoefficient
-  );
+
+  // PARKED (SLICE-VS8): leak-rate / orifice / annual-energy / CO₂ fields from
+  // older AI payloads are intentionally ignored here. The derived-CFM family
+  // must not re-enter a result, save payload, report, or export.
+
   const baselineSourceRaw =
     peaksRaw.baseline_source ?? peaksRaw.baselineSource;
   let baselineSource: "stored" | "fallback" | undefined =
@@ -442,22 +442,7 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
       delta_db: delta,
       crest_factor: crestFactor,
       mode: asText(peaksRaw.mode ?? obj.mode, "") || undefined,
-      ...(orificeSize != null ? { orifice_size: orificeSize } : {}),
-      ...(estimatedCfm != null ? { estimated_cfm: estimatedCfm } : {}),
-      ...(annualKwh != null ? { annual_kwh: annualKwh } : {}),
-      ...(annualCostLeak != null ? { annual_cost: annualCostLeak } : {}),
-      ...(co2Emissions != null ? { co2_emissions: co2Emissions } : {}),
-      ...(systemPressure != null ? { system_pressure: systemPressure } : {}),
-      ...(electricityCost != null
-        ? { electricity_cost: electricityCost }
-        : {}),
-      ...(operatingHours != null ? { operating_hours: operatingHours } : {}),
-      ...(compressorEfficiency != null
-        ? { compressor_efficiency: compressorEfficiency }
-        : {}),
-      ...(dischargeCoefficient != null
-        ? { discharge_coefficient: dischargeCoefficient }
-        : {}),
+      probe_type: probeType,
       ...(baselineSource ? { baseline_source: baselineSource } : {}),
       ...(baselineFallback ? { baseline_fallback: true } : {}),
       ...(baselineFallbackDb != null
@@ -475,10 +460,7 @@ export function normalizeUltrasoundResult(raw: unknown): UltrasoundResult {
       preventive_cost: Math.round(preventive),
       failure_cost: Math.round(failure),
       roi_percentage: Math.round(roi),
-      downtime_loss: Math.round(downtime),
-      ...(annualCostLeak != null
-        ? { annual_cost: Math.round(annualCostLeak * 100) / 100 }
-        : {})
+      downtime_loss: Math.round(downtime)
     },
     recommendations:
       recommendations.length > 0
@@ -664,16 +646,7 @@ export function ultrasoundPeaksForSave(result: UltrasoundResult): unknown[] {
       delta_db: result.peaks.delta_db ?? null,
       crest_factor: result.peaks.crest_factor ?? null,
       mode: result.peaks.mode ?? null,
-      orifice_size: result.peaks.orifice_size ?? null,
-      estimated_cfm: result.peaks.estimated_cfm ?? null,
-      annual_kwh: result.peaks.annual_kwh ?? null,
-      annual_cost: result.peaks.annual_cost ?? null,
-      co2_emissions: result.peaks.co2_emissions ?? null,
-      system_pressure: result.peaks.system_pressure ?? null,
-      electricity_cost: result.peaks.electricity_cost ?? null,
-      operating_hours: result.peaks.operating_hours ?? null,
-      compressor_efficiency: result.peaks.compressor_efficiency ?? null,
-      discharge_coefficient: result.peaks.discharge_coefficient ?? null,
+      probe_type: result.peaks.probe_type ?? "unknown",
       baseline_source: result.peaks.baseline_source ?? null,
       baseline_fallback: result.peaks.baseline_fallback ?? false,
       baseline_fallback_db: result.peaks.baseline_fallback_db ?? null,

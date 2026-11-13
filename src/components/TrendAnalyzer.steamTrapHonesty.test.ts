@@ -47,7 +47,7 @@ function block(start: string, end: string): string {
 
 const steamMemos = block(
   "const ueSteamAnalyses = useMemo",
-  "const toggleUeLeakSort"
+  "const ueBearingChartSeries = useMemo"
 );
 const steamRow = block(
   "function ueSteamInventoryFromRow",

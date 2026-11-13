@@ -17,12 +17,7 @@ import {
   type UltrasoundMetadata,
   type UltrasoundResult
 } from "./ultrasoundAnalysis";
-import { calculateLeakImpact, LEAK_IMPACT_DEFAULTS } from "./ultrasound/leakCalculator";
-
-function optionalPositiveNumber(value: unknown): number | undefined {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
+import { resolveProbeType, usAcousticDomain } from "./ultrasound/probeType";
 
 function optionalNonNegNumber(value: unknown): number | undefined {
   const n = Number(value);
@@ -79,18 +74,9 @@ function composeUltrasoundRecommendations(input: {
   baseline: number;
   delta: number;
   primaryFault: string;
-  leakImpact: { orificeSize: number; flowRateCfm: number; annualCost: number; annualKwh: number; co2Emissions: number } | null;
 }): string[] {
-  const { mode, peak, baseline, delta, primaryFault, leakImpact } = input;
+  const { mode, delta, primaryFault } = input;
   const isLeak = mode === "leak";
-
-  if (isLeak && leakImpact) {
-    return [
-      `Isolate and repair estimated ${leakImpact.orificeSize}" orifice (~${leakImpact.flowRateCfm} CFM).`,
-      `Projected annual waste: $${leakImpact.annualCost} (${leakImpact.annualKwh} kWh, ${leakImpact.co2Emissions} t CO₂e).`,
-      "Re-scan after repair to confirm dBµV returns to baseline."
-    ];
-  }
 
   const recs: string[] = [];
   if (delta >= 20) {
@@ -103,7 +89,11 @@ function composeUltrasoundRecommendations(input: {
     recs.push(`Low-level ultrasound detected — monitor ${primaryFault.toLowerCase()} trend at next scheduled reading.`);
     recs.push("No immediate action required; continue routine ultrasound surveillance.");
   }
-  recs.push("Generate CMMS work order if confirmed on re-scan.");
+  recs.push(
+    isLeak
+      ? "Quantify the leak with a calibrated flow meter; derived CFM/orifice estimates are parked and not reported."
+      : "Generate CMMS work order if confirmed on re-scan."
+  );
   return recs;
 }
 
@@ -146,34 +136,11 @@ export async function analyzeUltrasoundData(
     valve: "Steam Trap Blow-by"
   };
   const primary = primaryByMode[mode] || "Air Leak";
-
-  const isLeak = mode === "leak";
-  const systemPressureUsed =
-    optionalPositiveNumber(metadata.systemPressure) ??
-    LEAK_IMPACT_DEFAULTS.systemPressurePsi;
-  const electricityCostUsed =
-    optionalNonNegNumber(metadata.electricityCost ?? metadata.costPerKwh) ??
-    LEAK_IMPACT_DEFAULTS.electricityCostPerKwh;
-  const operatingHoursUsed =
-    optionalPositiveNumber(metadata.operatingHours) ??
-    LEAK_IMPACT_DEFAULTS.operatingHoursPerYear;
-  const compressorEfficiencyUsed =
-    optionalPositiveNumber(metadata.compressorEfficiency) ??
-    LEAK_IMPACT_DEFAULTS.compressorSpecificPowerKwPer100Cfm;
-  const dischargeCoefficientUsed =
-    optionalPositiveNumber(metadata.dischargeCoefficient) ??
-    LEAK_IMPACT_DEFAULTS.dischargeCoefficient;
-  const leakImpact = isLeak
-    ? calculateLeakImpact({
-        peakDb: peak,
-        baselineDb: baseline,
-        systemPressure: systemPressureUsed,
-        electricityCost: electricityCostUsed,
-        operatingHours: operatingHoursUsed,
-        compressorEfficiency: compressorEfficiencyUsed,
-        dischargeCoefficient: dischargeCoefficientUsed
-      })
-    : null;
+  const probeType = resolveProbeType(
+    metadata.probeType ?? metadata.probe_type,
+    metadata.transducer
+  );
+  const acousticDomain = usAcousticDomain(mode, primary);
 
   const description = composeUltrasoundDescription({
     mode,
@@ -190,8 +157,7 @@ export async function analyzeUltrasoundData(
     peak,
     baseline,
     delta,
-    primaryFault: primary,
-    leakImpact
+    primaryFault: primary
   });
 
   const mock: UltrasoundResult = {
@@ -212,58 +178,31 @@ export async function analyzeUltrasoundData(
       delta_db: delta,
       crest_factor,
       mode,
-      ...(leakImpact
-        ? {
-            orifice_size: leakImpact.orificeSize,
-            estimated_cfm: leakImpact.flowRateCfm,
-            annual_kwh: leakImpact.annualKwh,
-            annual_cost: leakImpact.annualCost,
-            co2_emissions: leakImpact.co2Emissions,
-            // Per-run basis inputs (persisted so historical economics and the
-            // basis pill stay reproducible after defaults change).
-            system_pressure: systemPressureUsed,
-            electricity_cost: electricityCostUsed,
-            operating_hours: operatingHoursUsed,
-            compressor_efficiency: compressorEfficiencyUsed,
-            discharge_coefficient: dischargeCoefficientUsed,
-            baseline_source: baselineProvided ? "stored" : "fallback",
-            ...(baselineProvided
-              ? {}
-              : { baseline_fallback: true, baseline_fallback_db: baseline })
-          }
-        : {})
+      probe_type: probeType,
+      ...(baselineProvided
+        ? { baseline_source: "stored" as const }
+        : {
+            baseline_source: "fallback" as const,
+            baseline_fallback: true,
+            baseline_fallback_db: baseline
+          })
     },
     financial_impact: {
-      preventive_cost: isLeak ? 450 : 1850,
-      failure_cost: isLeak
-        ? Math.max(9800, Math.round(leakImpact?.annualCost ?? 9800))
-        : 22000,
-      roi_percentage: isLeak ? 2078 : 1089,
-      downtime_loss: 2500,
-      ...(leakImpact ? { annual_cost: leakImpact.annualCost } : {})
+      preventive_cost: mode === "leak" ? 450 : 1850,
+      failure_cost: mode === "leak" ? 9800 : 22000,
+      roi_percentage: mode === "leak" ? 2078 : 1089,
+      downtime_loss: 2500
     },
     recommendations,
     detailed: {
       mode,
       transducer: metadata.transducer ? String(metadata.transducer) : undefined,
+      probe_type: probeType,
       heterodyne_khz: Number(metadata.heterodyneKhz) || 40,
       gain_db: Number(metadata.gainDb) || 30,
       confidence_score: 0.78,
       iso_29821_note:
-        "Severity derived from measured Δ dBµV exceedance; ISO 29821 mapping pending Master AI prompt.",
-      ...(leakImpact
-        ? {
-            analysis: {
-              leak_impact: {
-                orifice_size: leakImpact.orificeSize,
-                estimated_cfm: leakImpact.flowRateCfm,
-                annual_kwh: leakImpact.annualKwh,
-                annual_cost: leakImpact.annualCost,
-                co2_emissions: leakImpact.co2Emissions
-              }
-            }
-          }
-        : {})
+        `Reading domain: ${acousticDomain} · probe: ${probeType}. Severity derived from measured Δ dBµV exceedance; ISO 29821 mapping pending Master AI prompt.`
     }
   };
 
@@ -286,8 +225,8 @@ export async function runUltrasoundAnalysis(
       faults: data.fault_list.length,
       peak_dbmv: data.peaks.peak_dbmv,
       mode: data.peaks.mode,
-      estimated_cfm: data.peaks.estimated_cfm,
-      annual_cost: data.peaks.annual_cost
+      probe_type: data.peaks.probe_type,
+      delta_db: data.peaks.delta_db
     });
     return { success: true, data };
   } catch (err) {

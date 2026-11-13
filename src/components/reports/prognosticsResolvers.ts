@@ -15,6 +15,15 @@ import {
   WEAR_METAL_KEYS,
   PROGNOSTICS_PF_DISCLOSURES,
 } from "../../lib/maintenance/prescriptiveDictionary";
+import {
+  bearingLadderApplicable,
+  normalizeProbeType,
+  resolveProbeType,
+  ULTRASOUND_PROBE_LABEL,
+  usAcousticDomain,
+  type UltrasoundProbeType,
+  type UsAcousticDomain,
+} from "../../lib/ultrasound/probeType";
 
 const {
   notComputed: PF_NOT_COMPUTED,
@@ -244,25 +253,101 @@ export function ultrasoundRuns(
 }
 
 export function ultrasoundCandidates(runs: SavedAnalysisResult[]): SeriesCandidate[] {
-  const peak: { value: number; date: string }[] = [];
-  const delta: { value: number; date: string }[] = [];
-  const rms: { value: number; date: string }[] = [];
+  type Bucket = {
+    probeType: UltrasoundProbeType;
+    domain: UsAcousticDomain;
+    ladderApplicable: boolean;
+    peak: { value: number; date: string }[];
+    delta: { value: number; date: string }[];
+    rms: { value: number; date: string }[];
+  };
+  /**
+   * Airborne and contact/structure-borne readings are different physical
+   * quantities. Group into one series per probe+domain so no axis pools them.
+   */
+  const buckets = new Map<string, Bucket>();
   for (const r of runs) {
     const p = peakOfType(r, "ultrasound") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
+    const probeType = resolveProbeType(
+      p?.probe_type ?? p?.probeType ?? p?.sensor_mount_type ?? p?.mount_type,
+      p?.transducer ?? p?.sensor_type,
+    );
+    const domain = usAcousticDomain(
+      p?.mode != null ? String(p.mode) : null,
+      r.primary_fault,
+    );
+    const key = `${probeType}|${domain}`;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = {
+        probeType,
+        domain,
+        ladderApplicable: bearingLadderApplicable({ probeType, domain }),
+        peak: [],
+        delta: [],
+        rms: [],
+      };
+      buckets.set(key, bucket);
+    }
     const peakDb = num(p?.peak_dbmv ?? p?.peak_dbuv);
     const baseline = num(p?.baseline_dbmv ?? p?.baseline_dbuv);
     const storedDelta = num(p?.delta_db);
     const rmsDb = num(p?.rms_dbmv ?? p?.rms_dbuv);
-    if (peakDb != null) peak.push({ value: peakDb, date: r.timestamp });
-    if (rmsDb != null) rms.push({ value: rmsDb, date: r.timestamp });
+    if (peakDb != null) bucket.peak.push({ value: peakDb, date: r.timestamp });
+    if (rmsDb != null) bucket.rms.push({ value: rmsDb, date: r.timestamp });
     const d = storedDelta ?? (peakDb != null && baseline != null ? Math.round((peakDb - baseline) * 10) / 10 : null);
-    if (d != null) delta.push({ value: d, date: r.timestamp });
+    if (d != null) bucket.delta.push({ value: d, date: r.timestamp });
   }
+
   const out: SeriesCandidate[] = [];
-  if (delta.length) out.push({ id: "us-delta-db", label: "ΔdB over baseline", unit: "dB", points: delta, severityRank: 3, worsening: "increase" });
-  if (peak.length) out.push({ id: "us-peak-db", label: "Peak level", unit: "dBmV", points: peak, severityRank: 2, worsening: "increase" });
-  if (rms.length) out.push({ id: "us-rms-db", label: "RMS level", unit: "dBmV", points: rms, severityRank: 1, worsening: "increase" });
+  for (const bucket of buckets.values()) {
+    const suffix = `${bucket.probeType}:${bucket.domain}`;
+    const groupLabel = `${ULTRASOUND_PROBE_LABEL[bucket.probeType]} · ${bucket.domain}`;
+    if (bucket.delta.length) {
+      out.push({
+        id: `us-delta-db:${suffix}`,
+        label: `ΔdB over baseline (${groupLabel})`,
+        unit: "dB",
+        points: bucket.delta,
+        severityRank: bucket.ladderApplicable ? 3 : 1,
+        worsening: "increase",
+      });
+    }
+    if (bucket.peak.length) {
+      out.push({
+        id: `us-peak-db:${suffix}`,
+        label: `Peak level (${groupLabel})`,
+        unit: "dBµV",
+        points: bucket.peak,
+        severityRank: 2,
+        worsening: "increase",
+      });
+    }
+    if (bucket.rms.length) {
+      out.push({
+        id: `us-rms-db:${suffix}`,
+        label: `RMS level (${groupLabel})`,
+        unit: "dBµV",
+        points: bucket.rms,
+        severityRank: 1,
+        worsening: "increase",
+      });
+    }
+  }
   return out;
+}
+
+/** Parse a candidate id created by `ultrasoundCandidates` back to probe+domain. */
+function usCandidateGroup(id: string): {
+  probeType: UltrasoundProbeType;
+  domain: UsAcousticDomain;
+} | null {
+  const parts = id.split(":");
+  if (parts.length !== 3 || !parts[0].startsWith("us-")) return null;
+  return {
+    probeType: normalizeProbeType(parts[1]),
+    domain: parts[2] as UsAcousticDomain,
+  };
 }
 
 export function ultrasoundThreshold(
@@ -272,7 +357,16 @@ export function ultrasoundThreshold(
   const sel = candidates.find((c) => c.id === overrideId)
     ?? candidates.slice().sort(longestFirst)[0]
     ?? null;
-  if (sel?.id === "us-delta-db") {
+  const group = sel ? usCandidateGroup(sel.id) : null;
+  const isDelta = sel?.id.startsWith("us-delta-db:") ?? false;
+  const ladderApplicable =
+    group != null &&
+    isDelta &&
+    bearingLadderApplicable({
+      probeType: group.probeType,
+      domain: group.domain,
+    });
+  if (ladderApplicable) {
     return {
       threshold: {
         value: 16,

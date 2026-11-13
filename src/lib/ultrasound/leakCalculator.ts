@@ -1,11 +1,20 @@
 /**
+ * PARKED (SLICE-VS8) — do not import from UI, reports, exports, or the
+ * analysis engine.
+ *
  * Compressed-air leak impact calculator (industry orifice + DOE-style energy).
  * Pure math — safe for client or server.
  *
+ * This module previously resurfaced a modeled CFM/orifice/$/CO₂ estimate as
+ * if it were measured. It is retained only for verify scripts and the
+ * historical-row regression tests that prove the model is no longer wired to
+ * any user-facing surface. `calculateLeakImpact` must stay unreferenced by
+ * `src/components/**`, `src/lib/ultrasoundAnalysisEngine.ts`, and
+ * `src/lib/ultrasoundAnalysis.ts`.
+ *
  * Every economic/CO2 output below is MODELED from a single measured peak dBµV
  * delta. The constants are hardcoded defaults; nothing here is stored or
- * configured per tenant. Callers must surface `LEAK_BASIS_TEXT` beside any
- * derived dollar/CO2 figure so a model is never presented as a measurement.
+ * configured per tenant.
  */
 
 export type LeakImpactParams = {
@@ -332,7 +341,9 @@ const ZERO_RESULT: LeakImpactResult = {
 };
 
 /**
- * Estimate orifice size, CFM loss, annual kWh / $, and CO₂ from ultrasound dB levels.
+ * PARKED (SLICE-VS8) — verify-script / historical-row math only.
+ * Estimate orifice size, CFM loss, annual kWh / $, and CO₂ from dB levels.
+ * Never call this from a UI/report/export path.
  */
 export function calculateLeakImpact(params: LeakImpactParams): LeakImpactResult {
   const peakDb = Number(params.peakDb);

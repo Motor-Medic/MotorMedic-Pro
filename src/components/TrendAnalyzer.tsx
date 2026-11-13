@@ -80,22 +80,14 @@ import {
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
 import {
-  calculateLeakImpact,
-  formatLeakCfm,
-  formatLeakCo2,
-  formatLeakOrificeIn,
-  formatLeakUsdAmount,
-  formatLeakUsdPerYear,
-  leakCostSeverity,
-  leakDailySavingsUsd,
-  LEAK_BASIS_NOTE,
-  LEAK_BASIS_TEXT,
-  LEAK_COST_SEVERITY_SOURCE,
-  summarizeLeakInventory,
-  summarizeLeakRunBases,
-  type LeakCostSeverity,
-  type LeakRunBasisInput
-} from "../lib/ultrasound/leakCalculator";
+  powerMeanDbRounded,
+  DB_POWER_MEAN_NOTE
+} from "../lib/ultrasound/logUnits";
+import {
+  resolveProbeType,
+  ULTRASOUND_PROBE_LABEL,
+  type UltrasoundProbeType
+} from "../lib/ultrasound/probeType";
 import {
   calculateAdvancedSteamLoss,
   estimateSteamOrificeFromPeakDb,
@@ -420,6 +412,8 @@ function uePeaksFromRow(r: SavedAnalysisResult): {
   delta: number | null;
   crest: number | null;
   mode: string | null;
+  probeType: UltrasoundProbeType;
+  transducer: string | null;
 } {
   const peaks = Array.isArray(r.peaks) ? r.peaks : [];
   for (const raw of peaks) {
@@ -438,12 +432,20 @@ function uePeaksFromRow(r: SavedAnalysisResult): {
       }
     }
     const modeRaw = p.mode != null ? String(p.mode).trim() : "";
+    const transducer =
+      p.transducer != null ? String(p.transducer) : p.sensor_type != null ? String(p.sensor_type) : null;
+    const probeType = resolveProbeType(
+      p.probe_type ?? p.probeType ?? p.sensor_mount_type ?? p.mount_type,
+      transducer
+    );
     return {
       peak: Number.isFinite(peak) ? peak : null,
       rms: Number.isFinite(rms) ? rms : null,
       delta: Number.isFinite(delta) ? delta : null,
       crest: Number.isFinite(crest) ? crest : null,
-      mode: modeRaw || null
+      mode: modeRaw || null,
+      probeType,
+      transducer
     };
   }
   // Fallback: consensus_details.mode (older / detailed payloads)
@@ -459,12 +461,21 @@ function uePeaksFromRow(r: SavedAnalysisResult): {
             ""
         ).trim()
       : "";
+  const td =
+    r.telemetry_data && typeof r.telemetry_data === "object"
+      ? (r.telemetry_data as Record<string, unknown>)
+      : null;
+  const tdProbe =
+    td?.probe_type ?? td?.probeType ?? td?.sensor_mount_type ?? td?.mount_type;
+  const tdTransducer = td?.transducer ?? td?.sensor_type;
   return {
     peak: null,
     rms: null,
     delta: null,
     crest: null,
-    mode: cdMode || null
+    mode: cdMode || null,
+    probeType: resolveProbeType(tdProbe, tdTransducer),
+    transducer: tdTransducer != null ? String(tdTransducer) : null
   };
 }
 
@@ -481,62 +492,22 @@ function isUeBearingMechanicalRow(r: SavedAnalysisResult): boolean {
   return false;
 }
 
-/** Compressed Air Leaks tab — leak-mode ultrasound (or Air Leak classification). */
+/** Compressed Air Leaks tab — leak-mode ultrasound (or Air Leak classification).
+ * PARKED (SLICE-VS8): measured dBµV readings only. The derived
+ * CFM/orifice/$/CO₂ model is intentionally not called from this surface.
+ */
 function isUeLeakRow(r: SavedAnalysisResult): boolean {
   const { mode } = uePeaksFromRow(r);
   const m = (mode || "").toLowerCase();
   if (m === "leak" || m === "leaks") return true;
   if (m.includes("leak")) return true;
   const fault = String(r.primary_fault || "").toLowerCase();
-  if (fault.includes("air leak") || fault === "leak") return true;
-  // Peaks already carry leak economics
-  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
-  for (const raw of peaks) {
-    if (!raw || typeof raw !== "object") continue;
-    const p = raw as Record<string, unknown>;
-    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
-    if (
-      p.estimated_cfm != null ||
-      p.annual_cost != null ||
-      p.orifice_size != null
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return fault.includes("air leak") || fault === "leak";
 }
 
 function safeFinite(value: unknown, fallback = 0): number {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
-}
-
-type UeLeakCostSeverity = LeakCostSeverity;
-
-function leakCostTextClass(severity: UeLeakCostSeverity): string {
-  switch (severity) {
-    case "small":
-      return "text-emerald-400";
-    case "medium":
-      return "text-yellow-400";
-    case "large":
-      return "text-orange-400";
-    case "critical":
-      return "text-red-400";
-  }
-}
-
-function leakCostBadgeClass(severity: UeLeakCostSeverity): string {
-  switch (severity) {
-    case "small":
-      return "bg-emerald-500/15 border-emerald-500/40 text-emerald-300";
-    case "medium":
-      return "bg-yellow-500/15 border-yellow-500/40 text-yellow-300";
-    case "large":
-      return "bg-orange-500/15 border-orange-500/40 text-orange-300";
-    case "critical":
-      return "bg-red-500/15 border-red-500/40 text-red-300";
-  }
 }
 
 function formatLeakDate(iso: string | null | undefined): string {
@@ -550,26 +521,18 @@ function formatLeakDate(iso: string | null | undefined): string {
   });
 }
 
-type UeLeakInventoryRow = {
+type UeLeakReadingRow = {
   id: string;
   assetId: string;
   dateIso: string;
   dateMs: number;
   dateLabel: string;
-  peakDb: number;
-  baselineDb: number;
-  orificeSize: number;
-  estimatedCfm: number;
-  annualCost: number;
-  co2Emissions: number;
-  healthScore: number | null;
-  severity: UeLeakCostSeverity;
-  /** Per-run economics basis persisted with the scan (null = default used). */
-  systemPressure: number | null;
-  operatingHours: number | null;
-  dischargeCoefficient: number | null;
-  electricityCost: number | null;
-  compressorEfficiency: number | null;
+  peakDb: number | null;
+  baselineDb: number | null;
+  baselineStored: boolean;
+  deltaDb: number | null;
+  probeType: UltrasoundProbeType;
+  /** fallback means the delta rests on the modeled baseline, not a measurement. */
   baselineSource: "stored" | "fallback" | "unknown";
   baselineFallbackDb: number | null;
 };
@@ -580,157 +543,61 @@ function optionalFiniteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Read the persisted per-run leak basis off the first ultrasound peak. */
-function ueLeakBasisFromRow(r: SavedAnalysisResult): LeakRunBasisInput {
+/** Read measured dBµV fields only — no leak-rate/orifice/economic derivation. */
+function ueLeakReadingFromRow(r: SavedAnalysisResult): UeLeakReadingRow {
   const peaks = Array.isArray(r.peaks) ? r.peaks : [];
+  let peakDb: number | null = null;
+  let baselineDb: number | null = null;
+  let deltaDb: number | null = null;
+  let baselineSource: "stored" | "fallback" | "unknown" = "unknown";
+  let baselineFallbackDb: number | null = null;
+  let probeType: UltrasoundProbeType = "unknown";
+
   for (const raw of peaks) {
     if (!raw || typeof raw !== "object") continue;
     const p = raw as Record<string, unknown>;
     if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
-    const storedBaseline = p.baseline_dbmv ?? p.baseline_dbuv;
+    peakDb = optionalFiniteNumber(p.peak_dbmv ?? p.peak_dbuv);
+    const storedBaseline = optionalFiniteNumber(
+      p.baseline_dbmv ?? p.baseline_dbuv
+    );
+    baselineDb = storedBaseline;
+    deltaDb = optionalFiniteNumber(p.delta_db);
     const sourceRaw = String(
       p.baseline_source ?? p.baselineSource ?? ""
     ).toLowerCase();
-    let baselineSource: "stored" | "fallback" | "unknown" =
+    baselineSource =
       sourceRaw === "stored" || sourceRaw === "fallback"
         ? sourceRaw
-        : "unknown";
-    if (baselineSource === "unknown") {
-      baselineSource =
-        storedBaseline != null && storedBaseline !== ""
+        : storedBaseline != null
           ? "stored"
           : "fallback";
-    }
     const fallbackDb = optionalFiniteNumber(
       p.baseline_fallback_db ?? p.baselineFallbackDb
     );
-    return {
-      systemPressure: optionalFiniteNumber(
-        p.system_pressure ?? p.systemPressure
-      ),
-      operatingHours: optionalFiniteNumber(
-        p.operating_hours ?? p.operatingHours
-      ),
-      dischargeCoefficient: optionalFiniteNumber(
-        p.discharge_coefficient ?? p.dischargeCoefficient
-      ),
-      electricityCost: optionalFiniteNumber(
-        p.electricity_cost ?? p.electricityCost
-      ),
-      compressorEfficiency: optionalFiniteNumber(
-        p.compressor_efficiency ?? p.compressorEfficiency
-      ),
-      baselineSource,
-      baselineFallbackDb:
-        fallbackDb ??
-        (baselineSource === "fallback"
-          ? optionalFiniteNumber(storedBaseline) ?? 28
-          : null)
-    };
-  }
-  return {
-    systemPressure: null,
-    operatingHours: null,
-    dischargeCoefficient: null,
-    electricityCost: null,
-    compressorEfficiency: null,
-    baselineSource: "unknown",
-    baselineFallbackDb: null
-  };
-}
-
-/** Extract leak economics from peaks / financial_impact / telemetry_data (+ calculator backfill). */
-function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
-  const peaks = Array.isArray(r.peaks) ? r.peaks : [];
-  let peakDb = 0;
-  let baselineDb = 28;
-  let orificeSize = 0;
-  let estimatedCfm = 0;
-  let annualCost = 0;
-  let co2Emissions = 0;
-  let foundUe = false;
-
-  for (const raw of peaks) {
-    if (!raw || typeof raw !== "object") continue;
-    const p = raw as Record<string, unknown>;
-    if (String(p.type || "").toLowerCase() !== "ultrasound") continue;
-    foundUe = true;
-    peakDb = safeFinite(p.peak_dbmv ?? p.peak_dbuv, peakDb);
-    baselineDb = safeFinite(p.baseline_dbmv ?? p.baseline_dbuv, baselineDb);
-    orificeSize = safeFinite(p.orifice_size ?? p.orificeSize, orificeSize);
-    estimatedCfm = safeFinite(p.estimated_cfm ?? p.estimatedCfm, estimatedCfm);
-    annualCost = safeFinite(p.annual_cost ?? p.annualCost, annualCost);
-    co2Emissions = safeFinite(p.co2_emissions ?? p.co2Emissions, co2Emissions);
+    baselineFallbackDb =
+      fallbackDb ?? (baselineSource === "fallback" ? storedBaseline ?? 28 : null);
+    probeType = resolveProbeType(
+      p.probe_type ?? p.probeType ?? p.sensor_mount_type ?? p.mount_type,
+      p.transducer ?? p.sensor_type
+    );
     break;
   }
 
-  const fi =
-    r.financial_impact && typeof r.financial_impact === "object"
-      ? r.financial_impact
-      : {};
-  if (!annualCost) {
-    annualCost = safeFinite(
-      (fi as Record<string, unknown>).annual_cost ??
-        (fi as Record<string, unknown>).annualCost,
-      0
-    );
+  if (probeType === "unknown") {
+    const fromRow = uePeaksFromRow(r);
+    probeType = fromRow.probeType;
   }
 
-  const td =
-    r.telemetry_data && typeof r.telemetry_data === "object"
-      ? r.telemetry_data
-      : null;
-  if (td) {
-    const leakBlob =
-      (td.leak_impact && typeof td.leak_impact === "object"
-        ? (td.leak_impact as Record<string, unknown>)
-        : null) ||
-      (td.leak && typeof td.leak === "object"
-        ? (td.leak as Record<string, unknown>)
-        : null);
-    if (leakBlob) {
-      orificeSize = safeFinite(
-        leakBlob.orifice_size ?? leakBlob.orificeSize,
-        orificeSize
-      );
-      estimatedCfm = safeFinite(
-        leakBlob.estimated_cfm ?? leakBlob.flowRateCfm,
-        estimatedCfm
-      );
-      annualCost = safeFinite(
-        leakBlob.annual_cost ?? leakBlob.annualCost,
-        annualCost
-      );
-      co2Emissions = safeFinite(
-        leakBlob.co2_emissions ?? leakBlob.co2Emissions,
-        co2Emissions
-      );
-    }
-  }
-
-  // Backfill from peak/baseline when persisted economics are missing. Use the
-  // scan's own persisted basis (pressure / hours / Cd) so a backfilled row is
-  // not silently recomputed on today's defaults.
-  const basis = ueLeakBasisFromRow(r);
-  if (
-    foundUe &&
-    peakDb > 0 &&
-    (estimatedCfm <= 0 || annualCost <= 0 || orificeSize <= 0)
-  ) {
-    const computed = calculateLeakImpact({
-      peakDb,
-      baselineDb,
-      systemPressure: basis.systemPressure ?? undefined,
-      electricityCost: basis.electricityCost ?? undefined,
-      operatingHours: basis.operatingHours ?? undefined,
-      compressorEfficiency: basis.compressorEfficiency ?? undefined,
-      dischargeCoefficient: basis.dischargeCoefficient ?? undefined
-    });
-    if (orificeSize <= 0) orificeSize = computed.orificeSize;
-    if (estimatedCfm <= 0) estimatedCfm = computed.flowRateCfm;
-    if (annualCost <= 0) annualCost = computed.annualCost;
-    if (co2Emissions <= 0) co2Emissions = computed.co2Emissions;
-  }
+  const baselineForDelta =
+    baselineSource === "fallback" && baselineFallbackDb != null
+      ? baselineFallbackDb
+      : baselineDb;
+  const resolvedDelta =
+    deltaDb ??
+    (peakDb != null && baselineForDelta != null
+      ? Math.round((peakDb - baselineForDelta) * 10) / 10
+      : null);
 
   const dateIso = r.timestamp || r.created_at || "";
   const dateMs = dateIso ? new Date(dateIso).getTime() : 0;
@@ -742,23 +609,13 @@ function ueLeakInventoryFromRow(r: SavedAnalysisResult): UeLeakInventoryRow {
     dateMs: Number.isFinite(dateMs) ? dateMs : 0,
     dateLabel: formatLeakDate(dateIso),
     peakDb,
-    baselineDb,
-    orificeSize,
-    estimatedCfm,
-    annualCost,
-    co2Emissions,
-    systemPressure: basis.systemPressure ?? null,
-    operatingHours: basis.operatingHours ?? null,
-    dischargeCoefficient: basis.dischargeCoefficient ?? null,
-    electricityCost: basis.electricityCost ?? null,
-    compressorEfficiency: basis.compressorEfficiency ?? null,
-    baselineSource: basis.baselineSource ?? "unknown",
-    baselineFallbackDb: basis.baselineFallbackDb ?? null,
-    healthScore:
-      r.health_score != null && Number.isFinite(Number(r.health_score))
-        ? Number(r.health_score)
-        : null,
-    severity: leakCostSeverity(annualCost)
+    baselineDb:
+      baselineSource === "fallback" ? baselineFallbackDb : baselineDb,
+    baselineStored: baselineSource === "stored",
+    deltaDb: resolvedDelta,
+    probeType,
+    baselineSource,
+    baselineFallbackDb
   };
 }
 
@@ -2613,10 +2470,6 @@ export default function TrendAnalyzer({
   const [vibMode, setVibMode] = useState<VibMode>("broadband");
   const [irMode, setIrMode] = useState<IrMode>("hotspot");
   const [ueMode, setUeMode] = useState<UeMode>("bearings");
-  const [ueLeakSort, setUeLeakSort] = useState<{
-    key: "date" | "annual_cost";
-    dir: "asc" | "desc";
-  }>({ key: "date", dir: "desc" });
   const [mcaMode, setMcaMode] = useState<McaMode>("winding");
   /** MCA Single Source of Truth — all four tabs read slices from this record. */
   const [mcaRecord, setMcaRecord] = useState<McaSsotRecord>(EMPTY_MCA_SSOT);
@@ -4474,40 +4327,49 @@ export default function TrendAnalyzer({
     () => ueAnalyses.filter(isUeLeakRow),
     [ueAnalyses]
   );
-  /** Leak inventory shares the SAME window predicate as every other tab. */
+  /** Leak readings share the SAME window predicate as every other tab. */
   const windowedUeLeakAnalyses = useMemo(
     () => windowTrendByTimeRange(ueLeakAnalyses, timeRange),
     [ueLeakAnalyses, timeRange]
   );
   /** True when the asset has any stored leak-mode scan at all (not windowed). */
   const hasUeLeakScans = ueLeakAnalyses.length > 0;
-  const ueLeakInventoryRows = useMemo(() => {
-    const rows = windowedUeLeakAnalyses
-      .map(ueLeakInventoryFromRow)
-      // "Active Leak Inventory" lists leaks with modeled/ stored loss only.
-      .filter((row) => safeFinite(row.annualCost, 0) > 0 || safeFinite(row.estimatedCfm, 0) > 0);
-    const mult = ueLeakSort.dir === "asc" ? 1 : -1;
-    return [...rows].sort((a, b) => {
-      if (ueLeakSort.key === "annual_cost") {
-        return (a.annualCost - b.annualCost) * mult;
+  /**
+   * Measured dBµV rows only. CFM/orifice/$/CO₂ are parked (SLICE-VS8) and are
+   * deliberately absent from this table and its KPIs.
+   */
+  const ueLeakReadingRows = useMemo(() => {
+    const rows = [...windowedUeLeakAnalyses]
+      .map(ueLeakReadingFromRow)
+      .sort((a, b) => b.dateMs - a.dateMs);
+    // Deterministic same-date labels: two leak runs captured on the same day
+    // never render one ambiguous date cell. Shared SSOT helper (trendSeries).
+    return applySameDateSequenceLabels(
+      rows.map((row) => ({ ...row, date: row.dateLabel }))
+    );
+  }, [windowedUeLeakAnalyses]);
+  /** KPI values are computed from the exact rows rendered below (lockstep). */
+  const ueLeakKpis = useMemo(() => {
+    const deltaValues = ueLeakReadingRows
+      .map((row) => row.deltaDb)
+      .filter((value): value is number => value != null && Number.isFinite(value));
+    let fallbackCount = 0;
+    let fallbackDb: number | null = null;
+    for (const row of ueLeakReadingRows) {
+      if (row.baselineSource === "fallback") {
+        fallbackCount += 1;
+        if (fallbackDb == null && row.baselineFallbackDb != null) {
+          fallbackDb = row.baselineFallbackDb;
+        }
       }
-      return (a.dateMs - b.dateMs) * mult;
-    });
-  }, [windowedUeLeakAnalyses, ueLeakSort]);
-  /** KPI totals are computed from the exact rows rendered below (lockstep). */
-  const ueLeakKpis = useMemo(
-    () => summarizeLeakInventory(ueLeakInventoryRows),
-    [ueLeakInventoryRows]
-  );
-  /** N/A when the window holds no leak scans (or none exist at all). */
-  const ueLeakKpisAbsent = windowedUeLeakAnalyses.length === 0;
-  const ueLeakTotalAnnualCost = ueLeakKpis.totalAnnualCost;
-  const ueLeakDailySavings = leakDailySavingsUsd(ueLeakTotalAnnualCost);
-  /** Basis pill: defaults when every run matches, otherwise the per-run bases. */
-  const ueLeakBasisSummary = useMemo(
-    () => summarizeLeakRunBases(windowedUeLeakAnalyses.map(ueLeakBasisFromRow)),
-    [windowedUeLeakAnalyses]
-  );
+    }
+    return {
+      runCount: ueLeakReadingRows.length,
+      avgDelta: powerMeanDbRounded(deltaValues),
+      fallbackCount,
+      fallbackDb
+    };
+  }, [ueLeakReadingRows]);
   const ueElectricalAnalyses = useMemo(
     () => ueAnalyses.filter(isUeElectricalPdRow),
     [ueAnalyses]
@@ -4539,14 +4401,16 @@ export default function TrendAnalyzer({
       };
     }
     let maxPeak = 0;
-    let deltaSum = 0;
+    const deltaValues: number[] = [];
     let topSeverity: UePdSeverity = "normal";
     let topLabel = "Normal";
     let baselineFallbackCount = 0;
     let baselineFallbackDb: number | null = null;
     for (const row of uePdInventoryRows) {
       maxPeak = Math.max(maxPeak, safeFinite(row.peakDb, 0));
-      deltaSum += safeFinite(row.baselineDelta, 0);
+      if (Number.isFinite(row.baselineDelta)) {
+        deltaValues.push(row.baselineDelta);
+      }
       if (row.baselineSource === "fallback") {
         baselineFallbackCount += 1;
         if (baselineFallbackDb == null && row.baselineFallbackDb != null) {
@@ -4560,8 +4424,7 @@ export default function TrendAnalyzer({
     }
     return {
       peakElectricalDb: Math.round(maxPeak * 10) / 10,
-      avgBaselineDelta:
-        Math.round((deltaSum / uePdInventoryRows.length) * 10) / 10,
+      avgBaselineDelta: powerMeanDbRounded(deltaValues),
       threatSeverity: topSeverity,
       threatLabel: topLabel,
       baselineFallbackCount,
@@ -4630,15 +4493,9 @@ export default function TrendAnalyzer({
     () => ueSteamInventoryRows.filter((row) => row.thermalAvailable).length,
     [ueSteamInventoryRows]
   );
-  const toggleUeLeakSort = (key: "date" | "annual_cost") => {
-    setUeLeakSort((prev) =>
-      prev.key === key
-        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: key === "date" ? "desc" : "desc" }
-    );
-  };
   const ueBearingChartSeries = useMemo(() => {
     return [...windowedUeBearingAnalyses]
+      .filter((r) => uePeaksFromRow(r).probeType !== "airborne")
       .slice()
       .reverse()
       .map((r) => {
@@ -4659,8 +4516,16 @@ export default function TrendAnalyzer({
         };
       });
   }, [windowedUeBearingAnalyses]);
+  /**
+   * Ladder/KPI source: contact or unclassified legacy rows only. Airborne
+   * readings are a different physical quantity and never drive the ladder.
+   */
+  const ueBearingLadderAnalyses = useMemo(
+    () => ueBearingAnalyses.filter((r) => uePeaksFromRow(r).probeType !== "airborne"),
+    [ueBearingAnalyses]
+  );
   const latestUeBearing =
-    ueBearingAnalyses.length > 0 ? ueBearingAnalyses[0] : null;
+    ueBearingLadderAnalyses.length > 0 ? ueBearingLadderAnalyses[0] : null;
   const latestUeBearingPeaks = latestUeBearing
     ? uePeaksFromRow(latestUeBearing)
     : null;
@@ -7712,7 +7577,9 @@ export default function TrendAnalyzer({
                 </table>
                 <p className="text-[10px] text-slate-500 mt-2 italic">
                   {US_DDB_SOURCE}. Static in-repo reference — not recomputed
-                  from this scan and not a live per-asset diagnosis.
+                  from this scan and not a live per-asset diagnosis. Applies
+                  only to contact / structure-borne mechanical readings;
+                  airborne leak and electrical scans are descriptive-only.
                 </p>
               </div>
 
@@ -7733,6 +7600,7 @@ export default function TrendAnalyzer({
                         <th className="py-2 pr-3 font-bold">RMS</th>
                         <th className="py-2 pr-3 font-bold">Peak</th>
                         <th className="py-2 pr-3 font-bold">Crest</th>
+                        <th className="py-2 pr-3 font-bold">Probe</th>
                         <th className="py-2 pr-3 font-bold">Fault</th>
                         <th className="py-2 pr-3 font-bold">Health</th>
                       </tr>
@@ -7761,6 +7629,9 @@ export default function TrendAnalyzer({
                             <td className="py-2 pr-3 font-mono">
                               {up.crest != null ? up.crest : "—"}
                             </td>
+                            <td className="py-2 pr-3 text-xs">
+                              {ULTRASOUND_PROBE_LABEL[up.probeType]}
+                            </td>
                             <td className="py-2 pr-3">{r.primary_fault || "—"}</td>
                             <td className="py-2 pr-3 font-mono">
                               {r.health_score ?? "—"}
@@ -7781,32 +7652,22 @@ export default function TrendAnalyzer({
                   data-testid="ue-leak-basis-pill"
                 >
                   <p className="text-[11px] font-semibold text-sky-200">
-                    {ueLeakBasisSummary.isDefault
-                      ? LEAK_BASIS_TEXT
-                      : ueLeakBasisSummary.text}
+                    Measured dBµV readings only — the derived leak-rate model is
+                    parked (SLICE-VS8) and does not run on this tab.
                   </p>
                   <p className="text-[10px] text-slate-400 mt-1">
-                    {LEAK_BASIS_NOTE}
+                    {DB_POWER_MEAN_NOTE}
                   </p>
-                  {ueLeakBasisSummary.fallbackCount > 0 && (
+                  {ueLeakKpis.fallbackCount > 0 && (
                     <p
                       className="text-[10px] font-semibold text-amber-300 mt-1"
                       data-testid="ue-leak-baseline-fallback-note"
                     >
                       Baseline fallback: no stored baseline dBµV for{" "}
-                      {ueLeakBasisSummary.fallbackCount} run
-                      {ueLeakBasisSummary.fallbackCount === 1 ? "" : "s"} —{" "}
-                      {ueLeakBasisSummary.fallbackDb ?? 28} dBµV applied.
-                    </p>
-                  )}
-                  {ueLeakDailySavings != null && (
-                    <p
-                      className="text-[10px] font-mono text-emerald-300 mt-1"
-                      data-testid="ue-leak-daily-savings"
-                    >
-                      Derived daily savings:{" "}
-                      {formatLeakUsdAmount(ueLeakDailySavings)}/day (annual cost ÷
-                      365)
+                      {ueLeakKpis.fallbackCount} run
+                      {ueLeakKpis.fallbackCount === 1 ? "" : "s"} —{" "}
+                      {ueLeakKpis.fallbackDb ?? 28} dBµV applied. Delta is
+                      modeled, not measured.
                     </p>
                   )}
                 </div>
@@ -7815,39 +7676,38 @@ export default function TrendAnalyzer({
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                    Total Annual Waste
-                  </p>
-                  <p className="text-2xl font-bold text-red-400 font-mono">
-                    {ueLeakKpisAbsent
-                      ? "N/A"
-                      : formatLeakUsdPerYear(ueLeakKpis.totalAnnualCost)}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Sum of displayed active leak annual energy cost
-                  </p>
-                </div>
-                <div className={CARD}>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                    Total Flow Loss
+                    Leak Scans (Window)
                   </p>
                   <p className="text-2xl font-bold text-sky-400 font-mono">
-                    {ueLeakKpisAbsent
-                      ? "N/A"
-                      : formatLeakCfm(ueLeakKpis.totalCfm)}
+                    {windowedUeLeakAnalyses.length}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    Continuous compressed-air loss across displayed inventory
+                    Stored leak-mode runs inside the selected window
                   </p>
                 </div>
                 <div className={CARD}>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
-                    Total Carbon Footprint
+                    Mean ΔdBµV
                   </p>
                   <p className="text-2xl font-bold text-amber-400 font-mono">
-                    {ueLeakKpisAbsent ? "N/A" : formatLeakCo2(ueLeakKpis.totalCo2)}
+                    {ueLeakKpis.avgDelta == null
+                      ? "N/A"
+                      : `${ueLeakKpis.avgDelta.toFixed(1)} dB`}
                   </p>
                   <p className="text-xs text-slate-500 mt-1">
-                    EPA eGRID CO₂e from compressor energy waste
+                    Power-domain mean of per-run deltas — not an arithmetic mean
+                  </p>
+                </div>
+                <div className={CARD}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                    Leak-Rate Estimate
+                  </p>
+                  <p className="text-2xl font-bold text-slate-400 font-mono">
+                    Parked
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    CFM / orifice / $ / CO₂ outputs are not derived here
+                    (SLICE-VS8)
                   </p>
                 </div>
               </div>
@@ -7855,14 +7715,13 @@ export default function TrendAnalyzer({
               <div className={`${CARD} mb-6 overflow-x-auto`}>
                 <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
                   <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                    Active Leak Inventory
+                    Leak Reading Inventory
                   </p>
                   <p className="text-[10px] text-slate-500">
-                    Sort by Date or Annual Cost · severity:{" "}
-                    {LEAK_COST_SEVERITY_SOURCE}
+                    Measured dBµV only · sorted newest first
                   </p>
                 </div>
-                {ueLeakInventoryRows.length === 0 ? (
+                {ueLeakReadingRows.length === 0 ? (
                   <div className="flex flex-col items-center justify-center text-center py-12 px-4">
                     <div className="w-12 h-12 rounded-xl border border-sky-500/40 bg-sky-500/10 text-sky-400 flex items-center justify-center mb-4">
                       <Wind className="h-5 w-5" />
@@ -7872,50 +7731,23 @@ export default function TrendAnalyzer({
                         ? "No stored ultrasound leak scans for this asset. Run a Leak Detection diagnostic to populate this inventory."
                         : windowedUeLeakAnalyses.length === 0
                           ? `No leak scans in the selected ${timeRange} window.`
-                          : "No active leaks in the selected window — stored scans exist but none model a positive loss."}
+                          : "Stored leak scans exist in this window, but none carry a readable peak dBµV value."}
                     </p>
                   </div>
                 ) : (
                   <table className="w-full text-left text-sm">
                     <thead>
                       <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
-                        <th className="py-2 pr-3 font-bold">
-                          <button
-                            type="button"
-                            onClick={() => toggleUeLeakSort("date")}
-                            className="inline-flex items-center gap-1 cursor-pointer hover:text-slate-300 bg-transparent border-0 p-0 text-[10px] font-bold uppercase tracking-wider text-slate-500"
-                          >
-                            Date
-                            {ueLeakSort.key === "date"
-                              ? ueLeakSort.dir === "asc"
-                                ? " ↑"
-                                : " ↓"
-                              : ""}
-                          </button>
-                        </th>
-                        <th className="py-2 pr-3 font-bold">Peak Level</th>
-                        <th className="py-2 pr-3 font-bold">Est. Orifice</th>
-                        <th className="py-2 pr-3 font-bold">Flow Loss</th>
-                        <th className="py-2 pr-3 font-bold">
-                          <button
-                            type="button"
-                            onClick={() => toggleUeLeakSort("annual_cost")}
-                            className="inline-flex items-center gap-1 cursor-pointer hover:text-slate-300 bg-transparent border-0 p-0 text-[10px] font-bold uppercase tracking-wider text-slate-500"
-                          >
-                            Annual Cost ($/yr)
-                            {ueLeakSort.key === "annual_cost"
-                              ? ueLeakSort.dir === "asc"
-                                ? " ↑"
-                                : " ↓"
-                              : ""}
-                          </button>
-                        </th>
-                        <th className="py-2 pr-3 font-bold">CO₂ Impact</th>
-                        <th className="py-2 pr-3 font-bold">Status</th>
+                        <th className="py-2 pr-3 font-bold">Date</th>
+                        <th className="py-2 pr-3 font-bold">Peak (dBµV)</th>
+                        <th className="py-2 pr-3 font-bold">Baseline (dBµV)</th>
+                        <th className="py-2 pr-3 font-bold">Δ (dB)</th>
+                        <th className="py-2 pr-3 font-bold">Probe</th>
+                        <th className="py-2 pr-3 font-bold">Baseline Source</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {ueLeakInventoryRows.map((row) => (
+                      {ueLeakReadingRows.map((row) => (
                         <tr
                           key={row.id}
                           className="border-b border-slate-800/80 text-slate-300"
@@ -7924,33 +7756,29 @@ export default function TrendAnalyzer({
                             {row.dateLabel}
                           </td>
                           <td className="py-2.5 pr-3 font-mono">
-                            {safeFinite(row.peakDb, 0).toFixed(1)} dBµV
+                            {row.peakDb != null
+                              ? `${row.peakDb.toFixed(1)} dBµV`
+                              : "—"}
                           </td>
                           <td className="py-2.5 pr-3 font-mono">
-                            {formatLeakOrificeIn(
-                              safeFinite(row.orificeSize, 0)
-                            )}
+                            {row.baselineDb != null
+                              ? `${row.baselineDb.toFixed(1)} dBµV`
+                              : "—"}
                           </td>
-                          <td className="py-2.5 pr-3 font-mono text-sky-300">
-                            {formatLeakCfm(safeFinite(row.estimatedCfm, 0))}
-                          </td>
-                          <td
-                            className={`py-2.5 pr-3 font-mono font-semibold ${leakCostTextClass(row.severity)}`}
-                          >
-                            {formatLeakUsdPerYear(
-                              safeFinite(row.annualCost, 0)
-                            )}
-                          </td>
-                          <td className="py-2.5 pr-3 font-mono">
-                            {formatLeakCo2(safeFinite(row.co2Emissions, 0))}
+                          <td className="py-2.5 pr-3 font-mono text-amber-300">
+                            {row.deltaDb != null
+                              ? `${row.deltaDb.toFixed(1)} dB`
+                              : "—"}
                           </td>
                           <td className="py-2.5 pr-3">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-md border text-[10px] font-bold uppercase tracking-wider ${leakCostBadgeClass(row.severity)}`}
-                              title="Computed from modeled annual cost > $0 — not a stored status field"
-                            >
-                              Active Leak
-                            </span>
+                            {ULTRASOUND_PROBE_LABEL[row.probeType]}
+                          </td>
+                          <td className="py-2.5 pr-3 text-xs">
+                            {row.baselineSource === "stored"
+                              ? "Stored baseline"
+                              : row.baselineSource === "fallback"
+                                ? "Modeled fallback"
+                                : "—"}
                           </td>
                         </tr>
                       ))}
@@ -7961,9 +7789,9 @@ export default function TrendAnalyzer({
                   className="text-[10px] text-slate-500 mt-3"
                   data-testid="ue-leak-status-provenance"
                 >
-                  Status is computed from modeled annual cost (&gt; $0), not a
-                  stored status field. CO₂ and dollars are estimates from
-                  peak ΔdBµV.
+                  Δ is a descriptive subtraction of two dBµV levels. No CFM,
+                  orifice, dollar, or CO₂ estimate is derived on this tab
+                  (SLICE-VS8).
                 </p>
               </div>
             </>

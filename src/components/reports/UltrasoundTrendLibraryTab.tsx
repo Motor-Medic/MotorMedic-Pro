@@ -15,6 +15,14 @@ import {
   evaluateUsDeltaClass,
 } from "./UltrasoundResultsTab";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
+import {
+  bearingLadderApplicable,
+  resolveProbeType,
+  ULTRASOUND_PROBE_LABEL,
+  US_BEARING_LADDER_GATE_NOTE,
+  usAcousticDomain,
+  type UltrasoundProbeType,
+} from "../../lib/ultrasound/probeType";
 
 export interface UltrasoundTrendLibraryTabProps {
   selectedAnalysis: SavedAnalysisResult | null;
@@ -31,6 +39,8 @@ interface TrendRow {
   clazz: string;
   family: string;
   isCatastrophic: boolean;
+  probeType: UltrasoundProbeType;
+  ladderApplicable: boolean;
 }
 
 const num = (v: unknown): number | null =>
@@ -68,9 +78,19 @@ function classColor(clazz: string): string {
 
 function rowFor(r: SavedAnalysisResult): TrendRow | null {
   const p = peakOfType(r, "ultrasound") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
-  const peakDb = num(p?.peak_dbmv);
-  const baselineDb = num(p?.baseline_dbmv);
+  const peakDb = num(p?.peak_dbmv ?? p?.peak_dbuv);
+  const baselineDb = num(p?.baseline_dbmv ?? p?.baseline_dbuv);
   const storedDelta = num(p?.delta_db);
+  const primaryFault = r.primary_fault ?? r.fault_list?.[0]?.title ?? null;
+  const probeType = resolveProbeType(
+    p?.probe_type ?? p?.probeType ?? p?.sensor_mount_type ?? p?.mount_type,
+    p?.transducer ?? p?.sensor_type,
+  );
+  const mode = p?.mode != null ? String(p.mode) : null;
+  const ladderApplicable = bearingLadderApplicable({
+    probeType,
+    domain: usAcousticDomain(mode, primaryFault),
+  });
 
   let deltaDb: number | null;
   let audit: string;
@@ -95,11 +115,12 @@ function rowFor(r: SavedAnalysisResult): TrendRow | null {
     audit = "delta-dB unavailable \u2014 baseline not recorded";
   }
 
-  const bracket = deltaDb != null ? evaluateUsDeltaClass(deltaDb) : null;
-  const clazz = bracket?.clazz ?? "No data";
-  const primaryFault = r.primary_fault ?? r.fault_list?.[0]?.title ?? null;
+  const bracket =
+    deltaDb != null && ladderApplicable ? evaluateUsDeltaClass(deltaDb) : null;
+  const clazz = bracket?.clazz ?? (deltaDb == null ? "No data" : "Descriptive only");
   const family = classifyFaultFamily(primaryFault);
-  const isCatastrophic = deltaDb != null && deltaDb >= US_CATASTROPHIC_DB;
+  const isCatastrophic =
+    ladderApplicable && deltaDb != null && deltaDb >= US_CATASTROPHIC_DB;
 
   return {
     date: new Date(r.timestamp).toLocaleDateString("en-US", {
@@ -115,6 +136,8 @@ function rowFor(r: SavedAnalysisResult): TrendRow | null {
     clazz,
     family,
     isCatastrophic,
+    probeType,
+    ladderApplicable,
   };
 }
 
@@ -151,7 +174,7 @@ export default function UltrasoundTrendLibraryTab({
   // surfaces show exactly the same rows), then order oldest -> newest for the
   // date axis. dedupeAnalysisResults returns a fresh array, so the sort below
   // never mutates the caller's allAnalyses prop.
-  const rows = useMemo<TrendRow[]>(
+  const allRows = useMemo<TrendRow[]>(
     () =>
       dedupeAnalysisResults(
         (allAnalyses ?? []).filter(
@@ -171,7 +194,24 @@ export default function UltrasoundTrendLibraryTab({
   );
 
   const [showAll, setShowAll] = useState(false);
-  const hasData = rows.length > 0;
+  const [probeFilter, setProbeFilter] = useState<UltrasoundProbeType | null>(null);
+  const probesPresent = useMemo(
+    () => Array.from(new Set(allRows.map((r) => r.probeType))),
+    [allRows],
+  );
+  const activeProbe: UltrasoundProbeType =
+    probeFilter && probesPresent.includes(probeFilter)
+      ? probeFilter
+      : probesPresent[0] ?? "unknown";
+  /**
+   * Airborne and contact readings measure different physical quantities.
+   * Render one probe series at a time so a single axis never pools them.
+   */
+  const rows = useMemo(
+    () => allRows.filter((r) => r.probeType === activeProbe),
+    [allRows, activeProbe],
+  );
+  const hasData = allRows.length > 0;
 
   // --- Panel A: peak & baseline dBuV ---
   const allPeakVals = rows.map((r) => r.peakDb ?? 0);
@@ -257,6 +297,31 @@ export default function UltrasoundTrendLibraryTab({
           ({rows.length} US run{rows.length !== 1 ? "s" : ""})
         </span>
       </div>
+      {probesPresent.length > 1 && (
+        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          <span className="text-[10px] text-slate-500">Probe series:</span>
+          {probesPresent.map((probe) => (
+            <button
+              key={probe}
+              type="button"
+              onClick={() => setProbeFilter(probe)}
+              aria-pressed={activeProbe === probe}
+              className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                activeProbe === probe
+                  ? "border-cyan-500/60 bg-cyan-500/10 text-cyan-300"
+                  : "border-slate-700 text-slate-500 hover:text-slate-300"
+              }`}
+            >
+              {ULTRASOUND_PROBE_LABEL[probe]}
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="text-[10px] text-slate-500 mt-1">
+        {ULTRASOUND_PROBE_LABEL[activeProbe]} series — airborne and
+        contact/structure-borne readings measure different quantities and are
+        never pooled on one axis.
+      </p>
 
       {!hasData ? (
         <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-4 mt-3">
@@ -602,6 +667,7 @@ export default function UltrasoundTrendLibraryTab({
               <thead>
                 <tr className="text-slate-500">
                   <th className="text-left font-normal px-2 pb-1.5">Date</th>
+                  <th className="text-left font-normal px-2 pb-1.5">Probe</th>
                   <th className="text-right font-normal px-2 pb-1.5">Peak dBuV</th>
                   <th className="text-right font-normal px-2 pb-1.5">Baseline dBuV</th>
                   <th className="text-right font-normal px-2 pb-1.5">Delta stored</th>
@@ -617,6 +683,9 @@ export default function UltrasoundTrendLibraryTab({
                     className="text-slate-300 border-t border-slate-800"
                   >
                     <td className="py-1 px-2">{r.date}</td>
+                    <td className="py-1 px-2 text-[10px] text-slate-400">
+                      {ULTRASOUND_PROBE_LABEL[r.probeType]}
+                    </td>
                     <td className="py-1 px-2 text-right font-mono">
                       {r.peakDb != null ? r.peakDb.toFixed(1) : "\u2014"}
                     </td>
@@ -702,6 +771,9 @@ export default function UltrasoundTrendLibraryTab({
       <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3 mt-3">
         <p className="text-[10px] text-slate-500">
           Source: {US_DDB_SOURCE}
+        </p>
+        <p className="text-[10px] text-slate-500 mt-1">
+          {US_BEARING_LADDER_GATE_NOTE}
         </p>
       </div>
     </div>

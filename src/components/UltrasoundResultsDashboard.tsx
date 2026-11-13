@@ -30,6 +30,13 @@ import {
   DIAGNOSE_SAMPLE_DATASET,
   DIAGNOSE_HEALTH_SCORE_SOURCE
 } from "../lib/maintenance/prescriptiveDictionary";
+import {
+  bearingLadderApplicable,
+  resolveProbeType,
+  ULTRASOUND_PROBE_LABEL,
+  US_BEARING_LADDER_GATE_NOTE,
+  usAcousticDomain
+} from "../lib/ultrasound/probeType";
 
 const PLAYBACK_SPEEDS = [0.5, 1.0, 2.0] as const;
 const EQ_FILTERS = ["Low Pass", "High Pass", "Band Pass"] as const;
@@ -43,6 +50,8 @@ export type UltrasoundPeaksLite = {
   delta_db?: number;
   crest_factor?: number;
   mode?: string;
+  /** Airborne vs contact coupling; omitted on legacy rows. */
+  probe_type?: string;
   /**
    * Quantified leak rate in CFM. Only present once an analyst has measured
    * one — the financial panel stays blank without it rather than assuming a
@@ -198,8 +207,10 @@ export default function UltrasoundResultsDashboard({
   const [cmmsClipboardFormat, setCmmsClipboardFormat] =
     useState<(typeof CMMS_CLIPBOARD_FORMATS)[number]>("IBM Maximo");
 
-  // Leak economics are derived only from a measured rate; absent one the
-  // financial panel says so rather than assuming an orifice size.
+  // Leak economics are derived only from an analyst-entered measured rate;
+  // absent one the financial panel says so rather than assuming an orifice
+  // size. No CFM is ever computed from dBµV/peak dB — the dB→CFM model is
+  // parked (SLICE-VS8) in leakCalculator.ts and referenced by nothing.
   const leakCfm =
     ultrasoundPeaks?.leak_cfm != null && Number.isFinite(ultrasoundPeaks.leak_cfm)
       ? ultrasoundPeaks.leak_cfm
@@ -240,7 +251,22 @@ export default function UltrasoundResultsDashboard({
       : currentDb != null && baselineDb != null
         ? Math.round((currentDb - baselineDb) * 10) / 10
         : null;
-  const usSeverity = deltaDb != null ? evaluateUsSeverity(deltaDb) : null;
+  const usProbeType = resolveProbeType(ultrasoundPeaks?.probe_type);
+  const usDomain = usAcousticDomain(
+    ultrasoundPeaks?.mode,
+    primaryFault || analysis?.primaryFault?.title || analysis?.summary
+  );
+  const ladderApplicable = bearingLadderApplicable({
+    probeType: usProbeType,
+    domain: usDomain
+  });
+  const usSeverity =
+    deltaDb != null && ladderApplicable
+      ? evaluateUsSeverity(deltaDb, {
+          probeType: usProbeType,
+          domain: usDomain
+        })
+      : null;
   const healthDisplay =
     gaugeScore != null && Number.isFinite(gaugeScore)
       ? gaugeScore
@@ -323,6 +349,13 @@ export default function UltrasoundResultsDashboard({
                   <span className="text-slate-500">{DIAGNOSE_NOT_RECORDED}</span>
                 </span>
               )}
+              <span
+                className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-sky-200"
+                data-testid="ue-probe-badge"
+              >
+                Probe:{" "}
+                <span className="font-bold">{ULTRASOUND_PROBE_LABEL[usProbeType]}</span>
+              </span>
             </div>
           )}
           {healthDisplay != null && (
@@ -571,6 +604,19 @@ export default function UltrasoundResultsDashboard({
                       {usSeverity.action}
                     </p>
                   )}
+                  {!ladderApplicable && (
+                    <p className="text-xs text-slate-400 break-words">
+                      Descriptive only — the UE bearing-condition ladder is not applied to{" "}
+                      {usDomain === "airborne-leak"
+                        ? "airborne leak"
+                        : usDomain === "electrical"
+                          ? "electrical"
+                          : usDomain === "valve"
+                            ? "valve / steam-trap"
+                            : "unclassified"}{" "}
+                      readings.
+                    </p>
+                  )}
                 </>
               ) : (
                 <p className="text-sm text-slate-300 break-words">
@@ -581,6 +627,7 @@ export default function UltrasoundResultsDashboard({
                 </p>
               )}
               <p className="text-[11px] text-slate-600 break-words">{US_DDB_SOURCE}</p>
+              <p className="text-[11px] text-slate-600 break-words">{US_BEARING_LADDER_GATE_NOTE}</p>
             </div>
           )}
 
@@ -657,6 +704,14 @@ export default function UltrasoundResultsDashboard({
                 <span className="text-cyan-400 font-bold">
                   {leakCfm != null ? `${leakCfm} CFM continuous` : DIAGNOSE_NOT_RECORDED}
                 </span>
+              </p>
+              <p
+                className="text-[11px] text-slate-500"
+                data-testid="leak-cfm-provenance"
+              >
+                {leakCfm != null
+                  ? "Analyst-measured / entered — not model-derived. No CFM is computed from dBµV (SLICE-VS8)."
+                  : "Not recorded. No leak rate is estimated from dBµV — enter a calibrated flow measurement to price the leak (SLICE-VS8)."}
               </p>
               <p className="text-sm text-slate-300">
                 Annual Energy Waste:{" "}

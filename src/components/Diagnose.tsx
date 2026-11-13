@@ -1545,6 +1545,7 @@ export default function Diagnose({
     delta_db?: number;
     crest_factor?: number;
     mode?: string;
+    probe_type?: string;
   } | null>(null);
   const [ultrasoundSnapshot, setUltrasoundSnapshot] =
     useState<UltrasoundInputSnapshot | null>(null);

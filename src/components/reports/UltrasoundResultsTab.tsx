@@ -14,6 +14,13 @@ import type { ReportSeverity } from "../../lib/reports/technologySummary";
 import { classifyFaultFamily, FAULT_FAMILY_LABEL } from "../../lib/diagnostics/faultFamily";
 import { evaluateUsCrestBand } from "../../lib/maintenance/prescriptiveDictionary";
 import { peakOfType } from "../../lib/diagnostics/sensorFusion";
+import {
+  bearingLadderApplicable,
+  resolveProbeType,
+  ULTRASOUND_PROBE_LABEL,
+  US_BEARING_LADDER_GATE_NOTE,
+  usAcousticDomain,
+} from "../../lib/ultrasound/probeType";
 
 export interface UsPageTier {
   readonly minDb: number;
@@ -63,7 +70,19 @@ const cell = "rounded-lg border border-white/10 bg-slate-900/50 p-2.5";
 
 function peaks(r: SavedAnalysisResult) {
   const p = peakOfType(r, "ultrasound") ?? (Array.isArray(r.peaks) ? r.peaks[0] as Record<string, unknown> : null);
-  return { peakDb: num(p?.peak_dbmv), rmsDb: num(p?.rms_dbmv), baselineDb: num(p?.baseline_dbmv), deltaDb: num(p?.delta_db), crest: num(p?.crest_factor) ?? num(r.waveform_crest_factor) };
+  const transducer = p?.transducer ?? p?.sensor_type ?? null;
+  return {
+    peakDb: num(p?.peak_dbmv ?? p?.peak_dbuv),
+    rmsDb: num(p?.rms_dbmv ?? p?.rms_dbuv),
+    baselineDb: num(p?.baseline_dbmv ?? p?.baseline_dbuv),
+    deltaDb: num(p?.delta_db),
+    crest: num(p?.crest_factor) ?? num(r.waveform_crest_factor),
+    mode: p?.mode != null ? String(p.mode) : null,
+    probeType: resolveProbeType(
+      p?.probe_type ?? p?.probeType ?? p?.sensor_mount_type ?? p?.mount_type,
+      transducer
+    ),
+  };
 }
 function meta(r: SavedAnalysisResult) {
   const td = (r.telemetry_data ?? {}) as Record<string, unknown>;
@@ -98,7 +117,16 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
     if (pks.peakDb != null && pks.baselineDb != null) return { value: Math.round((pks.peakDb - pks.baselineDb) * 10) / 10, audit: "derived from peak - baseline (no stored delta)" };
     return { value: null as number | null, audit: "delta-dB unavailable - baseline not recorded" };
   })();
-  const bracket = useMemo(() => delta.value != null ? evaluateUsDeltaClass(delta.value) : null, [delta.value]);
+  const bracket = useMemo(() => {
+    if (delta.value == null) return null;
+    const domain = usAcousticDomain(pks.mode, selectedAnalysis.primary_fault);
+    if (!bearingLadderApplicable({ probeType: pks.probeType, domain })) return null;
+    return evaluateUsDeltaClass(delta.value);
+  }, [delta.value, pks.mode, pks.probeType, selectedAnalysis.primary_fault]);
+  const ladderApplicable = useMemo(() => {
+    const domain = usAcousticDomain(pks.mode, selectedAnalysis.primary_fault);
+    return bearingLadderApplicable({ probeType: pks.probeType, domain });
+  }, [pks.mode, pks.probeType, selectedAnalysis.primary_fault]);
   const faults = useMemo(() => (Array.isArray(selectedAnalysis.fault_list) ? selectedAnalysis.fault_list : []).map(f => { const t = String(f.fault ?? f.title ?? "Unknown"); return { title: t, sev: String(f.severity ?? "MEDIUM"), conf: Number(f.confidence ?? 0), family: classifyFaultFamily(t) }; }), [selectedAnalysis.fault_list]);
   const recs = useMemo(() => (selectedAnalysis.recommendations ?? []).map(r => { const family = classifyFaultFamily(r); return { text: r, label: family === "unknown" ? "Unattributed (stored consensus)" : "Ultrasound" }; }), [selectedAnalysis.recommendations]);
   if (!selectedAnalysis || (selectedAnalysis.analysis_type ?? "vibration") !== "ultrasound") return (
@@ -118,11 +146,13 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
         </span>
       </div>
       <p className="text-[10px] text-slate-500 mt-1">{US_DDB_SOURCE}</p>
+      <p className="text-[10px] text-slate-500 mt-1">{US_BEARING_LADDER_GATE_NOTE}</p>
     </div>
     <div className={card}>
       <div className="flex items-center gap-2 mb-3"><RadioTower className="h-4 w-4 text-sky-400 shrink-0" /><h4 className="text-xs font-bold text-slate-300 uppercase tracking-widest">Capture Metadata</h4></div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Field label="Sensor Mount Type" value={mt.mountType} />
+        <Field label="Probe Coupling" value={ULTRASOUND_PROBE_LABEL[pks.probeType]} />
         <Field label="Center / Heterodyne Frequency" value={mt.centerKhz} unit="kHz" />
         <Field label="Gain" value={mt.gainDb} unit="dB" />
         <Field label="Ambient Acoustic Noise Floor" value={mt.noiseFloor} unit="dB" />
@@ -145,7 +175,7 @@ export default function UltrasoundResultsTab({ selectedAnalysis }: UltrasoundRes
         <Zap className={`h-5 w-5 shrink-0 mt-0.5 ${bracket?.clazz.includes("Class 1") ? "text-red-400" : "text-amber-400"}`} />
         <div className="min-w-0">
           <p className="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1">Ultrasound Severity Evaluation</p>
-          {delta.value == null ? <p className="text-xs text-slate-400 italic">delta-dB unavailable — baseline not recorded; no severity class claimed.</p> : bracket ? <p className="text-xs text-slate-300">Δ {delta.value} dB: <span className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${sevTone(bracket.clazz)}`}>{bracket.clazz}</span> <span className="text-slate-500">· {bracket.action}</span></p> : null}
+          {delta.value == null ? <p className="text-xs text-slate-400 italic">delta-dB unavailable — baseline not recorded; no severity class claimed.</p> : !ladderApplicable ? <p className="text-xs text-slate-300">Δ {delta.value} dB · {ULTRASOUND_PROBE_LABEL[pks.probeType]}: <span className="italic text-slate-400">descriptive only — the bearing-condition ladder does not apply to this reading.</span></p> : bracket ? <p className="text-xs text-slate-300">Δ {delta.value} dB: <span className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase ${sevTone(bracket.clazz)}`}>{bracket.clazz}</span> <span className="text-slate-500">· {bracket.action}</span></p> : null}
           <p className="text-[10px] text-slate-500 mt-1">Source: {US_DDB_SOURCE}</p>
         </div>
       </div>
