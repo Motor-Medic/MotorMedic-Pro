@@ -10,9 +10,12 @@ import {
   buildPoolConfig,
   buildVerifyFullProbeConfig,
   getTlsMode,
+  isLoopbackDatabaseUrl,
   normalizeDatabaseUrl,
   resolveBootTlsMode,
+  resolveTlsModeForPool,
   tlsConfigForMode,
+  type PoolSslConfig,
   type TlsMode
 } from "./dbConnection";
 
@@ -32,7 +35,12 @@ const CONNECTION_LAYER = {
 
 interface TlsBearingConfig {
   sslmode?: string;
-  ssl?: { rejectUnauthorized?: boolean };
+  ssl?: PoolSslConfig;
+}
+
+/** ssl:false = TLS off; the object form carries rejectUnauthorized. */
+function rejectsUnauthorizedOf(ssl: PoolSslConfig): boolean {
+  return typeof ssl === "object" ? ssl.rejectUnauthorized : false;
 }
 
 /** The silent-MITM anti-pattern this slice must make impossible. */
@@ -40,10 +48,9 @@ function isSilentMitm(
   mode: TlsMode,
   config: TlsBearingConfig
 ): boolean {
-  return (
-    (mode === "verify-full" || config.sslmode === "verify-full") &&
-    config.ssl?.rejectUnauthorized === false
-  );
+  if (mode !== "verify-full" && config.sslmode !== "verify-full") return false;
+  const ssl = config.ssl;
+  return typeof ssl === "object" && ssl.rejectUnauthorized === false;
 }
 
 beforeEach(() => {
@@ -93,8 +100,8 @@ describe("TLS-1 G1b single source of truth — mode maps to exactly one TLS conf
     const pool = buildPoolConfig(DB_URL, "verify-full");
 
     expect(tls.sslmode).toBe("verify-full");
-    expect(tls.ssl.rejectUnauthorized).toBe(true);
-    expect(pool.ssl.rejectUnauthorized).toBe(true);
+    expect(rejectsUnauthorizedOf(tls.ssl)).toBe(true);
+    expect(rejectsUnauthorizedOf(pool.ssl)).toBe(true);
     expect(pool.connectionString).toContain("sslmode=verify-full");
     expect(pool.connectionString).not.toContain("sslmode=require");
     expect(isSilentMitm("verify-full", pool)).toBe(false);
@@ -105,8 +112,8 @@ describe("TLS-1 G1b single source of truth — mode maps to exactly one TLS conf
     const pool = buildPoolConfig(DB_URL, "require");
 
     expect(tls.sslmode).toBe("require");
-    expect(tls.ssl.rejectUnauthorized).toBe(false);
-    expect(pool.ssl.rejectUnauthorized).toBe(false);
+    expect(rejectsUnauthorizedOf(tls.ssl)).toBe(false);
+    expect(rejectsUnauthorizedOf(pool.ssl)).toBe(false);
     expect(pool.connectionString).toContain("sslmode=require");
     expect(isSilentMitm("require", pool)).toBe(false);
   });
@@ -125,10 +132,9 @@ describe("TLS-1 G1b single source of truth — mode maps to exactly one TLS conf
     expect(isSilentMitm("verify-full", tlsConfigForMode("verify-full"))).toBe(
       false
     );
-    expect(tlsConfigForMode("verify-full").ssl.rejectUnauthorized).not.toBe(
-      false
-    );
-  });
+    expect(
+      rejectsUnauthorizedOf(tlsConfigForMode("verify-full").ssl)
+    ).not.toBe(false);  });
 });
 
 describe("TLS-1 G2 boot probe — verify-full, loud non-fatal fallback", () => {
@@ -138,7 +144,7 @@ describe("TLS-1 G2 boot probe — verify-full, loud non-fatal fallback", () => {
     const probeUrl = new URL(probe.connectionString);
     const poolUrl = new URL(pool.connectionString);
 
-    expect(probe.ssl.rejectUnauthorized).toBe(true);
+    expect(rejectsUnauthorizedOf(probe.ssl)).toBe(true);
     expect(probeUrl.hostname).toBe(poolUrl.hostname);
     expect(probeUrl.port).toBe(poolUrl.port);
     expect(probeUrl.pathname).toBe(poolUrl.pathname);
@@ -163,9 +169,9 @@ describe("TLS-1 G2 boot probe — verify-full, loud non-fatal fallback", () => {
     expect(mode).toBe("verify-full");
     expect(getTlsMode()).toBe("verify-full");
     expect(probe).toHaveBeenCalledWith(DB_URL);
-    expect(buildPoolConfig(DB_URL, getTlsMode()!).ssl.rejectUnauthorized).toBe(
-      true
-    );
+    expect(
+      rejectsUnauthorizedOf(buildPoolConfig(DB_URL, getTlsMode()!).ssl)
+    ).toBe(true);
   });
 
   it("probe failure degrades to require, logs LOUDLY, and the state is observable", async () => {
@@ -183,9 +189,9 @@ describe("TLS-1 G2 boot probe — verify-full, loud non-fatal fallback", () => {
 
     expect(mode).toBe("require");
     expect(getTlsMode()).toBe("require");
-    expect(buildPoolConfig(DB_URL, getTlsMode()!).ssl.rejectUnauthorized).toBe(
-      false
-    );
+    expect(
+      rejectsUnauthorizedOf(buildPoolConfig(DB_URL, getTlsMode()!).ssl)
+    ).toBe(false);
 
     expect(log).toHaveBeenCalledTimes(1);
     const warning = String(log.mock.calls[0][0]);
@@ -256,5 +262,162 @@ describe("TLS-1 G3 memory mode — no DATABASE_URL means no probe", () => {
     expect(getTlsMode()).toBeNull();
     expect(probe).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe("DBLOCAL loopback short-circuit — no probe, no forced TLS on localhost", () => {
+  const LOCAL_URLS = [
+    "postgres://u:p@localhost:5432/spectracm?channel_binding=require",
+    "postgres://u:p@127.0.0.1:5432/spectracm",
+    "postgres://u:p@[::1]:5432/spectracm"
+  ];
+
+  it.each(LOCAL_URLS)(
+    "resolves ssl:false and skips the probe for %s",
+    async (localUrl) => {
+      expect(isLoopbackDatabaseUrl(localUrl)).toBe(true);
+
+      const probe = vi.fn(async () => undefined);
+      const log = vi.fn();
+
+      const mode = await resolveBootTlsMode({
+        databaseUrl: localUrl,
+        env: {},
+        probe,
+        log
+      });
+
+      expect(mode).toBe("disable");
+      expect(getTlsMode()).toBe("disable");
+      expect(probe).not.toHaveBeenCalled();
+
+      const pool = buildPoolConfig(localUrl, "disable");
+      expect(pool.ssl).toBe(false);
+      expect(pool.connectionString).toContain("sslmode=disable");
+      expect(isSilentMitm("disable", pool)).toBe(false);
+    }
+  );
+
+  it("prints exactly one honest boot line — no FAILED/MITM spam", async () => {
+    const log = vi.fn();
+
+    await resolveBootTlsMode({
+      databaseUrl: "postgres://u:p@localhost:5432/spectracm",
+      env: {},
+      probe: vi.fn(async () => undefined),
+      log
+    });
+
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = String(log.mock.calls[0][0]);
+    expect(line).toContain("local Postgres - TLS probe skipped (loopback)");
+    expect(line).not.toContain("MITM");
+    expect(line).not.toContain("FALLING BACK");
+    expect(line).not.toContain("FAILED");
+  });
+
+  it("honors the URL's sslmode for local hosts", async () => {
+    const base = "postgres://u:p@localhost:5432/spectracm";
+
+    const disabled = await resolveBootTlsMode({
+      databaseUrl: `${base}?sslmode=disable`,
+      env: {},
+      probe: vi.fn(async () => undefined),
+      log: vi.fn()
+    });
+    expect(disabled).toBe("disable");
+    expect(buildPoolConfig(`${base}?sslmode=disable`, "disable").ssl).toBe(
+      false
+    );
+
+    // Explicit non-default sslmodes are honored too (still probe-free).
+    const required = await resolveBootTlsMode({
+      databaseUrl: `${base}?sslmode=require`,
+      env: {},
+      probe: vi.fn(async () => undefined),
+      log: vi.fn()
+    });
+    expect(required).toBe("require");
+    expect(
+      rejectsUnauthorizedOf(buildPoolConfig(`${base}?sslmode=require`, "require").ssl)
+    ).toBe(false);
+
+    const verified = await resolveBootTlsMode({
+      databaseUrl: `${base}?sslmode=verify-full`,
+      env: {},
+      probe: vi.fn(async () => undefined),
+      log: vi.fn()
+    });
+    expect(verified).toBe("verify-full");
+    expect(
+      rejectsUnauthorizedOf(
+        buildPoolConfig(`${base}?sslmode=verify-full`, "verify-full").ssl
+      )
+    ).toBe(true);
+  });
+
+  it("remote hosts keep the existing probe behavior UNCHANGED — even with sslmode=disable in the URL", async () => {
+    const remoteUrl = "postgres://u:p@ep-cool.neon.tech:5432/db?sslmode=disable";
+    expect(isLoopbackDatabaseUrl(remoteUrl)).toBe(false);
+
+    const probe = vi.fn(async () => undefined);
+
+    const mode = await resolveBootTlsMode({
+      databaseUrl: remoteUrl,
+      env: {},
+      probe,
+      log: vi.fn()
+    });
+
+    expect(mode).toBe("verify-full");
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(remoteUrl);
+    expect(
+      rejectsUnauthorizedOf(buildPoolConfig(remoteUrl, "verify-full").ssl)
+    ).toBe(true);
+  });
+
+  it("loopback host detection is exact (case-insensitive, no substring matches)", () => {
+    expect(isLoopbackDatabaseUrl("postgres://LOCALHOST:5432/db")).toBe(true);
+    expect(isLoopbackDatabaseUrl("postgresql://user@localhost:5432/db")).toBe(
+      true
+    );
+    expect(isLoopbackDatabaseUrl("postgres://[::1]:5432/db")).toBe(true);
+    expect(isLoopbackDatabaseUrl("postgres://ep-cool.neon.tech:5432/db")).toBe(
+      false
+    );
+    expect(
+      isLoopbackDatabaseUrl("postgres://evil.com/localhost/db")
+    ).toBe(false);
+    expect(isLoopbackDatabaseUrl("not a url")).toBe(false);
+  });
+
+  it("lazy pools (src/lib/db.ts path) get ssl:false for a loopback DATABASE_URL even before boot resolves", () => {
+    const localEnv: NodeJS.ProcessEnv = {
+      DATABASE_URL: "postgres://u:p@127.0.0.1:5432/spectracm?sslmode=disable"
+    };
+
+    expect(resolveTlsModeForPool(localEnv)).toBe("disable");
+    const pool = buildPoolConfig(
+      localEnv.DATABASE_URL!,
+      resolveTlsModeForPool(localEnv)
+    );
+    expect(pool.ssl).toBe(false);
+    expect(pool.connectionString).toContain("sslmode=disable");
+  });
+
+  it("lazy pools keep the remote default (verify-full) untouched", () => {
+    const remoteEnv: NodeJS.ProcessEnv = {
+      DATABASE_URL: "postgres://u:p@ep-cool.neon.tech:5432/db"
+    };
+    expect(resolveTlsModeForPool(remoteEnv)).toBe("verify-full");
+    expect(
+      rejectsUnauthorizedOf(
+        buildPoolConfig(
+          remoteEnv.DATABASE_URL!,
+          resolveTlsModeForPool(remoteEnv)
+        ).ssl
+      )
+    ).toBe(true);
   });
 });
