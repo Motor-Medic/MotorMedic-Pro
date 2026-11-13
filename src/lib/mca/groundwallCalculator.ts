@@ -548,8 +548,6 @@ export function calculateGroundwallInsulation(
   const kT = windingTempC == null ? 1 : ieee43TempCorrectionFactor(windingTempC);
   const tempCorrected = windingTempC != null;
   const ir40MOmega = round3(ir1mMOmega * kT);
-  const irIeeePass =
-    irIeeeMinMOmega != null ? ir40MOmega >= irIeeeMinMOmega : null;
 
   const rawDar =
     ir30sMOmega != null && ir30sMOmega > 0 && ir1mMOmega > 0
@@ -576,6 +574,16 @@ export function calculateGroundwallInsulation(
   const piStatus = piStatusFrom(pi);
   const piIeeeMin = ieeePiMinimum(insulationClass);
   const piIeeePass = pi != null ? pi >= piIeeeMin : null;
+
+  // SLICE-HARNESS honesty fix: the IEEE 43 pass/fail verdict must be
+  // suppressed exactly like PI/DAR/leakage when the IR timeline is
+  // non-monotonic / artifact-laden. A PASS badge on a physically invalid
+  // test contradicts the suppression banner ("the IEEE 43 energize verdict
+  // are suppressed") and condemns/absolves the motor from bad data.
+  const irIeeePass =
+    dataQuality.valid && irIeeeMinMOmega != null
+      ? ir40MOmega >= irIeeeMinMOmega
+      : null;
 
   // Leakage is derived from the raw 1-minute IR (Ohm's law), not measured
   // independently. V / R(MΩ) = µA.
