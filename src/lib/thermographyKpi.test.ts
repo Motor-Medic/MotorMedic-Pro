@@ -287,6 +287,58 @@ describe("SLICE-V NETA repair-priority matrix", () => {
   });
 });
 
+describe("SLICE-THERMO-FAULT small-ΔT stored-verdict honesty", () => {
+  it("a ~2°F ΔT never mints a class or verdict — stored-only chain stays null", () => {
+    // Unclassified small-ΔT row: no stored severity_class anywhere.
+    const [unclassified] = buildThermoChartSeries([
+      row({ deltaT: 2.3 })
+    ]);
+    expect(unclassified.deltaT).toBe(2.3);
+    expect(unclassified.severityClass).toBeNull();
+    expect(unclassified.severityLabel).toBeNull();
+    expect(netaRepairWindowForStoredClass(unclassified.severityClass)).toBeNull();
+    // ΔT never feeds the label→level mapper: in the series builder the
+    // severity chain reads ONLY stored fields (peak.severity_class →
+    // ai_vision → analysis blob → row.severity), never deltaT/hotspot.
+    const severityChain = seriesSrc.slice(
+      seriesSrc.indexOf("const severityLabel ="),
+      seriesSrc.indexOf("const hotspot =")
+    );
+    expect(severityChain).not.toMatch(/deltaT|delta_t|hotspot/);
+    expect(severityChain).toMatch(/peak\.severity_class/);
+    expect(severityChain).toMatch(/row\.severity/);
+  });
+
+  it("a stored Class 1 at small ΔT renders the LOW row, never an inflated one", () => {
+    const [low] = buildThermoChartSeries([
+      row({ deltaT: 2.3, severityClass: "Class 1" })
+    ]);
+    expect(low.severityClass).toBe(1);
+    expect(low.severityLabel).toBe("Class 1");
+    expect(netaRepairWindowForStoredClass(1)).toEqual(
+      NETA_STORED_CLASS_REPAIR_WINDOW[1]
+    );
+    // Large-ΔT counterpart: stored Class 3 at ΔT 30 stays Class 3 — the
+    // stored class is authoritative in both directions, ΔT never re-derives.
+    const [high] = buildThermoChartSeries([
+      row({ deltaT: 30, severityClass: "Class 3" })
+    ]);
+    expect(high.severityClass).toBe(3);
+    expect(netaRepairWindowForStoredClass(3)).toEqual(
+      NETA_STORED_CLASS_REPAIR_WINDOW[3]
+    );
+  });
+
+  it("the KPI card discloses stored provenance so a small-ΔT pairing isn't read as a live computation", () => {
+    expect(trendSrc).toContain("thermo-kpi-provenance");
+    expect(trendSrc).toContain("not ΔT-derived");
+    // The card's Fault line is the stored primary_fault, verbatim.
+    expect(trendSrc).toContain("latestThermo?.primary_fault || NOT_REPORTED");
+    // No ΔT→verdict derivation exists anywhere in the render source.
+    expect(trendSrc).not.toContain("evaluateIrSeverity");
+  });
+});
+
 describe("SLICE-V deepest temperature fallback", () => {
   it("resolveTemperatureDisplayUnit defers to the stored unit, never hardcodes", () => {
     expect(resolveTemperatureDisplayUnit(undefined, "°F")).toBe("°F");

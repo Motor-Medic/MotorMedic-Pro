@@ -6423,6 +6423,14 @@ export default function TrendAnalyzer({
                           NETA:{" "}
                           {latestThermoChart?.severityLabel || NOT_REPORTED}
                         </li>
+                        {hasThermographyData && (
+                          <li className="pt-1" data-testid="thermo-kpi-provenance">
+                            <p className="text-[10px] text-slate-500 italic">
+                              Fault / NETA verdict stored from the saved scan —
+                              not ΔT-derived.
+                            </p>
+                          </li>
+                        )}
                         {thermoEmissivityPill && (
                           <li className="pt-1">
                             <span className="inline-flex max-w-full rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-300">

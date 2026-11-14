@@ -9,8 +9,16 @@
  * matrix in src/lib/thermographyTrendSeries.ts:311-330 — ΔT 50 °C ≡ Class 3
  * territory, but the row STORES "Class 2", so the honest render is the stored
  * class, never a recomputed one.
+ *
+ * SLICE-THERMO-FAULT adds a SMALL-ΔT fixture (~2 °F rise): per the real
+ * NETA/NFPA 70B bands (thermographyAnalysis.ts:238, Class 1 LOW = ΔT 1–3 °C)
+ * a 2.3 rise is Class 1 territory — the honest render is the stored low
+ * class / "None Detected" pairing plus the stored-provenance disclosure
+ * (TrendAnalyzer.tsx thermo-kpi-provenance), never an inflated
+ * "ANOMALY / Loose Connection" verdict. This is the fixture gap that
+ * previously let the implausible stored pairing render undisclosed.
  */
-import type { TechFixtures } from "../contract";
+import type { TechFixtureState, TechFixtures } from "../contract";
 
 const TS_A = "2026-11-13T09:00:00.000Z";
 
@@ -62,7 +70,6 @@ function thermoRow(overrides: Row = {}): Row {
 
 export const thermographyFixtures: TechFixtures = {
   tech: "thermography",
-
   /** Data present -> gates activate, real values render. */
   good: {
     name: "thermo-known-good",
@@ -129,4 +136,58 @@ export const thermographyFixtures: TechFixtures = {
     ],
     truth: []
   }
+};
+
+/**
+ * SLICE-THERMO-FAULT — SMALL-ΔT fixture (~2 °F rise). The stored pairing is
+ * the honest low one: "None Detected" fault + stored Class 1, ΔT 2.3 °F
+ * (≈1.3 °C — Class 1 LOW band 1–3 °C per thermographyAnalysis.ts:238).
+ * Nothing in the render chain may inflate this to "ANOMALY / Loose
+ * Connection": the verdict is stored from the scan (disclosed on the KPI
+ * card via thermo-kpi-provenance), never ΔT-derived.
+ */
+export const thermographySmallDeltaFixture: TechFixtureState = {
+  name: "thermo-small-delta",
+  rows: [
+    thermoRow({
+      primary_fault: "None Detected",
+      health_score: 90,
+      peak: {
+        hotspot_temp: 22.9,
+        reference_temp: 20.6,
+        delta_t: 2.3,
+        severity_class: "Class 1",
+        load_percentage: 75,
+        phase_a_temp: null,
+        phase_b_temp: null,
+        phase_c_temp: null,
+        de_bearing_temp: null,
+        ode_bearing_temp: null,
+        refractory_skin_temp: null
+      },
+      telemetry: {
+        environmental: { emissivity: 0.92, ambient_temp: 68, temp_unit: "°F" }
+      }
+    })
+  ],
+  truth: [
+    {
+      field: "NETA severity class (small ΔT)",
+      standard:
+        "NETA/NFPA 70B Class 1 LOW band ΔT 1–3 °C (src/lib/thermographyAnalysis.ts:238) — 2.3 °F ≈ 1.3 °C is Class 1 territory; stored class renders verbatim, never inflated",
+      expected: "Class 1"
+    },
+    {
+      field: "NETA repair window (small ΔT)",
+      standard:
+        "NETA_STORED_CLASS_REPAIR_WINDOW — Class 1 → Monitor (src/lib/thermographyTrendSeries.ts:311-330)",
+      expected: "Class 1 (LOW)"
+    },
+    {
+      field: "fault/verdict provenance",
+      standard:
+        "KPI card disclosure: fault & NETA verdict stored from the saved scan, not ΔT-derived (TrendAnalyzer.tsx thermo-kpi-provenance)",
+      expected: "Fault / NETA verdict stored from the saved scan — not ΔT-derived."
+    }
+  ]
 };

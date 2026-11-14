@@ -35,7 +35,7 @@ import {
   printGoogleChecklist,
   setupHarness
 } from "./contract";
-import { thermographyFixtures } from "./fixtures";
+import { thermographyFixtures, thermographySmallDeltaFixture } from "./fixtures";
 
 const harness = setupHarness();
 
@@ -98,6 +98,80 @@ describe("SLICE-HARNESS thermography — known-edge (hotspot-only)", () => {
     ]);
     expect(gate.textContent).not.toMatch(/0\.95/);
     expectNoExtrapolation(["Normalized ΔT Projection"]);
+  });
+});
+
+describe("SLICE-THERMO-FAULT — small-ΔT stored-verdict honesty", () => {
+  it("small-ΔT row (~2°F rise) renders the stored honest-low pairing, never an inflated ANOMALY/Loose Connection", async () => {
+    loadFixture(harness, thermographySmallDeltaFixture);
+    await openTech("thermography");
+
+    // Exact DOM: the stored honest-low pairing renders verbatim.
+    expectTextRendered(/Hotspot:\s*22\.9°F/);
+    expectTextRendered(/Reference:\s*20\.6°F/);
+    expectTextRendered(/ΔT:\s*2\.3°F/);
+    expectTextRendered(/Fault:\s*None Detected/);
+    expectTextRendered(/NETA:\s*Class 1/);
+    // Stored Class 1 -> the LOW repair row, never a recomputed higher class.
+    expectTextRendered("Class 1 (LOW)");
+    expectTextRendered("Monitor — routine re-inspection");
+    // Provenance disclosure: the verdict is stored from the scan.
+    expectTestIdContent("thermo-kpi-provenance", [
+      "Fault / NETA verdict stored from the saved scan — not ΔT-derived."
+    ]);
+    expectGoogleTruth(thermographySmallDeltaFixture.truth);
+    // The inflation lie must NOT be present anywhere in the rendered tab.
+    expectTextAbsent(/ANOMALY/);
+    expectTextAbsent(/Loose Connection/i);
+    expectTextAbsent(/Class 2|Class 3|Class 4/);
+    expectNoExtrapolation(["Normalized ΔT Projection"]);
+  });
+
+  it("small-ΔT row with NO stored verdict stays Not reported — no ΔT-derived class is fabricated", async () => {
+    loadFixture(harness, thermographySmallDeltaFixture);
+    harness.rows = [
+      {
+        id: "thermo-small-delta-unclassified",
+        asset_id: "M-101",
+        analysis_type: "thermography",
+        timestamp: "2026-11-13T09:00:00.000Z",
+        health_score: 90,
+        primary_fault: null,
+        recommendations: [],
+        peaks: [
+          {
+            type: "thermography",
+            hotspot_temp: 22.9,
+            reference_temp: 20.6,
+            delta_t: 2.3,
+            severity_class: null
+          }
+        ],
+        telemetry_data: { environmental: { temp_unit: "°F" } }
+      }
+    ];
+    await openTech("thermography");
+
+    // Present-if-stored: ΔT renders, verdict stays honestly absent.
+    expectTextRendered(/ΔT:\s*2\.3°F/);
+    expectTextRendered(/Fault:\s*Not reported/);
+    expectTextRendered(/NETA:\s*Not reported/);
+    // No-fabricated-derivation: a 2.3°F ΔT must never mint a verdict.
+    expectTextAbsent(/ANOMALY/);
+    expectTextAbsent(/Loose Connection/i);
+    expectTextAbsent(/Class 1 \(LOW\)|Class 2|Class 3|Class 4/);
+    // No stored class -> the repair matrix row is omitted entirely
+    // (mirrors thermographyKpi.test.ts:262-276).
+    expectTextAbsent("NETA Repair-Priority Reference");
+  });
+
+  it("M5 inflation lie: a planted 'ANOMALY' verdict on a small-ΔT row trips no-fabricated-value", async () => {
+    loadFixture(harness, thermographySmallDeltaFixture);
+    await openTech("thermography");
+    expectTextAbsent(/ANOMALY/); // GREEN before the lie
+
+    plantDomLie("Fault: Loose Connection · NETA: ANOMALY");
+    expect(() => expectTextAbsent(/ANOMALY/)).toThrow(ContractViolation);
   });
 });
 
