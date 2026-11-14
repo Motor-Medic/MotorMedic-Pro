@@ -76,7 +76,11 @@ import {
   resolveThermoTempUnit,
   seriesHasAny,
   skinAmbientDelta,
+  THERMO_EMISSIVITY_APP_DEFAULT_BADGE,
+  THERMO_EMISSIVITY_EXTRACTED_NOTE,
+  THERMO_LOAD_DISCLOSURE,
   thermoEmissivityAmbientPill,
+  thermoLoadTelemetryStored,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
 import {
@@ -4213,6 +4217,19 @@ export default function TrendAnalyzer({
     latestThermoRaw,
     thermoStoredUnit
   );
+  /**
+   * SLICE-IR1 — ε default-vs-extracted badge, reusing the THERMO-RAD cyan
+   * provenance mechanism. Source comes from stored markers only (never
+   * inferred from an unentered substrate); silent when no ε is stored.
+   */
+  const thermoEmissivityBadge =
+    latestThermoRaw?.emissivity != null && latestThermoRaw.emissivitySource
+      ? latestThermoRaw.emissivitySource === "app-default"
+        ? THERMO_EMISSIVITY_APP_DEFAULT_BADGE
+        : THERMO_EMISSIVITY_EXTRACTED_NOTE
+      : null;
+  /** SLICE-IR1 — load gate: disclosure ONLY, and only when load is NOT stored. */
+  const thermoLoadStored = thermoLoadTelemetryStored(latestThermoRaw);
   /** Reference temps stay in stored units — surface them as a note, never on the axis. */
   const thermoAmbientStoredNote =
     latestThermoRaw?.ambientReferenceTemp != null
@@ -6431,10 +6448,37 @@ export default function TrendAnalyzer({
                             </p>
                           </li>
                         )}
+                        {hasThermographyData && !thermoLoadStored && (
+                          <li
+                            className="pt-1"
+                            data-testid="thermo-kpi-load-disclosure"
+                          >
+                            <p className="text-[10px] text-slate-500 italic">
+                              {THERMO_LOAD_DISCLOSURE}
+                            </p>
+                          </li>
+                        )}
                         {thermoEmissivityPill && (
                           <li className="pt-1">
                             <span className="inline-flex max-w-full rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-300">
                               {thermoEmissivityPill}
+                            </span>
+                          </li>
+                        )}
+                        {thermoEmissivityBadge && (
+                          <li
+                            className="pt-1"
+                            data-testid="thermo-kpi-emissivity-provenance"
+                          >
+                            <span
+                              className={
+                                latestThermoRaw?.emissivitySource ===
+                                "app-default"
+                                  ? "inline-flex max-w-full rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] font-semibold text-amber-300"
+                                  : "inline-flex max-w-full rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-300"
+                              }
+                            >
+                              {thermoEmissivityBadge}
                             </span>
                           </li>
                         )}

@@ -139,6 +139,38 @@ export const thermographyFixtures: TechFixtures = {
 };
 
 /**
+ * SLICE-IR1 — ε FILE-EXTRACTED fixture: the row carries a radiometric /
+ * ai_vision file marker (Diagnose.tsx stores ai_vision.emissivitySetting from
+ * the THERMO-RAD decode) and no environmental ε entry, so the displayed ε is
+ * file-extracted — the badge renders the THERMO-RAD cyan provenance note and
+ * never the app-default warning. No substrate ε is invented anywhere.
+ */
+export const thermographyEmissivityExtractedFixture: TechFixtureState = {
+  name: "thermo-eps-extracted",
+  rows: [
+    thermoRow({
+      telemetry: {
+        environmental: { ambient_temp: 70, temp_unit: "°F" },
+        ai_vision: {
+          emissivitySetting: 0.92,
+          emissivity_setting: 0.92,
+          radiometric: { emissivitySetting: 0.92 }
+        }
+      }
+    })
+  ],
+  truth: [
+    {
+      field: "emissivity provenance (file-extracted)",
+      standard:
+        "THERMO-RAD: ε decoded from the file's FLIR radiometric metadata (ai_vision.radiometric.emissivitySetting, Diagnose.tsx ai_vision block) — displayed verbatim, never read from colors",
+      expected:
+        "Emissivity (ε) decoded from the file's FLIR radiometric metadata — not read from colors."
+    }
+  ]
+};
+
+/**
  * SLICE-THERMO-FAULT — SMALL-ΔT fixture (~2 °F rise). The stored pairing is
  * the honest low one: "None Detected" fault + stored Class 1, ΔT 2.3 °F
  * (≈1.3 °C — Class 1 LOW band 1–3 °C per thermographyAnalysis.ts:238).

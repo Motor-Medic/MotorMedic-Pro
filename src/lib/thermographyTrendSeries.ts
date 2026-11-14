@@ -23,6 +23,35 @@ export const NOT_DETECTED = "Not detected";
 export const THERMO_REF_TEMP_MISSING =
   "Reference temperature not recorded - radiometric analysis not available";
 
+/**
+ * SLICE-IR1 — THIRD disclosure (load gate), disclosure ONLY. Rendered verbatim
+ * on the severity/KPI card when thermography data exists but no load telemetry
+ * was stored. Generic wording on purpose: no section/table numbers or percent
+ * bands until web-confirmed. GUARD: this surface never computes a
+ * load-corrected ΔT — the I²R 100% projection stays PARKED (see
+ * `i2rNormalizedDelta` below); the verdict is disclosed as stored-only.
+ */
+export const THERMO_LOAD_DISCLOSURE =
+  "Definitive NETA classification assumes minimum load; load telemetry is not stored for this scan — the verdict is stored-only, not load-corrected.";
+
+/**
+ * SLICE-IR1 — ε provenance badge (default side). Rendered when the stored ε
+ * came through the app's environmental (manual / database preset) entry with
+ * no matching file-extracted marker. NEVER infers ε from an unentered
+ * substrate: the badge only flags the stored source path of an ε that IS
+ * stored.
+ */
+export const THERMO_EMISSIVITY_APP_DEFAULT_BADGE =
+  "Emissivity (ε) is an app default/preset entry — not extracted from the scan file.";
+
+/**
+ * SLICE-IR1 — ε provenance badge (extracted side). Reuses the THERMO-RAD cyan
+ * provenance mechanism (wording family of the radiometric caption in
+ * ThermographyInputAccordions.tsx) for an ε that is file-corroborated.
+ */
+export const THERMO_EMISSIVITY_EXTRACTED_NOTE =
+  "Emissivity (ε) decoded from the file's FLIR radiometric metadata — not read from colors.";
+
 export type ThermoChartPoint = {
   date: string;
   /** 1-based position in the deterministic oldest → newest series. */
@@ -76,6 +105,15 @@ export type ThermoChartPoint = {
   frictionalAnomaly: boolean | null;
   /** Operator / EXIF unit from telemetry_data.environmental.temp_unit when saved. */
   tempUnit: "°C" | "°F" | null;
+  /**
+   * SLICE-IR1 — stored ε source path, read from markers in the row, never
+   * inferred from the ε value: "file-extracted" when a radiometric / ai_vision
+   * file marker supplied (or exactly corroborated) the displayed ε,
+   * "app-default" when the displayed ε came only through the app's
+   * environmental (manual / database preset) entry, null when no ε is stored.
+   * No ε value is ever fabricated for an unentered substrate.
+   */
+  emissivitySource?: "file-extracted" | "app-default" | null;
 };
 
 function num(v: unknown): number | null {
@@ -345,6 +383,30 @@ export type ThermoEmissivityAmbientSource = Pick<
 >;
 
 /**
+ * SLICE-IR1 — load-gate presence check, DISCLOSURE ONLY. True when the stored
+ * row carries load telemetry (load %, or both measured and rated amps). This
+ * never computes a load-corrected ΔT and never feeds the (PARKED) I²R
+ * projection — it only decides whether the stored-only verdict disclosure
+ * must render.
+ */
+export function thermoLoadTelemetryStored(
+  point:
+    | Pick<ThermoChartPoint, "loadPercent" | "currentAmps" | "ratedAmps">
+    | null
+): boolean {
+  if (!point) return false;
+  if (point.loadPercent != null && Number.isFinite(point.loadPercent)) {
+    return true;
+  }
+  return (
+    point.currentAmps != null &&
+    Number.isFinite(point.currentAmps) &&
+    point.ratedAmps != null &&
+    Number.isFinite(point.ratedAmps)
+  );
+}
+
+/**
  * Emissivity + ambient/reference pill text.
  *
  * SLICE-VS7 unit isolation: `emissivity` is dimensionless and `ambient` /
@@ -463,6 +525,39 @@ export function extractThermoChartFields(
     (hotspot != null && reference != null
       ? Math.round((hotspot - reference) * 10) / 10
       : null);
+
+  // SLICE-IR1 — ε source classification from STORED MARKERS only (never from
+  // an inferred substrate/material value). The resolution chain below mirrors
+  // the `emissivity` field exactly: the environmental (app manual / preset)
+  // entry supplies the displayed value first, so the badge is only
+  // "file-extracted" when the displayed ε comes from a file path (env absent)
+  // or when the stored file marker EXACTLY corroborates the displayed value.
+  // A preset entry that disagrees with the file marker stays honestly
+  // "app-default".
+  const envEmissivity = num(env.emissivity);
+  const fileEmissivity =
+    num(aiRadiometric?.emissivitySetting) ??
+    num(peak.emissivitySetting) ??
+    num(peak.emissivity_setting) ??
+    num(peak.emissivity) ??
+    num(aiVision.emissivitySetting) ??
+    num(aiVision.emissivity_setting) ??
+    num(aiVision.emissivity) ??
+    deepNum(extracted, [
+      "radiometric.emissivitySetting",
+      "emissivitySetting",
+      "emissivity",
+      "emissivity_setting",
+      "epsilon"
+    ]);
+  const emissivitySource =
+    envEmissivity != null
+      ? fileEmissivity != null && fileEmissivity === envEmissivity
+        ? ("file-extracted" as const)
+        : ("app-default" as const)
+      : fileEmissivity != null
+        ? ("file-extracted" as const)
+        : null;
 
   return {
     date: formatDate(row.timestamp || row.created_at),
@@ -696,7 +791,8 @@ export function extractThermoChartFields(
       ) ??
       normalizeThermoTempUnit(
         deepText(analysis, ["temp_unit", "tempUnit", "temperature_unit"])
-      )
+      ),
+    emissivitySource
   };
 }
 

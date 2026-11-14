@@ -9,6 +9,7 @@
 import type { TechFixtures } from "../contract";
 import { vibrationFixtures } from "./vibrationFixtures";
 import {
+  thermographyEmissivityExtractedFixture,
   thermographyFixtures,
   thermographySmallDeltaFixture
 } from "./thermographyFixtures";
@@ -24,4 +25,4 @@ export const FIXTURE_MATRIX: Record<string, TechFixtures> = {
   oil_analysis: oilFixtures
 };
 
-export { vibrationFixtures, thermographyFixtures, thermographySmallDeltaFixture, ultrasoundFixtures, mcaFixtures, oilFixtures };
+export { vibrationFixtures, thermographyFixtures, thermographySmallDeltaFixture, thermographyEmissivityExtractedFixture, ultrasoundFixtures, mcaFixtures, oilFixtures };
