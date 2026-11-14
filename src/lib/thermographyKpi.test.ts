@@ -332,8 +332,12 @@ describe("SLICE-THERMO-FAULT small-ΔT stored-verdict honesty", () => {
   it("the KPI card discloses stored provenance so a small-ΔT pairing isn't read as a live computation", () => {
     expect(trendSrc).toContain("thermo-kpi-provenance");
     expect(trendSrc).toContain("not ΔT-derived");
-    // The card's Fault line is the stored primary_fault, verbatim.
-    expect(trendSrc).toContain("latestThermo?.primary_fault || NOT_REPORTED");
+    // The card's Fault line is the stored primary_fault, verbatim, from the
+    // SAME windowed row the KPI temperatures read (one window predicate —
+    // series + KPIs + audit table never drift).
+    expect(trendSrc).toContain(
+      "windowedThermoAnalyses[0]?.primary_fault || NOT_REPORTED"
+    );
     // No ΔT→verdict derivation exists anywhere in the render source.
     expect(trendSrc).not.toContain("evaluateIrSeverity");
   });

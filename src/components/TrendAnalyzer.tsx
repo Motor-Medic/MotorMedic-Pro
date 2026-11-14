@@ -6434,7 +6434,8 @@ export default function TrendAnalyzer({
                             : NOT_MEASURED}
                         </li>
                         <li className="text-sm font-semibold text-white">
-                          Fault: {latestThermo?.primary_fault || NOT_REPORTED}
+                          Fault:{" "}
+                          {windowedThermoAnalyses[0]?.primary_fault || NOT_REPORTED}
                         </li>
                         <li className="text-sm font-semibold text-slate-300">
                           NETA:{" "}
