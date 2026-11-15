@@ -2027,6 +2027,24 @@ const ENVELOPING_ORDER_OVERLAY_NOTE =
 export const ENVELOPING_BEARING_DORMANT_NOTE =
   "Bearing geometry/RPM not configured \u2014 envelope trends shown without defect-frequency overlay.";
 
+/** SLICE-VIB-ENV — honest label for the fault-frequency card when it fires. */
+const ENVELOPING_KINEMATIC_THEORETICAL_NOTE =
+  "Theoretical kinematic frequencies (from stored geometry + RPM) \u2014 reference lines for envelope pattern matching, never a confirmed fault.";
+
+/**
+ * SLICE-VIB-ENV — crest-factor audit wording.
+ *
+ * CF is the stored peak / RMS ratio (computed at capture). It is dimensionless
+ * by construction, so no display selector converts it. The CF > 5 impulsiveness
+ * flag is an in-repo heuristic, not a published standard, and no shock index is
+ * fabricated when the stored crest factor is absent.
+ */
+const ENVELOPING_CREST_HEURISTIC_THRESHOLD = 5;
+export const ENVELOPING_CREST_HEURISTIC_NOTE =
+  "Impulsiveness flag CF > 5 is an in-repo heuristic \u2014 not a published standard. Crest factor is dimensionless (peak / RMS) and is never unit-converted.";
+export const ENVELOPING_CREST_ABSENT_NOTE =
+  "No stored waveform crest factor in this window \u2014 no shock index is fabricated.";
+
 /** Frequency-axis envelope order overlay (BPFO/BPFI/BSF/FTF reference lines). */
 function EnvelopeOrderOverlayChart({
   data,
@@ -3608,6 +3626,43 @@ export default function TrendAnalyzer({
     }
     return applySameDateSequenceLabels(rows);
   }, [windowedVibAnalyses]);
+
+  /**
+   * SLICE-VIB-ENV — crest-factor audit source (stored waveform metrics only).
+   *
+   * Derives from the shared windowed waveform series (same trendSsot contract:
+   * window scope, running-state labels, deterministic ordering), then reads the
+   * stored peak / RMS of that same row's diagnostic record. The CF itself is
+   * never recomputed here and no shock index is fabricated — when no row in the
+   * window carries a stored crest factor, the audit confesses absence.
+   */
+  const envelopingCrestAudit = useMemo(() => {
+    for (let i = waveformTrendSeries.length - 1; i >= 0; i--) {
+      const point = waveformTrendSeries[i];
+      if (point.crestFactor == null || !(point.crestFactor > 0)) continue;
+      const row =
+        windowedVibAnalyses.find(
+          (r) => String(r.id) === point.analysisId
+        ) ?? null;
+      const rec = extractVibrationRecordFromAnalysis(row);
+      const wm = rec?.waveformMetrics;
+      return {
+        analysisId: point.analysisId,
+        dateLabel: point.dateLabel,
+        stoppedLabel: point.stoppedLabel,
+        crestFactor: point.crestFactor,
+        peakAmplitude:
+          wm != null && Number.isFinite(wm.peakAmplitude) && wm.peakAmplitude > 0
+            ? wm.peakAmplitude
+            : null,
+        rmsValue:
+          wm != null && Number.isFinite(wm.rmsValue) && wm.rmsValue > 0
+            ? wm.rmsValue
+            : null
+      };
+    }
+    return null;
+  }, [waveformTrendSeries, windowedVibAnalyses]);
 
   const latestWaveformAnalysisMetrics = useMemo(() => {
     const fromRecord = latestWaveformRecord?.waveformAnalysis;
@@ -5912,6 +5967,14 @@ export default function TrendAnalyzer({
                             ? `${machineSpecs.bearing} @ ${calculatedBearingFaults.rpm} RPM · 1X = ${calculatedBearingFaults.shaftHz.toFixed(2)} Hz · geometry ${calculatedBearingFaults.geometry.source} · ${vibrationRpmProvenanceLabel(bearingRpmReading.source)}`
                             : "Configure DE bearing part # and RPM on the asset to calculate BPFO / BPFI / BSF / FTF"}
                         </p>
+                        {calculatedBearingFaults && (
+                          <p
+                            data-testid="enveloping-kinematic-theoretical-note"
+                            className="text-xs text-slate-500 mt-1"
+                          >
+                            {ENVELOPING_KINEMATIC_THEORETICAL_NOTE}
+                          </p>
+                        )}
                         {!calculatedBearingFaults && (
                           <p
                             data-testid="enveloping-bearing-dormant-note"
@@ -6023,6 +6086,100 @@ export default function TrendAnalyzer({
                       </div>
                     </div>
                   )}
+
+                  {/* SLICE-VIB-ENV — crest-factor audit: CF = peak / RMS from
+                      stored waveform metrics only. Dimensionless; never
+                      unit-converted; threshold is an in-repo heuristic. */}
+                  <div
+                    className={`${CARD} mb-6`}
+                    data-testid="enveloping-crest-factor-audit"
+                  >
+                    <h3 className="text-base font-bold text-white mb-1">
+                      Impulsiveness Audit — Crest Factor
+                    </h3>
+                    <p className="text-xs text-slate-500 mb-3">
+                      CF = peak / RMS from stored waveform metrics, computed at
+                      capture — not recomputed here. Dimensionless: the ratio is
+                      unit-independent, so the g / Hz / velocity display
+                      selectors never convert it.
+                    </p>
+                    {envelopingCrestAudit ? (
+                      <>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                              Crest Factor (stored)
+                            </p>
+                            <p
+                              data-testid="enveloping-crest-value"
+                              className={`text-2xl font-bold font-mono ${
+                                envelopingCrestAudit.crestFactor >
+                                ENVELOPING_CREST_HEURISTIC_THRESHOLD
+                                  ? "text-orange-400"
+                                  : "text-cyan-400"
+                              }`}
+                            >
+                              {envelopingCrestAudit.crestFactor.toFixed(2)}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-1">
+                              dimensionless — no unit
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                              Stored peak
+                            </p>
+                            <p
+                              data-testid="enveloping-crest-peak"
+                              className="text-2xl font-bold font-mono text-slate-200"
+                            >
+                              {envelopingCrestAudit.peakAmplitude != null
+                                ? envelopingCrestAudit.peakAmplitude
+                                : "—"}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-1">
+                              as captured — no unit conversion
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                              Stored RMS
+                            </p>
+                            <p
+                              data-testid="enveloping-crest-rms"
+                              className="text-2xl font-bold font-mono text-slate-200"
+                            >
+                              {envelopingCrestAudit.rmsValue != null
+                                ? envelopingCrestAudit.rmsValue
+                                : "—"}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-1">
+                              same capture as peak — ratio stays CF
+                            </p>
+                          </div>
+                        </div>
+                        <p
+                          data-testid="enveloping-crest-threshold-note"
+                          className="text-xs text-amber-300 mt-3"
+                        >
+                          {ENVELOPING_CREST_HEURISTIC_NOTE}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          Latest in window · {envelopingCrestAudit.dateLabel}
+                          {envelopingCrestAudit.stoppedLabel
+                            ? ` · ${envelopingCrestAudit.stoppedLabel}`
+                            : ""}
+                        </p>
+                      </>
+                    ) : (
+                      <p
+                        data-testid="enveloping-crest-absent-note"
+                        className="text-xs text-amber-300"
+                      >
+                        {ENVELOPING_CREST_ABSENT_NOTE}
+                      </p>
+                    )}
+                  </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                     <div className={CARD}>
