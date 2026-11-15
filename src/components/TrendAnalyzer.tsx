@@ -5916,7 +5916,7 @@ export default function TrendAnalyzer({
                       data-testid="enveloping-stopped-series-note"
                       className="text-xs text-amber-300 mb-3"
                     >
-                      Includes stopped samples (load \u2264 80%) \u2014 labeled
+                      Includes stopped samples (load ≤ 80%) — labeled
                       &ldquo;stopped sample&rdquo; in the tooltip and history.
                     </p>
                   )}
