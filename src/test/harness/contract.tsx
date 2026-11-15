@@ -156,6 +156,12 @@ export interface Harness {
   rows: Array<Record<string, unknown>>;
   /** Oil sample db rows served by the stubbed /api/oil-analysis endpoint. */
   oilSamples: Array<Record<string, unknown>>;
+  /**
+   * Optional /api/tenant-settings payload (e.g. display-unit preferences:
+   * { display_units: { temperature: "°C" } }). Defaults to {} — identical to
+   * the pre-IR2 stub — so only tests that explicitly seed it see a change.
+   */
+  tenantSettings: Record<string, unknown>;
 }
 
 const TECH_CARD_NAME: Record<TechId, RegExp> = {
@@ -179,7 +185,7 @@ const TECH_LOADING_TEXT: Record<TechId, string> = {
  * the mutable seed state. Call at the top level of a spec file.
  */
 export function setupHarness(): Harness {
-  const state: Harness = { rows: [], oilSamples: [] };
+  const state: Harness = { rows: [], oilSamples: [], tenantSettings: {} };
 
   beforeEach(() => {
     localStorage.clear();
@@ -193,7 +199,9 @@ export function setupHarness(): Harness {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.startsWith("/api/tenant-settings")) return jsonResponse({});
+        if (url.startsWith("/api/tenant-settings")) {
+          return jsonResponse(state.tenantSettings);
+        }
         if (url.startsWith("/api/analysis-results")) {
           return jsonResponse({ results: state.rows });
         }
@@ -213,6 +221,7 @@ export function setupHarness(): Harness {
     sessionStorage.clear();
     state.rows = [];
     state.oilSamples = [];
+    state.tenantSettings = {};
   });
 
   return state;

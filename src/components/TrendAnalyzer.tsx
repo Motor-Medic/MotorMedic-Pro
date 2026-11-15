@@ -78,13 +78,18 @@ import {
   skinAmbientDelta,
   THERMO_EMISSIVITY_APP_DEFAULT_BADGE,
   THERMO_EMISSIVITY_EXTRACTED_NOTE,
+  THERMO_I2R_CURRENTS_WITHOUT_TEMPS,
+  THERMO_I2R_HEURISTIC_LABEL,
+  THERMO_I2R_PHASE_CURRENTS_NOT_STORED,
   THERMO_LOAD_DISCLOSURE,
   THERMO_MULTI_TECH_LINK_LABEL,
   THERMO_DT_TREND_DISCLOSURE,
   THERMO_DT_TREND_SINGLE_DATE,
+  thermoAmbientProvenanceLabel,
   thermoCrossTechPillLabel,
   thermoDeltaTTrend,
   thermoEmissivityAmbientPill,
+  thermoI2rProportionality,
   thermoLoadTelemetryStored,
   thermoReferenceBasisLabel,
   thermoStoredLoadLabel,
@@ -4378,6 +4383,30 @@ export default function TrendAnalyzer({
   const phaseHottest = hottestPhaseFromPoint(latestThermoChart);
   const phaseNfpaBadge = nfpaClassBadge(latestThermoChart);
   /**
+   * SLICE-IR2 — I²R proportionality badge, DESCRIPTIVE ONLY. Reads the SAME
+   * windowed, display-projected latest point as every other KPI on this tab
+   * (per-phase temps in the active display unit; per-phase currents raw
+   * amps — they never enter the temperature conversion). Stored per-phase
+   * currents are required for the ratio and are NEVER inferred from the
+   * run's total measured amps; P ∝ I²R is labeled an in-repo heuristic, not
+   * a standard, and no causal diagnosis is rendered unless stored.
+   */
+  const thermoI2rBadge = thermoI2rProportionality(
+    latestThermoChart,
+    thermoDisplayUnit
+  );
+  /**
+   * SLICE-IR2 — ambient-provenance badge, present-if-stored. Shows the
+   * stored ambient reference verbatim in its stored unit and discloses that
+   * NO drift compensation was applied ("Normalized" is never claimed); no
+   * synthetic weather or drift model backs it. Null (no badge) is the
+   * honest state when no ambient was stored.
+   */
+  const thermoAmbientProvenance = thermoAmbientProvenanceLabel(
+    latestThermoRaw,
+    thermoStoredUnit
+  );
+  /**
    * The left/right Radiometric axes are type-specific: left carries measured
    * absolute temperatures only (already display-projected), right carries
    * dimensionless ε. Reference temps stay off the converted axis.
@@ -7102,6 +7131,59 @@ export default function TrendAnalyzer({
                     </div>
                   </div>
 
+                  {/* SLICE-IR2 — descriptive I²R badge + ambient provenance */}
+                  {thermoI2rBadge && (
+                    <div
+                      data-testid="thermo-i2r-descriptive-badge"
+                      className={`${CARD} mb-6`}
+                    >
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        I²R Proportionality — descriptive, stored-only
+                      </p>
+                      {thermoI2rBadge.status === "stored-ratio" ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-200 font-mono">
+                            {thermoI2rBadge.currentsText}
+                          </p>
+                          <p className="text-sm text-slate-300 mt-1 font-mono">
+                            {thermoI2rBadge.ratioText} · stored ΔT{" "}
+                            {thermoI2rBadge.deltaTText}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm text-amber-300">
+                          {thermoI2rBadge.status === "not-stored"
+                            ? THERMO_I2R_PHASE_CURRENTS_NOT_STORED
+                            : THERMO_I2R_CURRENTS_WITHOUT_TEMPS}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-slate-500 mt-2 italic">
+                        {THERMO_I2R_HEURISTIC_LABEL} Descriptive only —
+                        per-phase current is never inferred from the run's
+                        total measured amps, and no causal diagnosis is
+                        rendered unless stored.
+                      </p>
+                    </div>
+                  )}
+                  {thermoAmbientProvenance && (
+                    <div
+                      data-testid="thermo-ambient-provenance-badge"
+                      className={`${CARD} mb-6`}
+                    >
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        Ambient Reference — provenance
+                      </p>
+                      <p className="text-sm font-semibold text-slate-300">
+                        {thermoAmbientProvenance}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-2 italic">
+                        Stored value shown in stored units — reference
+                        temperatures never convert; no synthetic weather or
+                        drift model is applied.
+                      </p>
+                    </div>
+                  )}
+
                   <ThermoChartFrame
                     title="Phase Delta & I²R Load — Phase A/B/C temperatures with ≥40% load validity band"
                     subtitle={`Left: Temperature (${thermoDisplayUnit}) · Right: Load (%) · Green band = operational validity (≥40% load)`}
@@ -7159,7 +7241,9 @@ export default function TrendAnalyzer({
                             fontSize: 11
                           }}
                         />
-                        {/* Green ≥40% load validity band (NFPA operational zone) */}
+                        {/* Green ≥40% load validity band — in-repo operational
+                            threshold (generic; not cited to a standard until
+                            web-confirmed) */}
                         {React.createElement(ReferenceArea, {
                           yAxisId: "load",
                           y1: PROJECTION_MIN_VALID_LOAD_PERCENT,

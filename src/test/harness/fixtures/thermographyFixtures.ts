@@ -246,6 +246,54 @@ export const thermographyNoLoadClassifiedFixture: TechFixtureState = {
   truth: []
 };
 
+/**
+ * SLICE-IR2 — PER-PHASE CURRENTS stored as explicit peak markers (with a
+ * stored total measured_amps of 300 A on the row): the descriptive
+ * stored-ratio side of the I²R badge must render the stored 100/98/95 A —
+ * never a three-way split of the 300 A total — alongside the stored ΔT.
+ * Real scans cannot carry these today (the schema stores one total
+ * measured_amps), so this fixture proves the present-if-stored path for
+ * the day a row records them.
+ */
+export const thermographyPhaseCurrentsFixture: TechFixtureState = {
+  name: "thermo-phase-currents",
+  rows: [
+    thermoRow({
+      measured_amps: 300,
+      rated_amps: 400,
+      peak: {
+        phase_a_amps: 100,
+        phase_b_amps: 98,
+        phase_c_amps: 95
+      }
+    })
+  ],
+  truth: []
+};
+
+/**
+ * SLICE-IR2 — middle case: per-phase currents stored WITHOUT matching
+ * per-phase temperatures. No stored pairing exists to describe, so the
+ * honest render is the currents-without-temps disclosure — never a ratio
+ * and never a fabricated temperature side.
+ */
+export const thermographyCurrentsWithoutTempsFixture: TechFixtureState = {
+  name: "thermo-currents-no-temps",
+  rows: [
+    thermoRow({
+      peak: {
+        phase_a_temp: null,
+        phase_b_temp: null,
+        phase_c_temp: null,
+        phase_a_amps: 100,
+        phase_b_amps: 98,
+        phase_c_amps: 95
+      }
+    })
+  ],
+  truth: []
+};
+
 /** Relative timestamps keep the multi-date fixture inside the 30D window. */
 function daysAgoIso(days: number, hours = 0): string {
   return new Date(

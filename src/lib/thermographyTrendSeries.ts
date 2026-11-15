@@ -91,6 +91,34 @@ export const THERMO_MULTI_TECH_NO_CONCURRENT =
 /** SLICE-IR1B — pill affordance linking to the dedicated fusion surface. */
 export const THERMO_MULTI_TECH_LINK_LABEL = "Open Multi-Tech Fusion";
 
+/**
+ * SLICE-IR2 — I²R proportionality honesty label. P ∝ I²R (power rising with
+ * the square of current through a fixed resistance) is an IN-REPO descriptive
+ * heuristic, not a published standard: no section, table, or percent band is
+ * attached to it until web-confirmed. The badge it labels is descriptive only
+ * and never renders a causal diagnosis (e.g. "consistent with resistive
+ * heating") unless one was stored with the scan.
+ */
+export const THERMO_I2R_HEURISTIC_LABEL =
+  "P ∝ I²R is an in-repo heuristic, not a standard.";
+
+/**
+ * SLICE-IR2 — not-stored side of the I²R badge (the common case: the schema
+ * stores ONE total measured_amps figure and no per-phase currents). Exact
+ * disclosure; per-phase current is NEVER inferred from the total load and
+ * never split from measured_amps.
+ */
+export const THERMO_I2R_PHASE_CURRENTS_NOT_STORED =
+  "Phase currents not stored - proportionality not computed.";
+
+/**
+ * SLICE-IR2 — middle case: a run stored explicit per-phase currents but not
+ * the matching per-phase temperatures, so no stored pairing exists to
+ * describe. Still no proportionality, still no inference.
+ */
+export const THERMO_I2R_CURRENTS_WITHOUT_TEMPS =
+  "Phase currents stored without matching phase temperatures - proportionality not computed.";
+
 export type ThermoChartPoint = {
   date: string;
   /** 1-based position in the deterministic oldest → newest series. */
@@ -122,7 +150,17 @@ export type ThermoChartPoint = {
   i2rNormalizedDelta: number | null;
   currentAmps: number | null;
   ratedAmps: number | null;
-  loadThreshold: 40; // NFPA reference line (constant, not mock data)
+  loadThreshold: 40; // in-repo operational reference line (constant, not mock data)
+  /**
+   * SLICE-IR2 — stored PER-PHASE currents, read ONLY from explicit per-phase
+   * markers (peak / polymorphic / extracted). The schema stores a single
+   * total `measured_amps`, and the total is never split or inferred per
+   * phase: these stay null unless the row itself recorded per-phase amps.
+   * Optional so older fixture literals (pre-IR2) remain valid.
+   */
+  phaseCurrentA?: number | null;
+  phaseCurrentB?: number | null;
+  phaseCurrentC?: number | null;
   // Tab 3 — Radiometric
   emissivity: number | null;
   scaleMin: number | null;
@@ -314,9 +352,11 @@ function telemetryDataBlob(row: SavedAnalysisResult): {
 }
 
 /**
- * NFPA operational validity floor for the *descriptive* load band. The parked
- * I²R projection used this floor to suppress its extrapolated figure; the UI
- * now keeps only the ≥40% operational-validity band on the measured load axis.
+ * In-repo operational validity floor for the *descriptive* load band (an
+ * internal threshold, not a published standard value — no section / table
+ * citation is attached until web-confirmed). The parked I²R projection used
+ * this floor to suppress its extrapolated figure; the UI now keeps only the
+ * ≥40% operational-validity band on the measured load axis.
  */
 export const PROJECTION_MIN_VALID_LOAD_PERCENT = 40;
 
@@ -710,6 +750,50 @@ export function extractThermoChartFields(
       num(poly.rated_amps) ??
       num(peak.rated_amps) ??
       deepNum(extracted, ["rated_amps", "fla", "full_load_amps"]),
+    // SLICE-IR2 — per-phase currents from EXPLICIT per-phase markers only.
+    // The total-measurement markers above (measured_amps / current_amps /
+    // amperage / amps) are deliberately NOT in these chains: a stored total
+    // is never split three ways and per-phase current is never inferred
+    // from load percentage. Absent markers stay null.
+    phaseCurrentA:
+      num(peak.phase_a_amps) ??
+      num(peak.phase_a_current) ??
+      num(peak.phaseAAmps) ??
+      num(peak.phaseACurrent) ??
+      num(poly.phase_a_amps) ??
+      num(poly.phase_a_current) ??
+      deepNum(extracted, [
+        "phase_a_amps",
+        "phase_a_current",
+        "phaseAAmps",
+        "phaseACurrent"
+      ]),
+    phaseCurrentB:
+      num(peak.phase_b_amps) ??
+      num(peak.phase_b_current) ??
+      num(peak.phaseBAmps) ??
+      num(peak.phaseBCurrent) ??
+      num(poly.phase_b_amps) ??
+      num(poly.phase_b_current) ??
+      deepNum(extracted, [
+        "phase_b_amps",
+        "phase_b_current",
+        "phaseBAmps",
+        "phaseBCurrent"
+      ]),
+    phaseCurrentC:
+      num(peak.phase_c_amps) ??
+      num(peak.phase_c_current) ??
+      num(peak.phaseCAmps) ??
+      num(peak.phaseCCurrent) ??
+      num(poly.phase_c_amps) ??
+      num(poly.phase_c_current) ??
+      deepNum(extracted, [
+        "phase_c_amps",
+        "phase_c_current",
+        "phaseCAmps",
+        "phaseCCurrent"
+      ]),
     loadThreshold: PROJECTION_MIN_VALID_LOAD_PERCENT,
     // Tab 3 — hybrid JSONB environmental (form physics) + AI vision radiometric
     emissivity:
@@ -1284,4 +1368,102 @@ export function thermoCrossTechPillLabel(
     return THERMO_MULTI_TECH_NO_CONCURRENT;
   }
   return `Concurrent runs in this window — Vibration: ${presence.vibration} · MCSA: ${presence.mca}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* SLICE-IR2 — Phase Delta & I²R Load descriptive badges               */
+/* ------------------------------------------------------------------ */
+
+/** SLICE-IR2 — stored-ratio side of the I²R descriptive badge. */
+export interface ThermoI2rStoredRatio {
+  /** "I_A: 100 A · I_B: 90 A · I_C: 80 A (stored)" */
+  currentsText: string;
+  /** "Stored ratio I_A : I_B : I_C = 1 : 0.9 : 0.8 (relative to Phase A)" */
+  ratioText: string;
+  /** Stored ΔT rendered in the caller's active display unit, or NOT_MEASURED. */
+  deltaTText: string;
+}
+
+/**
+ * SLICE-IR2 — I²R proportionality badge state, DESCRIPTIVE ONLY.
+ * - "stored-ratio"      — the run stores ALL THREE per-phase currents AND
+ *                         ALL THREE per-phase temperatures; the badge shows
+ *                         the stored current ratio + the stored ΔT verbatim.
+ * - "currents-without-temps" — per-phase currents stored but no matching
+ *                         per-phase temperatures; no pairing to describe.
+ * - "not-stored"        — no per-phase currents (the common case: the schema
+ *                         stores one total measured_amps figure).
+ * Null only when there is no scan at all in the window (no surface renders).
+ * The per-phase current is NEVER inferred from the total load or split from
+ * measured_amps, and no causal diagnosis is produced in any state.
+ */
+export type ThermoI2rProportionality =
+  | ({ status: "stored-ratio" } & ThermoI2rStoredRatio)
+  | { status: "currents-without-temps" }
+  | { status: "not-stored" };
+
+/**
+ * SLICE-IR2 — descriptive stored-ratio derivation. The ONLY arithmetic is
+ * the stored-value ratio itself (each phase current divided by the stored
+ * Phase A current, rounded to 2 decimals): no ΔT correction, no load
+ * extrapolation, no projection. Phase temperatures are required so the
+ * description pairs currents with measured phase evidence; the ΔT text is
+ * the stored ΔT passed through the caller's existing display-unit lockstep.
+ */
+export function thermoI2rProportionality(
+  point: Pick<
+    ThermoChartPoint,
+    | "phaseCurrentA"
+    | "phaseCurrentB"
+    | "phaseCurrentC"
+    | "phaseA"
+    | "phaseB"
+    | "phaseC"
+    | "deltaT"
+  > | null,
+  displayUnit: "°C" | "°F"
+): ThermoI2rProportionality | null {
+  if (!point) return null;
+  const currentsStored =
+    point.phaseCurrentA != null &&
+    point.phaseCurrentB != null &&
+    point.phaseCurrentC != null;
+  const tempsStored =
+    point.phaseA != null && point.phaseB != null && point.phaseC != null;
+  if (!currentsStored) return { status: "not-stored" };
+  if (!tempsStored) return { status: "currents-without-temps" };
+
+  const a = point.phaseCurrentA as number;
+  const b = point.phaseCurrentB as number;
+  const c = point.phaseCurrentC as number;
+  const ratio = (v: number) => Math.round((v / a) * 100) / 100;
+  return {
+    status: "stored-ratio",
+    currentsText: `I_A: ${a} A · I_B: ${b} A · I_C: ${c} A (stored)`,
+    ratioText: `Stored ratio I_A : I_B : I_C = 1 : ${ratio(b)} : ${ratio(c)} (relative to Phase A)`,
+    deltaTText:
+      point.deltaT != null && Number.isFinite(point.deltaT)
+        ? `${point.deltaT}${displayUnit}`
+        : NOT_MEASURED
+  };
+}
+
+/**
+ * SLICE-IR2 — ambient-provenance disclosure, present-if-stored. Renders only
+ * when the run stored an ambient reference, shows it VERBATIM in its stored
+ * unit (reference temperatures never enter the °C/°F display conversion),
+ * and discloses that NO drift compensation was applied — "Normalized" is
+ * never claimed. No synthetic weather or drift model backs this badge; null
+ * (no badge at all) is the honest state when nothing was stored.
+ */
+export function thermoAmbientProvenanceLabel(
+  point: Pick<ThermoChartPoint, "ambientReferenceTemp" | "tempUnit"> | null,
+  fallbackStoredUnit: "°C" | "°F"
+): string | null {
+  const ambient = point?.ambientReferenceTemp;
+  if (ambient == null || !Number.isFinite(ambient)) return null;
+  const unit = point?.tempUnit ?? fallbackStoredUnit;
+  return `Ambient reference stored (${
+    Math.round(ambient * 10) / 10
+  }${unit}); no drift compensation applied.`;
 }
