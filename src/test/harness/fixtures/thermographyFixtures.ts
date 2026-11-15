@@ -223,3 +223,127 @@ export const thermographySmallDeltaFixture: TechFixtureState = {
     }
   ]
 };
+
+/**
+ * SLICE-IR1B — classified but NO load telemetry: a stored Class 2 verdict with
+ * load_percentage null and no amp pair, so BOTH load surfaces (KPI card and
+ * NETA repair card) must render THERMO_LOAD_DISCLOSURE verbatim and no stored
+ * load % may appear anywhere on Tab 1.
+ */
+export const thermographyNoLoadClassifiedFixture: TechFixtureState = {
+  name: "thermo-noload-classified",
+  rows: [
+    thermoRow({
+      peak: {
+        hotspot_temp: 120,
+        reference_temp: 70,
+        delta_t: 50,
+        severity_class: "Class 2",
+        load_percentage: null
+      }
+    })
+  ],
+  truth: []
+};
+
+/** Relative timestamps keep the multi-date fixture inside the 30D window. */
+function daysAgoIso(days: number, hours = 0): string {
+  return new Date(
+    Date.now() - days * 86_400_000 - hours * 3_600_000
+  ).toISOString();
+}
+
+/** Minimal Vibration row shaped like the proven SLICE-VS4 factory. */
+function vibPresenceRow(id: string, timestamp: string): Row {
+  return {
+    id,
+    asset_id: "M-101",
+    component: null,
+    analysis_type: "vibration",
+    timestamp,
+    health_score: 82,
+    primary_fault: "Imbalance",
+    recommendations: [],
+    peaks: [],
+    telemetry_data: {
+      vibration_trend_record: {
+        assetId: "M-101",
+        timestamp,
+        broadband: {
+          overallVelocity: 2.5,
+          overallAcceleration: 0.42,
+          healthScore: 82,
+          primaryFault: "Imbalance"
+        },
+        spectral: [],
+        enveloping: [],
+        waveform: []
+      }
+    }
+  };
+}
+
+/** Minimal MCSA row — presence only; no cross-tech score is ever derived. */
+function mcaPresenceRow(id: string, timestamp: string): Row {
+  return {
+    id,
+    asset_id: "M-101",
+    component: null,
+    analysis_type: "mca",
+    timestamp,
+    health_score: 88,
+    primary_fault: "None Detected",
+    recommendations: [],
+    peaks: [],
+    telemetry_data: {}
+  };
+}
+
+/**
+ * SLICE-IR1B — multi-date fixture. ΔT 40 six days ago, then TWICE on the
+ * recent date (99 early, 50 latest) so same-date dedupe must keep the latest
+ * run: the descriptive slope is exactly (50 − 40) / 5 = 2 °/day, never a
+ * forecast. Load 75% stored on the latest run; concurrent Vibration + MCSA
+ * rows in-window exercise the read-only presence pill.
+ */
+export const thermographyMultiDateFixture: TechFixtureState = {
+  name: "thermo-multi-date",
+  rows: [
+    thermoRow({
+      id: "ir1b-old",
+      timestamp: daysAgoIso(6),
+      peak: {
+        hotspot_temp: 110,
+        reference_temp: 70,
+        delta_t: 40,
+        severity_class: "Class 2",
+        load_percentage: 70
+      }
+    }),
+    thermoRow({
+      id: "ir1b-recent-early",
+      timestamp: daysAgoIso(1, 8),
+      peak: {
+        hotspot_temp: 150,
+        reference_temp: 70,
+        delta_t: 99,
+        severity_class: "Class 2",
+        load_percentage: 75
+      }
+    }),
+    thermoRow({
+      id: "ir1b-recent-latest",
+      timestamp: daysAgoIso(1, 0),
+      peak: {
+        hotspot_temp: 120,
+        reference_temp: 70,
+        delta_t: 50,
+        severity_class: "Class 2",
+        load_percentage: 75
+      }
+    }),
+    vibPresenceRow("ir1b-vib-1", daysAgoIso(1, 4)),
+    mcaPresenceRow("ir1b-mca-1", daysAgoIso(2, 0))
+  ],
+  truth: []
+};

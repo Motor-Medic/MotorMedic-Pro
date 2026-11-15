@@ -52,6 +52,45 @@ export const THERMO_EMISSIVITY_APP_DEFAULT_BADGE =
 export const THERMO_EMISSIVITY_EXTRACTED_NOTE =
   "Emissivity (ε) decoded from the file's FLIR radiometric metadata — not read from colors.";
 
+/**
+ * SLICE-IR1B — reference-basis sub-label (absent side). The scan schema has NO
+ * basis field (no `reference_basis` / `baseline_type` / `reference_temp_type`
+ * exists anywhere in migrations or extractors — the analysis prompt only says
+ * "adjacent phase, similar component, or ambient air" without storing which),
+ * so the honest ΔT sub-label is this disclosure. Stored-only: if a row ever
+ * carries an explicit basis marker it renders verbatim instead; the basis is
+ * NEVER inferred from ambient vs phase and ΔT is never altered by it.
+ */
+export const THERMO_REFERENCE_BASIS_UNSPECIFIED =
+  "Baseline type not specified in scan";
+
+/**
+ * SLICE-IR1B — ΔT rate-of-change honesty label. The slope rendered under this
+ * label is a stored-only descriptive fit over the active SSOT window; it is
+ * never a failure forecast and no extrapolated failure date is computed.
+ */
+export const THERMO_DT_TREND_DISCLOSURE =
+  "Descriptive trend, not a failure forecast";
+
+/**
+ * SLICE-IR1B — single-date ΔT gate. With fewer than two DISTINCT calendar
+ * dates carrying a stored ΔT, no rate of change is computable; the surface
+ * renders this disclosure and holds the slope at exactly zero.
+ */
+export const THERMO_DT_TREND_SINGLE_DATE =
+  "One inspection date stored in this window — no ΔT rate of change is computable; slope held at 0.";
+
+/**
+ * SLICE-IR1B — multi-tech presence pill (absent side). Read-only check that
+ * Vibration / MCSA runs exist for the SAME asset and window; when neither
+ * does, this honest empty state renders instead of any inferred linkage.
+ */
+export const THERMO_MULTI_TECH_NO_CONCURRENT =
+  "No concurrent Vibration / MCSA runs in this window";
+
+/** SLICE-IR1B — pill affordance linking to the dedicated fusion surface. */
+export const THERMO_MULTI_TECH_LINK_LABEL = "Open Multi-Tech Fusion";
+
 export type ThermoChartPoint = {
   date: string;
   /** 1-based position in the deterministic oldest → newest series. */
@@ -114,6 +153,13 @@ export type ThermoChartPoint = {
    * No ε value is ever fabricated for an unentered substrate.
    */
   emissivitySource?: "file-extracted" | "app-default" | null;
+  /**
+   * SLICE-IR1B — stored reference-basis marker, read verbatim from explicit
+   * stored fields only (candidate markers: `reference_temp_type`,
+   * `reference_basis`, `baseline_type`). Null when no scan carries one — the
+   * basis is never inferred from ambient vs phase, and ΔT is never altered.
+   */
+  referenceBasis?: string | null;
 };
 
 function num(v: unknown): number | null {
@@ -407,6 +453,40 @@ export function thermoLoadTelemetryStored(
 }
 
 /**
+ * SLICE-IR1B — stored load rendered VERBATIM (present-if-stored). Uses the
+ * SAME `thermoLoadTelemetryStored` gate as the KPI disclosure, so the load % /
+ * amp pair on the KPI card and the NETA repair card can never disagree with
+ * the disclosure gate. Returns null when no load telemetry is stored (the
+ * caller then renders `THERMO_LOAD_DISCLOSURE` instead). No load-corrected ΔT
+ * is ever derived here and the NETA class is never adjusted.
+ */
+export function thermoStoredLoadLabel(
+  point: Pick<
+    ThermoChartPoint,
+    "loadPercent" | "currentAmps" | "ratedAmps"
+  > | null
+): string | null {
+  if (!thermoLoadTelemetryStored(point)) return null;
+  if (point.loadPercent != null && Number.isFinite(point.loadPercent)) {
+    return `Load: ${point.loadPercent}% (stored)`;
+  }
+  return `Load: ${point.currentAmps} A / ${point.ratedAmps} A rated (stored)`;
+}
+
+/**
+ * SLICE-IR1B — ΔT reference-basis sub-label, STORED-ONLY. A scan that carries
+ * an explicit basis marker renders it verbatim; anything else renders
+ * `THERMO_REFERENCE_BASIS_UNSPECIFIED`. The basis is never inferred (ambient
+ * vs phase) and never alters ΔT. Null only when there is no scan at all.
+ */
+export function thermoReferenceBasisLabel(
+  point: Pick<ThermoChartPoint, "referenceBasis"> | null
+): string | null {
+  if (!point) return null;
+  return point.referenceBasis ?? THERMO_REFERENCE_BASIS_UNSPECIFIED;
+}
+
+/**
  * Emissivity + ambient/reference pill text.
  *
  * SLICE-VS7 unit isolation: `emissivity` is dimensionless and `ambient` /
@@ -558,6 +638,21 @@ export function extractThermoChartFields(
       : fileEmissivity != null
         ? ("file-extracted" as const)
         : null;
+
+  // SLICE-IR1B — stored reference-basis marker, verbatim from explicit
+  // stored fields ONLY. No ambient-vs-phase inference, no default: when no
+  // scan field carries a basis, this stays null and the KPI card renders
+  // THERMO_REFERENCE_BASIS_UNSPECIFIED. ΔT is never altered by this value.
+  const referenceBasis =
+    asText(peak.reference_temp_type) ??
+    asText(peak.reference_basis) ??
+    asText(peak.baseline_type) ??
+    deepText(extracted, [
+      "reference_temp_type",
+      "reference_basis",
+      "baseline_type"
+    ]) ??
+    null;
 
   return {
     date: formatDate(row.timestamp || row.created_at),
@@ -792,7 +887,8 @@ export function extractThermoChartFields(
       normalizeThermoTempUnit(
         deepText(analysis, ["temp_unit", "tempUnit", "temperature_unit"])
       ),
-    emissivitySource
+    emissivitySource,
+    referenceBasis
   };
 }
 
@@ -1113,4 +1209,79 @@ export function mechanicalKpis(series: ThermoChartPoint[]): {
     creepAccelerating: null,
     creepDistinctDates
   };
+}
+
+/** SLICE-IR1B — descriptive ΔT rate-of-change result. */
+export interface ThermoDeltaTTrend {
+  /** Distinct calendar dates carrying a stored ΔT in the windowed series. */
+  distinctDates: number;
+  /**
+   * Descriptive slope in the STORED unit per day (null when no ΔT is stored
+   * at all; exactly 0 when only ONE distinct date exists — an honest zero,
+   * never an inferred rate).
+   */
+  slopePerDay: number | null;
+  /** True when the gate is closed (fewer than two distinct dates). */
+  gated: boolean;
+}
+
+/**
+ * SLICE-IR1B — ΔT rate-of-change gate, DESCRIPTIVE ONLY.
+ *
+ * The slope is computed ONLY when the windowed series carries a stored ΔT on
+ * at least TWO DISTINCT calendar dates (shared SSOT windowing is the caller's
+ * job — pass the same windowed series the chart reads). Same-date runs are
+ * DEDUPLICATED: the latest run on each calendar date wins (the series arrives
+ * chronological oldest → newest). The fit reuses `linearSlopePerDay`, is
+ * unit-isolated (computed on raw stored ΔT; callers convert the °/day result
+ * by scale only), and is a descriptive trend — never a failure forecast, and
+ * no extrapolated failure date is computed anywhere from it.
+ */
+export function thermoDeltaTTrend(
+  series: ThermoChartPoint[]
+): ThermoDeltaTTrend {
+  const perDate = new Map<string, { ms: number; value: number }>();
+  for (const point of series) {
+    if (point.deltaT == null || !Number.isFinite(point.deltaT)) continue;
+    const ms = Date.parse(point.timestamp || "");
+    if (!Number.isFinite(ms)) continue;
+    const key = localDateKey(point.timestamp);
+    if (!key) continue;
+    // Later runs overwrite: latest-per-date dedupe, deterministic given the
+    // chronological SSOT order from buildThermoChartSeries.
+    perDate.set(key, { ms, value: point.deltaT });
+  }
+  const distinctDates = perDate.size;
+  if (distinctDates < 2) {
+    return {
+      distinctDates,
+      slopePerDay: distinctDates === 1 ? 0 : null,
+      gated: true
+    };
+  }
+  const slope = linearSlopePerDay([...perDate.values()]);
+  return { distinctDates, slopePerDay: slope, gated: false };
+}
+
+/** SLICE-IR1B — read-only cross-technology presence (counts, never scores). */
+export interface ThermoCrossTechPresence {
+  /** Vibration runs stored for the same asset in the active window. */
+  vibration: number;
+  /** MCSA runs stored for the same asset in the active window. */
+  mca: number;
+}
+
+/**
+ * SLICE-IR1B — pill label for the read-only Vibration/MCSA presence check.
+ * Pure formatting over stored counts: no cross-tech score, no correlation,
+ * no fusion arithmetic. Zero runs on both sides renders the honest
+ * "no concurrent runs" disclosure verbatim.
+ */
+export function thermoCrossTechPillLabel(
+  presence: ThermoCrossTechPresence
+): string {
+  if (presence.vibration <= 0 && presence.mca <= 0) {
+    return THERMO_MULTI_TECH_NO_CONCURRENT;
+  }
+  return `Concurrent runs in this window — Vibration: ${presence.vibration} · MCSA: ${presence.mca}`;
 }

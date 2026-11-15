@@ -79,8 +79,15 @@ import {
   THERMO_EMISSIVITY_APP_DEFAULT_BADGE,
   THERMO_EMISSIVITY_EXTRACTED_NOTE,
   THERMO_LOAD_DISCLOSURE,
+  THERMO_MULTI_TECH_LINK_LABEL,
+  THERMO_DT_TREND_DISCLOSURE,
+  THERMO_DT_TREND_SINGLE_DATE,
+  thermoCrossTechPillLabel,
+  thermoDeltaTTrend,
   thermoEmissivityAmbientPill,
   thermoLoadTelemetryStored,
+  thermoReferenceBasisLabel,
+  thermoStoredLoadLabel,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
 import {
@@ -4285,6 +4292,61 @@ export default function TrendAnalyzer({
       : null;
   /** SLICE-IR1 — load gate: disclosure ONLY, and only when load is NOT stored. */
   const thermoLoadStored = thermoLoadTelemetryStored(latestThermoRaw);
+  /**
+   * SLICE-IR1B — stored load rendered VERBATIM (present-if-stored). Same
+   * `thermoLoadTelemetryStored` gate as the disclosure above; feeds both the
+   * KPI card and the NETA repair-card placement. No load-corrected ΔT is
+   * derived and the stored NETA class is never adjusted.
+   */
+  const thermoStoredLoad = thermoStoredLoadLabel(latestThermoRaw);
+  /**
+   * SLICE-IR1B — ΔT reference-basis sub-label, stored-only: a stored basis
+   * marker renders verbatim, otherwise the honest "not specified" disclosure.
+   * Null when no thermography scan exists (no surface at all).
+   */
+  const thermoReferenceBasis = thermoReferenceBasisLabel(
+    thermoAnalyses.length > 0 ? latestThermoRaw : null
+  );
+  /**
+   * SLICE-IR1B — ΔT rate-of-change gate, DESCRIPTIVE ONLY. Computed on the RAW
+   * stored series (same SSOT window as the chart); the °/day slope is
+   * converted for display by scale only, mirroring the creep-rate treatment.
+   */
+  const rawDeltaTTrend = useMemo(
+    () => thermoDeltaTTrend(thermoChartSeries),
+    [thermoChartSeries]
+  );
+  const deltaTTrendSlopeDisplay = useMemo(() => {
+    if (rawDeltaTTrend.slopePerDay == null) return null;
+    return (
+      Math.round(
+        convertTemperatureDelta(
+          rawDeltaTTrend.slopePerDay,
+          thermoReferenceUnit,
+          thermoDisplayUnit
+        ) * 100
+      ) / 100
+    );
+  }, [rawDeltaTTrend, thermoReferenceUnit, thermoDisplayUnit]);
+  const deltaTTrendSlopeText =
+    deltaTTrendSlopeDisplay == null
+      ? null
+      : rawDeltaTTrend.slopePerDay === 0
+        ? "0"
+        : `${deltaTTrendSlopeDisplay >= 0 ? "+" : ""}${deltaTTrendSlopeDisplay}`;
+  /**
+   * SLICE-IR1B — read-only multi-tech presence (asset + SAME active window).
+   * Counts stored Vibration / MCSA runs only; no cross-tech score or
+   * correlation is computed anywhere on this tab.
+   */
+  const thermoCrossTechCounts = useMemo(
+    () => ({
+      vibration: windowTrendByTimeRange(vibAnalyses, timeRange).length,
+      mca: windowTrendByTimeRange(mcaAnalyses, timeRange).length
+    }),
+    [vibAnalyses, mcaAnalyses, timeRange]
+  );
+  const thermoCrossTechLabel = thermoCrossTechPillLabel(thermoCrossTechCounts);
   /** Reference temps stay in stored units — surface them as a note, never on the axis. */
   const thermoAmbientStoredNote =
     latestThermoRaw?.ambientReferenceTemp != null
@@ -6589,6 +6651,14 @@ export default function TrendAnalyzer({
                           {latestThermoChart?.deltaT != null
                             ? `${latestThermoChart.deltaT}${thermoDisplayUnit}`
                             : NOT_MEASURED}
+                          {thermoReferenceBasis && (
+                            <span
+                              data-testid="thermo-reference-basis"
+                              className="mt-1 block text-[10px] font-normal italic text-slate-500"
+                            >
+                              {thermoReferenceBasis}
+                            </span>
+                          )}
                         </li>
                         <li className="text-sm font-semibold text-white">
                           Fault:{" "}
@@ -6598,6 +6668,14 @@ export default function TrendAnalyzer({
                           NETA:{" "}
                           {latestThermoChart?.severityLabel || NOT_REPORTED}
                         </li>
+                        {thermoStoredLoad && (
+                          <li
+                            data-testid="thermo-kpi-stored-load"
+                            className="text-sm font-semibold text-cyan-300"
+                          >
+                            {thermoStoredLoad}
+                          </li>
+                        )}
                         {hasThermographyData && (
                           <li className="pt-1" data-testid="thermo-kpi-provenance">
                             <p className="text-[10px] text-slate-500 italic">
@@ -6687,6 +6765,16 @@ export default function TrendAnalyzer({
                         Static NETA / NFPA 70B reference guidance keyed to the
                         stored severity class — not a live per-asset diagnosis
                         and not recomputed from ΔT.
+                      </p>
+                      <p
+                        data-testid="thermo-repair-card-load"
+                        className={
+                          thermoStoredLoad
+                            ? "text-[11px] font-semibold text-cyan-300 mt-2"
+                            : "text-[10px] text-slate-500 italic mt-2"
+                        }
+                      >
+                        {thermoStoredLoad ?? THERMO_LOAD_DISCLOSURE}
                       </p>
                     </div>
                   )}
@@ -6810,6 +6898,73 @@ export default function TrendAnalyzer({
                       </ComposedChart>
                     </ResponsiveContainer>
                   </ThermoChartFrame>
+
+                  {hasThermographyData && (
+                    <div data-testid="thermo-dt-trend-gate" className={`${CARD} mb-6`}>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        ΔT Rate of Change (descriptive)
+                      </p>
+                      {rawDeltaTTrend.distinctDates === 0 ? (
+                        <p className="text-sm text-slate-400">
+                          No stored ΔT readings in this window — no descriptive
+                          trend.
+                        </p>
+                      ) : rawDeltaTTrend.gated ? (
+                        <>
+                          <p className="text-sm font-semibold text-slate-300 font-mono">
+                            ΔT trend: 0{thermoDisplayUnit}/day
+                          </p>
+                          <p className="text-xs text-amber-300 mt-1">
+                            {THERMO_DT_TREND_SINGLE_DATE}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-semibold text-slate-200 font-mono">
+                            ΔT trend: {deltaTTrendSlopeText}
+                            {thermoDisplayUnit}/day
+                          </p>
+                          <p className="text-xs text-slate-400 mt-1">
+                            {rawDeltaTTrend.distinctDates} distinct inspection
+                            date{rawDeltaTTrend.distinctDates === 1 ? "" : "s"}{" "}
+                            in the active window; same-date runs deduplicated
+                            (latest per date).
+                          </p>
+                        </>
+                      )}
+                      <p className="text-[10px] text-slate-500 mt-2 italic">
+                        {THERMO_DT_TREND_DISCLOSURE} Slope derives only from
+                        stored ΔT readings and is converted by scale only — no
+                        extrapolated failure date is computed.
+                      </p>
+                    </div>
+                  )}
+
+                  {hasThermographyData && (
+                    <div
+                      data-testid="thermo-multi-tech-presence-pill"
+                      className={`${CARD} mb-6`}
+                    >
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        Concurrent Technologies (read-only presence)
+                      </p>
+                      <p className="text-sm font-semibold text-slate-300">
+                        {thermoCrossTechLabel}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => navigateToTab("multi-tech")}
+                        className="mt-2 inline-flex items-center rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 py-1 text-[11px] font-semibold text-cyan-300 cursor-pointer"
+                      >
+                        {THERMO_MULTI_TECH_LINK_LABEL}
+                      </button>
+                      <p className="text-[10px] text-slate-500 mt-2 italic">
+                        Read-only presence check for this asset and window — no
+                        cross-technology scoring, correlation, or fusion
+                        arithmetic on this tab.
+                      </p>
+                    </div>
+                  )}
 
                   {windowedThermoAnalyses.length > 0 && (
                     <div className={`${CARD} mb-6 overflow-x-auto`}>

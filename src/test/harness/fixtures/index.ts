@@ -11,6 +11,8 @@ import { vibrationFixtures } from "./vibrationFixtures";
 import {
   thermographyEmissivityExtractedFixture,
   thermographyFixtures,
+  thermographyMultiDateFixture,
+  thermographyNoLoadClassifiedFixture,
   thermographySmallDeltaFixture
 } from "./thermographyFixtures";
 import { ultrasoundFixtures } from "./ultrasoundFixtures";
@@ -25,4 +27,4 @@ export const FIXTURE_MATRIX: Record<string, TechFixtures> = {
   oil_analysis: oilFixtures
 };
 
-export { vibrationFixtures, thermographyFixtures, thermographySmallDeltaFixture, thermographyEmissivityExtractedFixture, ultrasoundFixtures, mcaFixtures, oilFixtures };
+export { vibrationFixtures, thermographyFixtures, thermographySmallDeltaFixture, thermographyEmissivityExtractedFixture, thermographyMultiDateFixture, thermographyNoLoadClassifiedFixture, ultrasoundFixtures, mcaFixtures, oilFixtures };
