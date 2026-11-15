@@ -93,6 +93,9 @@ import {
   thermoLoadTelemetryStored,
   thermoReferenceBasisLabel,
   thermoStoredLoadLabel,
+  NOT_RECORDED,
+  THERMO_EMISSIVITY_LABEL,
+  thermoPaletteSpanWidth,
   type ThermoChartPoint
 } from "../lib/thermographyTrendSeries";
 import {
@@ -5073,57 +5076,61 @@ export default function TrendAnalyzer({
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
               Units
             </span>
-            <select
-              value={displayUnits.velocity}
-              onChange={(e) =>
-                void updateDisplayUnits({
-                  velocity: e.target.value as DisplayUnits["velocity"]
-                })
-              }
-              aria-label="Velocity display unit"
-              title="Velocity display unit"
-              className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
-            >
-              {VELOCITY_DISPLAY_OPTIONS.map((unit) => (
-                <option key={unit} value={unit}>
-                  {unit}
-                </option>
-              ))}
-            </select>
-            <select
-              value={displayUnits.acceleration}
-              onChange={(e) =>
-                void updateDisplayUnits({
-                  acceleration: e.target.value as DisplayUnits["acceleration"]
-                })
-              }
-              aria-label="Acceleration display unit"
-              title="Acceleration display unit"
-              className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
-            >
-              {ACCELERATION_DISPLAY_OPTIONS.map((unit) => (
-                <option key={unit} value={unit}>
-                  {unit}
-                </option>
-              ))}
-            </select>
-            <select
-              value={displayUnits.frequency}
-              onChange={(e) =>
-                void updateDisplayUnits({
-                  frequency: e.target.value as DisplayUnits["frequency"]
-                })
-              }
-              aria-label="Frequency display unit"
-              title="Frequency display unit"
-              className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
-            >
-              {FREQUENCY_DISPLAY_OPTIONS.map((unit) => (
-                <option key={unit} value={unit}>
-                  {unit}
-                </option>
-              ))}
-            </select>
+            {trendTech === "vibration" && (
+              <>
+                <select
+                  value={displayUnits.velocity}
+                  onChange={(e) =>
+                    void updateDisplayUnits({
+                      velocity: e.target.value as DisplayUnits["velocity"]
+                    })
+                  }
+                  aria-label="Velocity display unit"
+                  title="Velocity display unit"
+                  className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+                >
+                  {VELOCITY_DISPLAY_OPTIONS.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={displayUnits.acceleration}
+                  onChange={(e) =>
+                    void updateDisplayUnits({
+                      acceleration: e.target.value as DisplayUnits["acceleration"]
+                    })
+                  }
+                  aria-label="Acceleration display unit"
+                  title="Acceleration display unit"
+                  className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+                >
+                  {ACCELERATION_DISPLAY_OPTIONS.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={displayUnits.frequency}
+                  onChange={(e) =>
+                    void updateDisplayUnits({
+                      frequency: e.target.value as DisplayUnits["frequency"]
+                    })
+                  }
+                  aria-label="Frequency display unit"
+                  title="Frequency display unit"
+                  className="min-h-[34px] px-2 rounded-lg border border-slate-700 bg-slate-950 text-xs text-slate-200 focus:border-yellow-500 outline-none cursor-pointer"
+                >
+                  {FREQUENCY_DISPLAY_OPTIONS.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
             {trendTech === "thermography" && (
               <>
                 <select
@@ -7345,7 +7352,7 @@ export default function TrendAnalyzer({
                       >
                         {radioKpis.latest?.emissivity != null
                           ? `ε = ${radioKpis.latest.emissivity}`
-                          : NOT_MEASURED}
+                          : NOT_RECORDED}
                         {radioKpis.emissivityDrift && (
                           <AlertTriangle
                             className="h-5 w-5 text-amber-400 shrink-0"
@@ -7356,9 +7363,12 @@ export default function TrendAnalyzer({
                       <p className="text-xs text-slate-500 mt-1">
                         {radioKpis.baselineEmissivity != null
                           ? radioKpis.emissivityDrift
-                            ? `Changed vs baseline ε = ${radioKpis.baselineEmissivity}`
+                            ? `Changed vs baseline ε = ${radioKpis.baselineEmissivity} (stored: ${radioKpis.latest?.emissivity}). Trends may reflect setting change.`
                             : `Matches baseline ε = ${radioKpis.baselineEmissivity}`
-                          : "From telemetry environmental settings"}
+                          : THERMO_EMISSIVITY_LABEL}
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-1 italic">
+                        {THERMO_EMISSIVITY_LABEL}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -7373,12 +7383,23 @@ export default function TrendAnalyzer({
                         }`}
                       >
                         {radioKpis.paletteConfigured
-                          ? `Range: ${radioKpis.paletteSpan}${thermoDisplayUnit}`
+                          ? `Range: ${
+                              thermoPaletteSpanWidth(
+                                latestThermoRaw?.scaleMin,
+                                latestThermoRaw?.scaleMax,
+                                latestThermoRaw?.tempUnit ?? thermoStoredUnit,
+                                thermoDisplayUnit
+                              ) ?? radioKpis.paletteSpan
+                            }${thermoDisplayUnit}`
                           : NOT_REPORTED}
                       </p>
                       <p className="text-xs text-slate-500 mt-1 font-mono">
                         {radioKpis.paletteConfigured
-                          ? `${radioKpis.latest!.scaleMin}${thermoDisplayUnit} → ${radioKpis.latest!.scaleMax}${thermoDisplayUnit}`
+                          ? `${radioKpis.latest!.scaleMin}${thermoDisplayUnit} → ${radioKpis.latest!.scaleMax}${thermoDisplayUnit}${
+                              radioKpis.spanChanged
+                                ? " · Span changed across scans"
+                                : ""
+                            }`
                           : "Camera scale not reported in saved scan"}
                       </p>
                     </div>
@@ -7456,7 +7477,9 @@ export default function TrendAnalyzer({
                     note={
                       thermoAxisPlan.snapshot && hasRadiometricSeries
                         ? SPARSE_TREND_HELPER_TEXT
-                        : null
+                        : hasEmissivitySeries && !hasRadiometricTempSeries
+                          ? "Emissivity setting only — radiometric temperature boundaries (scale, isotherm, box average) not recorded."
+                          : null
                     }
                   >
                     <ResponsiveContainer width="100%" height="100%">
@@ -7585,13 +7608,102 @@ export default function TrendAnalyzer({
                             stroke="#a78bfa"
                             strokeWidth={2.5}
                             strokeDasharray="6 4"
-                            dot={{ r: 3 }}
+                            dot={{ r: 4, fill: "#a78bfa", stroke: "#a78bfa" }}
                             connectNulls
                           />
                         )}
                       </ComposedChart>
                     </ResponsiveContainer>
                   </ThermoChartFrame>
+
+                  {windowedThermoAnalyses.length > 0 && (
+                    <div
+                      data-testid="thermo-radiometric-provenance-table"
+                      className="mt-6 rounded-xl border border-slate-800 bg-slate-900/60 p-4"
+                    >
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                        Radiometric & Isotherm Scan Provenance
+                      </p>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                          <thead>
+                            <tr className="text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800">
+                              <th className="py-2 pr-3 font-bold">Date</th>
+                              <th className="py-2 pr-3 font-bold">Emissivity (ε)</th>
+                              <th className="py-2 pr-3 font-bold">
+                                Scale Min ({thermoDisplayUnit})
+                              </th>
+                              <th className="py-2 pr-3 font-bold">
+                                Scale Max ({thermoDisplayUnit})
+                              </th>
+                              <th className="py-2 pr-3 font-bold">
+                                Isotherm ({thermoDisplayUnit})
+                              </th>
+                              <th className="py-2 pr-3 font-bold">
+                                Box Avg ({thermoDisplayUnit})
+                              </th>
+                              <th className="py-2 pr-3 font-bold">T_refl (stored)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {windowedThermoAnalyses.map((r, idx) => {
+                              const pt =
+                                thermoDisplaySeries[
+                                  thermoDisplaySeries.length - 1 - idx
+                                ];
+                              const rawPt =
+                                thermoChartSeries[
+                                  thermoChartSeries.length - 1 - idx
+                                ];
+                              return (
+                                <tr
+                                  key={r.id}
+                                  className="border-b border-slate-800/80 text-slate-300"
+                                >
+                                  <td className="py-2 pr-3 whitespace-nowrap">
+                                    {pt?.dateLabel ??
+                                      (r.timestamp
+                                        ? new Date(r.timestamp).toLocaleDateString()
+                                        : "—")}
+                                  </td>
+                                  <td className="py-2 pr-3 font-mono">
+                                    {rawPt?.emissivity != null
+                                      ? `ε = ${rawPt.emissivity}`
+                                      : NOT_REPORTED}
+                                  </td>
+                                  <td className="py-2 pr-3 font-mono">
+                                    {pt?.scaleMin != null
+                                      ? pt.scaleMin
+                                      : NOT_REPORTED}
+                                  </td>
+                                  <td className="py-2 pr-3 font-mono">
+                                    {pt?.scaleMax != null
+                                      ? pt.scaleMax
+                                      : NOT_REPORTED}
+                                  </td>
+                                  <td className="py-2 pr-3 font-mono">
+                                    {pt?.isothermThreshold != null
+                                      ? pt.isothermThreshold
+                                      : NOT_REPORTED}
+                                  </td>
+                                  <td className="py-2 pr-3 font-mono">
+                                    {pt?.boxAverage != null
+                                      ? pt.boxAverage
+                                      : NOT_MEASURED}
+                                  </td>
+                                  <td className="py-2 pr-3 font-mono">
+                                    {rawPt?.reflectedApparentTemp != null
+                                      ? `${rawPt.reflectedApparentTemp}${rawPt.tempUnit ?? thermoStoredUnit}`
+                                      : "—"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
 

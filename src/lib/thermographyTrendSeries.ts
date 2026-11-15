@@ -4,6 +4,7 @@
  */
 
 import type { SavedAnalysisResult } from "./analysisPersistence";
+import { convertTemperatureDelta } from "./vibration/units";
 
 /**
  * SLICE-VS7 null-trio. These are deliberately distinct so an absent stored
@@ -11,10 +12,19 @@ import type { SavedAnalysisResult } from "./analysisPersistence";
  * - `NOT_MEASURED`   — the run was saved but the instrument field is absent.
  * - `NOT_REPORTED`   — the analysis / camera never reported the field.
  * - `NOT_DETECTED`   — the run explicitly stored a negative (e.g. no anomaly).
+ * - `NOT_RECORDED`   — parameter (e.g. camera setting / T_ref) was not recorded.
  */
 export const NOT_MEASURED = "Not measured";
 export const NOT_REPORTED = "Not reported";
 export const NOT_DETECTED = "Not detected";
+export const NOT_RECORDED = "Not recorded";
+
+/**
+ * SLICE-IR3 — Emissivity setting descriptive label.
+ * The badge it labels is descriptive only: stored setting, not optically measured.
+ */
+export const THERMO_EMISSIVITY_LABEL =
+  "Stored camera setting (not optically measured)";
 
 /**
  * Exact copy required by the radiometric T_ref gate. Emitted verbatim when no
@@ -1174,6 +1184,23 @@ export function nfpaClassBadge(pt: ThermoChartPoint | null): {
   };
 }
 
+/**
+ * SLICE-IR3 — Camera palette span width.
+ * Scale-only conversion via convertTemperatureDelta (NEVER convertAbsoluteTemperature,
+ * NEVER +32). Bounds convert affinely; the span width is a delta.
+ */
+export function thermoPaletteSpanWidth(
+  rawScaleMin: number | null | undefined,
+  rawScaleMax: number | null | undefined,
+  fromUnit: "°C" | "°F",
+  toUnit: "°C" | "°F"
+): number | null {
+  if (rawScaleMin == null || rawScaleMax == null) return null;
+  const rawDelta = rawScaleMax - rawScaleMin;
+  const convertedDelta = convertTemperatureDelta(rawDelta, fromUnit, toUnit);
+  return Math.round(convertedDelta * 10) / 10;
+}
+
 /** Radiometric KPI helpers — first scan with ε is asset baseline; no invented values. */
 export function radiometricKpis(series: ThermoChartPoint[]): {
   latest: ThermoChartPoint | null;
@@ -1184,6 +1211,7 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
   paletteConfigured: boolean;
   isothermConfigured: boolean;
   boxAverageConfigured: boolean;
+  spanChanged: boolean;
 } {
   const latest = series.length ? series[series.length - 1] : null;
   const baseline =
@@ -1198,6 +1226,19 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
   const paletteSpan = paletteConfigured
     ? Math.round((latest!.scaleMax! - latest!.scaleMin!) * 10) / 10
     : null;
+  let spanChanged = false;
+  if (paletteConfigured && paletteSpan != null) {
+    for (let i = 0; i < series.length - 1; i++) {
+      const p = series[i];
+      if (p.scaleMax != null && p.scaleMin != null) {
+        const earlierSpan = Math.round((p.scaleMax - p.scaleMin) * 10) / 10;
+        if (Math.abs(earlierSpan - paletteSpan) > 0.1) {
+          spanChanged = true;
+          break;
+        }
+      }
+    }
+  }
   return {
     latest,
     baselineEmissivity: baseline,
@@ -1205,7 +1246,8 @@ export function radiometricKpis(series: ThermoChartPoint[]): {
     paletteSpan,
     paletteConfigured,
     isothermConfigured: latest?.isothermThreshold != null,
-    boxAverageConfigured: latest?.boxAverage != null
+    boxAverageConfigured: latest?.boxAverage != null,
+    spanChanged
   };
 }
 

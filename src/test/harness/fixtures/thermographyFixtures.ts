@@ -395,3 +395,82 @@ export const thermographyMultiDateFixture: TechFixtureState = {
   ],
   truth: []
 };
+
+/**
+ * SLICE-IR3 — Radiometric scale span fixture (stored in °C).
+ * Scale min = 10°C, scale max = 30°C (raw span = 20°C).
+ * Under °F display preference:
+ * - scaleMin converts affinely to 50°F (10 * 1.8 + 32)
+ * - scaleMax converts affinely to 86°F (30 * 1.8 + 32)
+ * - span width converts by delta to 36°F (20 * 1.8, NEVER 68°F!)
+ * Also stores isotherm (28°C -> 82.4°F) and boxAverage (24°C -> 75.2°F).
+ */
+export const thermographyRadiometricSpanFixture: TechFixtureState = {
+  name: "thermo-radiometric-span",
+  rows: [
+    thermoRow({
+      id: "ir3-span-row",
+      timestamp: daysAgoIso(1),
+      peak: {
+        scale_min_boundary: 10,
+        scale_max_boundary: 30,
+        isotherm_threshold: 28,
+        box_average_temperature: 24
+      },
+      telemetry: {
+        environmental: {
+          emissivity: 0.95,
+          temp_unit: "°C",
+          reflected_temp: 22
+        }
+      }
+    })
+  ],
+  truth: []
+};
+
+/**
+ * SLICE-IR3 — Radiometric drift fixture across two scans.
+ * Run 1: baseline emissivity = 0.95, span 10–30°C.
+ * Run 2: second scan emissivity = 0.85 (drift), span 15–40°C (span changed).
+ */
+export const thermographyRadiometricDriftFixture: TechFixtureState = {
+  name: "thermo-radiometric-drift",
+  rows: [
+    thermoRow({
+      id: "ir3-drift-row-1",
+      timestamp: daysAgoIso(5),
+      peak: {
+        scale_min_boundary: 10,
+        scale_max_boundary: 30,
+        isotherm_threshold: 28,
+        box_average_temperature: 24
+      },
+      telemetry: {
+        environmental: {
+          emissivity: 0.95,
+          temp_unit: "°C",
+          reflected_temp: 22
+        }
+      }
+    }),
+    thermoRow({
+      id: "ir3-drift-row-2",
+      timestamp: daysAgoIso(1),
+      peak: {
+        scale_min_boundary: 15,
+        scale_max_boundary: 40,
+        isotherm_threshold: 35,
+        box_average_temperature: 28
+      },
+      telemetry: {
+        environmental: {
+          emissivity: 0.85,
+          temp_unit: "°C",
+          reflected_temp: 22
+        }
+      }
+    })
+  ],
+  truth: []
+};
