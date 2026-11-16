@@ -301,6 +301,21 @@ function daysAgoIso(days: number, hours = 0): string {
   ).toISOString();
 }
 
+/**
+ * Relative day pinned to a FIXED local wall-clock hour (and optionally shifted
+ * by an exact millisecond gap). The ΔT dedupe key is the LOCAL calendar date
+ * (`localDateKey`), so a bare relative-hours offset — e.g. "1 day 8 hours
+ * ago" against "1 day ago" — lands on two different local dates whenever the
+ * suite runs before 08:00 local, fabricating a third inspection date and
+ * changing the descriptive slope. Pinning the hour keeps both runs of the
+ * same relative day on one calendar date at every clock time.
+ */
+function recentScanIso(hour: number, minusMs = 0): string {
+  const d = new Date(Date.now() - 86_400_000);
+  d.setHours(hour, 0, 0, 0);
+  return new Date(d.getTime() - minusMs).toISOString();
+}
+
 /** Minimal Vibration row shaped like the proven SLICE-VS4 factory. */
 function vibPresenceRow(id: string, timestamp: string): Row {
   return {
@@ -348,18 +363,21 @@ function mcaPresenceRow(id: string, timestamp: string): Row {
 }
 
 /**
- * SLICE-IR1B — multi-date fixture. ΔT 40 six days ago, then TWICE on the
- * recent date (99 early, 50 latest) so same-date dedupe must keep the latest
- * run: the descriptive slope is exactly (50 − 40) / 5 = 2 °/day, never a
- * forecast. Load 75% stored on the latest run; concurrent Vibration + MCSA
- * rows in-window exercise the read-only presence pill.
+ * SLICE-IR1B — multi-date fixture. ΔT 40 exactly five days before the recent
+ * scan, then TWICE on the recent local date (99 at 16:00, 50 at 20:00) so
+ * same-date dedupe must keep the latest run: the descriptive slope is exactly
+ * (50 − 40) / 5 = 2 °/day, never a forecast. The fixed local hours + exact
+ * 5-day gap make the dedupe/slope clock-independent (a bare hour offset
+ * crossed local midnight for part of the day, which is IR1B's fixture-drift
+ * flake). Load 75% stored on the latest run; concurrent Vibration + MCSA rows
+ * in-window exercise the read-only presence pill.
  */
 export const thermographyMultiDateFixture: TechFixtureState = {
   name: "thermo-multi-date",
   rows: [
     thermoRow({
       id: "ir1b-old",
-      timestamp: daysAgoIso(6),
+      timestamp: recentScanIso(20, 5 * 86_400_000),
       peak: {
         hotspot_temp: 110,
         reference_temp: 70,
@@ -370,7 +388,7 @@ export const thermographyMultiDateFixture: TechFixtureState = {
     }),
     thermoRow({
       id: "ir1b-recent-early",
-      timestamp: daysAgoIso(1, 8),
+      timestamp: recentScanIso(16),
       peak: {
         hotspot_temp: 150,
         reference_temp: 70,
@@ -381,7 +399,7 @@ export const thermographyMultiDateFixture: TechFixtureState = {
     }),
     thermoRow({
       id: "ir1b-recent-latest",
-      timestamp: daysAgoIso(1, 0),
+      timestamp: recentScanIso(20),
       peak: {
         hotspot_temp: 120,
         reference_temp: 70,

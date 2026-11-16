@@ -32,6 +32,7 @@ import {
   openTech,
   setupHarness
 } from "./contract";
+import type { TechFixtureState } from "./contract";
 import {
   thermographyFixtures,
   thermographyMultiDateFixture,
@@ -41,6 +42,47 @@ import {
 const harness = setupHarness();
 
 const trendSrc = readFileSync("src/components/TrendAnalyzer.tsx", "utf8");
+
+/**
+ * Hand recompute of the IR1B descriptive slope straight from the fixture's
+ * stored rows — deliberately NOT calling `thermoDeltaTTrend`. Same-date runs
+ * collapse to the latest local calendar date (rows arrive oldest → newest,
+ * so later runs overwrite), then (latest ΔT − earliest ΔT) / elapsed days.
+ * This is the independent number the DOM must match; if the fixture drifts,
+ * this recompute drifts with it and the assertion below fails loudly.
+ */
+function handRecomputeDeltaTTrend(fixture: TechFixtureState): {
+  perDate: number[];
+  gapDays: number;
+  slopePerDay: number;
+} {
+  const perDate = new Map<string, { ms: number; deltaT: number }>();
+  for (const row of fixture.rows) {
+    const timestamp = row.timestamp;
+    const peaks = Array.isArray(row.peaks) ? row.peaks : [];
+    const peak = peaks.find(
+      (p): p is Record<string, unknown> => !!p && typeof p === "object"
+    );
+    const deltaT = peak?.delta_t;
+    if (typeof timestamp !== "string" || typeof deltaT !== "number") continue;
+    const d = new Date(timestamp);
+    if (Number.isNaN(d.getTime())) continue;
+    // LOCAL calendar date — the same dedupe key the contract exercises.
+    perDate.set(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`, {
+      ms: d.getTime(),
+      deltaT
+    });
+  }
+  const kept = [...perDate.values()].sort((a, b) => a.ms - b.ms);
+  const first = kept[0];
+  const last = kept[kept.length - 1];
+  const gapDays = (last.ms - first.ms) / 86_400_000;
+  return {
+    perDate: kept.map((p) => p.deltaT),
+    gapDays,
+    slopePerDay: (last.deltaT - first.deltaT) / gapDays
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Stored load % verbatim + repair-card placement (SAME gate/constant) */
@@ -135,12 +177,22 @@ describe("SLICE-IR1B ΔT rate-of-change gate", () => {
     loadFixture(harness, thermographyMultiDateFixture);
     await openTech("thermography");
 
-    // ΔT 40 → 50 over exactly 5 distinct days, same-date runs deduplicated.
+    // PROOF the expectation is descriptive, not fabricated: recompute from the
+    // fixture's stored ΔT + timestamps. Same-date runs dedupe to the latest
+    // (99 at 16:00 is dropped, 50 at 20:00 kept); the surviving pair is ΔT 40
+    // exactly 5 days earlier → (50 − 40) / 5 = +2 °F/day.
+    const hand = handRecomputeDeltaTTrend(thermographyMultiDateFixture);
+    expect(hand.perDate).toEqual([40, 50]);
+    expect(hand.gapDays).toBeCloseTo(5, 9);
+    expect(hand.slopePerDay).toBeCloseTo(2, 9);
+
     const gate = expectTestIdContent("thermo-dt-trend-gate", [
-      "ΔT trend: +2°F/day",
+      `ΔT trend: +${hand.slopePerDay}°F/day`,
       "2 distinct inspection dates in the active window",
       "same-date runs deduplicated (latest per date)"
     ]);
+    // The displayed slope is the hand-recomputed descriptive fit, verbatim.
+    expect(gate.textContent).toContain("ΔT trend: +2°F/day");
     expect(gate.textContent).toContain("Descriptive trend, not a failure forecast");
     expectTextAbsent(/predicted failure/i);
     expectTextAbsent(/failure in \d+ days/i);
