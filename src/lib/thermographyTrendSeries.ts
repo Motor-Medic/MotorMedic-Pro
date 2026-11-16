@@ -1509,3 +1509,59 @@ export function thermoAmbientProvenanceLabel(
     Math.round(ambient * 10) / 10
   }${unit}); no drift compensation applied.`;
 }
+
+/**
+ * SLICE-IR4 — parked projection disclosure (AQ pattern). The mechanical tab
+ * renders measured bearing / refractory / friction readings only. Remaining
+ * life, erosion, thickness loss and any extrapolated failure date stay
+ * uncomputed and unrendered; this constant is the only place those families
+ * are named, so they cannot silently re-enter a card.
+ */
+export const THERMO_MECH_PARKED_NOTE =
+  "Parked: refractory remaining-life, erosion and thickness-loss estimates and any extrapolated failure-date output are not computed or rendered on this tab (SLICE-IR4, AQ pattern).";
+
+/**
+ * SLICE-IR4 — creep velocity wording. The number is the existing descriptive
+ * least-squares slope of stored skin temperatures; it is never a failure
+ * forecast and no failure date is extrapolated.
+ */
+export const THERMO_MECH_CREEP_LABEL =
+  "Descriptive least-squares slope across stored skin temperatures — not a failure forecast.";
+
+/**
+ * SLICE-IR4 — per-card limit citation, present-if-stored. Each card states the
+ * limit it actually judges against: the scan's stored max allowable when one
+ * exists, otherwise an explicit confession. No external standard section is
+ * cited until web-confirmed; bearing / friction / creep use generic in-repo
+ * wording only.
+ */
+export interface ThermoMechLimitCitations {
+  bearing: string;
+  refractory: string;
+  friction: string;
+  creep: string;
+}
+
+export function thermoMechLimitCitations(
+  point: Pick<
+    ThermoChartPoint,
+    "maxAllowable" | "frictionalSeverity" | "frictionalAnomaly"
+  > | null
+): ThermoMechLimitCitations {
+  const hasLimit =
+    point?.maxAllowable != null && Number.isFinite(point.maxAllowable);
+  const frictionStored =
+    point?.frictionalSeverity != null || point?.frictionalAnomaly != null;
+  return {
+    bearing:
+      "Limit source: no bearing-housing limit stored on this run — DE/ODE and ΔT vs ambient are descriptive (in-repo comparison, no external standard claimed).",
+    refractory: hasLimit
+      ? "Limit source: stored max allowable limit (analysis row / peaks) — compared against that stored value only."
+      : "Limit source: no stored max allowable for this run — skin temperature is reported without a pass/fail judgment.",
+    friction: frictionStored
+      ? "Limit source: stored friction class / flag only — no threshold is evaluated on this card."
+      : "Limit source: no friction class or flag stored for this run — nothing is inferred.",
+    creep:
+      "Limit source: no thermal-creep limit stored on this run — the slope is descriptive only, not a forecast."
+  };
+}

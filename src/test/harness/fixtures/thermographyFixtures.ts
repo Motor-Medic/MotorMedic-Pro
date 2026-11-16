@@ -415,6 +415,50 @@ export const thermographyMultiDateFixture: TechFixtureState = {
 };
 
 /**
+ * SLICE-IR4 — Mechanical & Refractory fixture. Three distinct dates carry
+ * stored skin temps 200 / 210 / 220 °F, so the descriptive creep slope is
+ * exactly 2.5 °F/day (never a forecast). The latest run stores the limit
+ * (max_allowable_limit 260) and a friction class + flag. No remaining-life,
+ * erosion or thickness field exists anywhere in the row.
+ */
+export const thermographyMechanicalFixture: TechFixtureState = {
+  name: "thermo-mechanical",
+  rows: [
+    thermoRow({
+      id: "ir4-row-1",
+      timestamp: recentScanIso(20, 8 * 86_400_000),
+      peak: {
+        refractory_skin_temp: 200,
+        de_bearing_temp: 120,
+        ode_bearing_temp: 118
+      }
+    }),
+    thermoRow({
+      id: "ir4-row-2",
+      timestamp: recentScanIso(20, 4 * 86_400_000),
+      peak: {
+        refractory_skin_temp: 210,
+        de_bearing_temp: 130,
+        ode_bearing_temp: 126
+      }
+    }),
+    thermoRow({
+      id: "ir4-row-3",
+      timestamp: recentScanIso(20),
+      peak: {
+        refractory_skin_temp: 220,
+        de_bearing_temp: 140,
+        ode_bearing_temp: 135,
+        max_allowable_limit: 260,
+        frictional_severity: "Class 2 — Moderate",
+        frictional_anomaly: true
+      }
+    })
+  ],
+  truth: []
+};
+
+/**
  * SLICE-IR3 — Radiometric scale span fixture (stored in °C).
  * Scale min = 10°C, scale max = 30°C (raw span = 20°C).
  * Under °F display preference:

@@ -85,12 +85,15 @@ import {
   THERMO_MULTI_TECH_LINK_LABEL,
   THERMO_DT_TREND_DISCLOSURE,
   THERMO_DT_TREND_SINGLE_DATE,
+  THERMO_MECH_CREEP_LABEL,
+  THERMO_MECH_PARKED_NOTE,
   thermoAmbientProvenanceLabel,
   thermoCrossTechPillLabel,
   thermoDeltaTTrend,
   thermoEmissivityAmbientPill,
   thermoI2rProportionality,
   thermoLoadTelemetryStored,
+  thermoMechLimitCitations,
   thermoReferenceBasisLabel,
   thermoStoredLoadLabel,
   NOT_RECORDED,
@@ -4441,6 +4444,8 @@ export default function TrendAnalyzer({
   ]);
   /** Raw fit: differences/rates are converted by scale for display below. */
   const mechKpis = mechanicalKpis(thermoChartSeries);
+  /** SLICE-IR4 — per-card limit citation, present-if-stored only. */
+  const mechCitations = thermoMechLimitCitations(latestThermoChart);
   const mechDeltaAmbientDE =
     mechKpis.deDeltaAmbient == null
       ? null
@@ -7745,6 +7750,12 @@ export default function TrendAnalyzer({
                             }`
                           : NOT_MEASURED}
                       </p>
+                      <p
+                        data-testid="thermo-mech-bearing-limit-source"
+                        className="text-[10px] text-slate-500 mt-2"
+                      >
+                        {mechCitations.bearing}
+                      </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -7763,6 +7774,12 @@ export default function TrendAnalyzer({
                         {latestThermoChart?.maxAllowable != null
                           ? `Max: ${latestThermoChart.maxAllowable}${thermoDisplayUnit}`
                           : NOT_MEASURED}
+                      </p>
+                      <p
+                        data-testid="thermo-mech-refractory-limit-source"
+                        className="text-[10px] text-slate-500 mt-2"
+                      >
+                        {mechCitations.refractory}
                       </p>
                     </div>
                     <div className={CARD}>
@@ -7791,6 +7808,12 @@ export default function TrendAnalyzer({
                               ? "Stored flag reports no friction anomaly"
                               : "No stored friction flag reported"}
                       </p>
+                      <p
+                        data-testid="thermo-mech-friction-limit-source"
+                        className="text-[10px] text-slate-500 mt-1"
+                      >
+                        {mechCitations.friction}
+                      </p>
                     </div>
                     <div className={CARD}>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
@@ -7803,10 +7826,25 @@ export default function TrendAnalyzer({
                       </p>
                       <p className="text-xs text-slate-500 mt-1">
                         {mechCreepRate != null
-                          ? "Measured least-squares slope across stored skin temps"
+                          ? THERMO_MECH_CREEP_LABEL
                           : SPARSE_TREND_HELPER_TEXT}
                       </p>
+                      <p
+                        data-testid="thermo-mech-creep-limit-source"
+                        className="text-[10px] text-slate-500 mt-1"
+                      >
+                        {mechCitations.creep}
+                      </p>
                     </div>
+                  </div>
+
+                  <div
+                    data-testid="thermo-mech-parked-note"
+                    className="rounded-xl border border-slate-700/60 bg-slate-900/40 px-4 py-3 mb-4"
+                  >
+                    <p className="text-[11px] font-semibold text-slate-300">
+                      {THERMO_MECH_PARKED_NOTE}
+                    </p>
                   </div>
 
                   <ThermoChartFrame

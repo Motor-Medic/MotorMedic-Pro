@@ -12,6 +12,7 @@ import {
   thermographyCurrentsWithoutTempsFixture,
   thermographyEmissivityExtractedFixture,
   thermographyFixtures,
+  thermographyMechanicalFixture,
   thermographyMultiDateFixture,
   thermographyNoLoadClassifiedFixture,
   thermographyPhaseCurrentsFixture,
@@ -42,6 +43,7 @@ export {
   thermographyCurrentsWithoutTempsFixture,
   thermographyRadiometricDriftFixture,
   thermographyRadiometricSpanFixture,
+  thermographyMechanicalFixture,
   ultrasoundFixtures,
   mcaFixtures,
   oilFixtures
