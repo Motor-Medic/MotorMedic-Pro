@@ -1,7 +1,20 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import {defineConfig} from 'vite';
+import {configDefaults, defineConfig} from 'vitest/config';
+
+/**
+ * .test.tsx specs that are node-side source audits, not renders.
+ *
+ * Both read files through `fileURLToPath(new URL(..., import.meta.url))`,
+ * which only works on a file:// module URL, and ArtifactDisclaimer also
+ * asserts the no-window branch of confirmArtifactExport. They stay on the
+ * node project even though their extension is .tsx.
+ */
+const NODE_RUNTIME_TSX_TESTS = [
+  'src/components/ArtifactDisclaimer.test.tsx',
+  'src/components/McaVisualPass.sliceVS9.test.tsx',
+];
 
 /**
  * AR-28 vendor isolation.
@@ -61,6 +74,37 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    /**
+     * Test environment mapping.
+     *
+     * .test.tsx specs render React into a real DOM (harness honesty contracts,
+     * testing-library queries), so they need jsdom. .test.ts specs are
+     * source/AST/SQL audits that use node:fs + `import.meta.url` file:// paths,
+     * so they must stay on node. Inline projects inherit resolve.alias ('@',
+     * buffer polyfill), define and plugins from this config via extends: true.
+     */
+    test: {
+      projects: [
+        {
+          extends: true as const,
+          test: {
+            name: 'dom',
+            environment: 'jsdom',
+            include: ['src/**/*.test.tsx'],
+            exclude: [...configDefaults.exclude, ...NODE_RUNTIME_TSX_TESTS],
+            setupFiles: ['./src/test/setup/jsdomStorage.ts'],
+          },
+        },
+        {
+          extends: true as const,
+          test: {
+            name: 'node',
+            environment: 'node',
+            include: ['src/**/*.test.ts', ...NODE_RUNTIME_TSX_TESTS],
+          },
+        },
+      ],
     },
   };
 });
