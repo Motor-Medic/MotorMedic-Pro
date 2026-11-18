@@ -111,6 +111,14 @@ import {
   type UltrasoundProbeType
 } from "../lib/ultrasound/probeType";
 import {
+  describeUeBearingDelta,
+  formatUeDeltaDb,
+  ueBaselineProvenanceLabel,
+  ueStoredClassLabel,
+  ueUltrasoundPeakRecord,
+  UE_BEARING_DELTA_DESCRIPTIVE_NOTE
+} from "../lib/ultrasound/bearingDeltaProvenance";
+import {
   calculateAdvancedSteamLoss,
   estimateSteamOrificeFromPeakDb,
   formatSteamUsdPerYear,
@@ -4701,6 +4709,16 @@ export default function TrendAnalyzer({
   const latestUeBearingPeaks = latestUeBearing
     ? uePeaksFromRow(latestUeBearing)
     : null;
+  /**
+   * SLICE-US1 — latest contact / unclassified-legacy scan, described from
+   * stored fields only. The static ladder is never consulted here: ΔdB is
+   * descriptive and the stored class (if any) is surfaced verbatim.
+   */
+  const ueBearingDeltaDescriptor = useMemo(() => {
+    if (!latestUeBearing) return null;
+    const record = ueUltrasoundPeakRecord(latestUeBearing.peaks);
+    return record ? describeUeBearingDelta(record) : null;
+  }, [latestUeBearing]);
   const hasUeBearingSeries = ueBearingChartSeries.some(
     (p) =>
       (typeof p.rms === "number" && Number.isFinite(p.rms)) ||
@@ -8182,6 +8200,76 @@ export default function TrendAnalyzer({
                   airborne leak and electrical scans are descriptive-only.
                 </p>
               </div>
+
+              {/* SLICE-US1 — baseline-provenance ΔdB + stored class, verbatim. */}
+              {ueBearingDeltaDescriptor && (
+                <div
+                  className={`${CARD} mb-6`}
+                  data-testid="ue-bearing-delta-provenance"
+                >
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">
+                    Baseline Δ — Descriptive (Latest Contact Scan)
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        Δ dB (descriptive)
+                      </p>
+                      <p
+                        className="text-2xl font-bold text-amber-400 font-mono"
+                        data-testid="ue-bearing-delta-value"
+                      >
+                        {formatUeDeltaDb(ueBearingDeltaDescriptor.deltaDb)}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Peak minus baseline subtraction of stored dBµV levels
+                        — not a ratio and not a class.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        Baseline provenance
+                      </p>
+                      <p
+                        className="text-sm font-semibold text-slate-200 mt-2"
+                        data-testid="ue-bearing-delta-baseline"
+                      >
+                        {ueBaselineProvenanceLabel(ueBearingDeltaDescriptor)}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Only a stored baseline yields a measured Δ; a modeled
+                        fallback is disclosed, never presented as measured.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">
+                        Stored class (verbatim)
+                      </p>
+                      <p
+                        className="text-sm font-semibold text-slate-200 mt-2"
+                        data-testid="ue-bearing-delta-class"
+                      >
+                        {ueStoredClassLabel(ueBearingDeltaDescriptor)}
+                      </p>
+                      {ueBearingDeltaDescriptor.storedAction && (
+                        <p
+                          className="text-xs text-slate-300 mt-1"
+                          data-testid="ue-bearing-delta-action"
+                        >
+                          {ueBearingDeltaDescriptor.storedAction}
+                        </p>
+                      )}
+                      <p className="text-xs text-slate-500 mt-1">
+                        Read from the saved scan verbatim — never recomputed
+                        from Δ, probe type, or fault text.
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-3 italic">
+                    {UE_BEARING_DELTA_DESCRIPTIVE_NOTE}
+                  </p>
+                </div>
+              )}
 
               <div className={`${CARD} mb-6 overflow-x-auto`}>
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-3">

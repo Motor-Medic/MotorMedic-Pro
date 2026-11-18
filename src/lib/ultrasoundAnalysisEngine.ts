@@ -19,9 +19,11 @@ import {
 } from "./ultrasoundAnalysis";
 import { resolveProbeType, usAcousticDomain } from "./ultrasound/probeType";
 
-function optionalNonNegNumber(value: unknown): number | undefined {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : undefined;
+/** dBµV level: any finite value (negative allowed); missing/NaN -> undefined. */
+function optionalFiniteMetadataNumber(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 type DescriptionTier = "measurements" | "none";
@@ -108,16 +110,16 @@ export async function analyzeUltrasoundData(
   void buildUltrasoundUserPrompt;
 
   const mode = String(metadata.mode || "leak").toLowerCase();
-  const peakFromMeta = Number(metadata.peakDbuV);
-  const rmsFromMeta = Number(metadata.rmsDbuV);
+  // dBµV is a logarithmic level: negative values are physically valid and
+  // must be preserved. Only missing / non-finite input falls back.
+  const peakFromMeta = optionalFiniteMetadataNumber(metadata.peakDbuV);
+  const rmsFromMeta = optionalFiniteMetadataNumber(metadata.rmsDbuV);
   const crestFromMeta = Number(metadata.crestFactor ?? metadata.crest_factor);
-  const baselineFromMeta = optionalNonNegNumber(
+  const baselineFromMeta = optionalFiniteMetadataNumber(
     metadata.baselineDb ?? metadata.baseline_dbmv
   );
-  const peak =
-    Number.isFinite(peakFromMeta) && peakFromMeta > 0 ? peakFromMeta : 55;
-  const rms =
-    Number.isFinite(rmsFromMeta) && rmsFromMeta > 0 ? rmsFromMeta : 39;
+  const peak = peakFromMeta != null ? peakFromMeta : 55;
+  const rms = rmsFromMeta != null ? rmsFromMeta : 39;
   // A stored baseline is used when present. Otherwise the 28 dBµV fallback is
   // applied to keep the economics computable — but it is tagged so the UI can
   // disclose the fallback rather than presenting it as measured.
