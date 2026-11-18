@@ -349,7 +349,10 @@ beforeAll(async () => {
     cookie: cookieFrom(loginRes),
     termsAcceptedAt: loginRes.body.terms_accepted_at
   };
-});
+  // Importing server.ts (758 KB) and registering every handler exceeds the
+  // 10s default hook timeout once v8 coverage instrumentation is applied, so
+  // this suite needs real headroom for the module load plus seed requests.
+}, 120_000);
 
 describe("Q1 - self-serve signup creates an isolated tenant shell", () => {
   it("POST /api/auth/register is public and creates a distinct company + user + plant", () => {

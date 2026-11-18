@@ -24,8 +24,10 @@ import {
   mcaPeakBlob,
   extractMcaWindingFromSaved,
   extractMcaGroundwallFromSaved,
+  extractMcaBarChartFromSaved,
 } from "../../lib/mca/mcaPersistence";
 import { percentUnbalance } from "../../lib/mca/windingBalanceCalculator";
+import McaSixFaultZoneMatrix from "./McaSixFaultZoneMatrix";
 
 export interface McaResultsTabProps {
   selectedAnalysis: SavedAnalysisResult;
@@ -82,6 +84,10 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
   );
   const groundwall = useMemo(
     () => extractMcaGroundwallFromSaved(selectedAnalysis),
+    [selectedAnalysis],
+  );
+  const barChart = useMemo(
+    () => extractMcaBarChartFromSaved(selectedAnalysis),
     [selectedAnalysis],
   );
 
@@ -322,6 +328,9 @@ export default function McaResultsTab({ selectedAnalysis }: McaResultsTabProps) 
           </p>
         )}
       </div>
+
+      {/* ===== SIX FAULT ZONES (grouped-bar stored values only) ===== */}
+      <McaSixFaultZoneMatrix barChart={barChart} />
 
       {/* ===== SEVERITY CARD ===== */}
       <div

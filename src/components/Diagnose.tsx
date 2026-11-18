@@ -6127,6 +6127,7 @@ useEffect(() => {
             recommendations={analysisResult.repairRecommendations ?? []}
             savedAnalysisId={savedAnalysisId}
             engineerName={signOffEngineerName}
+            barChart={mcaSnapshot?.barChart ?? null}
             onNewAnalysis={() => setShowResults(false)}
             onSaveWorkOrder={saveAndCreateWorkOrder}
             onToast={(msg, type) => toast(msg, type ?? "info")}

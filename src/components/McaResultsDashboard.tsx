@@ -1,6 +1,8 @@
 import React from "react";
 import CmmsPayloadBridge from "./diagnostics/CmmsPayloadBridge";
 import { useDiagnosticsIntelligence } from "../lib/diagnostics/useDiagnosticsIntelligence";
+import McaSixFaultZoneMatrix from "./reports/McaSixFaultZoneMatrix";
+import type { McaBarChartRecord } from "../lib/mca/mcaBarChart";
 import {
   MCA_IR_CITATION,
   MCA_DEFAULT_SCORE_PROVENANCE,
@@ -77,6 +79,8 @@ export interface McaResultsDashboardProps {
   healthScoreIsDefault?: boolean;
   /** Logged-in user, pre-fills the sign-off name field. */
   engineerName?: string;
+  /** Grouped-bar MCA record persisted with this run (stored values only). */
+  barChart?: McaBarChartRecord | null;
   onNewAnalysis: () => void;
   onSaveWorkOrder: () => void;
   onToast?: (message: string, type?: "success" | "info" | "warning" | "error") => void;
@@ -97,6 +101,7 @@ export default function McaResultsDashboard({
   recommendations = NO_RECOMMENDATIONS,
   savedAnalysisId = null,
   engineerName,
+  barChart = null,
   onNewAnalysis,
   onToast
 }: McaResultsDashboardProps) {
@@ -186,11 +191,15 @@ export default function McaResultsDashboard({
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="rounded-xl border border-white/10 bg-slate-950/40 p-4 min-w-0">
-            <div className="h-80 w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
-              <p className="text-xs text-slate-500">
-                No fault zone data captured — run an MCA analysis to populate the health matrix.
-              </p>
-            </div>
+            {barChart ? (
+              <McaSixFaultZoneMatrix barChart={barChart} />
+            ) : (
+              <div className="h-80 w-full flex items-center justify-center rounded-lg border border-dashed border-slate-700 bg-slate-950/40 px-4 text-center">
+                <p className="text-xs text-slate-500">
+                  No fault zone data captured — run an MCA analysis to populate the health matrix.
+                </p>
+              </div>
+            )}
             <p className="text-[11px] text-slate-500 mt-1 text-center break-words">
               {MCA_DEFAULT_SCORE_PROVENANCE}
             </p>

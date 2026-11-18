@@ -15,6 +15,11 @@ import {
   type MasterVisionParse,
   OIL_VISION_API_PATH
 } from "./oilVisionExtractor";
+import {
+  barChartLegacyTriplets,
+  parseMcaBarChart,
+  type McaBarChartRecord
+} from "./mca/mcaBarChart";
 
 export interface McaReportData {
   resistanceAb: number | null;
@@ -33,6 +38,11 @@ export interface McaReportData {
   phaseAngleCa: number | null;
   fi: number | null;
   insulationResistanceMohm: number | null;
+  /**
+   * Grouped-bar MCA reports: per-phase Z/L/angle/relative-C at rotor 0° and
+   * 90°, with axis-read tolerance + provenance. Absent for table reports.
+   */
+  barChart?: McaBarChartRecord | null;
   confidenceScore: number;
   sourceFileName?: string | null;
   model?: string;
@@ -405,6 +415,35 @@ function mapVisionJsonToMcaReportData(
     }
   }
 
+  // Additive grouped-bar branch (MCA-only prompt section). Only complete
+  // rotor-0° triplets bridge into the legacy phase columns; every value keeps
+  // its axis-read provenance and tolerance in `barChart`.
+  const barChart = parseMcaBarChart(master.mca_bar_chart ?? master.mcaBarChart);
+  if (barChart) {
+    result.barChart = barChart;
+    const legacy = barChartLegacyTriplets(barChart);
+    assign("impedanceAb", legacy.phaseZ ? legacy.phaseZ[0] : null);
+    assign("impedanceBc", legacy.phaseZ ? legacy.phaseZ[1] : null);
+    assign("impedanceCa", legacy.phaseZ ? legacy.phaseZ[2] : null);
+    assign("inductanceAb", legacy.phaseL ? legacy.phaseL[0] : null);
+    assign("inductanceBc", legacy.phaseL ? legacy.phaseL[1] : null);
+    assign("inductanceCa", legacy.phaseL ? legacy.phaseL[2] : null);
+    assign("phaseAngleAb", legacy.phaseFi ? legacy.phaseFi[0] : null);
+    assign("phaseAngleBc", legacy.phaseFi ? legacy.phaseFi[1] : null);
+    assign("phaseAngleCa", legacy.phaseFi ? legacy.phaseFi[2] : null);
+
+    if (result.confidenceScore === 0) {
+      const confs = barChart.samples
+        .map((s) => s.z_ohm.confidence)
+        .filter((n): n is number => n != null);
+      if (confs.length > 0) {
+        result.confidenceScore = Math.round(
+          (confs.reduce((a, b) => a + b, 0) / confs.length) * 100
+        );
+      }
+    }
+  }
+
   return result;
 }
 
@@ -439,6 +478,13 @@ function passesMcaGate(parsed: Record<string, unknown>): {
     if (key === "raw_table" || key === "data") continue;
     if (typeof value === "string") parts.push(value);
     else if (typeof value === "number" || typeof value === "boolean") parts.push(String(value));
+  }
+
+  // Grouped-bar evidence: the MCA-only prompt emits `mca_bar_chart` even when
+  // the report has no transcriptable table. Count its printed metric names as
+  // MCA markers so a bar-chart-only report is not rejected as non-MCA.
+  if (parsed.mca_bar_chart && typeof parsed.mca_bar_chart === "object") {
+    parts.push("impedance", "inductance", "phase angle");
   }
 
   const fullText = parts.join(" ");
@@ -536,6 +582,20 @@ export function finalizeMcaFromParses(
   }
 
   const data = mapVisionJsonToMcaReportData(primary.parsed, input.fileName, mergedTx);
+  // Grouped-bar honesty: every unreadable/absent cell is surfaced for operator
+  // review. Nothing is substituted, interpolated, or carried across rotor
+  // positions.
+  if (data.barChart) {
+    for (const sample of data.barChart.samples) {
+      for (const metric of ["z_ohm", "l_mh", "angle_deg", "c_rel"] as const) {
+        if (sample[metric].status !== "extracted") {
+          flaggedFields.push(
+            `bar_chart.${sample.phase}@${sample.rotor_deg}° ${metric}: ${sample[metric].status}`
+          );
+        }
+      }
+    }
+  }
   data.model = usedModel;
   data.detectedTechnology = "MCA";
   data.flaggedFields = flaggedFields;
@@ -587,7 +647,7 @@ export async function extractMcaReportFromImage(imageFile: File): Promise<McaRep
       method: "POST",
       headers: { "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ imageBase64: base64Image, fileName: imageFile.name })
+      body: JSON.stringify({ imageBase64: base64Image, fileName: imageFile.name, purpose: "mca" })
     });
   } catch (err) {
     clearTimeout(timeoutId);

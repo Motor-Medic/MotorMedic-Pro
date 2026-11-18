@@ -24,6 +24,7 @@ import {
   type DisplayUnits
 } from "./src/lib/vibration/units";
 import { MCA_VISION_PROMPT } from "./src/lib/mca/mcaVisionExtractor";
+import { MCA_GROUPED_BAR_PROMPT } from "./src/lib/vision/mcaGroupedBarPrompt";
 import { isLmStudioDevMode } from "./src/lib/openRouterModels";
 import {
   ANALYZE_VIBRATION_API_ALIAS,
@@ -2217,7 +2218,11 @@ app.post(OIL_VISION_API_PATH, requireModule("oil"), requirePermission("view_modu
         typeof req.body?.fileName === "string" ? req.body.fileName : null,
       models: Array.isArray(req.body?.models) ? req.body.models : undefined,
       maxTokens:
-        typeof req.body?.maxTokens === "number" ? req.body.maxTokens : undefined
+        typeof req.body?.maxTokens === "number" ? req.body.maxTokens : undefined,
+      // MCA-only additive prompt. Any other purpose (or none) omits this key,
+      // so oil / vibration / thermography / ultrasound keep the shared
+      // MASTER_VISION_PROMPT byte-for-byte.
+      ...(req.body?.purpose === "mca" ? { prompt: MCA_GROUPED_BAR_PROMPT } : {})
     };
 
     const { parses, lastError } = await runMasterVisionModelLoop(baseInput);

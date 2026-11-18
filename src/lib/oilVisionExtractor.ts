@@ -288,7 +288,8 @@ class VisionHttpError extends Error {
 async function callVisionProvider(
   candidate: VisionCandidate,
   imageUrl: string,
-  maxTokens: number
+  maxTokens: number,
+  prompt: string = MASTER_VISION_PROMPT
 ): Promise<{ status: number; body: string }> {
   const { spec, model } = candidate;
   if (spec.transport === "gemini") {
@@ -304,7 +305,7 @@ async function callVisionProvider(
           {
             parts: [
               { inline_data: { mime_type: mimeType, data } },
-              { text: MASTER_VISION_PROMPT }
+              { text: prompt }
             ]
           }
         ],
@@ -335,7 +336,7 @@ async function callVisionProvider(
           role: "user",
           content: [
             { type: "image_url", image_url: { url: imageUrl } },
-            { type: "text", text: MASTER_VISION_PROMPT }
+            { type: "text", text: prompt }
           ]
         }
       ]
@@ -1900,10 +1901,19 @@ export async function runMasterVisionModelLoop(input: {
   fileName?: string | null;
   models?: string[];
   maxTokens?: number;
+  /**
+   * MCA-only additive prompt (base prompt + grouped-bar section). Omitted by
+   * every other technology, which keeps MASTER_VISION_PROMPT byte-identical.
+   */
+  prompt?: string;
 }): Promise<MasterVisionLoopResult> {
   const startTime = logPipelineStart("masterVisionLoop", {
     fileName: input.fileName || null
   });
+  const prompt =
+    typeof input.prompt === "string" && input.prompt.length > 0
+      ? input.prompt
+      : MASTER_VISION_PROMPT;
   let imageUrl: string;
   try {
     imageUrl = normalizeImageUrl(input.imageBase64);
@@ -1956,7 +1966,7 @@ export async function runMasterVisionModelLoop(input: {
     const { spec, model } = candidate;
     let attemptStatus: number | null = null;
     try {
-      const { status, body } = await callVisionProvider(candidate, imageUrl, maxTokens);
+      const { status, body } = await callVisionProvider(candidate, imageUrl, maxTokens, prompt);
       attemptStatus = status;
       upstreamStatus = status;
       logPipelineSend(`provider:${spec.id}`, { model, httpStatus: status });

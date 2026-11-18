@@ -12,6 +12,10 @@ import type { McaExtractedData, RicDataPoint } from "./mcaPdfExtractor";
 import type { ConductorMaterial } from "./windingBalanceCalculator";
 import { sanitizeRicSeries } from "./rotorInfluenceCalculator";
 import { sanitizeSurgeSeries, type SurgeDataPoint } from "./surgeCalculator";
+import {
+  sanitizeMcaBarChartRecord,
+  type McaBarChartRecord
+} from "./mcaBarChart";
 
 export type McaPhaseTriplet = [number, number, number];
 
@@ -83,6 +87,11 @@ export type McaOperatorSnapshot = {
   surgeData?: SurgeDataPoint[] | null;
   surgeTestVoltageV?: number | string | null;
   surgeEar?: number | string | null;
+  /**
+   * Grouped-bar MCA report (rotor 0°/90° per-phase Z/L/angle/relative C).
+   * Additive branch; table/PDF paths leave this undefined.
+   */
+  barChart?: McaBarChartRecord | null;
   /**
    * Energized (online) power-quality readings — online mode only. Stored
    * present-if-stored; NO offline winding threshold (phase R/L/Z, Megger
@@ -273,7 +282,9 @@ export function mcaPeakBlob(row: SavedAnalysisResult | null): Record<string, unk
       p.ir_1m != null ||
       p.ricData != null ||
       p.ric_data != null ||
-      p.rotor_influence != null
+      p.rotor_influence != null ||
+      p.bar_chart != null ||
+      p.barChart != null
     ) {
       return p;
     }
@@ -305,6 +316,32 @@ function telemetryRoots(row: SavedAnalysisResult | null): {
     if (nested) consensus = { ...consensus, ...nested };
   }
   return { root, winding, groundwall, consensus };
+}
+
+/**
+ * Read the stored grouped-bar MCA record (rotor 0°/90°). Returns null when the
+ * row has none — surfaces must render "not extracted", never a fabricated
+ * matrix. Validated through the same axis-tolerance parser used at extraction.
+ */
+export function extractMcaBarChartFromSaved(
+  row: SavedAnalysisResult | null
+): McaBarChartRecord | null {
+  if (!row) return null;
+  const blob = mcaPeakBlob(row);
+  const { root } = telemetryRoots(row);
+  const candidates = [
+    blob.bar_chart,
+    blob.barChart,
+    root.bar_chart,
+    root.barChart,
+    (asObj(blob.winding) || {}).bar_chart,
+    (asObj(blob.winding) || {}).barChart
+  ];
+  for (const raw of candidates) {
+    const record = sanitizeMcaBarChartRecord(raw);
+    if (record) return record;
+  }
+  return null;
 }
 
 /**
@@ -1000,6 +1037,7 @@ export function mcaPayloadForSave(
     Array.isArray(snapRec.surgeData) ? snapRec.surgeData : null
   );
   const surgeData = surgeNormalized.length >= 2 ? surgeNormalized : null;
+  const barChart = sanitizeMcaBarChartRecord(snapRec.barChart);
   const surgeTestVoltageV = finiteNum(snapRec.surgeTestVoltageV);
   const surgeEar = finiteNum(snapRec.surgeEar);
   const extractMeta =
@@ -1160,6 +1198,7 @@ export function mcaPayloadForSave(
           surgeWaveform: surgeData
         }
       : {}),
+    ...(barChart ? { bar_chart: barChart, barChart } : {}),
     ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {}),
     ...(onlinePq
       ? {
@@ -1266,6 +1305,7 @@ export function mcaPayloadForSave(
           surge_waveform: surgeData
         }
       : {}),
+    ...(barChart ? { bar_chart: barChart, barChart } : {}),
     ...(extractMeta ? { extract_meta: extractMeta, extractMeta } : {}),
     ...(onlinePq
       ? {

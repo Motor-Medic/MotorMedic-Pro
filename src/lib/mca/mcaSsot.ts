@@ -694,6 +694,7 @@ export function mcaSsotToOperatorSnapshot(
       record.surge.waveform.length >= 2 ? record.surge.waveform : null,
     surgeTestVoltageV: record.surge.test_voltage_v ?? null,
     surgeEar: record.surge.ear ?? null,
+    barChart: extras?.barChart ?? null,
     extractMeta: {
       fileName: record.meta.fileName,
       formatDetected: record.meta.formatDetected,
@@ -786,6 +787,8 @@ export function mergeMcaOperatorSnapshots(
     ratedVoltage: next.ratedVoltage ?? prev?.ratedVoltage,
     ambientTempC: next.ambientTempC ?? prev?.ambientTempC,
     phases: next.phases ?? prev?.phases,
-    extractMeta: next.extractMeta ?? prev?.extractMeta
+    extractMeta: next.extractMeta ?? prev?.extractMeta,
+    // Additive grouped-bar record survives merges; absent stays null.
+    barChart: next.barChart ?? prev?.barChart ?? null
   };
 }

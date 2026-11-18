@@ -289,6 +289,7 @@ export default function McaInputAccordions({
   const [extractBanner, setExtractBanner] = useState<string | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [ricData, setRicData] = useState<RicDataPoint[] | null>(null);
+  const [barChart, setBarChart] = useState<McaReportData["barChart"]>(null);
   const [reportPi, setReportPi] = useState<number | null>(null);
   const [reportDar, setReportDar] = useState<number | null>(null);
   const [ir15s, setIr15s] = useState("");
@@ -387,6 +388,7 @@ export default function McaInputAccordions({
       reportPi,
       reportDar,
       ricData: ricData && ricData.length > 0 ? ricData : null,
+      barChart: barChart ?? null,
       extractMeta,
       // Online PQ (energized mode only) — collected, labeled online, and never
       // fed into offline winding thresholds (slice VS9 four-mode gate).
@@ -423,6 +425,7 @@ export default function McaInputAccordions({
     reportPi,
     reportDar,
     ricData,
+    barChart,
     extractMeta,
     // Online PQ states — must re-emit when edited (slice VS9)
     voltageUnbalance,
@@ -624,7 +627,6 @@ export default function McaInputAccordions({
       formatDetected: extracted.formatDetected,
       confidenceScore: extracted.confidenceScore
     });
-
     // Open sections that received data so the operator can verify visually
     const nextOpen: McaAccordionSection[] = [];
     if (hasWinding) {
@@ -658,6 +660,7 @@ export default function McaInputAccordions({
     setReading60s("");
     setIr15s("");
     setRicData(null);
+    setBarChart(null);
     setReportPi(null);
     setReportDar(null);
     setExtractMeta(null);
@@ -705,6 +708,13 @@ export default function McaInputAccordions({
 
     const flagged = mca.flaggedFields ?? [];
     setMcaFlaggedFields(flagged);
+
+    // Additive grouped-bar branch: keep the full 0°/90° record for the six
+    // fault-zone surfaces. Manual per-phase fields above remain editable.
+    setBarChart(mca.barChart ?? null);
+    if (mca.barChart) {
+      setOpenSections((prev) => Array.from(new Set([...prev, "phase"])));
+    }
 
     const filled = [
       mca.resistanceAb,
