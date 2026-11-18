@@ -14,3 +14,8 @@ server.err
 .agentsroom/handoff-summary-*.md
 .agentsroom/fork-context-*.txt
 .grok/config.toml
+.agentsroom/transfer-context-*.txt
+.agentsroom/handoff-context-*.txt
+
+.claude/settings.local.json
+.agentsroom/
