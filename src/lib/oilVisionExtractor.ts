@@ -121,12 +121,66 @@ interface VisionSkip {
   envKey: string;
 }
 
-interface VisionAttemptRecord {
+export interface VisionAttemptRecord {
   providerLabel: string;
   providerId: string;
   model: string;
   httpStatus: number | null;
   reason: string;
+}
+
+/**
+ * Why the provider chain produced no parseable report. Deliberately NOT the
+ * same statement as "the report type is not recognized": an HTTP error, a
+ * timeout, or an unusable 2xx body says nothing about the uploaded image.
+ */
+export type VisionProviderFailureKind =
+  | "http"
+  | "timeout"
+  | "network"
+  | "malformed"
+  | "unconfigured";
+
+/**
+ * Provider-side failure (401/429/timeout/malformed 2xx body). Carries the
+ * machine-readable status so API callers can surface
+ * "extraction unavailable (provider error: <status>)" instead of collapsing
+ * into the report-type gate ("Report type not recognized").
+ */
+export class VisionProviderError extends Error {
+  readonly kind: VisionProviderFailureKind;
+  readonly upstreamStatus: number | null;
+  readonly attempts: readonly VisionAttemptRecord[];
+
+  constructor(
+    kind: VisionProviderFailureKind,
+    upstreamStatus: number | null,
+    message: string,
+    attempts: readonly VisionAttemptRecord[]
+  ) {
+    super(message);
+    this.name = "VisionProviderError";
+    this.kind = kind;
+    this.upstreamStatus = upstreamStatus;
+    this.attempts = attempts;
+  }
+
+  /** Honest short label for the client state. */
+  get statusLabel(): string {
+    if (this.kind === "malformed") return "malformed response";
+    if (this.kind === "timeout") return "timeout";
+    if (this.kind === "network") return "network failure";
+    if (this.kind === "unconfigured") return "no provider configured";
+    return this.upstreamStatus != null ? String(this.upstreamStatus) : "unknown";
+  }
+}
+
+/** A 2xx response that is not a master-vision report payload. */
+class VisionMalformedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VisionMalformedError";
+  }
 }
 
 function visionKeyPresent(envKey: string): boolean {
@@ -285,6 +339,16 @@ class VisionHttpError extends Error {
  * max_tokens 6000, temperature 0.0, json mode) — only the wire envelope
  * differs per transport.
  */
+/** Per-attempt deadline. Without it a stalled provider holds the whole chain. */
+export const PROVIDER_ATTEMPT_TIMEOUT_MS = 60_000;
+
+function attemptSignal(): AbortSignal | undefined {
+  return typeof AbortSignal !== "undefined" &&
+    typeof AbortSignal.timeout === "function"
+    ? AbortSignal.timeout(PROVIDER_ATTEMPT_TIMEOUT_MS)
+    : undefined;
+}
+
 async function callVisionProvider(
   candidate: VisionCandidate,
   imageUrl: string,
@@ -300,6 +364,7 @@ async function callVisionProvider(
         "Content-Type": "application/json",
         "x-goog-api-key": (process.env[spec.envKey] || "").trim()
       },
+      signal: attemptSignal(),
       body: JSON.stringify({
         contents: [
           {
@@ -326,6 +391,7 @@ async function callVisionProvider(
   const res = await fetch(spec.url, {
     method: "POST",
     headers,
+    signal: attemptSignal(),
     body: JSON.stringify({
       model,
       max_tokens: maxTokens,
@@ -375,6 +441,32 @@ function salvageJsonString(raw: string): string {
     cleaned = cleaned.substring(firstBrace, lastBrace + 1);
   }
   return cleaned;
+}
+
+/**
+ * A 2xx body only counts as a vision attempt when it actually carries the
+ * master-vision report shape. Any other JSON object (a provider error blob,
+ * `{}`, a chatty non-report answer) is a malformed provider response — it must
+ * never reach the technology gates and masquerade as "report type not
+ * recognized".
+ */
+function isMasterVisionPayload(parsed: Record<string, unknown>): boolean {
+  if (
+    typeof parsed.detected_technology === "string" &&
+    parsed.detected_technology.trim().length > 0
+  ) {
+    return true;
+  }
+  if (Array.isArray(parsed.raw_table) && parsed.raw_table.length > 0) return true;
+  const bars = parsed.mca_bar_chart;
+  return isRecord(bars) && Array.isArray(bars.series) && bars.series.length > 0;
+}
+
+function isAbortLike(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === "TimeoutError" || err.name === "AbortError")
+  );
 }
 
 function masterFieldValue(field: unknown): number | null {
@@ -1448,12 +1540,10 @@ export async function extractOilReportFromImage(
       typeof result.error === "string" && result.error ? result.error : null;
     const detail =
       typeof result.message === "string" && result.message ? result.message : null;
-    // VISION_FAILED must never surface bare — the message carries the
-    // per-provider "vision: <code> <reason> (<model> via <provider>)" list.
+    // The human message carries the honest state (provider error status or the
+    // per-provider "vision: <code> <reason>" list); never surface a bare code.
     throw new Error(
-      code === "VISION_FAILED" && detail
-        ? detail
-        : code || detail || `Oil vision extraction failed (${response.status}).`
+      detail || code || `Oil vision extraction failed (${response.status}).`
     );
   }
 
@@ -1936,7 +2026,12 @@ export async function runMasterVisionModelLoop(input: {
   );
 
   if (candidates.length === 0) {
-    const e = new Error(buildVisionFailureMessage([], skipped));
+    const e = new VisionProviderError(
+      "unconfigured",
+      null,
+      buildVisionFailureMessage([], skipped),
+      []
+    );
     logPipelineFail("masterVisionLoop", startTime, e);
     throw e;
   }
@@ -1946,6 +2041,8 @@ export async function runMasterVisionModelLoop(input: {
   const attempts: VisionAttemptRecord[] = [];
   let lastError: unknown = null;
   let upstreamStatus: number | null = null;
+  let lastFailureKind: VisionProviderFailureKind = "unconfigured";
+  let lastFailureStatus: number | null = null;
 
   // --- Sequential key-gated chain (AR-23c, peaks amendment) ---
   // Walks providers in probed-live order. A non-VIBRATION lead parse keeps
@@ -1977,25 +2074,35 @@ export async function runMasterVisionModelLoop(input: {
       try {
         json = parseBodyJson(body);
       } catch {
-        throw new Error("response body is not JSON");
+        throw new VisionMalformedError("response body is not JSON");
       }
       const text =
         spec.transport === "gemini" ? readGeminiText(json) : readOpenAiContent(json);
       if (!text) {
-        throw new Error(`Vision model ${model} returned no text content.`);
+        throw new VisionMalformedError(
+          `Vision model ${model} returned no text content.`
+        );
       }
       // Parse guard — only a successfully fetched AND parsed payload counts.
       console.info("[vision] model:", model, "raw:", text);
       const cleanedJson = salvageJsonString(text);
       console.info("[vision] salvaged:", cleanedJson);
       if (!cleanedJson || !cleanedJson.startsWith("{") || !cleanedJson.endsWith("}")) {
-        throw new Error("no JSON object in vision response");
+        throw new VisionMalformedError("no JSON object in vision response");
+      }
+      const parsed = sanitizeVibrationSpectralRows(
+        parseMasterJsonStrict(cleanedJson)
+      );
+      if (!isMasterVisionPayload(parsed)) {
+        throw new VisionMalformedError(
+          "vision payload is not a report (no detected_technology, raw_table rows, or mca_bar_chart series)"
+        );
       }
       successes.push({
         provider: spec.label,
         providerId: spec.id,
         model,
-        parsed: sanitizeVibrationSpectralRows(parseMasterJsonStrict(cleanedJson))
+        parsed
       });
       console.info(`[vision] attempt ok: ${spec.label} ${model} http=${status}`);
       console.info(
@@ -2022,6 +2129,16 @@ export async function runMasterVisionModelLoop(input: {
       }
     } catch (err) {
       const httpStatus = err instanceof VisionHttpError ? err.httpStatus : attemptStatus;
+      const kind: VisionProviderFailureKind =
+        err instanceof VisionHttpError
+          ? "http"
+          : err instanceof VisionMalformedError
+            ? "malformed"
+            : isAbortLike(err)
+              ? "timeout"
+              : "network";
+      lastFailureKind = kind;
+      lastFailureStatus = httpStatus;
       const reason =
         err instanceof VisionHttpError
           ? err.reason
@@ -2037,7 +2154,7 @@ export async function runMasterVisionModelLoop(input: {
       });
       lastError = err;
       console.warn(
-        `[vision] attempt failed: ${spec.label} ${model} http=${httpStatus ?? "n/a"} reason=${clipReason(reason)}`
+        `[vision] attempt failed: ${spec.label} ${model} http=${httpStatus ?? "n/a"} kind=${kind} reason=${clipReason(reason)}`
       );
     }
   }
@@ -2085,7 +2202,12 @@ export async function runMasterVisionModelLoop(input: {
         reason: "no spectral peaks in response"
       });
     }
-    const vibFailure = new Error(buildVisionFailureMessage(attempts, skipped));
+    const vibFailure = new VisionProviderError(
+      "malformed",
+      null,
+      buildVisionFailureMessage(attempts, skipped),
+      attempts
+    );
     logPipelineFail("masterVisionLoop", startTime, vibFailure);
     throw vibFailure;
   }
@@ -2097,9 +2219,59 @@ export async function runMasterVisionModelLoop(input: {
     return { parses: successes, lastError, upstreamStatus };
   }
 
-  const failure = new Error(buildVisionFailureMessage(attempts, skipped));
+  const failure = new VisionProviderError(
+    lastFailureKind,
+    lastFailureStatus,
+    buildVisionFailureMessage(attempts, skipped),
+    attempts
+  );
   logPipelineFail("masterVisionLoop", startTime, failure);
   throw failure;
+}
+
+/**
+ * Manual smoke probe (`npm run vision:smoke`): exactly ONE provider attempt
+ * using the same wire call as the live chain. Not used by any request path.
+ */
+export async function probeVisionProvider(input: {
+  imageBase64: string;
+  models?: string[];
+  maxTokens?: number;
+  prompt?: string;
+}): Promise<{
+  provider: string;
+  providerId: string;
+  model: string;
+  status: number;
+  body: string;
+}> {
+  const imageUrl = normalizeImageUrl(input.imageBase64);
+  const { candidates, skipped } = buildVisionCandidates(
+    isLmStudioDevMode(),
+    input.models
+  );
+  const candidate = candidates[0];
+  if (!candidate) {
+    throw new VisionProviderError(
+      "unconfigured",
+      null,
+      buildVisionFailureMessage([], skipped),
+      []
+    );
+  }
+  const { status, body } = await callVisionProvider(
+    candidate,
+    imageUrl,
+    input.maxTokens ?? 6000,
+    input.prompt ?? MASTER_VISION_PROMPT
+  );
+  return {
+    provider: candidate.spec.label,
+    providerId: candidate.spec.id,
+    model: candidate.model,
+    status,
+    body
+  };
 }
 
 /** Oil finalizer — consumes a set of master parses and returns oil-shaped data. */

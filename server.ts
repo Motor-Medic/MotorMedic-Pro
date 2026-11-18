@@ -76,6 +76,7 @@ import {
 } from "./src/lib/oilAnalysisPersistence";
 import {
   OIL_VISION_API_PATH,
+  VisionProviderError,
   runMasterVisionModelLoop,
   finalizeOilFromParses
 } from "./src/lib/oilVisionExtractor";
@@ -2225,7 +2226,32 @@ app.post(OIL_VISION_API_PATH, requireModule("oil"), requirePermission("view_modu
       ...(req.body?.purpose === "mca" ? { prompt: MCA_GROUPED_BAR_PROMPT } : {})
     };
 
-    const { parses, lastError } = await runMasterVisionModelLoop(baseInput);
+    // Provider failure is NOT the same statement as "report type not
+    // recognized". A 401/429/timeout/malformed 2xx body says nothing about the
+    // uploaded image, so it gets its own honest state + machine-readable status
+    // instead of falling through the technology gates into a 422.
+    let loopResult: Awaited<ReturnType<typeof runMasterVisionModelLoop>>;
+    try {
+      loopResult = await runMasterVisionModelLoop(baseInput);
+    } catch (error) {
+      if (error instanceof VisionProviderError) {
+        console.warn(
+          `[vision] extraction unavailable: kind=${error.kind} status=${error.statusLabel}`
+        );
+        console.info("[vision] responding to client:", "n/a");
+        return res.status(502).json({
+          success: false,
+          error: "EXTRACTION_UNAVAILABLE",
+          message: `Extraction unavailable (provider error: ${error.statusLabel}). ${error.message}`,
+          providerError: {
+            status: error.upstreamStatus,
+            kind: error.kind
+          }
+        });
+      }
+      throw error;
+    }
+    const { parses, lastError } = loopResult;
 
     // Dispatch by detected technology: try vibration first, fall back to oil.
     interface AnyVisionOutcome {
