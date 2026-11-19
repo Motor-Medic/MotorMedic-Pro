@@ -11,6 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "check:suppressions": "node scripts/check-suppressions.mjs",
+    "vision:smoke": "tsx --env-file=.env scripts/vision-smoke.ts",
     "test": "vitest run"
   },
   "dependencies": {

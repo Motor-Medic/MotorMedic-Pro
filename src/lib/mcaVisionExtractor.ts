@@ -614,12 +614,16 @@ export function finalizeMcaFromParses(
 }
 
 /** Server-side entry: run models + finalize MCA. */
-export async function extractMcaReportFromImageBase64(input: {
+export async function extractMcaReportFromImageBase64(baseInput: {
   imageBase64: string;
   fileName?: string | null;
   models?: string[];
   maxTokens?: number;
 }): Promise<McaVisionExtractResult> {
+  // MCA grouped-bar reports have no printed numeric table, so the addendum is
+  // mandatory for this entry point too: the shared loop applies `purpose` to
+  // every rung of the chain (one prompt per loop run, never per provider).
+  const input = { ...baseInput, purpose: "mca" as const };
   const { parses, lastError } = await runMasterVisionModelLoop(input);
   return finalizeMcaFromParses(parses, lastError, input);
 }

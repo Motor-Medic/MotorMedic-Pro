@@ -30,6 +30,10 @@ import {
   MASTER_VISION_PROMPT,
   type MasterField
 } from "./vision/masterVisionPrompt";
+import {
+  buildVisionPromptForPurpose,
+  type VisionPurpose
+} from "./vision/mcaGroupedBarPrompt";
 
 export const OIL_VISION_API_PATH = "/api/oil-analysis/vision-extract";
 
@@ -55,6 +59,20 @@ export const OIL_VISION_MODELS = [
 /*  - gemini-2.5-flash, gemini-2.0-flash: 404 (retired)                */
 /*  - DashScope qwen3-vl-plus/qwen-vl-max: 401 on all four host        */
 /*    variants → key cannot be certified → entry withheld              */
+/*                                                                     */
+/* SLICE-VISION-LIVE-2 (live probe, real image payloads):              */
+/*  - gemini-3.5-flash: 60s timeout on both fixtures in one pass,      */
+/*    503 "high demand" on oil / 200+MCA in the next — an image call   */
+/*    is not a boot ping. Kept in place; the key-gated chain falls     */
+/*    through, so the UI never receives a fabricated value.            */
+/*  - pixtral-12b-2409: 200 + target schema on BOTH fixtures in every  */
+/*    pass, grouped-bar confidences >= 0.8.                            */
+/*  - groq qwen/qwen3.8-27b: 200 + schema, then intermittent 429       */
+/*    (on-demand token cap); MCA bars also report 0.75 confidence,     */
+/*    which the >=0.8 gate correctly nulls.                            */
+/*  - openai gpt-4o: 200 + schema on both fixtures in every pass.      */
+/*  - openrouter: 402 (credits) — stays LAST, never promoted.          */
+/* Chain order is unchanged and locked by a regression assertion.      */
 /* ------------------------------------------------------------------ */
 
 export interface VisionProviderSpec {
@@ -597,7 +615,15 @@ const METAL_CANON: Record<string, keyof OilTranscriptionResult["metals"]> = {
   boron: "boron",
   b: "boron",
   molybdenum: "molybdenum",
-  mo: "molybdenum"
+  mo: "molybdenum",
+  chromium: "chromium",
+  cr: "chromium",
+  lead: "lead",
+  pb: "lead",
+  nickel: "nickel",
+  ni: "nickel",
+  tin: "tin",
+  sn: "tin"
 };
 
 function resolveMetal(h: string): keyof OilTranscriptionResult["metals"] | null {
@@ -615,6 +641,10 @@ function resolveMetal(h: string): keyof OilTranscriptionResult["metals"] | null 
     "mg",
     "b",
     "mo",
+    "cr",
+    "pb",
+    "ni",
+    "sn",
     "iron",
     "copper",
     "aluminum",
@@ -627,7 +657,11 @@ function resolveMetal(h: string): keyof OilTranscriptionResult["metals"] | null 
     "calcium",
     "magnesium",
     "boron",
-    "molybdenum"
+    "molybdenum",
+    "chromium",
+    "lead",
+    "nickel",
+    "tin"
   ]) {
     const re = new RegExp(`(^|[^a-z0-9])${token}([^a-z0-9]|$)`, "i");
     if (re.test(h)) return METAL_CANON[token];
@@ -648,6 +682,18 @@ type CanonicalTarget =
 function classifyHeader(rawHeader: string | null): CanonicalTarget {
   const h = normalizeHeader(rawHeader);
   if (!h) return { kind: "exclude" };
+
+  // A printed LIMIT / threshold / status column is not a measurement. Models
+  // transcribe every table cell as its own row, so "Iron (Fe) Limit = 100"
+  // arrives right after "Iron (Fe) = 10". Without this guard the limit
+  // overwrites the measured value (SLICE-VISION-LIVE-2 live capture).
+  if (
+    /\b(limit|limits|max|maximum|min|minimum|threshold|alarm|flag|status|target|typical|spec|specification|reference)\b/.test(
+      h
+    )
+  ) {
+    return { kind: "exclude" };
+  }
 
   // Row identifiers never map into measurement fields (code-excluded).
   if (
@@ -1996,14 +2042,23 @@ export async function runMasterVisionModelLoop(input: {
    * every other technology, which keeps MASTER_VISION_PROMPT byte-identical.
    */
   prompt?: string;
+  /**
+   * Request purpose. `"mca"` forces the grouped-bar addendum onto EVERY rung
+   * of the chain (there is one prompt per loop run, not per provider), so no
+   * entry point can silently omit it. Any other value keeps the base prompt
+   * byte-for-byte.
+   */
+  purpose?: VisionPurpose;
 }): Promise<MasterVisionLoopResult> {
   const startTime = logPipelineStart("masterVisionLoop", {
     fileName: input.fileName || null
   });
   const prompt =
-    typeof input.prompt === "string" && input.prompt.length > 0
-      ? input.prompt
-      : MASTER_VISION_PROMPT;
+    input.purpose === "mca"
+      ? buildVisionPromptForPurpose("mca")
+      : typeof input.prompt === "string" && input.prompt.length > 0
+        ? input.prompt
+        : MASTER_VISION_PROMPT;
   let imageUrl: string;
   try {
     imageUrl = normalizeImageUrl(input.imageBase64);
