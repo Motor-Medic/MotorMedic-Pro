@@ -254,6 +254,48 @@ describe("SLICE-AR viscosity-vs-TAN module nature", () => {
   });
 });
 
+describe("SLICE-OA1 display layer", () => {
+  it("renders percent of limit and stays — for an unreported element", async () => {
+    mockRows([baseRow({ iron: "10", chromium: null })]);
+    render(<OilWearMetalsTab assetId="asset-1" />);
+
+    expect(await screen.findByText("Wear Metals & Debris")).toBeTruthy();
+    expect(bodyText()).toContain("10.0% of limit");
+    expect(bodyText()).toContain("— of limit");
+  });
+
+  it("renders the static ICP particle-size disclosure beside the D5185 note", async () => {
+    mockRows([baseRow()]);
+    render(<OilWearMetalsTab assetId="asset-1" />);
+
+    expect(await screen.findByText("Wear Metals & Debris")).toBeTruthy();
+    expect(bodyText()).toContain("large spalling debris");
+    expect(bodyText()).toContain("does not rule out macroscopic wear");
+  });
+
+  it("marks a lone TAN point on the Viscosity vs TAN timeline as a GAP", async () => {
+    mockRows([baseRow({ viscosity_40c: null, operating_hours: 100 })]);
+    render(<OilWearMetalsTab assetId="asset-1" />);
+
+    expect(await screen.findByText("Viscosity vs. TAN Trend")).toBeTruthy();
+    expect(screen.getAllByText("GAP").length).toBeGreaterThan(0);
+    expect(bodyText()).toContain("read as a gap");
+  });
+
+  it("renders the hour-gate wording when co-movement cannot be judged", async () => {
+    mockRows([
+      baseRow({ id: "a", sample_date: "2026-01-15", operating_hours: 0 }),
+      baseRow({ id: "b", sample_date: "2026-02-15", operating_hours: 0 })
+    ]);
+    render(<OilWearMetalsTab assetId="asset-1" />);
+
+    expect(await screen.findByText("Co-movement status (descriptive)")).toBeTruthy();
+    expect(bodyText()).toContain(
+      "insufficient operating-hour data — co-movement flag withheld"
+    );
+  });
+});
+
 describe("SLICE-AR AP windowing lockstep and honest nulls", () => {
   it("keeps the in-range KPI equal to the rendered rows", async () => {
     mockRows([

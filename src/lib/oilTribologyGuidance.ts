@@ -1,4 +1,5 @@
 import type { OilSample } from "../types/oilAnalysis";
+import { toSampleDateKey } from "./oilAnalysisMetrics";
 
 export const VISCOSITY_REFERENCE_LABEL_40C =
   "Viscosity @ 40°C (ASTM D445 reference)";
@@ -345,5 +346,68 @@ export function latestOilSample(samples: readonly OilSample[]): OilSample | null
     if (sampleTime > newestTime) return sample;
     if (sampleTime < newestTime) return newest;
     return String(sample.id ?? "") >= String(newest.id ?? "") ? sample : newest;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// SLICE-OA1 — ICP particle-size disclosure + viscosity/TAN pair completeness
+// ---------------------------------------------------------------------------
+
+/**
+ * Static method disclosure rendered beside the ASTM D5185 note.
+ *
+ * ICP-OES reads dissolved and fine wear metal only, so a clean elemental
+ * result cannot exclude large spalling debris. This is method limitation text:
+ * no computation is derived from it.
+ */
+export const ICP_OES_PARTICLE_SIZE_DISCLOSURE =
+  "ASTM D5185 ICP-OES resolves dissolved and fine wear metal (roughly < 10 µm) and does not detect large spalling debris; a clean ICP result does not rule out macroscopic wear.";
+
+export interface ViscosityTanPairInput {
+  sampleDate: string;
+  viscosity40C?: number | null;
+  acidNumber?: number | null;
+  operatingHours?: number | null;
+}
+
+export interface ViscosityTanPairPoint {
+  /** Calendar-day key (YYYY-MM-DD) the badges are grouped by. */
+  date: string;
+  hasViscosity: boolean;
+  hasTan: boolean;
+  /** A usable hour stamp: finite and non-zero (the existing rate gate). */
+  hasOperatingHours: boolean;
+  /** True only when viscosity, TAN and operating hours are all present. */
+  isCompletePair: boolean;
+}
+
+function hasFiniteValue(value: number | null | undefined): boolean {
+  return value != null && Number.isFinite(value);
+}
+
+/**
+ * Pair completeness for the Viscosity-vs-TAN timeline.
+ *
+ * A row that carries TAN without Visc@40 or without a usable operating-hour
+ * stamp is not a pair, so the UI marks it as a GAP instead of letting a lone
+ * point read as a trend. Missing readings stay missing — nothing is filled.
+ */
+export function viscosityTanPairCompleteness(
+  samples: readonly ViscosityTanPairInput[]
+): ViscosityTanPairPoint[] {
+  return samples.map((sample) => {
+    const hasViscosity = hasFiniteValue(sample.viscosity40C);
+    const hasTan = hasFiniteValue(sample.acidNumber);
+    const hasOperatingHours =
+      hasFiniteValue(sample.operatingHours) &&
+      (sample.operatingHours as number) > 0;
+
+    return {
+      date: toSampleDateKey(sample.sampleDate),
+      hasViscosity,
+      hasTan,
+      hasOperatingHours,
+      isCompletePair: hasViscosity && hasTan && hasOperatingHours
+    };
   });
 }

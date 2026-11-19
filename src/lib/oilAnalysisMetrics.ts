@@ -1082,3 +1082,222 @@ export function sampleAgeInDays(raw: string | Date | null | undefined): number {
   const sampleTime = new Date(year, month - 1, day).getTime();
   return (Date.now() - sampleTime) / 86_400_000;
 }
+
+// ---------------------------------------------------------------------------
+// SLICE-OA1 — wear-metal display layer
+// ---------------------------------------------------------------------------
+
+/** Display labels for the six wear-metal keys carried by OilSample. */
+export const WEAR_METAL_LABELS: Record<WearMetalKey, string> = {
+  iron: "Iron (Fe)",
+  copper: "Copper (Cu)",
+  chromium: "Chromium (Cr)",
+  lead: "Lead (Pb)",
+  aluminum: "Aluminum (Al)",
+  silicon: "Silicon (Si)"
+};
+
+/**
+ * The rate label required beside every wear-metal slope. The rate is a
+ * two-point endpoint Δ only — it carries no hours-to-limit projection.
+ */
+export const WEAR_METAL_ENDPOINT_RATE_NOTE =
+  "descriptive endpoint Δ, no projection";
+
+const WEAR_METAL_LIMIT_READERS: Record<
+  WearMetalKey,
+  (sample: OilSample) => number
+> = {
+  iron: (sample) => sample.ironAlarmLimit,
+  copper: (sample) => sample.copperAlarmLimit,
+  chromium: (sample) => sample.chromiumAlarmLimit,
+  lead: (sample) => sample.leadAlarmLimit,
+  aluminum: (sample) => sample.aluminumAlarmLimit,
+  silicon: (sample) => sample.siliconAlarmLimit
+};
+
+function roundToHundredth(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Percentage of the alarm limit, rounded to 0.1.
+ *
+ * Honest nulls: an unreported value OR a non-positive limit yields null so the
+ * UI renders "—" instead of a zero-filled or divide-by-zero ratio.
+ */
+export function percentOfLimit(
+  ppm: number | null | undefined,
+  limit: number | null | undefined
+): number | null {
+  if (ppm == null || !Number.isFinite(ppm)) return null;
+  if (limit == null || !Number.isFinite(limit) || limit <= 0) return null;
+  return Math.round((ppm / limit) * 1000) / 10;
+}
+
+/** Render a percent-of-limit value; null always renders as the "—" glyph. */
+export function formatPercentOfLimit(percent: number | null): string {
+  return percent == null ? "—" : `${percent.toFixed(1)}%`;
+}
+
+export interface WearMetalLimitDisplay {
+  element: WearMetalKey;
+  /** Latest ppm, or null when the latest sample did not measure it. */
+  latestPpm: number | null;
+  /** Limit the value is judged against (stored per-sample, else in-repo). */
+  limitPpm: number;
+  /** ppm / limit at 0.1 resolution; null for an unreported value or limit <= 0. */
+  percentOfLimit: number | null;
+  /** latestPpm − baselinePpm; null when either side is unreported. */
+  deltaFromBaselinePpm: number | null;
+  /** Endpoint Δppm / Δhours × 100; null unless the hour gate passes. */
+  ratePer100Hours: number | null;
+  /** Reuses the existing >= 2 distinct non-zero hour gate. */
+  rateStatus: WearGenerationRate["status"];
+}
+
+/**
+ * Per-element display summary for a wear-metal card.
+ *
+ * The samples are ordered chronologically before "latest" is picked, so an
+ * unsorted DB read cannot promote an older row. The rate reuses
+ * `calculateWearGenerationRate`; the limit reuses the stored per-sample alarm
+ * limit with DEFAULT_ALARM_LIMITS as the labelled in-repo fallback. No
+ * baseline is invented: an absent baseline leaves `deltaFromBaselinePpm` null.
+ */
+export function wearMetalLimitDisplay(
+  samples: readonly OilSample[],
+  element: WearMetalKey,
+  baselinePpm: number | null = null
+): WearMetalLimitDisplay {
+  const ordered = orderOilSamplesBySequence(samples);
+  const latest = ordered.length > 0 ? ordered[ordered.length - 1] : null;
+
+  const incomingLimit = latest
+    ? WEAR_METAL_LIMIT_READERS[element](latest)
+    : undefined;
+  const limitPpm =
+    incomingLimit != null && Number.isFinite(incomingLimit)
+      ? incomingLimit
+      : DEFAULT_ALARM_LIMITS[element];
+
+  const incomingValue = latest ? latest[element] : undefined;
+  const latestPpm =
+    incomingValue != null && Number.isFinite(incomingValue)
+      ? incomingValue
+      : null;
+
+  const baseline =
+    baselinePpm != null && Number.isFinite(baselinePpm) ? baselinePpm : null;
+
+  const rate = calculateWearGenerationRate(ordered, (sample) => sample[element]);
+
+  return {
+    element,
+    latestPpm,
+    limitPpm,
+    percentOfLimit: percentOfLimit(latestPpm, limitPpm),
+    deltaFromBaselinePpm:
+      latestPpm != null && baseline != null
+        ? roundToHundredth(latestPpm - baseline)
+        : null,
+    ratePer100Hours: rate.status === "available" ? rate.ppmPer100Hours : null,
+    rateStatus: rate.status
+  };
+}
+
+export interface WearMetalPresence {
+  element: WearMetalKey;
+  label: string;
+  /** "unmeasured" preserves the null/— state; a measured 0 stays "zero". */
+  state: "measured" | "zero" | "unmeasured";
+  ppm: number | null;
+}
+
+/**
+ * Pair-completeness status for the latest sample: which elements were measured,
+ * which were reported as 0, and which were not measured at all. Descriptive
+ * only — element presence is never attributed to a component.
+ */
+export function latestWearMetalPresence(
+  samples: readonly OilSample[]
+): WearMetalPresence[] {
+  const ordered = orderOilSamplesBySequence(samples);
+  const latest = ordered.length > 0 ? ordered[ordered.length - 1] : null;
+
+  return (Object.keys(WEAR_METAL_LABELS) as WearMetalKey[]).map((element) => {
+    const raw = latest ? latest[element] : undefined;
+    const ppm = raw != null && Number.isFinite(raw) ? raw : null;
+    return {
+      element,
+      label: WEAR_METAL_LABELS[element],
+      state: ppm == null ? "unmeasured" : ppm === 0 ? "zero" : "measured",
+      ppm
+    };
+  });
+}
+
+export interface WearMetalCoMovementStatus {
+  status: "available" | "insufficient-hours";
+  /** Distinct non-zero operating-hour values across the supplied samples. */
+  distinctNonZeroHourCount: number;
+  /** Populated only when the hour gate passes; otherwise always empty. */
+  flags: string[];
+}
+
+/**
+ * Co-movement status for the wear metals.
+ *
+ * A co-movement flag (rising Si with rising Fe and/or Cr) is emitted only when
+ * at least two samples carry distinct non-zero operating hours. Otherwise the
+ * caller renders "insufficient operating-hour data" and no flag — an all-zero
+ * hour demo can never synthesize a movement claim.
+ */
+export function wearMetalCoMovementStatus(
+  samples: readonly OilSample[]
+): WearMetalCoMovementStatus {
+  const ordered = orderOilSamplesBySequence(samples);
+
+  const hourValues = new Set<number>();
+  for (const sample of ordered) {
+    if (Number.isFinite(sample.operatingHours) && sample.operatingHours > 0) {
+      hourValues.add(sample.operatingHours);
+    }
+  }
+  const distinctNonZeroHourCount = hourValues.size;
+
+  if (distinctNonZeroHourCount < 2) {
+    return {
+      status: "insufficient-hours",
+      distinctNonZeroHourCount,
+      flags: []
+    };
+  }
+
+  const rising = (element: WearMetalKey): boolean => {
+    const rate = calculateWearGenerationRate(
+      ordered,
+      (sample) => sample[element]
+    );
+    return (
+      rate.status === "available" &&
+      rate.ppmPer100Hours != null &&
+      rate.ppmPer100Hours > 0
+    );
+  };
+
+  const flags: string[] = [];
+  if (rising("silicon")) {
+    const coRising = (["iron", "chromium"] as const)
+      .filter(rising)
+      .map((element) => WEAR_METAL_LABELS[element]);
+
+    if (coRising.length > 0) {
+      flags.push(
+        `Silicon and ${coRising.join(" / ")} are rising across the hour-stamped samples (${WEAR_METAL_ENDPOINT_RATE_NOTE}).`
+      );
+    }
+  }
+
+  return { status: "available", distinctNonZeroHourCount, flags };
+}

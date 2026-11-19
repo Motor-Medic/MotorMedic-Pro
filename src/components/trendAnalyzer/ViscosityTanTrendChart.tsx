@@ -14,11 +14,13 @@ import {
   YAxis
 } from "recharts";
 import { formatSampleDate } from "../../lib/oilAnalysisMetrics";
+import { viscosityTanPairCompleteness } from "../../lib/oilTribologyGuidance";
 
 export type ViscosityTanSamplePoint = {
   sampleDate: string;
   viscosity40C?: number | null;
   acidNumber?: number | null;
+  operatingHours?: number | null;
 };
 
 export interface ViscosityTanTrendChartProps {
@@ -31,22 +33,27 @@ export function ViscosityTanTrendChart({
   samples,
   maxPoints = 6
 }: ViscosityTanTrendChartProps) {
-  const chartData = samples
+  const visibleSamples = samples
     .filter(
       (s) =>
         (s.viscosity40C != null && Number.isFinite(s.viscosity40C)) ||
         (s.acidNumber != null && Number.isFinite(s.acidNumber))
     )
-    .slice(-maxPoints)
-    .map((s) => ({
-      date: formatSampleDate(s.sampleDate, {
-        month: "short",
-        day: "numeric",
-        year: "2-digit"
-      }),
-      viscosity: s.viscosity40C ?? null,
-      tan: s.acidNumber ?? null
-    }));
+    .slice(-maxPoints);
+
+  // Pair-completeness is keyed off the same visible rows as the plot, so a TAN
+  // point without Visc@40 / operating hours is marked as a GAP in place.
+  const pairPoints = viscosityTanPairCompleteness(visibleSamples);
+
+  const chartData = visibleSamples.map((s) => ({
+    date: formatSampleDate(s.sampleDate, {
+      month: "short",
+      day: "numeric",
+      year: "2-digit"
+    }),
+    viscosity: s.viscosity40C ?? null,
+    tan: s.acidNumber ?? null
+  }));
 
   return (
     <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
@@ -123,6 +130,51 @@ export function ViscosityTanTrendChart({
               />
             </LineChart>
           </ResponsiveContainer>
+        </div>
+      )}
+
+      {chartData.length > 0 && (
+        <div className="mt-4 border-t border-slate-700 pt-3">
+          <p className="text-[11px] text-slate-500 mb-2">
+            Pair completeness: a TAN point without Visc@40 or operating hours is
+            a GAP, not a trend. Missing readings stay “—”.
+          </p>
+          <ul className="space-y-1">
+            {pairPoints.map((point, index) => {
+              const gap = point.hasTan && !point.isCompletePair;
+              const gapReasons = [
+                point.hasTan && !point.hasViscosity ? "Visc@40 missing" : null,
+                point.hasTan && !point.hasOperatingHours
+                  ? "operating hours missing"
+                  : null
+              ].filter((reason): reason is string => reason != null);
+
+              return (
+                <li
+                  key={`${point.date}-${index}`}
+                  className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400"
+                >
+                  <span>{formatSampleDate(point.date)}</span>
+                  {gap && (
+                    <span className="rounded border border-yellow-400/30 bg-yellow-400/10 px-1.5 py-0.5 font-semibold text-yellow-400">
+                      GAP
+                    </span>
+                  )}
+                  <span className="font-mono">
+                    Visc@40 {point.hasViscosity ? "reported" : "—"} · TAN{" "}
+                    {point.hasTan ? "reported" : "—"} · Hours{" "}
+                    {point.hasOperatingHours ? "reported" : "—"}
+                  </span>
+                  {gap && (
+                    <span className="text-slate-500">
+                      lone TAN point ({gapReasons.join(", ")}) — read as a gap,
+                      not a trend.
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
     </div>

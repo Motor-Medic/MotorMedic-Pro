@@ -28,16 +28,21 @@ import {
 } from "recharts";
 import {
   calculateBaselineDelta,
-  calculateWearGenerationRate,
+  formatPercentOfLimit,
   formatSampleDate,
   getThresholdStatus,
   interpretWearPattern,
-  orderOilSamplesBySequence
+  latestWearMetalPresence,
+  orderOilSamplesBySequence,
+  wearMetalCoMovementStatus,
+  wearMetalLimitDisplay,
+  WEAR_METAL_ENDPOINT_RATE_NOTE
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
 import {
   alloyCoElevationRatios,
   filterOilSamplesToWindow,
+  ICP_OES_PARTICLE_SIZE_DISCLOSURE,
   METALLURGY_RATIOS_NOTE,
   siliconAluminumRatio
 } from "../../lib/oilTribologyGuidance";
@@ -232,18 +237,20 @@ export function OilWearMetalsTab({
   const renderCard = (
     label: string,
     element: WearMetalKey,
-    value: number | undefined,
-    limit: number,
     baselineAnchor: BaselineAnchor | null
   ) => {
-    const measuredValue =
-      value != null && Number.isFinite(value) ? value : undefined;
+    // Limit + percent-of-limit + endpoint rate all come from the shared display
+    // helper, so the card, the rate gate and the ordering rule stay in lockstep.
+    const display = wearMetalLimitDisplay(
+      windowed,
+      element,
+      baselineAnchor?.value ?? null
+    );
+    const measuredValue = display.latestPpm;
     const status =
-      measuredValue == null ? null : getThresholdStatus(measuredValue, limit);
-    const rate =
       measuredValue == null
         ? null
-        : calculateWearGenerationRate(windowed, (sample) => sample[element]);
+        : getThresholdStatus(measuredValue, display.limitPpm);
 
     return (
       <div
@@ -262,7 +269,10 @@ export function OilWearMetalsTab({
           )}
         </div>
         <div className="text-xs mt-2 opacity-75">
-          <div>Limit: {limit} PPM</div>
+          <div>Limit: {display.limitPpm} PPM</div>
+          <div>
+            {formatPercentOfLimit(display.percentOfLimit)} of limit
+          </div>
           {measuredValue != null && baselineAnchor != null && (
             <div>
               Δ{" "}
@@ -276,11 +286,17 @@ export function OilWearMetalsTab({
                 : "first in-window sample (no stored baseline)"}
             </div>
           )}
-          {measuredValue != null && rate != null && (
+          {measuredValue != null && (
             <div>
-              {rate.status === "available" && rate.ppmPer100Hours != null
-                ? `Rate: ${rate.ppmPer100Hours.toFixed(2)} PPM/100h`
+              {display.rateStatus === "available" &&
+              display.ratePer100Hours != null
+                ? `Rate: ${display.ratePer100Hours.toFixed(2)} PPM/100h`
                 : "Rate: insufficient operating-hour data"}
+            </div>
+          )}
+          {measuredValue != null && display.rateStatus === "available" && (
+            <div className="text-[11px] opacity-60">
+              {WEAR_METAL_ENDPOINT_RATE_NOTE}
             </div>
           )}
         </div>
@@ -298,6 +314,8 @@ export function OilWearMetalsTab({
 
   const alloyRatios = alloyCoElevationRatios(latest);
   const siAl = siliconAluminumRatio(latest);
+  const latestPresence = latestWearMetalPresence(windowed);
+  const coMovement = wearMetalCoMovementStatus(windowed);
   const missingSiAlLabels = (missing: ("silicon" | "aluminum")[]): string =>
     missing
       .map((key) => (key === "silicon" ? "Silicon" : "Aluminum"))
@@ -348,35 +366,30 @@ export function OilWearMetalsTab({
         <p className="text-[11px] text-slate-500 mt-1 break-words">
           {OIL_SPECTROSCOPY_CITATION}
         </p>
+        <p className="text-[11px] text-slate-500 mt-1 break-words">
+          {ICP_OES_PARTICLE_SIZE_DISCLOSURE}
+        </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {renderCard(
           "Iron (Fe)",
           "iron",
-          latest.iron,
-          latest.ironAlarmLimit,
           baselineFor(baseline.baselineIron, baseline.iron)
         )}
         {renderCard(
           "Copper (Cu)",
           "copper",
-          latest.copper,
-          latest.copperAlarmLimit,
           baselineFor(baseline.baselineCopper, baseline.copper)
         )}
         {renderCard(
           "Chromium (Cr)",
           "chromium",
-          latest.chromium,
-          latest.chromiumAlarmLimit,
           baselineFor(baseline.baselineChromium, baseline.chromium)
         )}
         {renderCard(
           "Silicon (Si)",
           "silicon",
-          latest.silicon,
-          latest.siliconAlarmLimit,
           baselineFor(baseline.baselineSilicon, baseline.silicon)
         )}
       </div>
@@ -390,6 +403,59 @@ export function OilWearMetalsTab({
           Generation rate: Δppm / Δoperating hours, shown only when at least two
           samples carry distinct non-zero operating hours. Descriptive only; no
           projection or extrapolation.
+        </p>
+      </div>
+
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Latest sample completeness (descriptive)
+        </h3>
+        <p className="text-sm text-slate-400 mb-3">
+          Element presence in the latest sample only — measured, reported 0, or
+          not measured. Presence is never attributed to a component.
+        </p>
+        <ul className="grid grid-cols-2 md:grid-cols-3 gap-2">
+          {latestPresence.map((entry) => (
+            <li
+              key={entry.element}
+              className="rounded border border-slate-700 px-3 py-2"
+            >
+              <span className="text-xs text-slate-500">{entry.label}</span>
+              <div className="font-mono text-slate-200">
+                {entry.state === "measured" && `${entry.ppm} PPM`}
+                {entry.state === "zero" && "0 PPM (reported)"}
+                {entry.state === "unmeasured" && (
+                  <span className="text-slate-400">Not measured</span>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Co-movement status (descriptive)
+        </h3>
+        {coMovement.status === "insufficient-hours" ? (
+          <p className="text-sm text-slate-400">
+            insufficient operating-hour data — co-movement flag withheld.
+          </p>
+        ) : coMovement.flags.length > 0 ? (
+          <ul className="space-y-1 text-sm text-slate-300">
+            {coMovement.flags.map((flag) => (
+              <li key={flag}>{flag}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-slate-400">
+            No gated co-movement flag across the hour-stamped samples.
+          </p>
+        )}
+        <p className="text-[11px] text-slate-500 mt-2">
+          A co-movement flag (rising Si with rising Fe/Cr) is rendered only when
+          at least two samples carry distinct non-zero operating hours. Rate
+          basis: {WEAR_METAL_ENDPOINT_RATE_NOTE}.
         </p>
       </div>
 
