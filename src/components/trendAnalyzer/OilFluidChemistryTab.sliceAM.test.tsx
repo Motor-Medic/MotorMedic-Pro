@@ -81,7 +81,10 @@ describe("tanTbnTrend gate", () => {
     expect(tanTbnTrend([])).toEqual({
       delta: null,
       deltaDate: null,
-      slopePerSample: null,
+      slopePerDay: null,
+      slopePer100Hours: null,
+      slopeBasis: null,
+      elapsedDays: null,
       distinctDateCount: 0
     });
     expect(
@@ -89,7 +92,10 @@ describe("tanTbnTrend gate", () => {
     ).toEqual({
       delta: null,
       deltaDate: null,
-      slopePerSample: null,
+      slopePerDay: null,
+      slopePer100Hours: null,
+      slopeBasis: null,
+      elapsedDays: null,
       distinctDateCount: 0
     });
   });
@@ -101,19 +107,21 @@ describe("tanTbnTrend gate", () => {
     ]);
     expect(result.delta).toBe(-3);
     expect(result.deltaDate).toBe("2026-02-01");
-    expect(result.slopePerSample).toBeNull();
+    expect(result.slopePerDay).toBeNull();
     expect(result.distinctDateCount).toBe(2);
   });
 
-  it("computes the least-squares slope at three distinct dates", () => {
+  it("computes the least-squares slope per elapsed day, not per sample", () => {
     const result = tanTbnTrend([
       mk("2026-01-01", 1.0, 5.0),
-      mk("2026-02-01", 2.0, 4.0),
-      mk("2026-03-01", 3.0, 3.0)
+      mk("2026-01-11", 2.0, 4.0),
+      mk("2026-01-21", 3.0, 3.0)
     ]);
     expect(result.delta).toBe(0);
-    expect(result.deltaDate).toBe("2026-03-01");
-    expect(result.slopePerSample).toBeCloseTo(2, 10);
+    expect(result.deltaDate).toBe("2026-01-21");
+    expect(result.slopePerDay).toBeCloseTo(0.2, 10);
+    expect(result.slopeBasis).toBe("elapsed-days");
+    expect(result.elapsedDays).toBe(20);
     expect(result.distinctDateCount).toBe(3);
   });
 
@@ -125,7 +133,7 @@ describe("tanTbnTrend gate", () => {
     ]);
     expect(result.distinctDateCount).toBe(2);
     expect(result.deltaDate).toBe("2026-02-01");
-    expect(result.slopePerSample).toBeNull();
+    expect(result.slopePerDay).toBeNull();
   });
 
   it("keeps the paired reading's own date when newer samples omit TAN or TBN", () => {
@@ -137,7 +145,7 @@ describe("tanTbnTrend gate", () => {
     expect(result.delta).toBe(-2);
     expect(result.deltaDate).toBe("2026-02-01");
     expect(result.distinctDateCount).toBe(2);
-    expect(result.slopePerSample).toBeNull();
+    expect(result.slopePerDay).toBeNull();
   });
 });
 
@@ -182,21 +190,24 @@ describe("OilFluidChemistryTab SLICE-AM", () => {
       baseRow({ sample_date: "2026-01-15", acid_number: "1.00", tbn: "5.00" }),
       baseRow({
         id: "sample-2",
-        sample_date: "2026-02-15",
+        sample_date: "2026-01-25",
         acid_number: "2.00",
         tbn: "4.00"
       }),
       baseRow({
         id: "sample-3",
-        sample_date: "2026-03-15",
+        sample_date: "2026-02-04",
         acid_number: "3.00",
         tbn: "3.00"
       })
     ]);
     render(<OilFluidChemistryTab assetId="asset-1" />);
 
-    expect(await screen.findByText("+2.000")).toBeTruthy();
-    expect(screen.getByText(/mg KOH\/g per sample date · 3 distinct dates/)).toBeTruthy();
+    expect(await screen.findByText("+0.2000")).toBeTruthy();
+    expect(
+      screen.getByText(/mg KOH\/g per day \(Δelapsed days\) · 3 distinct dates/)
+    ).toBeTruthy();
+    expect(screen.queryByText(/per sample date/)).toBeNull();
   });
 
   it("names the paired reading's date when a newer sample omits TAN or TBN", async () => {
@@ -334,5 +345,111 @@ describe("OilFluidChemistryTab SLICE-AM", () => {
     expect(source).toContain("VISCOSITY_REFERENCE_LABEL_40C");
     expect(source).toContain('unit="Abs/cm"');
     expect(source).toContain("mg KOH/g");
+  });
+});
+
+describe("OilFluidChemistryTab SLICE-OA2 provenance & pair integrity", () => {
+  it("resolves the same latest row as Wear Metals for same-date zero-hour uploads", async () => {
+    mockRows([
+      baseRow({
+        id: "sample-a",
+        sample_date: "2026-11-19",
+        operating_hours: 0,
+        created_at: "2026-11-19T08:00:00.000Z",
+        acid_number: "1.50"
+      }),
+      baseRow({
+        id: "sample-b",
+        sample_date: "2026-11-19",
+        operating_hours: 0,
+        created_at: "2026-11-19T10:00:00.000Z",
+        acid_number: "2.00"
+      }),
+      baseRow({
+        id: "sample-c",
+        sample_date: "2026-11-19",
+        operating_hours: 0,
+        created_at: "2026-11-19T12:00:00.000Z",
+        acid_number: "2.85"
+      })
+    ]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    const tanCard = (await screen.findByText("TAN")).parentElement;
+    expect(tanCard?.textContent).toContain("2.85");
+    expect(tanCard?.textContent).not.toContain("1.50");
+  });
+
+  it("renders the raw-absorbance badges and one compact audit line", async () => {
+    mockRows([baseRow()]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    expect(
+      (await screen.findAllByText("RAW Abs/cm — not ΔAbs")).length
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getByText(
+        "1 samples · 1 distinct dates · 1 non-zero-hour rows · 1 paired TAN+TBN · 1 ISO reported"
+      )
+    ).toBeTruthy();
+  });
+
+  it("adds a traceable nitration column for the KPI value", async () => {
+    mockRows([baseRow({ nitration: "17.00" })]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    expect(await screen.findByText("Nitration (Abs/cm)")).toBeTruthy();
+    // Once in the KPI strip, once in the stored-row table.
+    expect(screen.getAllByText("17.00").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("states the empty viscosity/oxidation series instead of drawing bare axes", async () => {
+    mockRows([baseRow({ oxidation: null, nitration: null })]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    expect(
+      await screen.findByText(
+        "No paired viscosity/oxidation readings in range — nothing plotted."
+      )
+    ).toBeTruthy();
+  });
+
+  it("states the missing TBN pair instead of drawing bare axes", async () => {
+    mockRows([baseRow({ tbn: null })]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    expect(await screen.findByText("TBN not reported — no pair")).toBeTruthy();
+  });
+
+  it("compares ISO bands ordinally and withholds an out-of-range triplet", async () => {
+    mockRows([
+      baseRow({
+        iso_4um: 18,
+        iso_6um: 16,
+        iso_14um: 13
+      })
+    ]);
+    const { unmount } = render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    expect(await screen.findByText("Above target in 3 of 3 bands")).toBeTruthy();
+    expect(screen.getByText(">4 µm: above")).toBeTruthy();
+    expect(screen.queryByText(/notches? above/)).toBeNull();
+    expect(
+      screen.getByText(/Per-band ordinal comparison; codes are not subtracted/)
+    ).toBeTruthy();
+    unmount();
+
+    mockRows([baseRow({ iso_4um: 29, iso_6um: 16, iso_14um: 13 })]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+    expect(await screen.findByText("ISO codes not reported")).toBeTruthy();
+  });
+
+  it("excludes a non-40°C viscosity reading from the series and labels it", async () => {
+    mockRows([baseRow({ viscosity_40c: null, viscosity_100c: "7.2" })]);
+    render(<OilFluidChemistryTab assetId="asset-1" />);
+
+    expect(
+      await screen.findByText(/not comparable to the 40°C series/)
+    ).toBeTruthy();
   });
 });

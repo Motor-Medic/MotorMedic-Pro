@@ -1,5 +1,8 @@
 import type { OilSample } from "../types/oilAnalysis";
-import { toSampleDateKey } from "./oilAnalysisMetrics";
+import {
+  orderOilSamplesBySequence,
+  toSampleDateKey
+} from "./oilAnalysisMetrics";
 
 export const VISCOSITY_REFERENCE_LABEL_40C =
   "Viscosity @ 40°C (ASTM D445 reference)";
@@ -338,15 +341,16 @@ export function filterOilSamplesToWindow(
   });
 }
 
+/**
+ * The newest sample, resolved through the SAME sequence helper the Wear Metals
+ * and Cleanliness tabs use. Date alone is not an ordering key: same-day, same
+ * hour uploads are tie-broken by created_at then id, so every oil surface picks
+ * the same "latest" row.
+ */
 export function latestOilSample(samples: readonly OilSample[]): OilSample | null {
   if (samples.length === 0) return null;
-  return samples.reduce((newest, sample) => {
-    const sampleTime = new Date(sample.sampleDate).getTime();
-    const newestTime = new Date(newest.sampleDate).getTime();
-    if (sampleTime > newestTime) return sample;
-    if (sampleTime < newestTime) return newest;
-    return String(sample.id ?? "") >= String(newest.id ?? "") ? sample : newest;
-  });
+  const ordered = orderOilSamplesBySequence(samples);
+  return ordered[ordered.length - 1];
 }
 
 // ---------------------------------------------------------------------------
@@ -410,4 +414,93 @@ export function viscosityTanPairCompleteness(
       isCompletePair: hasViscosity && hasTan && hasOperatingHours
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// SLICE-OA2 — viscosity test-temperature guard
+// ---------------------------------------------------------------------------
+
+/** The only reference temperature this app's viscosity series plots against. */
+export const VISCOSITY_SERIES_REFERENCE_C = 40;
+
+export const VISCOSITY_TEMPERATURE_EXCLUSION_LABEL =
+  "not comparable to the 40°C series";
+
+export type ViscosityTemperatureReason =
+  | "reference-40c"
+  | "temperature-not-40c"
+  | "temperature-not-recorded"
+  | "no-40c-reading";
+
+export interface ViscosityTemperatureGuard {
+  /** True only for a reading measured at the 40 °C reference. */
+  comparable: boolean;
+  /** Temperature basis in °C when declared, else null. */
+  temperatureC: number | null;
+  reason: ViscosityTemperatureReason;
+  /** Label the UI shows for an excluded row; null when comparable. */
+  exclusionLabel: string | null;
+}
+
+/**
+ * Kinematic viscosity is meaningless without its test temperature.
+ *
+ * `viscosity40C` is the stored 40 °C ASTM D445 column, so an absent declared
+ * temperature is read as the 40 °C reference. A declared temperature other than
+ * 40 °C — or a sample that carries only a non-40 °C reading — is excluded from
+ * the 40 °C series instead of being plotted.
+ */
+export function viscosityTemperatureGuard(
+  sample: Pick<
+    OilSample,
+    "viscosity40C" | "viscosity100C" | "viscosityTestTemperatureC"
+  >
+): ViscosityTemperatureGuard {
+  const reading = finiteNumber(sample.viscosity40C);
+  if (reading == null) {
+    const otherReading = finiteNumber(sample.viscosity100C);
+    if (otherReading != null) {
+      // KV was reported, but not at the 40 °C reference and no test
+      // temperature is stored for it.
+      return {
+        comparable: false,
+        temperatureC: null,
+        reason: "temperature-not-recorded",
+        exclusionLabel: VISCOSITY_TEMPERATURE_EXCLUSION_LABEL
+      };
+    }
+    return {
+      comparable: false,
+      temperatureC: null,
+      reason: "no-40c-reading",
+      exclusionLabel: null
+    };
+  }
+
+  const declared = finiteNumber(sample.viscosityTestTemperatureC);
+  if (declared == null) {
+    // The value came from the 40 °C column, so its basis is recorded.
+    return {
+      comparable: true,
+      temperatureC: VISCOSITY_SERIES_REFERENCE_C,
+      reason: "reference-40c",
+      exclusionLabel: null
+    };
+  }
+
+  if (declared !== VISCOSITY_SERIES_REFERENCE_C) {
+    return {
+      comparable: false,
+      temperatureC: declared,
+      reason: "temperature-not-40c",
+      exclusionLabel: VISCOSITY_TEMPERATURE_EXCLUSION_LABEL
+    };
+  }
+
+  return {
+    comparable: true,
+    temperatureC: declared,
+    reason: "reference-40c",
+    exclusionLabel: null
+  };
 }

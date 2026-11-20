@@ -18,9 +18,18 @@ import {
   YAxis
 } from "recharts";
 import {
+  compareIsoTripletToTarget,
+  formatFluidChemistryAudit,
   formatIsoCode,
   formatSampleDate,
+  fluidChemistryAudit,
+  ftirComparability,
+  FTIR_COMPARABILITY_REQUIREMENT,
   getIsoTriplet,
+  isIsoTripletReported,
+  ISO_4406_ORDINAL_RULE,
+  orderOilSamplesBySequence,
+  RAW_ABSORBANCE_BADGE,
   tanTbnTrend,
   waterPhaseAlert
 } from "../../lib/oilAnalysisMetrics";
@@ -28,7 +37,9 @@ import { fetchOilSamples } from "../../lib/oilSampleRow";
 import {
   filterOilSamplesToWindow,
   latestOilSample,
-  VISCOSITY_REFERENCE_LABEL_40C
+  VISCOSITY_REFERENCE_LABEL_40C,
+  VISCOSITY_TEMPERATURE_EXCLUSION_LABEL,
+  viscosityTemperatureGuard
 } from "../../lib/oilTribologyGuidance";
 import {
   ISO_CLEANLINESS_TARGET,
@@ -83,12 +94,14 @@ function SummaryCard({
   label,
   value,
   unit,
-  note
+  note,
+  badge
 }: {
   label: string;
   value: string;
   unit?: string;
   note?: string;
+  badge?: string;
 }) {
   const measured = value !== "—";
   return (
@@ -96,6 +109,11 @@ function SummaryCard({
       <div className="text-xs uppercase tracking-wide text-slate-500">
         {label}
       </div>
+      {badge ? (
+        <div className="w-fit rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300">
+          {badge}
+        </div>
+      ) : null}
       <div
         className={`text-2xl font-bold ${measured ? "text-white" : "text-slate-600"}`}
       >
@@ -156,6 +174,12 @@ export function OilFluidChemistryTab({
   );
 
   const latest = useMemo(() => latestOilSample(windowed), [windowed]);
+  // One shared sequence order for the table and every chart, so a same-date,
+  // zero-hour upload cannot resolve differently on this tab than on Wear Metals.
+  const orderedWindowed = useMemo(
+    () => orderOilSamplesBySequence(windowed),
+    [windowed]
+  );
 
   if (!assetId) {
     return (
@@ -227,21 +251,47 @@ export function OilFluidChemistryTab({
   const pairedIsLatest =
     trend.deltaDate != null && trend.deltaDate === latest.sampleDate;
 
-  const currentIso = getIsoTriplet(latest);
-  const target = ISO_CLEANLINESS_TARGET;
-  const worstOvershoot = currentIso
-    ? Math.max(...currentIso.map((code, i) => code - target[i]))
-    : null;
-  const atTarget = worstOvershoot != null && worstOvershoot <= 0;
+  const audit = fluidChemistryAudit(windowed);
+  const auditLine = formatFluidChemistryAudit(audit);
+  const ftir = ftirComparability(windowed);
 
-  const chartData = windowed.map((s) => ({
-    date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
-    hours: s.operatingHours,
-    viscosity: s.viscosity40C ?? null,
-    oxidation: s.oxidation ?? null,
-    tan: s.acidNumber ?? null,
-    tbn: s.tbn ?? null
-  }));
+  const currentIsoRaw = getIsoTriplet(latest);
+  const currentIso = isIsoTripletReported(currentIsoRaw) ? currentIsoRaw : null;
+  const target = ISO_CLEANLINESS_TARGET;
+  const isoBands = compareIsoTripletToTarget(currentIso, target);
+  const isoAboveCount =
+    isoBands == null
+      ? null
+      : isoBands.filter((band) => band.comparison === "above").length;
+  const atTarget = isoAboveCount === 0;
+
+  const chartData = orderedWindowed.map((s) => {
+    const viscosityGuard = viscosityTemperatureGuard(s);
+    const hasOxidation = s.oxidation != null && Number.isFinite(s.oxidation);
+    return {
+      date: formatSampleDate(s.sampleDate, { month: "short", day: "numeric" }),
+      hours: s.operatingHours,
+      viscosity: viscosityGuard.comparable ? s.viscosity40C ?? null : null,
+      // Raw absorbance is plotted only when the stored instrument/pathlength/
+      // method signature is complete and identical across readings.
+      oxidation: ftir.comparable && hasOxidation ? s.oxidation : null,
+      tan: s.acidNumber ?? null,
+      tbn: s.tbn ?? null
+    };
+  });
+
+  const viscosityOxidationPairCount = chartData.filter(
+    (point) => point.viscosity != null && point.oxidation != null
+  ).length;
+  const tanTbnPairCount = chartData.filter(
+    (point) => point.tan != null && point.tbn != null
+  ).length;
+  const tbnReported = orderedWindowed.some(
+    (s) => s.tbn != null && Number.isFinite(s.tbn)
+  );
+  const excludedViscosity = orderedWindowed.filter(
+    (s) => viscosityTemperatureGuard(s).exclusionLabel != null
+  );
 
   const tooltipStyle = {
     backgroundColor: "#0f172a",
@@ -258,6 +308,7 @@ export function OilFluidChemistryTab({
           Latest sample {formatSampleDate(latest.sampleDate)} ·{" "}
           {latest.operatingHours.toLocaleString()} operating hours
         </p>
+        <p className="text-xs text-slate-500 mt-1 font-mono">{auditLine}</p>
         {windowActive && (
           <p className="text-xs text-slate-500 mt-1">
             Window {windowStart || "open start"} &ndash;{" "}
@@ -301,11 +352,13 @@ export function OilFluidChemistryTab({
           label="Oxidation"
           value={display(latest.oxidation, 2)}
           unit="Abs/cm"
+          badge={RAW_ABSORBANCE_BADGE}
         />
         <SummaryCard
           label="Nitration"
           value={display(latest.nitration, 2)}
           unit="Abs/cm"
+          badge={RAW_ABSORBANCE_BADGE}
         />
       </div>
 
@@ -313,6 +366,10 @@ export function OilFluidChemistryTab({
         Oxidation / nitration are shown as raw absorbance (Abs/cm). No stored
         fresh-oil or base-stock FTIR baseline exists, so neither reading carries
         a pass/fail verdict.
+      </p>
+      <p className="text-xs text-slate-500 italic">
+        {RAW_ABSORBANCE_BADGE}. {FTIR_COMPARABILITY_REQUIREMENT}{" "}
+        {ftir.note}
       </p>
 
       {/* Viscosity vs Oxidation */}
@@ -324,6 +381,25 @@ export function OilFluidChemistryTab({
           Base oil degradation — viscosity at the fixed 40°C reference (cSt)
           against oxidation (Abs/cm)
         </p>
+        {!ftir.comparable ? (
+          <p className="mb-3 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-300">
+            {ftir.note}
+          </p>
+        ) : null}
+        {excludedViscosity.length > 0 ? (
+          <p className="mb-3 text-xs text-slate-500">
+            Excluded from the 40°C series:{" "}
+            {excludedViscosity
+              .map((s) => formatSampleDate(s.sampleDate))
+              .join(", ")}{" "}
+            — {VISCOSITY_TEMPERATURE_EXCLUSION_LABEL}.
+          </p>
+        ) : null}
+        {viscosityOxidationPairCount === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            No paired viscosity/oxidation readings in range — nothing plotted.
+          </p>
+        ) : (
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
@@ -381,9 +457,8 @@ export function OilFluidChemistryTab({
             </LineChart>
           </ResponsiveContainer>
         </div>
+        )}
       </div>
-
-      {/* TAN vs TBN — descriptive delta and gated slope, no projection */}
       <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
         <h3 className="text-lg font-semibold text-white mb-1">
           TAN vs. TBN
@@ -423,17 +498,25 @@ export function OilFluidChemistryTab({
               TAN − TBN trend slope
             </div>
             <div
-              className={`text-2xl font-bold font-mono ${trend.slopePerSample != null ? "text-white" : "text-slate-600"}`}
+              className={`text-2xl font-bold font-mono ${trend.slopePerDay != null ? "text-white" : "text-slate-600"}`}
             >
-              {trend.slopePerSample != null
-                ? `${trend.slopePerSample > 0 ? "+" : ""}${trend.slopePerSample.toFixed(3)}`
+              {trend.slopePerDay != null
+                ? `${trend.slopePerDay > 0 ? "+" : ""}${trend.slopePerDay.toFixed(4)}`
                 : "—"}
             </div>
             <div className="text-xs text-slate-500">
-              {trend.slopePerSample != null
-                ? `mg KOH/g per sample date · ${trend.distinctDateCount} distinct dates`
+              {trend.slopePerDay != null
+                ? `mg KOH/g per day (Δelapsed days) · ${trend.distinctDateCount} distinct dates · descriptive only`
                 : `Needs ≥3 distinct-date samples with TAN and TBN (${trend.distinctDateCount} on file)`}
             </div>
+            {trend.slopePer100Hours != null ? (
+              <div className="text-xs text-slate-500">
+                Hour-gated basis:{" "}
+                {`${trend.slopePer100Hours > 0 ? "+" : ""}${trend.slopePer100Hours.toFixed(4)}`}{" "}
+                mg KOH/g per 100 operating hours (Δoperating-hours) ·
+                descriptive only
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -442,6 +525,13 @@ export function OilFluidChemistryTab({
           telemetry, so no future date is inferred.
         </p>
 
+        {tanTbnPairCount === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            {tbnReported
+              ? "TAN not reported — no pair"
+              : "TBN not reported — no pair"}
+          </p>
+        ) : (
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
@@ -474,6 +564,7 @@ export function OilFluidChemistryTab({
             </LineChart>
           </ResponsiveContainer>
         </div>
+        )}
       </div>
 
       {/* ISO 4406 cleanliness — descriptive, no life-extension model */}
@@ -486,9 +577,12 @@ export function OilFluidChemistryTab({
             Target basis: recalled Noria default — not a stored per-asset target
           </span>
         </div>
-        <p className="text-sm text-slate-400 mb-4">
+        <p className="text-sm text-slate-400 mb-2">
           Current particle count against a recalled Noria default for general
           industrial service — descriptive comparison only.
+        </p>
+        <p className="mb-4 text-xs text-slate-500 italic">
+          {ISO_4406_ORDINAL_RULE}
         </p>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className={CARD_BASE}>
@@ -516,18 +610,35 @@ export function OilFluidChemistryTab({
               Current vs. target
             </div>
             <div
-              className={`text-2xl font-bold ${currentIso != null ? (atTarget ? "text-green-400" : "text-yellow-300") : "text-slate-600"}`}
+              className={`text-2xl font-bold ${isoBands != null ? (atTarget ? "text-green-400" : "text-yellow-300") : "text-slate-600"}`}
             >
-              {currentIso == null
+              {isoBands == null
                 ? "—"
                 : atTarget
-                  ? "At or below target"
-                  : `${worstOvershoot} notch${worstOvershoot === 1 ? "" : "es"} above`}
+                  ? "At or below target in all 3 bands"
+                  : `Above target in ${isoAboveCount} of 3 bands`}
             </div>
+            {isoBands != null ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {isoBands.map((band) => (
+                  <span
+                    key={band.channel}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] ${
+                      band.comparison === "above"
+                        ? "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
+                        : "border-green-500/40 bg-green-500/10 text-green-300"
+                    }`}
+                  >
+                    {band.channel}:{" "}
+                    {band.comparison === "above" ? "above" : "at or below"}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="text-xs text-slate-500">
-              {currentIso == null
+              {isoBands == null
                 ? "ISO codes not reported"
-                : "Worst channel, descriptive comparison"}
+                : "Per-band ordinal comparison; codes are not subtracted"}
             </div>
           </div>
         </div>
@@ -545,11 +656,12 @@ export function OilFluidChemistryTab({
               <th className="px-4 py-3">TBN (mg KOH/g)</th>
               <th className="px-4 py-3">Water (ppm)</th>
               <th className="px-4 py-3">Oxidation (Abs/cm)</th>
+              <th className="px-4 py-3">Nitration (Abs/cm)</th>
               <th className="px-4 py-3">ISO 4406</th>
             </tr>
           </thead>
           <tbody>
-            {windowed.map((s, idx) => (
+            {orderedWindowed.map((s, idx) => (
               <tr
                 key={s.id ?? `${s.sampleDate}-${idx}`}
                 className="border-b border-slate-700 hover:bg-slate-800/50"
@@ -570,6 +682,9 @@ export function OilFluidChemistryTab({
                 </td>
                 <td className="px-4 py-3 font-mono">
                   {display(s.oxidation, 2)}
+                </td>
+                <td className="px-4 py-3 font-mono">
+                  {display(s.nitration, 2)}
                 </td>
                 <td className="px-4 py-3 font-mono">
                   {formatIsoCode(getIsoTriplet(s))}

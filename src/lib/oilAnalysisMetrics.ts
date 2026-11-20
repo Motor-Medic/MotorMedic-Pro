@@ -264,6 +264,9 @@ export function projectTanTbnCrossover(
   };
 }
 
+/** Time basis for the descriptive TAN − TBN slope. Never a sample count. */
+export type TanTbnSlopeBasis = "elapsed-days" | "operating-hours";
+
 export interface TanTbnTrend {
   /** Latest distinct-date sample's TAN − TBN, or null when no sample has both. */
   delta: number | null;
@@ -273,18 +276,57 @@ export interface TanTbnTrend {
    */
   deltaDate: string | null;
   /**
-   * Least-squares slope of (TAN − TBN) per distinct-date sample, only at three
+   * Least-squares slope of (TAN − TBN) per elapsed calendar day, only at three
    * or more distinct sample dates that carry a valid TAN and TBN. Descriptive
    * only — never extrapolated to an hours/weeks runway.
+   *
+   * The x axis is ELAPSED TIME, not sample index: two uploads on the same day
+   * collapse to one point, and a long gap between lab dates carries more weight
+   * than a short one. A per-sample-count slope would misstate the rate.
    */
-  slopePerSample: number | null;
+  slopePerDay: number | null;
+  /**
+   * Least-squares slope per 100 operating hours. Gated exactly like the wear
+   * rate: three distinct paired dates plus at least two distinct non-zero hour
+   * stamps. Null when the hour gate fails.
+   */
+  slopePer100Hours: number | null;
+  /** Basis actually available for display; null when both slopes are withheld. */
+  slopeBasis: TanTbnSlopeBasis | null;
+  /** Calendar days between the first and last paired distinct dates. */
+  elapsedDays: number | null;
   /** Distinct sample dates that carry a valid TAN and TBN. */
   distinctDateCount: number;
 }
 
+const DAY_MS = 86_400_000;
+
+/** UTC midnight for a YYYY-MM-DD key, or null when the key is malformed. */
+function dateKeyToUtcMs(key: string): number | null {
+  const [year, month, day] = key.split("-").map(Number);
+  if (![year, month, day].every(Number.isFinite)) return null;
+  return Date.UTC(year, month - 1, day);
+}
+
+/** Least-squares slope of y against x; null when x has no spread. */
+function leastSquaresSlope(
+  points: readonly { x: number; y: number }[]
+): number | null {
+  if (points.length < 2) return null;
+  const meanX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const meanY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  let numerator = 0;
+  let denominator = 0;
+  for (const point of points) {
+    numerator += (point.x - meanX) * (point.y - meanY);
+    denominator += (point.x - meanX) ** 2;
+  }
+  return denominator === 0 ? null : numerator / denominator;
+}
+
 /**
- * Descriptive TAN/TBN trend: the current TAN − TBN gap plus a regression
- * slope once there are enough distinct-date samples to justify one.
+ * Descriptive TAN/TBN trend: the current TAN − TBN gap plus a time-normalized
+ * regression slope once there are enough distinct-date samples to justify one.
  *
  * No crossover date is projected. Oil samples carry no load telemetry, so any
  * "hours to crossover" figure would be an invented runway.
@@ -292,53 +334,103 @@ export interface TanTbnTrend {
 export function tanTbnTrend(samples: OilSample[]): TanTbnTrend {
   // Collapse duplicate sample dates to one gap so repeated lab uploads cannot
   // overweight a single day in the regression.
-  const gapByDate = new Map<string, number>();
+  const gapByDate = new Map<string, { gap: number; hours: number | null }>();
   for (const sample of samples) {
     const { acidNumber, tbn } = sample;
     if (acidNumber == null || !Number.isFinite(acidNumber)) continue;
     if (tbn == null || !Number.isFinite(tbn)) continue;
     const dateKey = toSampleDateKey(sample.sampleDate);
     if (!dateKey) continue;
-    gapByDate.set(dateKey, acidNumber - tbn);
+    gapByDate.set(dateKey, {
+      gap: acidNumber - tbn,
+      hours: Number.isFinite(sample.operatingHours)
+        ? sample.operatingHours
+        : null
+    });
   }
 
-  const gaps = [...gapByDate.entries()]
-    .sort(([a], [b]) => a.localeCompare(b));
+  const gaps = [...gapByDate.entries()].sort(([a], [b]) =>
+    a.localeCompare(b)
+  );
 
   if (gaps.length === 0) {
     return {
       delta: null,
       deltaDate: null,
-      slopePerSample: null,
+      slopePerDay: null,
+      slopePer100Hours: null,
+      slopeBasis: null,
+      elapsedDays: null,
       distinctDateCount: 0
     };
   }
 
-  const [deltaDate, delta] = gaps[gaps.length - 1];
+  const [deltaDate, latestPoint] = gaps[gaps.length - 1];
+  const delta = latestPoint.gap;
   if (gaps.length < 3) {
     return {
       delta,
       deltaDate,
-      slopePerSample: null,
+      slopePerDay: null,
+      slopePer100Hours: null,
+      slopeBasis: null,
+      elapsedDays: null,
       distinctDateCount: gaps.length
     };
   }
 
-  const n = gaps.length;
-  const meanX = (n - 1) / 2;
-  const meanY = gaps.reduce((sum, [, gap]) => sum + gap, 0) / n;
-  let numerator = 0;
-  let denominator = 0;
-  gaps.forEach(([, gap], x) => {
-    numerator += (x - meanX) * (gap - meanY);
-    denominator += (x - meanX) ** 2;
-  });
+  const firstMs = dateKeyToUtcMs(gaps[0][0]);
+  const lastMs = dateKeyToUtcMs(gaps[gaps.length - 1][0]);
+  const elapsedDays =
+    firstMs != null && lastMs != null && lastMs > firstMs
+      ? (lastMs - firstMs) / DAY_MS
+      : null;
+
+  const dayPoints =
+    firstMs == null
+      ? []
+      : gaps.flatMap(([dateKey, point]) => {
+          const ms = dateKeyToUtcMs(dateKey);
+          return ms == null
+            ? []
+            : [{ x: (ms - firstMs) / DAY_MS, y: point.gap }];
+        });
+  const slopePerDay = leastSquaresSlope(dayPoints);
+
+  // Hour basis: every paired date must carry a usable hour stamp and at least
+  // two distinct non-zero values must exist (the existing wear-rate gate).
+  const hourValues = gaps
+    .map(([, point]) => point.hours)
+    .filter((hours): hours is number => hours != null && hours > 0);
+  const distinctNonZeroHours = new Set(hourValues).size;
+  const allHoursStamped = gaps.every(([, point]) => point.hours != null);
+  let slopePer100Hours: number | null = null;
+  if (allHoursStamped && distinctNonZeroHours >= 2) {
+    const firstHours = gaps[0][1].hours as number;
+    const lastHours = gaps[gaps.length - 1][1].hours as number;
+    if (Number.isFinite(lastHours - firstHours) && lastHours - firstHours > 0) {
+      slopePer100Hours = leastSquaresSlope(
+        gaps.map(([, point]) => ({
+          x: ((point.hours as number) - firstHours) / 100,
+          y: point.gap
+        }))
+      );
+    }
+  }
 
   return {
     delta,
     deltaDate,
-    slopePerSample: denominator === 0 ? null : numerator / denominator,
-    distinctDateCount: n
+    slopePerDay,
+    slopePer100Hours,
+    slopeBasis:
+      slopePerDay != null
+        ? "elapsed-days"
+        : slopePer100Hours != null
+          ? "operating-hours"
+          : null,
+    elapsedDays,
+    distinctDateCount: gaps.length
   };
 }
 
@@ -1300,4 +1392,275 @@ export function wearMetalCoMovementStatus(
   }
 
   return { status: "available", distinctNonZeroHourCount, flags };
+}
+
+// ---------------------------------------------------------------------------
+// SLICE-OA2 — fluid-chemistry provenance & pair-integrity display layer
+// ---------------------------------------------------------------------------
+
+/**
+ * Every fluid-chemistry KPI on the tab must be traceable to a stored row+field.
+ * These counts are descriptive only; nothing is inferred from an absent value.
+ */
+export interface FluidChemistryAudit {
+  sampleCount: number;
+  distinctDateCount: number;
+  /** Rows carrying a finite operating hour greater than zero. */
+  nonZeroHourCount: number;
+  /** Rows carrying both a finite TAN and a finite TBN. */
+  pairedTanTbnCount: number;
+  /** Rows carrying three numeric ISO 4406 bands on the 0–28 code scale. */
+  isoReportedCount: number;
+}
+
+/** The compact audit line rendered under the Fluid Chemistry header. */
+export function formatFluidChemistryAudit(audit: FluidChemistryAudit): string {
+  return [
+    `${audit.sampleCount} samples`,
+    `${audit.distinctDateCount} distinct dates`,
+    `${audit.nonZeroHourCount} non-zero-hour rows`,
+    `${audit.pairedTanTbnCount} paired TAN+TBN`,
+    `${audit.isoReportedCount} ISO reported`
+  ].join(" · ");
+}
+
+/** Descriptive audit counts for the in-window fluid-chemistry rows. */
+export function fluidChemistryAudit(
+  samples: readonly OilSample[]
+): FluidChemistryAudit {
+  const dates = new Set<string>();
+  let nonZeroHourCount = 0;
+  let pairedTanTbnCount = 0;
+  let isoReportedCount = 0;
+
+  for (const sample of samples) {
+    const dateKey = toSampleDateKey(sample.sampleDate);
+    if (dateKey) dates.add(dateKey);
+
+    if (
+      Number.isFinite(sample.operatingHours) &&
+      sample.operatingHours > 0
+    ) {
+      nonZeroHourCount += 1;
+    }
+
+    if (
+      sample.acidNumber != null &&
+      Number.isFinite(sample.acidNumber) &&
+      sample.tbn != null &&
+      Number.isFinite(sample.tbn)
+    ) {
+      pairedTanTbnCount += 1;
+    }
+
+    if (isIsoTripletReported(getIsoTriplet(sample))) {
+      isoReportedCount += 1;
+    }
+  }
+
+  return {
+    sampleCount: samples.length,
+    distinctDateCount: dates.size,
+    nonZeroHourCount,
+    pairedTanTbnCount,
+    isoReportedCount
+  };
+}
+
+/**
+ * A reported ISO 4406 triplet is three whole numeric bands on the 0–28 code
+ * scale. A string placeholder ("—", "n/a") can never satisfy this, and an
+ * out-of-range band is treated as not reported rather than coerced.
+ */
+export function isIsoTripletReported(
+  triplet: IsoCodeTriplet | null | undefined
+): triplet is IsoCodeTriplet {
+  if (!Array.isArray(triplet) || triplet.length !== 3) return false;
+  return triplet.every(
+    (code) =>
+      typeof code === "number" &&
+      Number.isInteger(code) &&
+      code >= 0 &&
+      code <= 28
+  );
+}
+
+/**
+ * ISO 4406 codes are ORDINAL log bands, one code step ≈ a doubling of
+ * particles/mL. They are never averaged or arithmetically subtracted; a
+ * current-vs-target statement is a per-band at/above/below comparison.
+ */
+export const ISO_4406_ORDINAL_RULE =
+  "ISO 4406 codes are ordinal log bands: each code step is roughly a doubling of particles/mL. Codes must never be averaged or arithmetically subtracted; current vs. target is a per-band at/above/below comparison.";
+
+export type IsoBandComparison = "at-or-below" | "above";
+
+export interface IsoBandComparisonRow {
+  channel: ">4 µm" | ">6 µm" | ">14 µm";
+  current: number;
+  target: number;
+  comparison: IsoBandComparison;
+}
+
+const ISO_BAND_CHANNELS = [">4 µm", ">6 µm", ">14 µm"] as const;
+
+/**
+ * Per-band comparison of two reported triplets. Returns null unless BOTH the
+ * current and target triplets are reported, so the caller renders "—" with
+ * "ISO codes not reported" instead of a comparison against nothing.
+ *
+ * Uses ordinal comparison only — no subtraction, averaging or interpolation.
+ */
+export function compareIsoTripletToTarget(
+  current: IsoCodeTriplet | null | undefined,
+  target: IsoCodeTriplet | null | undefined
+): IsoBandComparisonRow[] | null {
+  if (!isIsoTripletReported(current) || !isIsoTripletReported(target)) {
+    return null;
+  }
+  return ISO_BAND_CHANNELS.map((channel, index) => ({
+    channel,
+    current: current[index],
+    target: target[index],
+    comparison:
+      current[index] <= target[index] ? "at-or-below" : "above"
+  }));
+}
+
+/**
+ * The caveat that belongs at the point of reading a raw FTIR absorbance.
+ * Abs/cm is an absolute instrument reading, not a change from a fresh-oil
+ * baseline (ΔAbs).
+ */
+export const RAW_ABSORBANCE_BADGE = "RAW Abs/cm — not ΔAbs";
+
+export const FTIR_COMPARABILITY_REQUIREMENT =
+  "Raw absorbance is comparable across samples only when instrument, pathlength and method are stored and identical.";
+
+export const FTIR_TREND_WITHHELD_NOTE =
+  "Raw-absorbance trend withheld — instrument, pathlength and method are not stored for every reading, so absorbance is not comparable across samples.";
+
+export const FTIR_TREND_DIFFERS_NOTE =
+  "Raw-absorbance trend withheld — stored instrument, pathlength or method differs between samples, so absorbance is not comparable across the series.";
+
+export interface FtirComparability {
+  /** True only when every reading carries identical stored method metadata. */
+  comparable: boolean;
+  /** Human-readable basis or the reason the trend is withheld. */
+  note: string;
+}
+
+function hasFiniteAbsorbance(sample: OilSample): boolean {
+  return (
+    (sample.oxidation != null && Number.isFinite(sample.oxidation)) ||
+    (sample.nitration != null && Number.isFinite(sample.nitration))
+  );
+}
+
+function ftirSignature(sample: OilSample): string | null {
+  const instrument = sample.ftirInstrument?.trim();
+  const method = sample.ftirMethod?.trim();
+  const pathlength = sample.ftirPathlengthMm;
+  if (!instrument || !method) return null;
+  if (pathlength == null || !Number.isFinite(pathlength)) return null;
+  return `${instrument}|${pathlength}|${method}`;
+}
+
+/**
+ * Decide whether a raw-absorbance series may be plotted as a trend.
+ *
+ * Requires at least two readings and a complete, identical stored
+ * instrument/pathlength/method signature on every reading. An absent signature
+ * withholds the trend — it is never assumed to be comparable.
+ */
+export function ftirComparability(
+  samples: readonly OilSample[]
+): FtirComparability {
+  const readings = samples.filter(hasFiniteAbsorbance);
+  if (readings.length < 2) {
+    return {
+      comparable: false,
+      note: "Fewer than two raw-absorbance readings in range — no trend."
+    };
+  }
+
+  const signatures = readings.map(ftirSignature);
+  if (signatures.some((signature) => signature == null)) {
+    return { comparable: false, note: FTIR_TREND_WITHHELD_NOTE };
+  }
+  if (new Set(signatures).size !== 1) {
+    return { comparable: false, note: FTIR_TREND_DIFFERS_NOTE };
+  }
+
+  return {
+    comparable: true,
+    note: `Instrument, pathlength and method are stored and identical across ${readings.length} readings.`
+  };
+}
+
+/**
+ * A stored fresh-oil / base-stock FTIR reference. The only legitimate source
+ * of a pass/fail verdict against a raw absorbance reading.
+ */
+export interface FreshOilFtirReference {
+  oxidation?: number | null;
+  nitration?: number | null;
+}
+
+function isStoredFreshOilReference(
+  reference: unknown
+): reference is FreshOilFtirReference {
+  if (reference == null || typeof reference !== "object") return false;
+  const candidate = reference as FreshOilFtirReference;
+  return (
+    (candidate.oxidation != null && Number.isFinite(candidate.oxidation)) ||
+    (candidate.nitration != null && Number.isFinite(candidate.nitration))
+  );
+}
+
+/**
+ * True only when a stored fresh-oil/base-stock reference record exists.
+ *
+ * Deliberately takes a RECORD, not a caller-supplied boolean: a flag could be
+ * fabricated at the call site. A boolean or any non-record value is false.
+ */
+export function hasFreshOilFtirBaseline(reference: unknown): boolean {
+  return isStoredFreshOilReference(reference);
+}
+
+export type FtirBaselineVerdict = "above-reference" | "at-or-below-reference";
+
+/**
+ * Descriptive verdict against a stored fresh-oil reference, or null when no
+ * such record exists. Never derives a verdict from an absent baseline.
+ */
+export function ftirBaselineVerdict(
+  reference: unknown,
+  reading: number | null | undefined
+): FtirBaselineVerdict | null {
+  if (!isStoredFreshOilReference(reference)) return null;
+  if (reading == null || !Number.isFinite(reading)) return null;
+
+  const candidates = [reference.oxidation, reference.nitration].filter(
+    (value): value is number => value != null && Number.isFinite(value)
+  );
+  if (candidates.length === 0) return null;
+
+  // A verdict needs a field-matched reference; callers that know which field
+  // they are judging should use the typed overload below.
+  const baseline = candidates[0];
+  return reading > baseline ? "above-reference" : "at-or-below-reference";
+}
+
+/** Field-matched fresh-oil verdict: null unless that field's reference exists. */
+export function ftirFieldBaselineVerdict(
+  reference: unknown,
+  field: "oxidation" | "nitration",
+  reading: number | null | undefined
+): FtirBaselineVerdict | null {
+  if (!isStoredFreshOilReference(reference)) return null;
+  if (reading == null || !Number.isFinite(reading)) return null;
+  const baseline = reference[field];
+  if (baseline == null || !Number.isFinite(baseline)) return null;
+  return reading > baseline ? "above-reference" : "at-or-below-reference";
 }

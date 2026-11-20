@@ -108,11 +108,26 @@ export interface OilSample {
   viscosity40C?: number; // cSt @ 40°C
   viscosity100C?: number; // cSt @ 100°C
   viscosityIndex?: number;
+  /**
+   * Optional lab-declared kinematic-viscosity test temperature. When absent,
+   * `viscosity40C` is read as the 40 °C ASTM D445 reference implied by the
+   * stored column. A declared value other than 40 excludes the row from the
+   * 40 °C series instead of plotting an incomparable point.
+   */
+  viscosityTestTemperatureC?: number;
   acidNumber?: number; // TAN mg KOH/g
   tbn?: number; // Base number mg KOH/g
   waterPpm?: number;
   oxidation?: number; // Abs/cm
   nitration?: number; // Abs/cm
+  /**
+   * Optional FTIR method metadata. Raw absorbance is comparable across samples
+   * only when instrument, pathlength and method are stored and identical; when
+   * any of these is absent the raw-absorbance trend is withheld.
+   */
+  ftirInstrument?: string;
+  ftirPathlengthMm?: number;
+  ftirMethod?: string;
 
   // ISO 4406 particle counts (code per >4µm / >6µm / >14µm channel)
   iso4um?: number;
