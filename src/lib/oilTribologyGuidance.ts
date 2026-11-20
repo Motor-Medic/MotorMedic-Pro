@@ -1,7 +1,13 @@
 import type { OilSample } from "../types/oilAnalysis";
 import {
+  formatIsoCode,
+  getIsoTriplet,
+  isIsoTripletReported,
+  isoNotchDelta,
   orderOilSamplesBySequence,
-  toSampleDateKey
+  toSampleDateKey,
+  validateIsoTriplet,
+  type IsoCodeTriplet
 } from "./oilAnalysisMetrics";
 
 export const VISCOSITY_REFERENCE_LABEL_40C =
@@ -161,6 +167,182 @@ export function decodeIso4406(
       minPerMl: range.minPerMl,
       maxPerMl: range.maxPerMl
     }];
+  });
+}
+
+// ---------------------------------------------------------------------------
+// SLICE-OA3 — ISO 4406 code provenance and ordinal trend
+// ---------------------------------------------------------------------------
+
+/**
+ * Map one stored particles/mL count onto the ISO 4406 code band that contains
+ * it. Reuses ISO_4406_RANGES (the in-repo ISO scale); this is not a second
+ * implementation. Returns null for an absent or non-positive count so a
+ * missing count can never become code 0.
+ */
+export function isoCodeFromParticleCount(
+  count: number | null | undefined
+): number | null {
+  const value = finiteNumber(count);
+  if (value == null || value <= 0) return null;
+  const range = ISO_4406_RANGES.find(
+    (band) => value >= band.minPerMl && value < band.maxPerMl
+  );
+  return range?.code ?? null;
+}
+
+/**
+ * Derive the triplet implied by stored raw counts. This is the allowed
+ * direction only: codes may be derived from reported counts, but counts are
+ * never invented from a reported code.
+ */
+export function deriveIsoTripletFromParticleCounts(
+  sample: Pick<
+    OilSample,
+    "particles4um" | "particles6um" | "particles14um"
+  >
+): IsoCodeTriplet | null {
+  const codes = [
+    isoCodeFromParticleCount(sample.particles4um),
+    isoCodeFromParticleCount(sample.particles6um),
+    isoCodeFromParticleCount(sample.particles14um)
+  ] as const;
+  const [code4, code6, code14] = codes;
+  if (code4 == null || code6 == null || code14 == null) return null;
+  return [code4, code6, code14];
+}
+
+export type IsoCodeProvenance =
+  | "lab-reported"
+  | "count-derived"
+  | "lab-and-derived-agree"
+  | "lab-and-derived-disagree"
+  | "not-reported";
+
+export interface IsoCodeProvenanceResult {
+  labReported: IsoCodeTriplet | null;
+  countDerived: IsoCodeTriplet | null;
+  provenance: IsoCodeProvenance;
+  /** Both provenances exist and at least one band differs. */
+  disagreement: boolean;
+  /** What the UI must say beside the displayed code. */
+  label: string;
+}
+
+export const ISO_CODE_NOT_REPORTED_LABEL = "— / ISO codes not reported";
+
+export const ISO_CODE_DISAGREEMENT_NOTE =
+  "Lab-reported ISO 4406 code and count-derived code disagree — both are shown; neither is silently preferred.";
+
+/**
+ * Keep a lab-reported triplet and a code derived from stored raw counts as
+ * distinct provenances. Never silently chooses one when they disagree.
+ */
+export function isoCodeProvenance(
+  sample: Pick<
+    OilSample,
+    "iso4um" | "iso6um" | "iso14um" | "particles4um" | "particles6um" | "particles14um"
+  >
+): IsoCodeProvenanceResult {
+  const labCodes = [sample.iso4um, sample.iso6um, sample.iso14um] as const;
+  const [lab4, lab6, lab14] = labCodes;
+  const labReported: IsoCodeTriplet | null =
+    typeof lab4 === "number" &&
+    typeof lab6 === "number" &&
+    typeof lab14 === "number" &&
+    isIsoTripletReported([lab4, lab6, lab14])
+      ? [lab4, lab6, lab14]
+      : null;
+  const countDerived = deriveIsoTripletFromParticleCounts(sample);
+  const disagreement =
+    labReported != null &&
+    countDerived != null &&
+    labReported.some((code, index) => code !== countDerived[index]);
+
+  if (labReported == null && countDerived == null) {
+    return {
+      labReported,
+      countDerived,
+      provenance: "not-reported",
+      disagreement: false,
+      label: ISO_CODE_NOT_REPORTED_LABEL
+    };
+  }
+  if (labReported == null) {
+    return {
+      labReported,
+      countDerived,
+      provenance: "count-derived",
+      disagreement: false,
+      label:
+        "ISO 4406 code derived from stored raw particle counts — no lab-reported triplet"
+    };
+  }
+  if (countDerived == null) {
+    return {
+      labReported,
+      countDerived,
+      provenance: "lab-reported",
+      disagreement: false,
+      label: "Lab-reported ISO 4406 triplet"
+    };
+  }
+  return disagreement
+    ? {
+        labReported,
+        countDerived,
+        provenance: "lab-and-derived-disagree",
+        disagreement: true,
+        label:
+          "Lab-reported ISO 4406 triplet — count-derived code differs (both shown)"
+      }
+    : {
+        labReported,
+        countDerived,
+        provenance: "lab-and-derived-agree",
+        disagreement: false,
+        label: "Lab-reported ISO 4406 triplet (count-derived check agrees)"
+      };
+}
+
+export interface IsoBandStepChange {
+  fromDate: string;
+  toDate: string;
+  fromCode: string;
+  toCode: string;
+  /** Signed per-band ordinal steps, via the shared isoNotchDelta helper. */
+  steps: IsoCodeTriplet;
+}
+
+export const ISO_TREND_MEAN_NOTE =
+  "Per-band ordinal steps only — ISO 4406 codes are never averaged.";
+
+export const ISO_PARTICLE_METHOD_NOT_STORED =
+  "Particle-counting method/instrument is not stored — ISO 4406 codes are not comparable across samples; cross-sample cleanliness trend withheld.";
+
+/**
+ * Consecutive per-band ordinal steps between valid reported triplets. Uses the
+ * shared sequence ordering and isoNotchDelta; it never computes a mean code.
+ */
+export function isoBandStepChanges(
+  samples: readonly OilSample[]
+): IsoBandStepChange[] {
+  const reported = orderOilSamplesBySequence(samples).flatMap((sample) => {
+    const triplet = getIsoTriplet(sample);
+    if (!isIsoTripletReported(triplet)) return [];
+    if (!validateIsoTriplet(triplet).valid) return [];
+    return [{ sample, triplet }];
+  });
+
+  return reported.slice(1).map((entry, index) => {
+    const previous = reported[index];
+    return {
+      fromDate: previous.sample.sampleDate,
+      toDate: entry.sample.sampleDate,
+      fromCode: formatIsoCode(previous.triplet),
+      toCode: formatIsoCode(entry.triplet),
+      steps: isoNotchDelta(previous.triplet, entry.triplet)
+    };
   });
 }
 

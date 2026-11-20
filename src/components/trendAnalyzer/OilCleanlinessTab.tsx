@@ -25,12 +25,14 @@ import {
 } from "recharts";
 import {
   calculateParticleRatio,
+  compareIsoTripletToTarget,
   FILTER_BETA_GUIDANCE_BASIS,
   filterBetaGuidanceFor,
   formatIsoCode,
   formatSampleDate,
   getIsoTriplet,
   hasValidIsoTriplet,
+  ISO_4406_ORDINAL_RULE,
   ISO_CODE_SCALE_MAX,
   ISO_CODE_SCALE_MIN,
   ISO_TRIPLET_DATA_QUALITY_WARNING,
@@ -45,11 +47,25 @@ import {
   type IsoTripletValidation
 } from "../../lib/oilAnalysisMetrics";
 import { fetchOilSamples } from "../../lib/oilSampleRow";
-import { filterOilSamplesToWindow } from "../../lib/oilTribologyGuidance";
+import {
+  filterOilSamplesToWindow,
+  ISO_CODE_DISAGREEMENT_NOTE,
+  ISO_PARTICLE_METHOD_NOT_STORED,
+  ISO_TREND_MEAN_NOTE,
+  isoBandStepChanges,
+  isoCodeProvenance,
+  latestOilSample
+} from "../../lib/oilTribologyGuidance";
 import {
   ISO_CLEANLINESS_TARGET,
   type OilSample
 } from "../../types/oilAnalysis";
+
+export interface OilCleanlinessTarget {
+  triplet: IsoCodeTriplet;
+  /** Stored provenance, e.g. "OEM gearbox spec rev C" — never inferred. */
+  source: string;
+}
 
 export interface OilCleanlinessTabProps {
   assetId: string;
@@ -59,6 +75,17 @@ export interface OilCleanlinessTabProps {
   windowStart?: string | null;
   /** Toolbar To date (YYYY-MM-DD); null/empty means open end. */
   windowEnd?: string | null;
+  /**
+   * Optional stored per-asset/OEM target supplied by the caller. When absent,
+   * the recalled Noria default is labelled as not a stored per-asset target.
+   */
+  target?: OilCleanlinessTarget;
+  /**
+   * Set true only when the caller holds stored particle-counting method and
+   * instrument evidence showing every in-window sample used the same method.
+   * Absent/false means the method is not stored, so the trend is withheld.
+   */
+  methodComparable?: boolean;
 }
 
 const TARGET: IsoCodeTriplet = ISO_CLEANLINESS_TARGET;
@@ -112,7 +139,9 @@ export function OilCleanlinessTab({
   assetId,
   refreshKey = 0,
   windowStart = null,
-  windowEnd = null
+  windowEnd = null,
+  target: storedTarget,
+  methodComparable = false
 }: OilCleanlinessTabProps) {
   const [samples, setSamples] = useState<OilSample[]>([]);
   const [loading, setLoading] = useState(true);
@@ -230,16 +259,40 @@ export function OilCleanlinessTab({
     );
   }
 
-  // Sequence order is authoritative: the last in-window row is the latest
-  // sample even when two uploads share a calendar date.
-  const latest = windowed[windowed.length - 1];
+  // Shared ordering helper: the same "latest" row OA1/OA2 resolve.
+  const latest =
+    latestOilSample(windowed) ?? windowed[windowed.length - 1];
   const latestTriplet = getIsoTriplet(latest);
   const latestValidation = validateIsoTriplet(latestTriplet);
   const latestInvalid = latestValidation.present && !latestValidation.valid;
-  /** Only a valid triplet may feed any derived value below. */
+  /** Only a valid lab triplet may feed any derived value below. */
   const derivationTriplet: IsoCodeTriplet | null = latestValidation.valid
     ? latestTriplet
     : null;
+
+  // Provenance: lab-reported and count-derived codes are kept distinct.
+  const latestProvenance = isoCodeProvenance(latest);
+  const latestDerivedTriplet = latestProvenance.countDerived;
+  /** Show a reported lab code when present; otherwise a labelled derived code. */
+  const headlineTriplet =
+    latestProvenance.labReported ?? latestDerivedTriplet;
+  const targetTriplet: IsoCodeTriplet = storedTarget?.triplet ?? TARGET;
+  const targetBasisLabel = storedTarget
+    ? `${storedTarget.source} — stored per-asset/OEM target`
+    : TARGET_BASIS_LABEL;
+  const targetBasisShort = storedTarget ? storedTarget.source : TARGET_BASIS_SHORT;
+  /**
+   * Comparison never silently substitutes a derived code for an invalid lab
+   * code. Derived comparison is used only when no lab triplet is stored.
+   */
+  const comparisonTriplet =
+    derivationTriplet ??
+    (latestTriplet == null ? latestDerivedTriplet : null);
+  const isoBands = compareIsoTripletToTarget(comparisonTriplet, targetTriplet);
+  const isoAboveCount =
+    isoBands == null
+      ? null
+      : isoBands.filter((band) => band.comparison === "above").length;
 
   const validTripletSamples = windowed.filter(hasValidIsoTriplet);
   const invalidSamples = windowed.filter((sample) => {
@@ -266,14 +319,10 @@ export function OilCleanlinessTab({
   const notchAlert =
     delta != null && delta.some((d) => d >= NOTCH_ALERT_THRESHOLD);
 
-  const atTarget =
-    derivationTriplet != null &&
-    derivationTriplet[0] <= TARGET[0] &&
-    derivationTriplet[1] <= TARGET[1] &&
-    derivationTriplet[2] <= TARGET[2];
+  const atTarget = isoBands != null && isoAboveCount === 0;
 
   const worstOvershoot = derivationTriplet
-    ? worstChannelOvershoot(derivationTriplet, TARGET)
+    ? worstChannelOvershoot(derivationTriplet, targetTriplet)
     : null;
 
   // Fine/coarse profiling needs at least two VALID multi-channel samples; a
@@ -293,7 +342,7 @@ export function OilCleanlinessTab({
   const overshootRows = derivationTriplet
     ? ([">4μm", ">6μm", ">14μm"] as const).map((channel, index) => {
         const current = derivationTriplet[index];
-        const target = TARGET[index];
+        const target = targetTriplet[index];
         const steps = current - target;
         return {
           channel,
@@ -304,6 +353,14 @@ export function OilCleanlinessTab({
         };
       })
     : [];
+
+  const trendSteps = isoBandStepChanges(windowed);
+  const trendWithheldReason =
+    validTripletSamples.length < 2
+      ? `Cleanliness trend withheld — ${validTripletSamples.length} valid reported ISO 4406 triplet${validTripletSamples.length === 1 ? "" : "s"} in range; at least 2 are required.`
+      : !methodComparable
+        ? ISO_PARTICLE_METHOD_NOT_STORED
+        : null;
 
   const chartData = windowed.map((s) => {
     const triplet = getIsoTriplet(s);
@@ -320,6 +377,15 @@ export function OilCleanlinessTab({
       iso14: valid ? triplet?.[2] ?? null : null
     };
   });
+  const hasPlottableChartData = chartData.some(
+    (point) =>
+      point.p4 != null ||
+      point.p6 != null ||
+      point.p14 != null ||
+      point.iso4 != null ||
+      point.iso6 != null ||
+      point.iso14 != null
+  );
 
   const tooltipStyle = {
     backgroundColor: "#0f172a",
@@ -386,6 +452,23 @@ export function OilCleanlinessTab({
         </div>
       )}
 
+      {latestProvenance.disagreement && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-sky-500/40 bg-sky-500/10 p-4 text-sky-200"
+        >
+          <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm font-semibold">Code provenance discrepancy</p>
+            <p className="text-sm mt-0.5">{ISO_CODE_DISAGREEMENT_NOTE}</p>
+            <p className="mt-1 text-xs font-mono">
+              Lab-reported: {formatIsoCode(latestProvenance.labReported)} ·
+              Count-derived: {formatIsoCode(latestProvenance.countDerived)}
+            </p>
+          </div>
+        </div>
+      )}
+
       {notchAlert && (
         <div className="flex items-start gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-4 text-red-300">
           <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
@@ -412,34 +495,39 @@ export function OilCleanlinessTab({
           </div>
           <div
             className={`text-3xl font-bold font-mono ${
-              latestTriplet
+              headlineTriplet
                 ? latestInvalid
                   ? "text-amber-300"
                   : "text-white"
                 : "text-slate-600"
             }`}
           >
-            {formatIsoCode(latestTriplet)}
+            {formatIsoCode(headlineTriplet)}
           </div>
           <div className="text-xs text-slate-500">
-            Target {TARGET.join("/")} · {TARGET_BASIS_LABEL} · &gt;4μm / &gt;6μm
-            / &gt;14μm
+            Target {formatIsoCode(targetTriplet)} · {targetBasisLabel} · &gt;4μm
+            / &gt;6μm / &gt;14μm
           </div>
-          {latestTriplet && (
+          <div className="text-xs text-slate-400">{latestProvenance.label}</div>
+          {headlineTriplet && (
             <div
               className={`mt-2 inline-flex w-fit rounded-full border px-2.5 py-1 text-xs font-semibold ${
                 latestInvalid
                   ? "border-amber-500/40 bg-amber-500/10 text-amber-300"
-                  : atTarget
-                    ? "border-green-500/40 bg-green-500/10 text-green-300"
-                    : "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
+                  : isoBands == null
+                    ? "border-slate-600 bg-slate-700/30 text-slate-300"
+                    : atTarget
+                      ? "border-green-500/40 bg-green-500/10 text-green-300"
+                      : "border-yellow-500/40 bg-yellow-500/10 text-yellow-300"
               }`}
             >
               {latestInvalid
-                ? `${TARGET_BASIS_SHORT} comparison withheld`
-                : atTarget
-                  ? `At or below ${TARGET_BASIS_SHORT}`
-                  : `Above ${TARGET_BASIS_SHORT}`}
+                ? `${targetBasisShort} comparison withheld`
+                : isoBands == null
+                  ? "Comparison withheld"
+                  : atTarget
+                    ? `At or below ${targetBasisShort}`
+                    : `Above ${targetBasisShort}`}
             </div>
           )}
         </div>
@@ -536,17 +624,139 @@ export function OilCleanlinessTab({
             }`}
           >
             {derivationTriplet
-              ? recommendedFilterBeta(derivationTriplet, TARGET)
+              ? recommendedFilterBeta(derivationTriplet, targetTriplet)
               : "—"}
           </div>
           <div className="text-xs text-slate-500">
             {latestInvalid
               ? "Withheld - ISO 4406 code failed validity check"
               : derivationTriplet
-                ? `Based on worst-channel overshoot against the ${TARGET_BASIS_SHORT} ${TARGET.join("/")} (not a stored per-asset spec). ${FILTER_BETA_GUIDANCE_BASIS}`
+                ? `Based on worst-channel overshoot against the ${targetBasisShort} ${formatIsoCode(targetTriplet)} (${storedTarget ? "stored per-asset/OEM target" : "not a stored per-asset spec"}). ${FILTER_BETA_GUIDANCE_BASIS}`
                 : "ISO codes not reported"}
           </div>
         </div>
+      </div>
+
+      {/* Per-band ordinal comparison vs target */}
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-lg font-semibold text-white">
+            ISO 4406 vs Target — Per-Band Ordinal Comparison
+          </h3>
+          <span className="rounded-full border border-slate-600 px-2 py-0.5 text-[10px] text-slate-400">
+            Target basis: {targetBasisLabel}
+          </span>
+        </div>
+        <p className="mb-1 text-sm text-slate-400">
+          Code shown: {latestProvenance.label}
+        </p>
+        <p className="mb-3 text-xs italic text-slate-500">
+          {ISO_4406_ORDINAL_RULE}
+        </p>
+        <p className="mb-3 text-xs text-slate-400">
+          Target {formatIsoCode(targetTriplet)} · &gt;4μm / &gt;6μm / &gt;14μm
+        </p>
+
+        {isoBands != null ? (
+          <>
+            <div
+              className={`text-base font-semibold ${
+                isoAboveCount === 0 ? "text-green-300" : "text-yellow-300"
+              }`}
+            >
+              {isoAboveCount === 0
+                ? "At or below target in all 3 bands"
+                : `Above target in ${isoAboveCount} of 3 bands`}
+            </div>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-sm text-left text-slate-300">
+                <thead className="text-xs uppercase bg-slate-800 text-slate-400">
+                  <tr>
+                    <th className="px-4 py-2">Band</th>
+                    <th className="px-4 py-2">Current</th>
+                    <th className="px-4 py-2">Target</th>
+                    <th className="px-4 py-2">Ordinal position</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {isoBands.map((band) => {
+                    const position =
+                      band.current === band.target
+                        ? "at target"
+                        : band.current < band.target
+                          ? "below target"
+                          : "above target";
+                    return (
+                      <tr key={band.channel} className="border-b border-slate-700/70">
+                        <td className="px-4 py-2 font-mono">{band.channel}</td>
+                        <td className="px-4 py-2 font-mono">{band.current}</td>
+                        <td className="px-4 py-2 font-mono">{band.target}</td>
+                        <td
+                          className={`px-4 py-2 ${
+                            band.comparison === "above"
+                              ? "text-yellow-300"
+                              : "text-green-300"
+                          }`}
+                        >
+                          {position}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            <p className="font-mono text-slate-400">{formatIsoCode(null)}</p>
+            <p className="mt-1">{latestProvenance.label}</p>
+            <p className="mt-1">
+              No per-band comparison is derived. No baseline is invented and no
+              code is subtracted or averaged.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Raw counts, only when stored */}
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Raw Particle Counts (per mL)
+        </h3>
+        <p className="text-sm text-slate-400 mb-3">
+          Stored lab counts only. Each ISO 4406 code step is roughly a doubling
+          of particles/mL; codes are ordinal log bands, not linear values.
+        </p>
+        {hasRawCounts(latest) ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {(
+              [
+                [">4μm", latest.particles4um],
+                [">6μm", latest.particles6um],
+                [">14μm", latest.particles14um]
+              ] as const
+            ).map(([channel, count]) => (
+              <div key={channel} className={CARD_BASE}>
+                <div className="text-xs uppercase tracking-wide text-slate-500">
+                  {channel}
+                </div>
+                <div className="text-xl font-bold font-mono text-white">
+                  {formatCount(count)}
+                </div>
+                <div className="text-xs text-slate-500">particles/mL</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            <p className="font-mono text-slate-400">—</p>
+            <p className="mt-1">
+              Raw particle counts not stored for the latest sample — not
+              back-filled from ISO codes.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Overshoot matrix — one row per channel, gated on a valid triplet */}
@@ -556,8 +766,8 @@ export function OilCleanlinessTab({
         </h3>
         <p className="text-sm text-slate-400 mb-4">
           Per-channel step deltas and 2^steps concentration multipliers against
-          the {TARGET_BASIS_LABEL} ({TARGET.join("/")}). Each ISO code step is
-          roughly a doubling of particle concentration.
+          the {targetBasisLabel} ({formatIsoCode(targetTriplet)}). Each ISO code
+          step is roughly a doubling of particle concentration.
         </p>
 
         {derivationTriplet ? (
@@ -568,7 +778,7 @@ export function OilCleanlinessTab({
                   <th className="px-4 py-3">Channel</th>
                   <th className="px-4 py-3">Current code</th>
                   <th className="px-4 py-3">
-                    {TARGET_BASIS_SHORT} target
+                    {targetBasisShort} target
                   </th>
                   <th className="px-4 py-3">Step delta</th>
                   <th className="px-4 py-3">2^steps multiplier</th>
@@ -618,8 +828,76 @@ export function OilCleanlinessTab({
           </div>
         )}
         <p className="mt-3 text-xs text-slate-500">
-          Target basis: {TARGET_BASIS_LABEL}. {FILTER_BETA_GUIDANCE_BASIS}
+          Target basis: {targetBasisLabel}. {FILTER_BETA_GUIDANCE_BASIS}
         </p>
+      </div>
+
+      {/* Cleanliness trend — ordinal steps only, method-gated */}
+      <div className="border border-slate-700 rounded-lg p-6 bg-slate-800/30">
+        <h3 className="text-lg font-semibold text-white mb-1">
+          Cleanliness Trend — Per-Band Ordinal Steps
+        </h3>
+        <p className="text-sm text-slate-400 mb-2">{ISO_TREND_MEAN_NOTE}</p>
+        {trendWithheldReason != null ? (
+          <div className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            <p className="font-semibold text-slate-400">
+              Cleanliness trend withheld
+            </p>
+            <p className="mt-1">{trendWithheldReason}</p>
+            <p className="mt-1">
+              Stored values remain visible in the table below; no cross-sample
+              direction is implied and no numeric mean of codes is computed.
+            </p>
+          </div>
+        ) : trendSteps.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            <p className="font-semibold text-slate-400">
+              Cleanliness trend withheld
+            </p>
+            <p className="mt-1">
+              No consecutive reported ISO 4406 triplets are available.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left text-slate-300">
+              <thead className="text-xs uppercase bg-slate-800 text-slate-400">
+                <tr>
+                  <th className="px-4 py-2">Sequence</th>
+                  <th className="px-4 py-2">&gt;4μm step</th>
+                  <th className="px-4 py-2">&gt;6μm step</th>
+                  <th className="px-4 py-2">&gt;14μm step</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trendSteps.map((step, index) => (
+                  <tr
+                    key={`${step.fromDate}-${step.toDate}-${index}`}
+                    className="border-b border-slate-700/70"
+                  >
+                    <td className="px-4 py-2 font-mono">
+                      {step.fromCode} → {step.toCode}
+                      <span className="ml-2 text-xs text-slate-500">
+                        {formatSampleDate(step.fromDate)} →{" "}
+                        {formatSampleDate(step.toDate)}
+                      </span>
+                    </td>
+                    {step.steps.map((value, bandIndex) => (
+                      <td
+                        key={bandIndex}
+                        className={`px-4 py-2 font-mono ${
+                          value > 0 ? "text-yellow-300" : value < 0 ? "text-green-300" : "text-slate-300"
+                        }`}
+                      >
+                        {value > 0 ? `+${value}` : String(value)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Trend chart: raw counts when available, valid ISO codes otherwise */}
@@ -627,11 +905,18 @@ export function OilCleanlinessTab({
         <h3 className="text-lg font-semibold text-white mb-1">
           {anyRawCounts ? "Particle Count Trend" : "ISO 4406 Code Trend"}
         </h3>
-        <p className="text-sm text-slate-400 mb-4">
+        <p className="text-sm text-slate-400 mb-1">
           {anyRawCounts
             ? "Particles per mL by channel (logarithmic scale)"
             : "Raw counts not recorded — plotting ISO 4406 codes"}
         </p>
+        <p className="text-xs text-slate-500 mb-4">
+          Stored readings only —{" "}
+          {methodComparable
+            ? "the caller attests a common stored particle-counting method."
+            : "particle-counting method/instrument is not stored, so this is not a comparable cleanliness trend."}
+        </p>
+        {hasPlottableChartData ? (
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
@@ -768,6 +1053,15 @@ export function OilCleanlinessTab({
             </LineChart>
           </ResponsiveContainer>
         </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-slate-700 p-4 text-sm text-slate-500">
+            <p className="font-mono text-slate-400">—</p>
+            <p className="mt-1">
+              No plottable particle count or valid ISO 4406 code in this range.
+              No zero is implied.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Standards table */}
