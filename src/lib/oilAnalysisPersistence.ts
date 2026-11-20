@@ -180,12 +180,14 @@ async function findOilAnalysisId(
   assetId: string,
   tenantId: number | null
 ): Promise<string | null> {
-  const result = tenantId == null
-    ? await query("SELECT id FROM oil_analysis WHERE asset_id = $1", [assetId])
-    : await query(
-        "SELECT id FROM oil_analysis WHERE asset_id = $1 AND tenant_id = $2",
-        [assetId, tenantId]
-      );
+  // SLICE-SEC-BASELINE-1: never fall back to an unscoped query. A missing
+  // tenant id means "no tenant-scoped row can match" — return null rather
+  // than risk reading another tenant's oil_analysis row.
+  if (tenantId == null) return null;
+  const result = await query(
+    "SELECT id FROM oil_analysis WHERE asset_id = $1 AND tenant_id = $2",
+    [assetId, tenantId]
+  );
   return result.rows.length > 0 ? (result.rows[0].id as string) : null;
 }
 

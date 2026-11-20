@@ -10,6 +10,7 @@ import {
   saveOilSample
 } from "../../../lib/oilAnalysisPersistence";
 import { isDbConfigured } from "../../../lib/db";
+import { tenantIdFromNextRequest } from "../../../lib/auth/tenantFromRequest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,18 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+/** Resolve the tenant id from the verified session cookie. Returns 401 when absent. */
+async function resolveTenantOr401(request: Request): Promise<{ tenantId: number | null; response?: Response }> {
+  const tenantId = await tenantIdFromNextRequest(request);
+  if (tenantId == null) {
+    return {
+      tenantId: null,
+      response: jsonResponse({ error: "Authentication required", code: "NO_SESSION" }, 401)
+    };
+  }
+  return { tenantId };
+}
+
 export async function GET(request: Request) {
   if (!isDbConfigured()) {
     return jsonResponse(
@@ -29,6 +42,10 @@ export async function GET(request: Request) {
       503
     );
   }
+
+  const tenantResult = await resolveTenantOr401(request);
+  if (tenantResult.response) return tenantResult.response;
+  const tenantId = tenantResult.tenantId!;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -38,7 +55,8 @@ export async function GET(request: Request) {
       return jsonResponse({ error: "assetId is required" }, 400);
     }
 
-    const { samples } = await fetchOilSamplesForAsset(assetId);
+    // SLICE-SEC-BASELINE-1: tenant scoping enforced at the query layer.
+    const { samples } = await fetchOilSamplesForAsset(assetId, tenantId);
 
     return jsonResponse({
       success: true,
@@ -58,6 +76,10 @@ export async function POST(request: Request) {
     );
   }
 
+  const tenantResult = await resolveTenantOr401(request);
+  if (tenantResult.response) return tenantResult.response;
+  const tenantId = tenantResult.tenantId!;
+
   try {
     const body = (await request.json()) as Record<string, unknown>;
     const input = coerceSaveOilSampleInput(body);
@@ -66,7 +88,8 @@ export async function POST(request: Request) {
       return jsonResponse({ error: input.error }, 400);
     }
 
-    const result = await saveOilSample(input);
+    // SLICE-SEC-BASELINE-1: tenant id stamped server-side from session, never from client.
+    const result = await saveOilSample(input, tenantId);
 
     return jsonResponse({
       success: true,
@@ -78,3 +101,4 @@ export async function POST(request: Request) {
     return jsonResponse({ error: "Failed to save data" }, 500);
   }
 }
+
