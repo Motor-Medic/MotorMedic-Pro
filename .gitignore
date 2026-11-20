@@ -19,3 +19,5 @@ server.err
 
 .claude/settings.local.json
 .agentsroom/
+
+graphify-out/

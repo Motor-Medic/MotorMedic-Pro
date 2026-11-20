@@ -1,0 +1,10 @@
+﻿node_modules/
+dist/
+build/
+coverage/
+*.min.js
+*.min.css
+*.map
+*.lock
+.env*
+graphify-out/
