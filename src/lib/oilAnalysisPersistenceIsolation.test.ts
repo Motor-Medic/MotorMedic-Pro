@@ -22,6 +22,7 @@ import {
   fetchOilSamplesForAsset,
   saveOilSample,
   getOrCreateOilAnalysisId,
+  TenantRequiredError,
   type SaveOilSampleInput
 } from "./oilAnalysisPersistence";
 
@@ -73,16 +74,13 @@ describe("getOrCreateOilAnalysisId — SELECT is always tenant-scoped", () => {
     expect(params[1]).toBe(7);
   });
 
-  it("when tenantId is null, INSERT uses the -1 sentinel (never unscoped SELECT)", async () => {
-    // findOilAnalysisId returns null immediately for null tenant (no SELECT).
-    // getOrCreateOilAnalysisId then INSERTs with tenant_id = -1.
-    mockedQuery.mockResolvedValueOnce(mockRows([{ id: "oa-1" }]));
-    const id = await getOrCreateOilAnalysisId("asset-x", null);
-    expect(id).toBe("oa-1");
-    const insertSql = mockedQuery.mock.calls[0]?.[0] as string;
-    const insertParams = mockedQuery.mock.calls[0]?.[1] as unknown[];
-    expect(insertSql).toContain("tenant_id");
-    expect(insertParams[1]).toBe(-1);
+  it("rejects a null tenant and performs no INSERT (no orphan write)", async () => {
+    // null tenant is rejected at the write gate; findOilAnalysisId is never
+    // called and no INSERT is issued.
+    await expect(
+      getOrCreateOilAnalysisId("asset-x", null as unknown as number)
+    ).rejects.toBeInstanceOf(TenantRequiredError);
+    expect(mockedQuery).not.toHaveBeenCalled();
   });
 });
 
@@ -98,18 +96,12 @@ describe("fetchOilSamplesForAsset — tenant-scoped read", () => {
     expect(fetchParams[1]).toBe(1); // tenant A's id, not B's
   });
 
-  it("missing tenant yields empty result without an unscoped query", async () => {
-    // tenantId null → findOilAnalysisId returns null (no SELECT)
-    // → getOrCreate INSERTs with -1 → fetch with tenant_id = -1 returns empty
-    mockedQuery.mockResolvedValueOnce(mockRows([{ id: "oa-sentinel" }])); // insert
-    mockedQuery.mockResolvedValue(mockRows([])); // fetch: empty
+  it("missing tenant yields empty result without any query (no orphan write)", async () => {
+    // Fail-closed read: null tenant returns empty and never touches the DB.
     const result = await fetchOilSamplesForAsset("asset-any", null);
     expect(result.samples).toEqual([]);
-    // The fetch query must still reference tenant_id (with -1 sentinel).
-    const fetchSql = mockedQuery.mock.calls[1]?.[0] as string;
-    const fetchParams = mockedQuery.mock.calls[1]?.[1] as unknown[];
-    expect(fetchSql).toContain("tenant_id");
-    expect(fetchParams[1]).toBe(-1);
+    expect(result.analysisId).toBeNull();
+    expect(mockedQuery).not.toHaveBeenCalled();
   });
 });
 
@@ -146,6 +138,14 @@ describe("saveOilSample — tenant-scoped write", () => {
     expect(findSql).toContain("tenant_id");
     expect(analysisInsertSql).toContain("tenant_id");
     expect(sampleInsertSql).toContain("tenant_id");
+  });
+
+  it("rejects a null tenant and performs no write", async () => {
+    // null tenant is rejected before any query is issued; nothing is written.
+    await expect(
+      saveOilSample(baseInput, null as unknown as number)
+    ).rejects.toBeInstanceOf(TenantRequiredError);
+    expect(mockedQuery).not.toHaveBeenCalled();
   });
 });
 

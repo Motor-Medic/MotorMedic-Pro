@@ -2163,6 +2163,9 @@ app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_mod
     // Tenant comes from the verified session only; the client cannot ask for
     // another company's oil history by changing query params.
     const tenantId = req.tenantId ?? requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
     const { samples } = await fetchOilSamplesForAsset(assetId, tenantId);
     return res.json({ success: true, samples });
   } catch (error: any) {
@@ -2182,7 +2185,11 @@ app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_mo
       return res.status(400).json({ error: input.error });
     }
 
-    const result = await saveOilSample(input, req.tenantId ?? requestTenantId(req));
+    const tenantId = req.tenantId ?? requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
+    const result = await saveOilSample(input, tenantId);
 
     if ("error" in result) {
       return res.status(result.status).json({ error: result.error });

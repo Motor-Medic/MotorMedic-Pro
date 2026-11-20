@@ -19,6 +19,20 @@ import {
 
 export const OIL_ANALYSIS_API_PATH = "/api/oil-analysis";
 
+/**
+ * Thrown by write paths when no tenant id is available. Routes map this to
+ * 401/400; it is never silently substituted with a sentinel such as -1, which
+ * would create orphan tenant-scoped rows.
+ */
+export class TenantRequiredError extends Error {
+  readonly statusCode = 401;
+  readonly code = "NO_TENANT";
+  constructor() {
+    super("Tenant id is required for oil analysis write");
+    this.name = "TenantRequiredError";
+  }
+}
+
 export type SaveOilSampleInput = {
   assetId: string;
   sampleDate: string;
@@ -193,14 +207,18 @@ async function findOilAnalysisId(
 
 export async function getOrCreateOilAnalysisId(
   assetId: string,
-  tenantId: number | null = null
+  tenantId: number
 ): Promise<string> {
+  if (tenantId == null) {
+    throw new TenantRequiredError();
+  }
+
   const existingId = await findOilAnalysisId(assetId, tenantId);
   if (existingId) return existingId;
 
   const inserted = await query(
     `INSERT INTO oil_analysis (asset_id, tenant_id) VALUES ($1, $2) RETURNING id`,
-    [assetId, tenantId ?? -1]
+    [assetId, tenantId]
   );
   return inserted.rows[0].id as string;
 }
@@ -211,6 +229,11 @@ export async function fetchOilSamplesForAsset(
 ) {
   if (!isDbConfigured()) {
     throw new Error("Database is not configured (DATABASE_URL).");
+  }
+
+  // Fail-closed read: no tenant → no rows, and never an orphan write.
+  if (tenantId == null) {
+    return { analysisId: null, samples: [] };
   }
 
   const analysisId = await getOrCreateOilAnalysisId(assetId, tenantId);
@@ -227,10 +250,14 @@ export async function fetchOilSamplesForAsset(
 
 export async function saveOilSample(
   input: SaveOilSampleInput,
-  tenantId: number | null = null
+  tenantId: number
 ) {
   if (!isDbConfigured()) {
     throw new Error("Database is not configured (DATABASE_URL).");
+  }
+
+  if (tenantId == null) {
+    throw new TenantRequiredError();
   }
 
   const {
@@ -403,7 +430,7 @@ export async function saveOilSample(
       DEFAULT_ALARM_LIMITS.lead,
       DEFAULT_ALARM_LIMITS.aluminum,
       DEFAULT_ALARM_LIMITS.silicon,
-      tenantId ?? -1
+      tenantId
     ]
   );
 
