@@ -12,10 +12,13 @@
  */
 
 import {
+  DEFAULT_OIL_IDENTITY_STATE,
+  IdentityProvenance,
   MORPH_CATEGORIES,
   MORPH_SEVERITIES,
   type MorphSeverity,
-  type MorphologyMap
+  type MorphologyMap,
+  type OilIdentityState
 } from "../types/oilAnalysis";
 import { validateFerrographyReadings } from "./oilAnalysisMetrics";
 
@@ -54,6 +57,10 @@ export interface OilLabSnapshot {
   /** Operator-observed morphology. Absent means "not reported". */
   morphology?: MorphologyMap | null;
   operatingHours?: number | null;
+  /** Identity confirmation state. When confirmed is false, fresh-oil variance
+   * baselines must not be stored; the existing "no baseline is invented" path
+   * handles the withholding at read time. */
+  oilIdentity?: OilIdentityState;
 }
 
 /**
@@ -195,6 +202,11 @@ export interface OilSampleSavePayload {
   rulerPercent?: number;
   ucRating?: number;
   morphology?: MorphologyMap;
+  /** Identity confirmation state. When false, baselines must not be stored
+   * server-side; the read-side "no baseline is invented" path then withholds
+   * variance deltas/rates/slopes. */
+  oilIdentity?: OilIdentityState;
+  identityConfirmed?: boolean | null;
 }
 
 function optional(value: number | null | undefined): number | undefined {
@@ -248,6 +260,8 @@ export function buildOilSampleSavePayload(
     mpcDeltaE: optional(s.mpcDeltaE),
     rulerPercent: optional(s.rulerPercent),
     ucRating: optional(s.ucRating),
-    morphology: optionalMorphology(s.morphology)
+    morphology: optionalMorphology(s.morphology),
+    oilIdentity: s.oilIdentity,
+    identityConfirmed: s.oilIdentity?.confirmed ?? null
   };
 }

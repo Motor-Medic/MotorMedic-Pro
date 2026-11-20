@@ -53,6 +53,10 @@ export type SaveOilSampleInput = {
   ucRating?: number | null;
   morphology?: MorphologyMap | null;
   ferrographImageUrl?: string | null;
+  /** When false, fresh-oil variance baselines must not be stored; the
+   * read-side "no baseline is invented" path then withholds variance
+   * deltas/rates/slopes for unconfirmed identities. */
+  identityConfirmed?: boolean | null;
 };
 
 /** Parse an optional numeric body field; blank/garbage becomes null. */
@@ -167,7 +171,8 @@ export function coerceSaveOilSampleInput(
     rulerPercent: optNumeric(body.rulerPercent),
     ucRating: optIntInRange(body.ucRating, 0, 8),
     morphology: coerceMorphology(body),
-    ferrographImageUrl: optText(body.ferrographImageUrl)
+    ferrographImageUrl: optText(body.ferrographImageUrl),
+    identityConfirmed: body.identityConfirmed == null ? null : Boolean(body.identityConfirmed)
   };
 }
 
@@ -258,7 +263,8 @@ export async function saveOilSample(
     rulerPercent = null,
     ucRating = null,
     morphology = null,
-    ferrographImageUrl = null
+    ferrographImageUrl = null,
+    identityConfirmed = null
   } = input;
 
   const morph = (key: MorphCategoryKey): MorphSeverity | null =>
@@ -380,12 +386,15 @@ export async function saveOilSample(
       morph("nonmetallic"),
       morph("fibers"),
       ferrographImageUrl,
-      isFirstSample ? iron : null,
-      isFirstSample ? copper : null,
-      isFirstSample ? chromium : null,
-      isFirstSample ? lead : null,
-      isFirstSample ? aluminum : null,
-      isFirstSample ? silicon : null,
+      // Baseline stored only on the first sample AND only when oil identity is
+      // confirmed. Unconfirmed identity → null baseline → existing
+      // "no baseline is invented" withhold handles variance at read time.
+      (isFirstSample && identityConfirmed) ? iron : null,
+      (isFirstSample && identityConfirmed) ? copper : null,
+      (isFirstSample && identityConfirmed) ? chromium : null,
+      (isFirstSample && identityConfirmed) ? lead : null,
+      (isFirstSample && identityConfirmed) ? aluminum : null,
+      (isFirstSample && identityConfirmed) ? silicon : null,
       DEFAULT_ALARM_LIMITS.iron,
       DEFAULT_ALARM_LIMITS.copper,
       DEFAULT_ALARM_LIMITS.chromium,

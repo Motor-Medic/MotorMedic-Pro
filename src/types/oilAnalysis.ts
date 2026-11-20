@@ -1,4 +1,38 @@
 /**
+ * How an oil identity field was populated. A dropdown's initial (factory default)
+ * value is "unset-default" and must NEVER be treated as a selection or extraction.
+ */
+export type IdentityProvenance =
+  | "unset-default"
+  | "extracted-low-confidence"
+  | "extracted-high-confidence"
+  | "human-confirmed";
+
+/**
+ * Identity confirmation state carried on the oil lab snapshot so the save /
+ * persistence path can withhold fresh-oil variance baselines for unconfirmed
+ * identities, routing through the existing "no baseline is invented" path.
+ */
+export interface OilIdentityState {
+  assetType: IdentityProvenance;
+  brand: IdentityProvenance;
+  isoGrade: IdentityProvenance;
+  baseChemistry: IdentityProvenance;
+  contradictions: Record<string, string | null>;
+  confirmed: boolean;
+}
+
+/** Default identity state: every field unset-default, nothing confirmed, no baseline. */
+export const DEFAULT_OIL_IDENTITY_STATE: OilIdentityState = {
+  assetType: "unset-default",
+  brand: "unset-default",
+  isoGrade: "unset-default",
+  baseChemistry: "unset-default",
+  contradictions: {},
+  confirmed: false
+};
+
+/**
  * Provenance label for morphology. Morphology is read off the ferrogram by the
  * operator/lab, never inferred by vision extraction, so every UI surface that
  * accepts or renders it says so.

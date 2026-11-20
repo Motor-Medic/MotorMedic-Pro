@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { OilReportData } from "../types/oilVision";
+import type { IdentityProvenance, OilIdentityState } from "../types/oilAnalysis";
 import {
   MORPH_CATEGORIES,
   MORPH_OBSERVATION_LABEL,
@@ -68,6 +69,13 @@ const BASE_CHEMISTRIES: BaseOilChemistry[] = [
   "Synthetic PAG/Ester",
   "Food-Grade H1"
 ];
+
+/** High-confidence threshold for vision extraction (matches extractor's 0.8 rule). */
+const IDENTITY_HIGH_CONF = 80;
+
+/** Engine / hydraulic application keywords the extractor may surface. */
+const ENGINE_TOKENS = ["engine", "unleaded", "gasoline", "motor oil", "ic engine"];
+const HYDRAULIC_TOKENS = ["hydraulic", "hydraulic system", "hp system"];
 
 const BETA_RATINGS = ["β₆ ≥ 100", "β₁₀ ≥ 1000", "β₁₄ ≥ 1000"] as const;
 
@@ -325,14 +333,89 @@ export default function OilInputAccordions({
   React.useEffect(() => { equipmentRefOil.current = equipment; }, [equipment]);
   React.useEffect(() => { onExtractionStatusChange?.(oilParsing); }, [oilParsing, onExtractionStatusChange]);
 
-  // Section 1
+  // Section 1 — Fluid Identity (provenance-tracked)
+  // Factory defaults are unset-default and must NEVER be treated as read/extracted.
   const [assetType, setAssetType] = useState<OilAssetType>("Hydraulic System");
   const [brand, setBrand] = useState<string>("Mobil DTE 25");
   const [isoGrade, setIsoGrade] = useState<string>("ISO VG 46");
   const [baseChemistry, setBaseChemistry] = useState<BaseOilChemistry>("Mineral");
+  const [assetTypeProv, setAssetTypeProv] = useState<IdentityProvenance>("unset-default");
+  const [brandProv, setBrandProv] = useState<IdentityProvenance>("unset-default");
+  const [isoGradeProv, setIsoGradeProv] = useState<IdentityProvenance>("unset-default");
+  const [baseChemProv, setBaseChemProv] = useState<IdentityProvenance>("unset-default");
+  const [assetTypeContra, setAssetTypeContra] = useState<string | null>(null);
+  const [brandContra, setBrandContra] = useState<string | null>(null);
+  const [isoGradeContra, setIsoGradeContra] = useState<string | null>(null);
+  const [baseChemContra, setBaseChemContra] = useState<string | null>(null);
   const [systemCapacity, setSystemCapacity] = useState("");
   const [capacityUnit, setCapacityUnit] = useState<"Gallons" | "Liters">("Gallons");
   const [sumpFootnote, setSumpFootnote] = useState<string | null>(null);
+
+  /** True only when every identity field is extracted-high-confidence or human-confirmed. */
+  const isIdentityConfirmed = useMemo(
+    () =>
+      [assetTypeProv, brandProv, isoGradeProv, baseChemProv].every(
+        (p) => p === "extracted-high-confidence" || p === "human-confirmed"
+      ),
+    [assetTypeProv, brandProv, isoGradeProv, baseChemProv]
+  );
+
+  /** Baseline may only be attached when identity is confirmed. When false, the
+   * existing "no baseline is invented" withhold in wearMetalLimitDisplay / the
+   * OilWearMetalsTab baseline anchor handles the withholding — no parallel gate. */
+  const baselineAttached = isIdentityConfirmed;
+
+  /** Confirm a single identity field via the [VERIFY] affordance. */
+  const confirmIdentity = (field: "assetType" | "brand" | "isoGrade" | "baseChemistry") => {
+    switch (field) {
+      case "assetType": setAssetTypeProv("human-confirmed"); setAssetTypeContra(null); break;
+      case "brand": setBrandProv("human-confirmed"); setBrandContra(null); break;
+      case "isoGrade": setIsoGradeProv("human-confirmed"); setIsoGradeContra(null); break;
+      case "baseChemistry": setBaseChemProv("human-confirmed"); setBaseChemContra(null); break;
+    }
+  };
+
+  /** Demote a single identity field back to unset-default on contradiction. */
+  const demoteIdentity = (
+    field: "assetType" | "brand" | "isoGrade" | "baseChemistry",
+    reason: string
+  ) => {
+    switch (field) {
+      case "assetType": setAssetTypeProv("unset-default"); setAssetTypeContra(reason); break;
+      case "brand": setBrandProv("unset-default"); setBrandContra(reason); break;
+      case "isoGrade": setIsoGradeProv("unset-default"); setIsoGradeContra(reason); break;
+      case "baseChemistry": setBaseChemProv("unset-default"); setBaseChemContra(reason); break;
+    }
+  };
+
+  /** User-initiated change to an identity field marks it human-confirmed. */
+  const onIdentityChange = (
+    field: "assetType" | "brand" | "isoGrade" | "baseChemistry",
+    value: string
+  ) => {
+    switch (field) {
+      case "assetType":
+        setAssetType(value as OilAssetType);
+        setAssetTypeProv("human-confirmed");
+        setAssetTypeContra(null);
+        break;
+      case "brand":
+        setBrand(value);
+        setBrandProv("human-confirmed");
+        setBrandContra(null);
+        break;
+      case "isoGrade":
+        setIsoGrade(value);
+        setIsoGradeProv("human-confirmed");
+        setIsoGradeContra(null);
+        break;
+      case "baseChemistry":
+        setBaseChemistry(value as BaseOilChemistry);
+        setBaseChemProv("human-confirmed");
+        setBaseChemContra(null);
+        break;
+    }
+  };
 
   // Section 2
   const [assetHours, setAssetHours] = useState("");
@@ -401,10 +484,62 @@ export default function OilInputAccordions({
       const o = data.operatingParams;
 
       const brandMatch = matchBrand(h.lubricantBrand);
-      if (brandMatch) setBrand(brandMatch);
+      if (brandMatch) {
+        setBrand(brandMatch);
+        setBrandProv(
+          data.confidenceScore >= IDENTITY_HIGH_CONF
+            ? "extracted-high-confidence"
+            : "extracted-low-confidence"
+        );
+      }
 
       const gradeMatch = matchIsoGrade(h.lubricantGrade);
-      if (gradeMatch) setIsoGrade(gradeMatch);
+      if (gradeMatch) {
+        setIsoGrade(gradeMatch);
+        setIsoGradeProv(
+          data.confidenceScore >= IDENTITY_HIGH_CONF
+            ? "extracted-high-confidence"
+            : "extracted-low-confidence"
+        );
+      }
+
+      // --- Contradiction detection (model-independent, cheap) ---
+      // A single contradictory token is enough to demote identity to unconfirmed.
+      if (h.lubricantBrand?.trim()) {
+        const extractedBrand = matchBrand(h.lubricantBrand);
+        if (extractedBrand && extractedBrand !== brand) {
+          setBrandContra(
+            `extractor read brand "${h.lubricantBrand}" which conflicts with selected "${brand}"`
+          );
+          setBrandProv("unset-default");
+        }
+      }
+
+      if (h.lubricantGrade?.trim()) {
+        const extractedGrade = matchIsoGrade(h.lubricantGrade);
+        if (extractedGrade && extractedGrade !== isoGrade) {
+          setIsoGradeContra(
+            `extractor read grade "${h.lubricantGrade}" which conflicts with selected "${isoGrade}"`
+          );
+          setIsoGradeProv("unset-default");
+        }
+      }
+
+      const signals = `${h.assetDescription ?? ""} ${data.rawNotes ?? ""}`.toLowerCase();
+      const mentionsEngine = ENGINE_TOKENS.some((t) => signals.includes(t));
+      const mentionsHydraulic = HYDRAULIC_TOKENS.some((t) => signals.includes(t));
+      if (assetType !== "Engine" && mentionsEngine && !mentionsHydraulic) {
+        setAssetTypeContra(
+          `extractor signals engine application, identity is "${assetType}"`
+        );
+        setAssetTypeProv("unset-default");
+      }
+      if (assetType === "Engine" && mentionsHydraulic && !mentionsEngine) {
+        setAssetTypeContra(
+          `extractor signals hydraulic system, identity is "Engine"`
+        );
+        setAssetTypeProv("unset-default");
+      }
 
       const extractionMatch = matchSampleExtraction(h.samplePoint);
       if (extractionMatch) setSampleExtraction(extractionMatch);
@@ -558,6 +693,14 @@ export default function OilInputAccordions({
     setBrand("Mobil DTE 25");
     setIsoGrade("ISO VG 46");
     setBaseChemistry("Mineral");
+    setAssetTypeProv("unset-default");
+    setBrandProv("unset-default");
+    setIsoGradeProv("unset-default");
+    setBaseChemProv("unset-default");
+    setAssetTypeContra(null);
+    setBrandContra(null);
+    setIsoGradeContra(null);
+    setBaseChemContra(null);
     setSystemCapacity("");
     setCapacityUnit("Gallons");
     setSumpFootnote(null);
@@ -643,7 +786,20 @@ export default function OilInputAccordions({
       rulerPercent: num(rulerPercent),
       ucRating: num(ucRating),
       morphology: Object.keys(morphology).length > 0 ? morphology : undefined,
-      operatingHours: num(assetHours)
+      operatingHours: num(assetHours),
+      oilIdentity: {
+        assetType: assetTypeProv,
+        brand: brandProv,
+        isoGrade: isoGradeProv,
+        baseChemistry: baseChemProv,
+        confirmed: isIdentityConfirmed,
+        contradictions: {
+          assetType: assetTypeContra,
+          brand: brandContra,
+          isoGrade: isoGradeContra,
+          baseChemistry: baseChemContra
+        }
+      }
     };
   }, [
     ppm,
@@ -661,7 +817,16 @@ export default function OilInputAccordions({
     rulerPercent,
     ucRating,
     morphology,
-    assetHours
+    assetHours,
+    assetTypeProv,
+    brandProv,
+    isoGradeProv,
+    baseChemProv,
+    isIdentityConfirmed,
+    assetTypeContra,
+    brandContra,
+    isoGradeContra,
+    baseChemContra
   ]);
 
   useEffect(() => {
@@ -713,11 +878,11 @@ export default function OilInputAccordions({
         onToggle={toggleSection}
       >
         <label className="block min-w-0 max-w-md">
-          <span className={fieldLabel}>Asset Type</span>
+          <span className={fieldLabel}>Asset Type{assetTypeContra && <span className="ml-1 text-[9px] text-red-400 font-bold">⚠ {assetTypeContra}</span>}</span>
           <div className="relative">
             <select
               value={assetType}
-              onChange={(e) => setAssetType(e.target.value as OilAssetType)}
+              onChange={(e) => onIdentityChange("assetType", e.target.value as OilAssetType)}
               className={selectCls}
             >
               {ASSET_TYPES.map((t) => (
@@ -728,6 +893,20 @@ export default function OilInputAccordions({
             </select>
             <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
           </div>
+          {(assetTypeProv === "unset-default" || assetTypeProv === "extracted-low-confidence") && (
+            <div className="mt-2 flex items-start gap-2">
+              <button
+                type="button"
+                onClick={() => confirmIdentity("assetType")}
+                className="ml-1 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40"
+              >
+                [VERIFY]
+              </button>
+              <span className="text-[10px] text-red-400 font-semibold leading-tight">
+                not identified — confirm
+              </span>
+            </div>
+          )}
         </label>
 
         <div>
@@ -736,11 +915,11 @@ export default function OilInputAccordions({
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <label className="block min-w-0">
-              <span className={fieldLabel}>Brand / Product Family</span>
+              <span className={fieldLabel}>Brand / Product Family{brandContra && <span className="ml-1 text-[9px] text-red-400 font-bold">⚠ {brandContra}</span>}</span>
               <div className="relative">
                 <select
                   value={brand}
-                  onChange={(e) => setBrand(e.target.value)}
+                  onChange={(e) => onIdentityChange("brand", e.target.value)}
                   className={selectCls}
                 >
                   {BRANDS.map((b) => (
@@ -751,13 +930,27 @@ export default function OilInputAccordions({
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
               </div>
+              {(brandProv === "unset-default" || brandProv === "extracted-low-confidence") && (
+                <div className="mt-2 flex items-start gap-2">
+                  <button
+                    type="button"
+                    onClick={() => confirmIdentity("brand")}
+                    className="ml-1 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40"
+                  >
+                    [VERIFY]
+                  </button>
+                  <span className="text-[10px] text-red-400 font-semibold leading-tight">
+                    not identified — confirm
+                  </span>
+                </div>
+              )}
             </label>
             <label className="block min-w-0">
-              <span className={fieldLabel}>Weight / ISO Grade</span>
+              <span className={fieldLabel}>Weight / ISO Grade{isoGradeContra && <span className="ml-1 text-[9px] text-red-400 font-bold">⚠ {isoGradeContra}</span>}</span>
               <div className="relative">
                 <select
                   value={isoGrade}
-                  onChange={(e) => setIsoGrade(e.target.value)}
+                  onChange={(e) => onIdentityChange("isoGrade", e.target.value)}
                   className={selectCls}
                 >
                   {ISO_GRADES.map((g) => (
@@ -768,21 +961,37 @@ export default function OilInputAccordions({
                 </select>
                 <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400 w-4 h-4" />
               </div>
+              {(isoGradeProv === "unset-default" || isoGradeProv === "extracted-low-confidence") && (
+                <div className="mt-2 flex items-start gap-2">
+                  <button
+                    type="button"
+                    onClick={() => confirmIdentity("isoGrade")}
+                    className="ml-1 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40"
+                  >
+                    [VERIFY]
+                  </button>
+                  <span className="text-[10px] text-red-400 font-semibold leading-tight">
+                    not identified — confirm
+                  </span>
+                </div>
+              )}
             </label>
           </div>
           <p className="text-xs text-slate-400 mt-1 italic">
-            AI has pre-loaded fresh fluid specifications for trend variance validation.
+            {baselineAttached
+              ? "Fresh-oil baseline attached — trend variance validation active."
+              : "AI has pre-loaded fresh fluid specifications for trend variance validation — baseline withheld until identity is confirmed."}
           </p>
         </div>
 
         <div>
-          <span className={fieldLabel}>Base Oil Chemistry Classification</span>
+          <span className={fieldLabel}>Base Oil Chemistry Classification{baseChemContra && <span className="ml-1 text-[9px] text-red-400 font-bold">⚠ {baseChemContra}</span>}</span>
           <div className="flex flex-wrap gap-2">
             {BASE_CHEMISTRIES.map((c) => (
               <button
                 key={c}
                 type="button"
-                onClick={() => setBaseChemistry(c)}
+                onClick={() => onIdentityChange("baseChemistry", c)}
                 className={`min-h-[36px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-all ${
                   baseChemistry === c
                     ? "bg-yellow-500 text-slate-900 border-yellow-500"
@@ -793,6 +1002,20 @@ export default function OilInputAccordions({
               </button>
             ))}
           </div>
+          {(baseChemProv === "unset-default" || baseChemProv === "extracted-low-confidence") && (
+            <div className="mt-2 flex items-start gap-2">
+              <button
+                type="button"
+                onClick={() => confirmIdentity("baseChemistry")}
+                className="ml-1 inline-flex items-center rounded bg-amber-500/20 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-amber-300 ring-1 ring-amber-500/40"
+              >
+                [VERIFY]
+              </button>
+              <span className="text-[10px] text-red-400 font-semibold leading-tight">
+                not identified — confirm
+              </span>
+            </div>
+          )}
         </div>
 
         <div>
