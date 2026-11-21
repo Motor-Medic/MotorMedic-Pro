@@ -189,6 +189,15 @@ function countCallText(exact: string): number {
 
 // ---- end scaffolding ------------------------------------------------------
 
+// Re-imports server.ts with the pool branch active, then clears the
+// boot/init queries so poolCallLog reflects only the handler under test.
+async function bootPoolServer(): Promise<void> {
+  vi.resetModules();
+  await import("../../server.ts");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  poolCallLog.length = 0;
+}
+
 function makeRes() {
   const headers: Record<string, string> = {};
   const res: any = {
@@ -1238,9 +1247,7 @@ describe("SLICE-SEC-6b - POOL path: batch upsert honors child-row ownership in S
       return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
     };
 
-    vi.resetModules();
-    await import("../../server.ts");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await bootPoolServer();
 
     const res = await callBatchHandler(
       { component_id: secAComponentId, points: [{ id: foreignId, name: "hacked" }] },
@@ -1274,9 +1281,7 @@ describe("SLICE-SEC-6b - POOL path: batch upsert honors child-row ownership in S
       return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
     };
 
-    vi.resetModules();
-    await import("../../server.ts");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await bootPoolServer();
 
     const res = await callBatchHandler(
       {
@@ -1313,9 +1318,7 @@ describe("SLICE-SEC-6b - POOL path: batch upsert honors child-row ownership in S
       return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
     };
 
-    vi.resetModules();
-    await import("../../server.ts");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await bootPoolServer();
 
     const res = await callBatchHandler(
       {
@@ -1329,6 +1332,336 @@ describe("SLICE-SEC-6b - POOL path: batch upsert honors child-row ownership in S
     expect(countCallText("ROLLBACK")).toBe(0);
     expect(res.statusCode).toBe(200);
     expect(res.body.success).toBe(true);
+  });
+});
+
+// ---- SLICE-SEC-9 - analysis_results tenant isolation (pool path) ----
+// analysis_results is written by vibration, thermography, ultrasound and MCA
+// through POST /api/save-analysis-result, and read by /api/analysis-results,
+// /api/analysis-results/:id, /api/analysis-results/:id/baseline,
+// /api/diagnosis-sign-off and computeAssetHealthScore. Every write/read must
+// carry a tenant predicate derived only from the session; caller-supplied ids
+// are never trusted; absent tenant fails closed with 401.
+
+describe("SLICE-SEC-9 - analysis_results tenant isolation (pool path)", () => {
+  // Tenant A's own numeric asset id and a foreign (tenant B's) asset id.
+  // poolQueryImpl decides ownership in each test, so these are just inputs.
+  let aAssetId = 101;
+  let foreignAssetId = 9999;
+
+  function findRouteHandler(method: string, pattern: string, exact = true): any {
+    const matches = harness.routes.filter(
+      (r: any) =>
+        r.method === method &&
+        typeof r.pattern === "string" &&
+        (exact ? r.pattern === pattern : r.pattern.includes(pattern))
+    );
+    if (matches.length === 0) throw new Error(`No route registered for ${method} ${pattern}`);
+    return matches[matches.length - 1].handler;
+  }
+
+  async function invokeHandler(
+    handler: any,
+    tenantId: number | null,
+    body: Record<string, unknown> | null,
+    params: Record<string, string> = {},
+    query: Record<string, string> = {}
+  ): Promise<any> {
+    const res = makeRes();
+    const req: any = {
+      method: body == null ? "GET" : "POST",
+      path: "",
+      originalUrl: "",
+      url: "",
+      params,
+      query,
+      body: body ?? {},
+      headers: {},
+      tenantId,
+      auth: tenantId == null ? {} : { user: { role: "plant-engineer", id: tenantId }, tenantId, sessionId: "sess" }
+    };
+    await handler(req, res, () => Promise.resolve());
+    return res;
+  }
+
+  function poolMatches(pattern: string | RegExp): boolean {
+    return poolCallLog.some((c) => String(c.text).match(pattern));
+  }
+
+  beforeEach(() => {
+    poolCallLog.length = 0;
+    poolQueryImpl = null;
+  });
+
+  afterEach(() => {
+    process.exit = realProcessExit;
+    vi.resetModules();
+    delete process.env.DATABASE_URL;
+  });
+
+  it("POOL: save-analysis-result INSERT carries session tenant_id; caller-supplied tenant_id ignored", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    // Asset ownership check passes for tenant A's asset.
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      const t = String(text);
+      if (/FROM assets a/.test(t)) {
+        const assetId = Number(params?.[0]);
+        const tenant = Number(params?.[1]);
+        return {
+          rows: assetId === aAssetId && tenant === tenantA.companyId ? [{ 1: 1 }] : [],
+          rowCount: assetId === aAssetId && tenant === tenantA.companyId ? 1 : 0,
+          command: "SELECT",
+          oid: 0,
+          fields: []
+        };
+      }
+      if (String(t).startsWith("INSERT INTO analysis_results")) {
+        return { rows: [{ id: "ar-new-1" }], rowCount: 1, command: "INSERT", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("POST", "/api/save-analysis-result");
+    // Body carries a forged tenant_id (tenant B's) — must be ignored.
+    const res = await invokeHandler(
+      handler,
+      tenantA.companyId,
+      { asset_id: String(aAssetId), analysis_type: "vibration", tenant_id: tenantB.companyId },
+      {}
+    );
+    expect(res.statusCode).toBe(200);
+
+    const insert = poolCallLog.find((c) => String(c.text).startsWith("INSERT INTO analysis_results"));
+    expect(insert).toBeDefined();
+    const insertParams = insert!.params as unknown[];
+    // Last param is tenant_id; must be tenant A's id, never the forged B id.
+    expect(insertParams[insertParams.length - 1]).toBe(tenantA.companyId);
+    expect(insertParams).not.toContain(tenantB.companyId);
+    expect(String(insert!.text)).toContain("tenant_id");
+  });
+
+  it("POOL: absent tenant returns 401 and issues no analysis_results write", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    poolQueryImpl = async () => ({ rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] });
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("POST", "/api/save-analysis-result");
+    const res = await invokeHandler(handler, null, { asset_id: String(aAssetId) }, {});
+
+    expect(res.statusCode).toBe(401);
+    // No INSERT (or any query) may be issued for an absent tenant.
+    expect(poolMatches(/INSERT INTO analysis_results/)).toBe(false);
+  });
+
+  it("POOL: unverified foreign asset id is rejected before writing analysis_results", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    // Asset ownership check: tenant A does NOT own B's asset -> rowCount 0.
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      if (/FROM assets a/.test(String(text))) {
+        return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("POST", "/api/save-analysis-result");
+    const res = await invokeHandler(
+      handler,
+      tenantA.companyId,
+      { asset_id: String(foreignAssetId), analysis_type: "thermography" },
+      {}
+    );
+
+    expect(res.statusCode).toBe(404);
+    expect(poolMatches(/INSERT INTO analysis_results/)).toBe(false);
+  });
+
+  it("POOL: analysis-results list SELECT carries tenant_id and never another tenant's id", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      if (String(text).startsWith("SELECT * FROM analysis_results")) {
+        return { rows: [{ id: "ar-a" }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("GET", "/api/analysis-results");
+    const res = await invokeHandler(handler, tenantA.companyId, null, {}, {});
+
+    expect(res.statusCode).toBe(200);
+    const select = poolCallLog.find((c) => String(c.text).startsWith("SELECT * FROM analysis_results"));
+    expect(select).toBeDefined();
+    const sql = String(select!.text);
+    const p = select!.params as unknown[];
+    expect(sql).toContain("tenant_id");
+    // The tenant bound to the query must be A's id, never B's.
+    expect(p).toContain(tenantA.companyId);
+    expect(p).not.toContain(tenantB.companyId);
+  });
+
+  it("POOL: analysis-results/:id SELECT carries the session tenant predicate", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      if (String(text).startsWith("SELECT * FROM analysis_results WHERE id")) {
+        return { rows: [{ id: "ar-1" }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("GET", "/api/analysis-results/:id");
+    const res = await invokeHandler(handler, tenantA.companyId, null, { id: "ar-1" }, {});
+
+    expect(res.statusCode).toBe(200);
+    const select = poolCallLog.find((c) => String(c.text).startsWith("SELECT * FROM analysis_results WHERE id"));
+    expect(select).toBeDefined();
+    const sql = String(select!.text);
+    const p = select!.params as unknown[];
+    expect(sql).toContain("tenant_id");
+    expect(p).toContain(tenantA.companyId);
+    expect(p).not.toContain(tenantB.companyId);
+  });
+
+  it("POOL: diagnosis-sign-off rejects foreign analysis_results id (tenant mismatch)", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      const t = String(text);
+      if (/SELECT id FROM analysis_results WHERE id/.test(t)) {
+        // Only row 100 belongs to tenant A; B's diagnosis id (foreign) yields none.
+        const owned = Number(params?.[0]) === 100 && Number(params?.[1]) === tenantA.companyId;
+        return {
+          rows: owned ? [{ id: 100 }] : [],
+          rowCount: owned ? 1 : 0,
+          command: "SELECT",
+          oid: 0,
+          fields: []
+        };
+      }
+      if (/INSERT INTO diagnosis_sign_off/.test(t)) {
+        return { rows: [], rowCount: 1, command: "INSERT", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("POST", "/api/diagnosis-sign-off");
+
+    // Foreign id: tenant A signing off on a row that isn't A's -> 404.
+    const foreign = await invokeHandler(
+      handler,
+      tenantA.companyId,
+      { diagnosisId: "9999", status: "pending" },
+      {}
+    );
+    expect(foreign.statusCode).toBe(404);
+
+    // Owned id -> 200, and the SELECT carried tenant_id = A.
+    const owned = await invokeHandler(
+      handler,
+      tenantA.companyId,
+      { diagnosisId: "100", status: "pending" },
+      {}
+    );
+    expect(owned.statusCode).toBe(200);
+
+    const sel = poolCallLog.find((c) =>
+      String(c.text).startsWith("SELECT id FROM analysis_results WHERE id")
+    );
+    expect(sel).toBeDefined();
+    const selParams = sel!.params as unknown[];
+    expect(String(sel!.text)).toContain("tenant_id");
+    expect(selParams).toContain(tenantA.companyId);
+    expect(selParams).not.toContain(tenantB.companyId);
+  });
+
+  it("POOL: baseline set carries session tenant on all analysis_results writes", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      const t = String(text);
+      if (/SELECT \* FROM analysis_results WHERE id/.test(t)) {
+        const owned = Number(params?.[1]) === tenantA.companyId;
+        return {
+          rows: owned ? [{ id: "ar-1", asset_id: String(aAssetId) }] : [],
+          rowCount: owned ? 1 : 0,
+          command: "SELECT",
+          oid: 0,
+          fields: []
+        };
+      }
+      if (/UPDATE analysis_results SET is_baseline/.test(t)) {
+        return { rows: [{ id: "ar-1" }], rowCount: 1, command: "UPDATE", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("POST", "/api/analysis-results/:id/baseline");
+    const res = await invokeHandler(handler, tenantA.companyId, null, { id: "ar-1" }, {});
+
+    expect(res.statusCode).toBe(200);
+    const writes = poolCallLog.filter((c) => /UPDATE analysis_results SET is_baseline/.test(String(c.text)));
+    expect(writes.length).toBeGreaterThan(0);
+    for (const w of writes) {
+      const p = w.params as unknown[];
+      expect(String(w.text)).toContain("tenant_id");
+      expect(p).toContain(tenantA.companyId);
+      expect(p).not.toContain(tenantB.companyId);
+    }
+  });
+
+  it("POOL: valid same-tenant save-analysis-result succeeds end to end", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec9";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      const t = String(text);
+      if (/FROM assets a/.test(t)) {
+        const owned = Number(params?.[0]) === aAssetId && Number(params?.[1]) === tenantA.companyId;
+        return {
+          rows: owned ? [{ 1: 1 }] : [],
+          rowCount: owned ? 1 : 0,
+          command: "SELECT",
+          oid: 0,
+          fields: []
+        };
+      }
+      if (String(t).startsWith("INSERT INTO analysis_results")) {
+        return { rows: [{ id: "ar-ok" }], rowCount: 1, command: "INSERT", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    await bootPoolServer();
+
+    const handler = findRouteHandler("POST", "/api/save-analysis-result");
+    const res = await invokeHandler(
+      handler,
+      tenantA.companyId,
+      { asset_id: String(aAssetId), analysis_type: "ultrasound", health_score: 88 },
+      {}
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+    const insert = poolCallLog.find((c) => String(c.text).startsWith("INSERT INTO analysis_results"));
+    expect(insert).toBeDefined();
+    const p = insert!.params as unknown[];
+    expect(p[p.length - 1]).toBe(tenantA.companyId);
   });
 });
 

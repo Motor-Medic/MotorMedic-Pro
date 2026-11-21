@@ -14,3 +14,4 @@ Rules:
 
 Before any code change, read docs/DOCTRINE.md. Its rules are binding.
 - graphify binary: C:\Users\dufre\.local\bin\graphify.exe - if graphify is not on PATH, use this absolute path. Never report graphify as unavailable without trying it first.
+- Security: read docs/SECURITY-REQUIREMENTS.md before any change. Its five guarantees and six-question per-slice gate are binding. Security is sequenced before features.

@@ -1553,7 +1553,22 @@ app.post("/api/save-analysis-result", async (req, res) => {
     }
 
     // AR-29 rule 9 — tenant_id comes only from the verified session.
-    const tenantId = req.tenantId ?? -1;
+    // Fail closed: an absent tenant never writes analysis_results.
+    const tenantId = req.tenantId;
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
+
+    // Never write analysis_results for a foreign asset: a caller-supplied
+    // numeric asset_id must belong to the session tenant before we persist.
+    if (assetId && /^\d+$/.test(String(assetId))) {
+      const assetOwned = await tenantOwnsRow(pool, "assets", Number(assetId), tenantId);
+      if (!assetOwned) {
+        return res.status(404).json({
+          error: "Asset not found or not accessible to your tenant.",
+        });
+      }
+    }
 
     const insert = await pool.query(
       `INSERT INTO analysis_results (
@@ -1798,6 +1813,12 @@ app.get(
         return res.status(400).json({ success: false, error: "Asset id is required." });
       }
 
+      // Tenant comes from the verified session only; fail closed on absent tenant.
+      const tenantId = req.tenantId;
+      if (tenantId == null) {
+        return res.status(401).json({ success: false, error: "Authentication required", code: "NO_SESSION" });
+      }
+
       const pickNum = (v: unknown): number | null => {
         if (v == null || v === "") return null;
         const n = typeof v === "number" ? v : Number(v);
@@ -1876,9 +1897,10 @@ app.get(
            WHERE LOWER(TRIM(COALESCE(asset_id, ''))) = ANY(
              SELECT LOWER(TRIM(x)) FROM UNNEST($1::text[]) AS x
            )
+           AND tenant_id = $2
            ORDER BY COALESCE(timestamp, created_at) DESC NULLS LAST
            LIMIT 1`,
-          [matchKeys]
+          [matchKeys, tenantId]
         );
         lastAnalysis = lastRes.rows[0] || null;
       }
@@ -2082,7 +2104,11 @@ app.get("/api/analysis-results", requirePermission("reports.export"), async (req
     let result;
     // AR-29 directive 1 — tenant-scoped read: only rows stamped with the
     // session tenant; sentinel (-1) rows are excluded until assigned.
-    const tenantId = req.tenantId ?? -1;
+    // Fail closed: an absent tenant never reads analysis_results.
+    const tenantId = req.tenantId;
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
     if (assetIds.length > 1) {
       if (component) {
         result = await pool.query(
@@ -2376,9 +2402,14 @@ app.get("/api/analysis-results/:id", requirePermission("reports.export"), async 
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
   try {
+    // Fail closed: an absent tenant never reads analysis_results.
+    const tenantId = req.tenantId;
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
     const result = await pool.query(
       `SELECT * FROM analysis_results WHERE id = $1 AND tenant_id = $2`,
-      [req.params.id, req.tenantId ?? -1]
+      [req.params.id, tenantId]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Analysis result not found." });
@@ -2394,9 +2425,14 @@ app.post("/api/analysis-results/:id/baseline", async (req, res) => {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
   try {
+    // Fail closed: an absent tenant never reads/writes analysis_results.
+    const tenantId = req.tenantId;
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
     const existing = await pool.query(
       `SELECT * FROM analysis_results WHERE id = $1 AND tenant_id = $2`,
-      [req.params.id, req.tenantId ?? -1]
+      [req.params.id, tenantId]
     );
     if (!existing.rows.length) {
       return res.status(404).json({ error: "Analysis result not found." });
@@ -2405,17 +2441,17 @@ app.post("/api/analysis-results/:id/baseline", async (req, res) => {
     if (row.asset_id) {
       await pool.query(
         `UPDATE analysis_results SET is_baseline = FALSE WHERE asset_id = $1 AND tenant_id = $2`,
-        [row.asset_id, req.tenantId ?? -1]
+        [row.asset_id, tenantId]
       );
     } else {
       await pool.query(
         `UPDATE analysis_results SET is_baseline = FALSE WHERE tenant_id = $1`,
-        [req.tenantId ?? -1]
+        [tenantId]
       );
     }
     const updated = await pool.query(
       `UPDATE analysis_results SET is_baseline = TRUE WHERE id = $1 AND tenant_id = $2 RETURNING *`,
-      [req.params.id, req.tenantId ?? -1]
+      [req.params.id, tenantId]
     );
     return res.json({ success: true, analysis: updated.rows[0] });
   } catch (error: any) {
@@ -2483,9 +2519,15 @@ app.post("/api/diagnosis-sign-off", async (req, res) => {
   }
 
   try {
+    // Fail closed: an absent tenant never reads analysis_results.
+    const tenantId = req.tenantId;
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Authentication required", code: "NO_SESSION" });
+    }
+    // Verify the diagnosis row belongs to the session tenant before using it.
     const exists = await pool.query(
-      `SELECT id FROM analysis_results WHERE id = $1`,
-      [diagnosisId]
+      `SELECT id FROM analysis_results WHERE id = $1 AND tenant_id = $2`,
+      [diagnosisId, tenantId]
     );
     if (!exists.rows.length) {
       return res
@@ -9251,10 +9293,11 @@ async function computeAssetHealthScore(
       `SELECT health_score, severity, primary_fault
        FROM analysis_results
        WHERE LOWER(TRIM(asset_id)) = LOWER(TRIM($1))
+         AND tenant_id = $2
          AND (analysis_type = 'vibration' OR analysis_type IS NULL OR analysis_type = '')
        ORDER BY timestamp DESC NULLS LAST, created_at DESC
        LIMIT 1`,
-      [assetId]
+      [assetId, companyId]
     );
     if (vibRes.rows.length > 0) {
       const score = computeTechHealthScore("vibration", vibRes.rows[0]);
@@ -9297,10 +9340,11 @@ async function computeAssetHealthScore(
       `SELECT severity, severity_class, delta_t, peak_dbmv
        FROM analysis_results
        WHERE LOWER(TRIM(asset_id)) = LOWER(TRIM($1))
+         AND tenant_id = $2
          AND analysis_type = 'thermography'
        ORDER BY timestamp DESC NULLS LAST, created_at DESC
        LIMIT 1`,
-      [assetId]
+      [assetId, companyId]
     );
     if (thermoRes.rows.length > 0) {
       const score = computeTechHealthScore("thermography", thermoRes.rows[0]);
@@ -9319,10 +9363,11 @@ async function computeAssetHealthScore(
       `SELECT peak_dbmv, baseline_dbmv, delta_db
        FROM analysis_results
        WHERE LOWER(TRIM(asset_id)) = LOWER(TRIM($1))
+         AND tenant_id = $2
          AND analysis_type = 'ultrasound'
        ORDER BY timestamp DESC NULLS LAST, created_at DESC
        LIMIT 1`,
-      [assetId]
+      [assetId, companyId]
     );
     if (usRes.rows.length > 0) {
       const score = computeTechHealthScore("ultrasound", usRes.rows[0]);
