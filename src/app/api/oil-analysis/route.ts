@@ -5,6 +5,7 @@
 
 import {
   OIL_ANALYSIS_API_PATH,
+  TenantRequiredError,
   coerceSaveOilSampleInput,
   fetchOilSamplesForAsset,
   saveOilSample
@@ -63,6 +64,11 @@ export async function GET(request: Request) {
       samples
     });
   } catch (error) {
+    // SLICE-SEC-3: the error declares its own status/code; map it instead of
+    // collapsing a missing tenant into a generic 500.
+    if (error instanceof TenantRequiredError) {
+      return jsonResponse({ error: error.message, code: error.code }, error.statusCode);
+    }
     console.error("Error fetching oil analysis:", error);
     return jsonResponse({ error: "Failed to fetch data" }, 500);
   }
@@ -97,6 +103,9 @@ export async function POST(request: Request) {
       warnings: result.warnings
     });
   } catch (error) {
+    if (error instanceof TenantRequiredError) {
+      return jsonResponse({ error: error.message, code: error.code }, error.statusCode);
+    }
     console.error("Error saving oil sample:", error);
     return jsonResponse({ error: "Failed to save data" }, 500);
   }

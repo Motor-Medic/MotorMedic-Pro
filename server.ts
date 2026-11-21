@@ -70,10 +70,15 @@ import {
 import { decodeRadiometric, describeRadiometricContainer } from "./src/lib/radiometricDecoder";
 import {
   OIL_ANALYSIS_API_PATH,
+  TenantRequiredError,
   coerceSaveOilSampleInput,
   fetchOilSamplesForAsset,
   saveOilSample
 } from "./src/lib/oilAnalysisPersistence";
+import {
+  checkPreAuthRateLimit,
+  resolveClientIp
+} from "./src/lib/visionRateLimit";
 import {
   OIL_VISION_API_PATH,
   VisionProviderError,
@@ -2150,6 +2155,37 @@ app.get("/api/analysis-results", requirePermission("reports.export"), async (req
   }
 });
 
+/**
+ * SLICE-SEC-3 — Express client IP. The immediate peer is the socket address;
+ * X-Forwarded-For / X-Real-IP are honored only when that peer is listed in
+ * TRUSTED_PROXY_IPS, so a client cannot rotate the header for a fresh bucket.
+ */
+function visionClientIp(req: any): string | null {
+  const forwarded = req?.headers?.["x-forwarded-for"];
+  const realIp = req?.headers?.["x-real-ip"];
+  return resolveClientIp({
+    peerIp: req?.socket?.remoteAddress ?? null,
+    forwardedFor: typeof forwarded === "string" ? forwarded : null,
+    realIp: typeof realIp === "string" ? realIp : null
+  });
+}
+
+/** SLICE-SEC-3 — cheap pre-auth flood guard; runs before requireModule/session. */
+function visionPreAuthThrottle(req: any, res: any, next: any) {
+  const decision = checkPreAuthRateLimit(visionClientIp(req));
+  if (!decision.allowed) {
+    const retryAfterSec = Math.ceil(decision.retryAfterMs / 1000);
+    res.set("Retry-After", String(retryAfterSec));
+    return res.status(429).json({
+      success: false,
+      error: "RATE_LIMITED",
+      message: "Rate limit exceeded",
+      retryAfterSec
+    });
+  }
+  return next();
+}
+
 app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_module:oil"), async (req, res) => {
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
@@ -2169,6 +2205,12 @@ app.get(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_mod
     const { samples } = await fetchOilSamplesForAsset(assetId, tenantId);
     return res.json({ success: true, samples });
   } catch (error: any) {
+    // SLICE-SEC-3: map the error's own status/code instead of a generic 500.
+    if (error instanceof TenantRequiredError) {
+      return res
+        .status(error.statusCode)
+        .json({ error: error.message, code: error.code });
+    }
     console.error("[oil-analysis] GET error:", error);
     return res.status(500).json({ error: "Failed to fetch data" });
   }
@@ -2201,12 +2243,17 @@ app.post(OIL_ANALYSIS_API_PATH, requireModule("oil"), requirePermission("view_mo
       warnings: result.warnings
     });
   } catch (error: any) {
+    if (error instanceof TenantRequiredError) {
+      return res
+        .status(error.statusCode)
+        .json({ error: error.message, code: error.code });
+    }
     console.error("[oil-analysis] POST error:", error);
     return res.status(500).json({ error: "Failed to save data" });
   }
 });
 
-app.post(OIL_VISION_API_PATH, requireModule("oil"), requirePermission("view_module:oil"), async (req, res) => {
+app.post(OIL_VISION_API_PATH, visionPreAuthThrottle, requireModule("oil"), requirePermission("view_module:oil"), async (req, res) => {
   req.setTimeout(180_000);
   res.setTimeout(180_000);
   try {
