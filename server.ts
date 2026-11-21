@@ -13957,38 +13957,6 @@ app.get("/api/hierarchy", async (req, res) => {
   }
 });
 
-// POST /api/wipe-equipment - Wipe all equipment hierarchy data
-app.post("/api/wipe-equipment", async (req, res) => {
-  try {
-    console.log("Database wipe requested via /api/wipe-equipment");
-    
-    // Clear in-memory caches
-    memoryRoutes = [];
-    memoryEquipment = [];
-    memoryAssets = [];
-    memoryComponents = [];
-    memoryCollectionPoints = [];
-    memoryMeasurementPoints = [];
-    memoryAnalysisHistory = [];
-    memoryRouteAssignments = [];
-    
-    if (pool) {
-      // Execute in strict cascading constraint order
-      await pool.query("DELETE FROM analysis_history;");
-      await pool.query("DELETE FROM measurement_points;");
-      await pool.query("DELETE FROM collection_points;");
-      await pool.query("DELETE FROM components;");
-      await pool.query("DELETE FROM assets;");
-      await pool.query("DELETE FROM routes;");
-    }
-    
-    return res.json({ success: true, message: "Database wiped successfully" });
-  } catch (error: any) {
-    console.error("Database wipe failed:", error);
-    return res.status(500).json({ error: error.message || "Failed to wipe database" });
-  }
-});
-
 // GET /api/routes/single/:id - Get single route details (tenant-scoped)
 app.get("/api/routes/single/:id", async (req, res) => {
   try {
