@@ -11,7 +11,7 @@
  * documented-broken cases now run as normal `it(...)` cases and must stay
  * green: tenant scope is enforced in the product code, not waived here.
  */
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 type Handler = (req: any, res: any, next?: any) => unknown;
 
@@ -113,6 +113,81 @@ vi.mock("vite", () => ({
   createServer: async () => ({ middlewares: harness.noop })
 }));
 vi.mock("dotenv", () => ({ default: { config: () => ({ parsed: {} }) } }));
+
+// ---- SLICE-SEC-6b POOL-path scaffolding -----------------------------------
+// Re-imports server.ts in a sub-suite with DATABASE_URL set and a scriptable
+// fake pg Pool so the production SQL branch (server.ts:16188-16256) runs.
+// The single `express` mock (line 111) is reused: re-importing server.ts appends
+// the pool-branch handlers onto the same `harness.routes` array, so the last
+// POST /api/collection-points/batch registration is the pool branch.
+
+// Scriptable fake pg Pool.
+let poolQueryImpl: ((text: string, params?: unknown[]) => Promise<any>) | null = null;
+const poolCallLog: Array<{ text: string; params?: unknown[] }> = [];
+
+const fakePool: any = {
+  query: async (text: string, params?: unknown[]) => {
+    poolCallLog.push({ text, params });
+    if (poolQueryImpl) return poolQueryImpl(text, params);
+    return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+  },
+  on() {
+    return fakePool;
+  }
+};
+
+vi.mock("pg", () => ({
+  default: { Pool: class { constructor() { return fakePool; } } },
+  Pool: class { constructor() { return fakePool; } }
+}));
+
+const realProcessExit = process.exit;
+
+function findBatchRouteHandler(): any {
+  const matches = harness.routes.filter(
+    (r: any) =>
+      r.method === "POST" &&
+      typeof r.pattern === "string" &&
+      /collection.points\/batch/.test(r.pattern)
+  );
+  if (matches.length === 0) throw new Error("No POST /api/collection-points/batch route registered");
+  return matches[matches.length - 1].handler;
+}
+
+async function callBatchHandler(
+  body: Record<string, unknown>,
+  tenantId: number | null
+): Promise<any> {
+  const handler = findBatchRouteHandler();
+  const res: any = {
+    statusCode: 200,
+    body: undefined,
+    status(c: number) { this.statusCode = c; return this; },
+    json(p: any) { this.body = p; return this; }
+  };
+  const req: any = {
+    body,
+    tenantId,
+    auth: tenantId == null ? {} : { tenantId }
+  };
+  await handler(req, res, () => Promise.resolve());
+  return res;
+}
+
+function lastCallText(): string | undefined {
+  return poolCallLog[poolCallLog.length - 1]?.text as string | undefined;
+}
+function lastCallParams(): unknown[] | undefined {
+  return poolCallLog[poolCallLog.length - 1]?.params as unknown[] | undefined;
+}
+function findCallText(prefix: string): { text: string; params?: unknown[] } | undefined {
+  return poolCallLog.find((c) => String(c.text).startsWith(prefix));
+}
+function countCallText(exact: string): number {
+  return poolCallLog.filter((c) => c.text === exact).length;
+}
+
+// ---- end scaffolding ------------------------------------------------------
 
 function makeRes() {
   const headers: Record<string, string> = {};
@@ -1047,6 +1122,213 @@ describe("SLICE-SEC-6 - batch collection-point upsert re-checks child-row owners
     expect(res.body.success).toBe(true);
     const afterA = await aPoint();
     expect(afterA?.name).toBe(`A-sec point updated ${run}`);
+  });
+});
+
+describe("SLICE-SEC-6b - POOL path: batch upsert honors child-row ownership in SQL", () => {
+  // Tenant A's own equipment, provisioned through the real memory-mode API
+  // (already-imported handlers) so the parent component check passes.
+  let secAAssetId: number;
+  let secAComponentId: number;
+  let secACollectionPointId: number;
+
+  // Owned vs foreign child ids, scoped per test.
+  let ownedIds: Set<number>;
+  let foreignId: number;
+
+  beforeAll(async () => {
+    const assetRes = await callApi("POST", "/api/assets", {
+      cookie: tenantA.cookie,
+      body: { name: `A-sec6b asset ${run}`, tag_number: `A-SEC6B-${run}` }
+    });
+    expect(assetRes.statusCode).toBe(201);
+    secAAssetId = assetRes.body.id;
+
+    const compRes = await callApi("POST", "/api/components", {
+      cookie: tenantA.cookie,
+      body: { asset_id: secAAssetId, name: `A-sec6b component ${run}` }
+    });
+    expect(compRes.statusCode).toBe(201);
+    secAComponentId = compRes.body.id;
+
+    const cpRes = await callApi("POST", "/api/collection-points", {
+      cookie: tenantA.cookie,
+      body: { component_id: secAComponentId, name: `A-sec6b point ${run}` }
+    });
+    expect(cpRes.statusCode).toBe(201);
+    secACollectionPointId = cpRes.body.id;
+
+    foreignId = bCollectionPointId; // tenant B's collection point (foreign to A)
+  });
+
+  beforeEach(() => {
+    poolCallLog.length = 0;
+    poolQueryImpl = null;
+    ownedIds = new Set([secACollectionPointId]);
+  });
+
+  afterEach(() => {
+    process.exit = realProcessExit;
+    vi.resetModules();
+    delete process.env.DATABASE_URL;
+  });
+
+  it("POOL: child UPDATE carries BOTH id and component_id predicates (assert on SQL text + params)", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec6b";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      // Parent component ownership + all SELECT ownership checks -> owned.
+      if (/pl\.company_id = \$2/.test(text) || /component_id = \$1/.test(text)) {
+        return { rows: [{ 1: 1 }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (String(text).startsWith("UPDATE collection_points")) {
+        const ptId = Number(params?.[2]);
+        return {
+          rows: [{ id: secACollectionPointId, name: "A-updated" }],
+          rowCount: ownedIds.has(ptId) ? 1 : 0,
+          command: "UPDATE",
+          oid: 0,
+          fields: []
+        };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    vi.resetModules();
+    await import("../../server.ts");
+    // Let setupServer's async boot (pool = new Pool) complete before invoking.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const res = await callBatchHandler(
+      {
+        component_id: secAComponentId,
+        points: [{ id: secACollectionPointId, name: "A-updated" }]
+      },
+      tenantA.companyId
+    );
+
+    const update = findCallText("UPDATE collection_points SET name = $1");
+    expect(update).toBeDefined();
+    // Assert on the ACTUAL SQL text: both id AND component_id predicates.
+    expect(String(update!.text)).toContain("WHERE id = $3 AND component_id = $4");
+    expect(String(update!.text)).toContain("RETURNING *");
+    // Assert on the ACTUAL params: [name, location_order, id, component_id].
+    expect(update!.params).toEqual(["A-updated", 0, secACollectionPointId, secAComponentId]);
+    // Commit occurred (all-or-nothing success path).
+    expect(countCallText("COMMIT")).toBe(1);
+    expect(countCallText("ROLLBACK")).toBe(0);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it("POOL: rowCount === 0 throws, issues ROLLBACK, and NO COMMIT occurs", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec6b";
+
+    // Foreign child id: no row matches id + component_id -> rowCount 0 -> throw.
+    poolQueryImpl = async (text: string) => {
+      if (/pl\.company_id = \$2/.test(text)) {
+        return { rows: [{ 1: 1 }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (/component_id = \$1/.test(text) && !String(text).startsWith("UPDATE")) {
+        return { rows: [{ id: secACollectionPointId }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (String(text).startsWith("UPDATE collection_points")) {
+        return { rows: [], rowCount: 0, command: "UPDATE", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    vi.resetModules();
+    await import("../../server.ts");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const res = await callBatchHandler(
+      { component_id: secAComponentId, points: [{ id: foreignId, name: "hacked" }] },
+      tenantA.companyId
+    );
+
+    expect(res.statusCode).toBe(500);
+    // ROLLBACK issued, NO COMMIT.
+    expect(countCallText("ROLLBACK")).toBeGreaterThanOrEqual(1);
+    expect(countCallText("COMMIT")).toBe(0);
+  });
+
+  it("POOL: mixed-ownership batch issues no successful COMMIT", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec6b";
+
+    // Drive rowCount from the params actually sent: owned child -> rowCount 1,
+    // foreign child -> rowCount 0 -> throw -> ROLLBACK, no COMMIT.
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      if (/pl\.company_id = \$2/.test(text)) {
+        return { rows: [{ 1: 1 }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (/component_id = \$1/.test(text) && !String(text).startsWith("UPDATE")) {
+        return { rows: [{ id: secACollectionPointId }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (String(text).startsWith("UPDATE collection_points")) {
+        // params: [name, i, id, component_id]
+        const ptId = Number(params?.[2]);
+        const rowCount = ownedIds.has(ptId) ? 1 : 0;
+        return { rows: rowCount ? [{ id: ptId }] : [], rowCount, command: "UPDATE", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    vi.resetModules();
+    await import("../../server.ts");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const res = await callBatchHandler(
+      {
+        component_id: secAComponentId,
+        points: [
+          { id: secACollectionPointId, name: "A-updated" }, // owned
+          { id: foreignId, name: "hacked" }                  // foreign -> rowCount 0
+        ]
+      },
+      tenantA.companyId
+    );
+
+    expect(res.statusCode).toBe(500);
+    // The foreign child forces ROLLBACK; the owned point is NOT committed.
+    expect(countCallText("ROLLBACK")).toBeGreaterThanOrEqual(1);
+    expect(countCallText("COMMIT")).toBe(0);
+  });
+
+  it("POOL: valid same-tenant batch commits", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/sec6b";
+
+    poolQueryImpl = async (text: string, params?: unknown[]) => {
+      if (/pl\.company_id = \$2/.test(text)) {
+        return { rows: [{ 1: 1 }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (/component_id = \$1/.test(text) && !String(text).startsWith("UPDATE")) {
+        return { rows: [{ id: secACollectionPointId }], rowCount: 1, command: "SELECT", oid: 0, fields: [] };
+      }
+      if (String(text).startsWith("UPDATE collection_points")) {
+        const ptId = Number(params?.[2]);
+        const rowCount = ownedIds.has(ptId) ? 1 : 0;
+        return { rows: rowCount ? [{ id: ptId, name: "A-updated" }] : [], rowCount, command: "UPDATE", oid: 0, fields: [] };
+      }
+      return { rows: [], rowCount: 0, command: "SELECT", oid: 0, fields: [] };
+    };
+
+    vi.resetModules();
+    await import("../../server.ts");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const res = await callBatchHandler(
+      {
+        component_id: secAComponentId,
+        points: [{ id: secACollectionPointId, name: `A-sec6b updated ${run}` }]
+      },
+      tenantA.companyId
+    );
+
+    expect(countCallText("COMMIT")).toBe(1);
+    expect(countCallText("ROLLBACK")).toBe(0);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
   });
 });
 

@@ -13,3 +13,4 @@ Rules:
 - A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
 
 Before any code change, read docs/DOCTRINE.md. Its rules are binding.
+- graphify binary: C:\Users\dufre\.local\bin\graphify.exe - if graphify is not on PATH, use this absolute path. Never report graphify as unavailable without trying it first.
