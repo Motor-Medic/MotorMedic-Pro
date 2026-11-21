@@ -125,7 +125,7 @@ Note: `N-VS*` / `N-HARNESS` / `N-IR*` / `N-VS9` are the regression-lock naming c
 ## (g) Verification protocol
 
 Before any change is considered complete:
-1. Run the full suite green: `npm test -- --run --maxWorkers=1` (baseline: 1522 passed, 135 files, unchanged).
+1. Run the full suite green: `npm test -- --run --maxWorkers=1` — no failures; test count must not decrease from the pre-slice run.
 2. Run typecheck: `npx tsc --noEmit` (baseline: exit 0).
 3. No commit until review. Do not commit as part of this capture.
 
