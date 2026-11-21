@@ -2574,6 +2574,10 @@ app.get("/api/reports", requirePermission("reports.export"), async (req, res) =>
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Session has no tenant." });
+  }
   try {
     const clauses: string[] = [];
     const params: unknown[] = [];
@@ -2587,7 +2591,7 @@ app.get("/api/reports", requirePermission("reports.export"), async (req, res) =>
 
     // AR-29 directive 1 — tenant from the verified session (the legacy
     // client-supplied company_id filter is no longer trusted).
-    push("tenant_id =", req.tenantId ?? -1);
+    push("tenant_id =", tenantId);
 
     const limit = Math.min(
       200,
@@ -2615,13 +2619,17 @@ app.get("/api/reports/:id", requirePermission("reports.export"), async (req, res
   if (!pool) {
     return res.status(503).json({ error: "Database is not configured (DATABASE_URL)." });
   }
+  const tenantId = requestTenantId(req);
+  if (tenantId == null) {
+    return res.status(401).json({ error: "Session has no tenant." });
+  }
   if (!isReportId(req.params.id)) {
     return res.status(404).json({ error: "Report not found." });
   }
   try {
     const result = await pool.query(
       `SELECT * FROM reports WHERE id = $1 AND tenant_id = $2`,
-      [req.params.id, req.tenantId ?? -1]
+      [req.params.id, tenantId]
     );
     if (!result.rows.length) {
       return res.status(404).json({ error: "Report not found." });
@@ -2664,20 +2672,16 @@ app.post("/api/reports", async (req, res) => {
       .json({ error: "technologySummary must be an object keyed by technology." });
   }
 
-  const companyIdRaw = body.companyId ?? body.company_id;
-  const companyId =
-    companyIdRaw == null || companyIdRaw === ""
-      ? null
-      : Number.isFinite(Number(companyIdRaw))
-        ? Number(companyIdRaw)
-        : null;
-
   const asArray = (v: unknown) => (Array.isArray(v) ? v : []);
 
   try {
-    // AR-29 rule 9 — tenant stamped from the verified session; the legacy
-    // company_id body field is no longer trusted for tenancy.
-    const tenantId = req.tenantId ?? -1;
+    // AR-29 rule 9 — tenant is derived strictly from the verified session.
+    // companyId / tenantId / organizationId are stripped from the body (and
+    // query / headers) and never trusted; the client cannot forge tenancy.
+    const tenantId = requestTenantId(req);
+    if (tenantId == null) {
+      return res.status(401).json({ error: "Session has no tenant." });
+    }
 
     const result = await pool.query(
       `INSERT INTO reports
@@ -2687,7 +2691,7 @@ app.post("/api/reports", async (req, res) => {
        RETURNING *`,
       [
         assetId,
-        companyId != null ? companyId : tenantId !== -1 ? tenantId : null,
+        tenantId,
         body.title ? String(body.title) : null,
         JSON.stringify(summary),
         severity,
