@@ -940,6 +940,116 @@ describe("SLICE-H2 - display-unit preferences are per-tenant and display-only", 
   });
 });
 
+describe("SLICE-SEC-6 - batch collection-point upsert re-checks child-row ownership", () => {
+  let aAssetId: number;
+  let aComponentId: number;
+  let aCollectionPointId: number;
+
+  beforeAll(async () => {
+    // Tenant A provisions its own equipment so the batch endpoint's parent
+    // component check passes for A's own component.
+    const assetRes = await callApi("POST", "/api/assets", {
+      cookie: tenantA.cookie,
+      body: { name: `A-sec asset ${run}`, tag_number: `A-SEC-${run}` }
+    });
+    expect(assetRes.statusCode).toBe(201);
+    aAssetId = assetRes.body.id;
+
+    const compRes = await callApi("POST", "/api/components", {
+      cookie: tenantA.cookie,
+      body: { asset_id: aAssetId, name: `A-sec component ${run}` }
+    });
+    expect(compRes.statusCode).toBe(201);
+    aComponentId = compRes.body.id;
+
+    const cpRes = await callApi("POST", "/api/collection-points", {
+      cookie: tenantA.cookie,
+      body: { component_id: aComponentId, name: `A-sec point ${run}` }
+    });
+    expect(cpRes.statusCode).toBe(201);
+    aCollectionPointId = cpRes.body.id;
+  });
+
+  async function aPoint() {
+    const res = await callApi("GET", "/api/collection-points", {
+      cookie: tenantA.cookie,
+      query: { component_id: String(aComponentId) }
+    });
+    expect(res.statusCode).toBe(200);
+    return (res.body as any[]).find((cp: any) => cp.id === aCollectionPointId);
+  }
+
+  async function bPoint() {
+    const res = await callApi("GET", "/api/collection-points", {
+      cookie: tenantB.cookie,
+      query: { component_id: String(bComponentId) }
+    });
+    expect(res.statusCode).toBe(200);
+    return (res.body as any[]).find((cp: any) => cp.id === bCollectionPointId);
+  }
+
+  it("rejects a batch that includes another tenant's collection point id", async () => {
+    const beforeB = await bPoint();
+    const res = await callApi("POST", "/api/collection-points/batch", {
+      cookie: tenantA.cookie,
+      body: {
+        component_id: aComponentId,
+        points: [{ id: bCollectionPointId, name: "hacked by tenant A" }]
+      }
+    });
+    expect([400, 500]).toContain(res.statusCode);
+    const afterB = await bPoint();
+    expect(afterB?.name).toBe(beforeB?.name);
+  });
+
+  it("applies nothing for a mixed-ownership batch", async () => {
+    const beforeA = await aPoint();
+    const beforeB = await bPoint();
+    const res = await callApi("POST", "/api/collection-points/batch", {
+      cookie: tenantA.cookie,
+      body: {
+        component_id: aComponentId,
+        points: [
+          { id: aCollectionPointId, name: "A-updated" },
+          { id: bCollectionPointId, name: "hacked" }
+        ]
+      }
+    });
+    expect([400, 500]).toContain(res.statusCode);
+    const afterA = await aPoint();
+    const afterB = await bPoint();
+    expect(afterA?.name).toBe(beforeA?.name);
+    expect(afterB?.name).toBe(beforeB?.name);
+  });
+
+  it("rejects a child id outside the verified parent (unknown id)", async () => {
+    const res = await callApi("POST", "/api/collection-points/batch", {
+      cookie: tenantA.cookie,
+      body: {
+        component_id: aComponentId,
+        points: [{ id: 900000000, name: "ghost" }]
+      }
+    });
+    expect([400, 500]).toContain(res.statusCode);
+    const afterA = await aPoint();
+    expect(afterA?.name).not.toBe("ghost");
+  });
+
+  it("succeeds for a valid same-tenant batch", async () => {
+    const res = await callApi("POST", "/api/collection-points/batch", {
+      cookie: tenantA.cookie,
+      body: {
+        component_id: aComponentId,
+        points: [{ id: aCollectionPointId, name: `A-sec point updated ${run}` }]
+      }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+    const afterA = await aPoint();
+    expect(afterA?.name).toBe(`A-sec point updated ${run}`);
+  });
+});
+
 function readServer(): string {
   const fs = require("node:fs") as typeof import("node:fs");
   const path = require("node:path") as typeof import("node:path");

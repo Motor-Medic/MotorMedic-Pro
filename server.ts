@@ -16214,11 +16214,19 @@ app.post(["/api/collection-points/batch", "/api/collection_points/batch"], async
           const pt = points[i];
           const name = pt.name ? pt.name.trim() : `Point ${i + 1}`;
           if (pt.id) {
-            // Update existing
+            // Update existing — re-check child-row ownership. The row must
+            // belong to the session-verified parent component (compId), which
+            // tenantOwnsRow already tied to requestTenantId(req) above
+            // (server.ts:16189). Never trust a client-supplied child id alone.
             const upResult = await pool.query(
-              "UPDATE collection_points SET name = $1, location_order = $2 WHERE id = $3 RETURNING *",
-              [name, i, parseInt(pt.id, 10)]
+              "UPDATE collection_points SET name = $1, location_order = $2 WHERE id = $3 AND component_id = $4 RETURNING *",
+              [name, i, parseInt(pt.id, 10), compId]
             );
+            if (upResult.rowCount === 0) {
+              // Foreign or missing child id: fail closed. The catch below
+              // ROLLBACKs, so the whole batch is rejected — all or nothing.
+              throw new Error(`Collection point not found or not owned: ${pt.id}`);
+            }
             savedPoints.push(upResult.rows[0]);
           } else {
             // Insert new
@@ -16248,8 +16256,27 @@ app.post(["/api/collection-points/batch", "/api/collection_points/batch"], async
       }
     } else {
       const keepIds = points.filter(p => p.id).map(p => parseInt(p.id, 10));
+
+      // Reject the whole batch if any client-supplied child id is not a
+      // collection point owned by the session tenant under the verified
+      // parent component. Fail closed: no in-memory mutation happens when
+      // any child id is foreign — all or nothing.
+      for (const pt of points) {
+        if (!pt.id) continue;
+        const ptId = parseInt(pt.id, 10);
+        if (
+          !memoryCollectionPoints.some(
+            (item) => item.id === ptId && item.component_id === compId
+          )
+        ) {
+          throw new Error(`Collection point not found or not owned: ${ptId}`);
+        }
+      }
+
       // Delete removed points in memory
-      memoryCollectionPoints = memoryCollectionPoints.filter(cp => cp.component_id !== compId || keepIds.includes(cp.id));
+      memoryCollectionPoints = memoryCollectionPoints.filter(
+        (cp) => cp.component_id !== compId || keepIds.includes(cp.id)
+      );
       
       const savedPoints = [];
       for (let i = 0; i < points.length; i++) {
@@ -16257,12 +16284,15 @@ app.post(["/api/collection-points/batch", "/api/collection_points/batch"], async
         const name = pt.name ? pt.name.trim() : `Point ${i + 1}`;
         if (pt.id) {
           const ptId = parseInt(pt.id, 10);
-          const cp = memoryCollectionPoints.find(item => item.id === ptId);
-          if (cp) {
-            cp.name = name;
-            cp.location_order = i;
-            savedPoints.push(cp);
+          const cp = memoryCollectionPoints.find(
+            (item) => item.id === ptId && item.component_id === compId
+          );
+          if (!cp) {
+            throw new Error(`Collection point not found or not owned: ${ptId}`);
           }
+          cp.name = name;
+          cp.location_order = i;
+          savedPoints.push(cp);
         } else {
           const cpId = getNextId();
           const cp = {
