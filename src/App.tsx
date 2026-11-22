@@ -3,6 +3,7 @@ import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint, TargetCo
 import Diagnose from "./components/Diagnose";
 import Login, { UserSession } from "./components/Login";
 import RouteGuard from "./components/auth/RouteGuard";
+import { setEquipmentTenantId, clearCurrentTenantCache } from "./data/equipmentDb";
 import ArtifactDisclaimer from "./components/ArtifactDisclaimer";
 import AIChatbot from "./components/AIChatbot";
 import ScrollToTop from "./components/ScrollToTop";
@@ -181,8 +182,10 @@ export default function App() {
   useEffect(() => {
     if (user) {
       setSelectedCompanyId(user.company_id);
+      setEquipmentTenantId(user.company_id);
       localStorage.setItem("motormedic_user_session", JSON.stringify(user));
     } else {
+      setEquipmentTenantId(null);
       localStorage.removeItem("motormedic_user_session");
     }
   }, [user]);
@@ -401,7 +404,10 @@ export default function App() {
     // Completely clear user session tokens & preferences from storage
     localStorage.removeItem("motormedic_user_session");
     sessionStorage.clear();
-    
+
+    // Clear this tenant's equipment cache keys only (never other tenants').
+    clearCurrentTenantCache();
+
     // Clear states
     setUser(null);
     setSelectedReport(null);

@@ -937,6 +937,45 @@ export const DEMO_EQUIPMENT_SEED: EquipRoute[] = [
 ];
 
 const STORAGE_KEY = "motormedic_equipment";
+const ACTIVE_DB_KEY = "motormedic_active_db_selection";
+const CACHE_PREFIX = "mm";
+
+/** Authenticated tenant id scoping the equipment cache. Null = legacy/unscoped. */
+let currentEquipmentTenantId: number | null = null;
+
+/** Set the authenticated tenant id that scopes all equipment cache keys. */
+export function setEquipmentTenantId(tenantId: number | null): void {
+  currentEquipmentTenantId = tenantId;
+}
+
+/** Current authenticated tenant id scoping the equipment cache. */
+export function getEquipmentTenantId(): number | null {
+  return currentEquipmentTenantId;
+}
+
+/**
+ * Namespace a cache key by the current tenant id: `mm:<tenantId>:<key>`.
+ * Falls back to the bare key when no tenant is authenticated (legacy mode).
+ * No bare keys are used while a tenant is authenticated.
+ */
+function tenantKey(baseKey: string): string {
+  const t = currentEquipmentTenantId;
+  return t == null ? baseKey : `${CACHE_PREFIX}:${t}:${baseKey}`;
+}
+
+/**
+ * Clear only the current tenant's namespaced cache keys. Never touches other
+ * tenants' keys (never destroy data you don't own), and never exposes them.
+ */
+export function clearCurrentTenantCache(): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.removeItem(tenantKey(STORAGE_KEY));
+    localStorage.removeItem(tenantKey(ACTIVE_DB_KEY));
+  } catch {
+    /* ignore quota / private-mode errors */
+  }
+}
 
 function emptyStore(): EquipmentStore {
   return { plants: [], units: [], routes: [] };
@@ -993,7 +1032,7 @@ export function flattenEquipment(routes: EquipRoute[]): FlatEquipAsset[] {
 function readStoreFromStorage(): EquipmentStore {
   if (typeof localStorage === "undefined") return emptyStore();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(tenantKey(STORAGE_KEY));
     if (raw == null || raw === "") return emptyStore();
     return normalizeStore(JSON.parse(raw));
   } catch {
@@ -1003,7 +1042,11 @@ function readStoreFromStorage(): EquipmentStore {
 
 function writeStoreToStorage(store: EquipmentStore): void {
   if (typeof localStorage === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+  try {
+    localStorage.setItem(tenantKey(STORAGE_KEY), JSON.stringify(store));
+  } catch {
+    /* ignore quota */
+  }
 }
 
 /** Full hierarchy store (plants, units, routes). */
@@ -1226,8 +1269,6 @@ export const FLAT_EQUIPMENT: FlatEquipAsset[] = [];
 /* Active Equipment DB selection (Diagnose quick-sync)                         */
 /* ========================================================================== */
 
-const ACTIVE_DB_SELECTION_KEY = "motormedic_active_db_selection";
-
 export interface ActiveDbSelection {
   nodeId: string;
   kind: string;
@@ -1243,7 +1284,7 @@ export interface ActiveDbSelection {
 export function saveActiveDbSelection(selection: ActiveDbSelection): void {
   if (typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(ACTIVE_DB_SELECTION_KEY, JSON.stringify(selection));
+    localStorage.setItem(tenantKey(ACTIVE_DB_KEY), JSON.stringify(selection));
   } catch {
     /* ignore quota */
   }
@@ -1252,7 +1293,7 @@ export function saveActiveDbSelection(selection: ActiveDbSelection): void {
 export function getActiveDbSelection(): ActiveDbSelection | null {
   if (typeof localStorage === "undefined") return null;
   try {
-    const raw = localStorage.getItem(ACTIVE_DB_SELECTION_KEY);
+    const raw = localStorage.getItem(tenantKey(ACTIVE_DB_KEY));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as ActiveDbSelection;
     if (!parsed || typeof parsed !== "object") return null;
