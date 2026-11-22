@@ -3,7 +3,7 @@ import { SavedReport, SystemHealth, DiagnosticResponse, TrendDataPoint, TargetCo
 import Diagnose from "./components/Diagnose";
 import Login, { UserSession } from "./components/Login";
 import RouteGuard from "./components/auth/RouteGuard";
-import { setEquipmentTenantId, clearCurrentTenantCache } from "./data/equipmentDb";
+import { setEquipmentTenantId, clearCurrentTenantCache, purgeLegacyBareEquipmentKeys } from "./data/equipmentDb";
 import ArtifactDisclaimer from "./components/ArtifactDisclaimer";
 import AIChatbot from "./components/AIChatbot";
 import ScrollToTop from "./components/ScrollToTop";
@@ -164,6 +164,13 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
+  }, []);
+
+  // SEC-13 — one-time migration: purge the pre-SEC-11 bare equipment cache keys
+  // exactly once on first run after upgrade. Namespaced keys (mm:<tenantId>:...)
+  // are never touched, and no legacy contents are copied into a tenant namespace.
+  useEffect(() => {
+    purgeLegacyBareEquipmentKeys();
   }, []);
 
   const [selectedCompanyId, setSelectedCompanyId] = useState<number>(() => {

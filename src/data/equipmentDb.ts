@@ -940,6 +940,12 @@ const STORAGE_KEY = "motormedic_equipment";
 const ACTIVE_DB_KEY = "motormedic_active_db_selection";
 const CACHE_PREFIX = "mm";
 
+/**
+ * Bookkeeping flag recorded once the pre-SEC-11 bare-key purge has run.
+ * Kept separate from the two legacy data keys so cleanup never deletes itself.
+ */
+const LEGACY_PURGE_FLAG = "motormedic_legacy_cache_purge_v1";
+
 /** Authenticated tenant id scoping the equipment cache. Null = legacy/unscoped. */
 let currentEquipmentTenantId: number | null = null;
 
@@ -972,6 +978,24 @@ export function clearCurrentTenantCache(): void {
   try {
     localStorage.removeItem(tenantKey(STORAGE_KEY));
     localStorage.removeItem(tenantKey(ACTIVE_DB_KEY));
+  } catch {
+    /* ignore quota / private-mode errors */
+  }
+}
+
+/**
+ * One-time migration: delete the pre-SEC-11 bare equipment cache keys
+ * (`motormedic_equipment`, `motormedic_active_db_selection`) without copying
+ * their contents into any tenant namespace. Namespaced keys
+ * (`mm:<tenantId>:...`) are never touched. Runs at most once.
+ */
+export function purgeLegacyBareEquipmentKeys(): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (localStorage.getItem(LEGACY_PURGE_FLAG) === "1") return;
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(ACTIVE_DB_KEY);
+    localStorage.setItem(LEGACY_PURGE_FLAG, "1");
   } catch {
     /* ignore quota / private-mode errors */
   }

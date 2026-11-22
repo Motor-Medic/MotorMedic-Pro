@@ -4,6 +4,7 @@ import {
   getEquipmentData,
   getEquipmentStore,
   getEquipmentTenantId,
+  purgeLegacyBareEquipmentKeys,
   saveEquipmentStore,
   setEquipmentTenantId,
   type EquipmentStore
@@ -146,5 +147,70 @@ describe("SLICE-SEC-11 equipment cache tenant isolation", () => {
     setEquipmentTenantId(2);
     expect(getEquipmentData().length).toBe(0);
     expect(getEquipmentStore().routes.length).toBe(0);
+  });
+});
+
+describe("SLICE-SEC-13 legacy bare-key cleanup", () => {
+  it("deletes the two legacy bare keys on first run without copying contents into a tenant namespace", () => {
+    installStorage();
+    (globalThis.localStorage as Storage).setItem(
+      "motormedic_equipment",
+      JSON.stringify({ routes: [{ id: "r", name: "legacy" }] })
+    );
+    (globalThis.localStorage as Storage).setItem(
+      "motormedic_active_db_selection",
+      JSON.stringify({ nodeId: "legacy-node" })
+    );
+
+    purgeLegacyBareEquipmentKeys();
+
+    expect(
+      (globalThis.localStorage as Storage).getItem("motormedic_equipment")
+    ).toBeNull();
+    expect(
+      (globalThis.localStorage as Storage).getItem("motormedic_active_db_selection")
+    ).toBeNull();
+    // Purge recorded so it does not repeat on subsequent runs.
+    expect(
+      (globalThis.localStorage as Storage).getItem("motormedic_legacy_cache_purge_v1")
+    ).toBe("1");
+  });
+
+  it("leaves namespaced tenant keys untouched by cleanup", () => {
+    installStorage();
+    (globalThis.localStorage as Storage).setItem(
+      "mm:1:motormedic_equipment",
+      JSON.stringify(tenantAStore)
+    );
+    (globalThis.localStorage as Storage).setItem(
+      "mm:2:motormedic_equipment",
+      JSON.stringify(tenantBStore)
+    );
+    (globalThis.localStorage as Storage).setItem("motormedic_equipment", "stale-bare");
+
+    purgeLegacyBareEquipmentKeys();
+
+    expect(
+      (globalThis.localStorage as Storage).getItem("mm:1:motormedic_equipment")
+    ).not.toBeNull();
+    expect(
+      (globalThis.localStorage as Storage).getItem("mm:2:motormedic_equipment")
+    ).not.toBeNull();
+    expect((globalThis.localStorage as Storage).getItem("motormedic_equipment")).toBeNull();
+  });
+
+  it("purges at most once; a bare key reintroduced after the flag is set is left alone", () => {
+    installStorage();
+    (globalThis.localStorage as Storage).setItem("motormedic_equipment", "stale");
+    purgeLegacyBareEquipmentKeys();
+    expect(
+      (globalThis.localStorage as Storage).getItem("motormedic_equipment")
+    ).toBeNull();
+
+    (globalThis.localStorage as Storage).setItem("motormedic_equipment", "stale-again");
+    purgeLegacyBareEquipmentKeys();
+    expect(
+      (globalThis.localStorage as Storage).getItem("motormedic_equipment")
+    ).toBe("stale-again");
   });
 });
