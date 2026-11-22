@@ -91,6 +91,9 @@ import { finalizeThermographyFromParses } from "./src/lib/thermographyVisionExtr
 import {
   assertProductionAuthEnv,
   assertTrustedProxyEnv,
+  PLATFORM_TRUST_PROXY_HOPS,
+  TRUSTED_PROXY_PLATFORM,
+  trustedProxyIps,
   isDevAuthSeedEnabled,
   isProductionEnv,
   hashPassword as bcryptHashPassword,
@@ -261,6 +264,14 @@ process.on("uncaughtException", (err) => {
 // Initialize Express
 const app = express();
 const PORT = 3000;
+
+// SEC-14 — TRUSTED_PROXY_IPS=platform trusts the immediate platform hop
+// (managed proxies such as Vercel publish no fixed public IP list). An IP/CIDR
+// allowlist is never handed to Express trust proxy; SEC-3's resolveClientIp
+// keeps enforcing that allowlist explicitly.
+if (trustedProxyIps(process.env) === TRUSTED_PROXY_PLATFORM) {
+  app.set("trust proxy", PLATFORM_TRUST_PROXY_HOPS);
+}
 
 // Increase payload limits for base64 uploads (images, CSVs, etc.) and attach rawBody for Square
 app.use(express.json({ 

@@ -124,6 +124,42 @@ function isValidIpv6(ip: string): boolean {
   return true;
 }
 
+/* ------------------------------------------------------------------ */
+/* SEC-14 — `platform` sentinel for managed reverse proxies (Vercel)   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * SEC-14 — TRUSTED_PROXY_IPS may be the exact literal `platform` when the app
+ * sits behind a managed platform proxy (e.g. Vercel) whose public IP list is
+ * not expressible. It means "trust the immediate platform hop" and maps to
+ * Express `trust proxy = PLATFORM_TRUST_PROXY_HOPS` (one hop), never to an IP
+ * allowlist. Case-sensitive: `PLATFORM` is not the sentinel and fails.
+ */
+export const TRUSTED_PROXY_PLATFORM = "platform";
+
+/** Express `trust proxy` hop count for TRUSTED_PROXY_IPS=platform. */
+export const PLATFORM_TRUST_PROXY_HOPS = 1;
+
+/**
+ * SEC-14 — resolved TRUSTED_PROXY_IPS value for the server.
+ *   - `platform` sentinel => the marker (server sets trust proxy = 1 hop).
+ *   - IP/CIDR allowlist => the parsed entries (never treated as trust proxy).
+ *   - unset/empty => null (proxy stays untrusted).
+ */
+export function trustedProxyIps(
+  env: EnvLike = process.env
+): string[] | typeof TRUSTED_PROXY_PLATFORM | null {
+  const raw = env.TRUSTED_PROXY_IPS;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed === TRUSTED_PROXY_PLATFORM) return TRUSTED_PROXY_PLATFORM;
+  return trimmed
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 /**
  * Validate one comma-separated TRUSTED_PROXY_IPS entry as a valid IPv4,
  * IPv4-mapped IPv6 ("::ffff:a.b.c.d"), IPv6, or CIDR of either family.
@@ -170,6 +206,8 @@ function isValidIpOrCidr(entry: string): boolean {
  * Returns fatal problems with the TRUSTED_PROXY_IPS configuration.
  *   - Production + absent/empty => error (fail fast at boot).
  *   - Any environment + malformed entry => error (fail fast everywhere).
+ *   - SEC-14: the exact literal `platform` is valid in every environment and
+ *     must be used alone (it selects the immediate platform hop, not a list).
  * Non-production absence is intentionally not an error here; callers log a
  * warning and keep the proxy untrusted.
  */
@@ -181,16 +219,31 @@ export function collectTrustedProxyErrors(env: EnvLike): string[] {
   if (!present) {
     if (isProductionEnv(env)) {
       errors.push(
-        "TRUSTED_PROXY_IPS is missing in production. Set it to a " +
+        "TRUSTED_PROXY_IPS is missing in production. Set it to `platform` " +
+          "(trust the immediate platform hop, e.g. Vercel) or a " +
           "comma-separated list of trusted proxy IPs/CIDRs (e.g. 10.0.0.0/8)."
       );
     }
     return errors;
   }
 
-  for (const entry of raw.split(",")) {
-    const trimmed = entry.trim();
-    if (!trimmed) continue; // tolerate trailing / double commas
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  // SEC-14 — the platform sentinel is exact, case-sensitive, and exclusive.
+  if (entries.some((entry) => entry === TRUSTED_PROXY_PLATFORM)) {
+    if (entries.length !== 1) {
+      errors.push(
+        `TRUSTED_PROXY_IPS: "${TRUSTED_PROXY_PLATFORM}" must be used alone, ` +
+          "not combined with IP/CIDR entries."
+      );
+    }
+    return errors;
+  }
+
+  for (const trimmed of entries) {
     if (!isValidIpOrCidr(trimmed)) {
       errors.push(
         `TRUSTED_PROXY_IPS contains an invalid IP/CIDR: "${trimmed}".`
@@ -213,7 +266,8 @@ export function assertTrustedProxyEnv(env: EnvLike = process.env): void {
       "═══════════════════════════════════════════════════════════════",
       "❌ FATAL (SEC-12 trusted proxy): refusing to start.",
       ...errors.map((e) => `   • ${e}`),
-      "Set TRUSTED_PROXY_IPS to a comma-separated list of trusted proxy IPs/CIDRs.",
+      "Set TRUSTED_PROXY_IPS to `platform` (trust the immediate platform hop) " +
+        "or a comma-separated list of trusted proxy IPs/CIDRs.",
       "═══════════════════════════════════════════════════════════════",
     ].join("\n");
     throw new Error(banner);
