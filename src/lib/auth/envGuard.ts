@@ -43,6 +43,7 @@ export interface EnvLike {
   SESSION_SECRET?: string;
   DATABASE_URL?: string;
   ENABLE_DEV_AUTH_SEED?: string;
+  TRUSTED_PROXY_IPS?: string;
 }
 
 export function isProductionEnv(env: EnvLike): boolean {
@@ -93,6 +94,141 @@ export function collectProductionEnvErrors(env: EnvLike): string[] {
   }
 
   return errors;
+}
+
+/* ------------------------------------------------------------------ */
+/* SEC-12 — fail-fast on untrusted / malformed proxy config at boot   */
+/* ------------------------------------------------------------------ */
+
+/** A single octet with no leading-zero (octal-ambiguity) forms. */
+function isValidIpv4Octet(part: string): boolean {
+  const n = Number(part);
+  return n >= 0 && n <= 255 && String(n) === part;
+}
+
+/** Structural validation for an IPv6 address (compressed "::" allowed). */
+function isValidIpv6(ip: string): boolean {
+  if (!/^[0-9a-fA-F:]+$/.test(ip)) return false;
+  const doubleColonCount = (ip.match(/::/g) || []).length;
+  if (doubleColonCount > 1) return false;
+  // A lone leading or trailing colon (not part of "::") is invalid.
+  if (/^:(?!:)/.test(ip)) return false;
+  if (/(?!:):$/.test(ip)) return false;
+  const groups = ip.split(":");
+  const nonEmpty = groups.filter((g) => g !== "");
+  if (nonEmpty.length > 8) return false;
+  if (doubleColonCount === 0 && nonEmpty.length !== 8) return false;
+  for (const g of nonEmpty) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(g)) return false;
+  }
+  return true;
+}
+
+/**
+ * Validate one comma-separated TRUSTED_PROXY_IPS entry as a valid IPv4,
+ * IPv4-mapped IPv6 ("::ffff:a.b.c.d"), IPv6, or CIDR of either family.
+ */
+function isValidIpOrCidr(entry: string): boolean {
+  const trimmed = entry.trim();
+  if (!trimmed) return false;
+
+  // Accept IPv4-mapped IPv6 by stripping the well-known prefix first.
+  let ipPart = trimmed.replace(/^::ffff:/i, "");
+  let cidr: number | null = null;
+  const slash = ipPart.indexOf("/");
+  if (slash !== -1) {
+    const cidrPart = ipPart.slice(slash + 1).trim();
+    if (!/^\d+$/.test(cidrPart)) return false;
+    cidr = Number(cidrPart);
+    ipPart = ipPart.slice(0, slash);
+  }
+
+  // IPv4 (possibly the remainder of ::ffff:a.b.c.d).
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+  const m4 = ipv4.exec(ipPart);
+  if (m4) {
+    const parts = [m4[1], m4[2], m4[3], m4[4]];
+    if (parts.some((p) => !isValidIpv4Octet(p))) return false;
+    if (cidr !== null) {
+      return Number.isInteger(cidr) && cidr >= 0 && cidr <= 32;
+    }
+    return true;
+  }
+
+  // IPv6.
+  if (isValidIpv6(ipPart)) {
+    if (cidr !== null) {
+      return Number.isInteger(cidr) && cidr >= 0 && cidr <= 128;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Returns fatal problems with the TRUSTED_PROXY_IPS configuration.
+ *   - Production + absent/empty => error (fail fast at boot).
+ *   - Any environment + malformed entry => error (fail fast everywhere).
+ * Non-production absence is intentionally not an error here; callers log a
+ * warning and keep the proxy untrusted.
+ */
+export function collectTrustedProxyErrors(env: EnvLike): string[] {
+  const errors: string[] = [];
+  const raw = env.TRUSTED_PROXY_IPS;
+  const present = typeof raw === "string" && raw.trim().length > 0;
+
+  if (!present) {
+    if (isProductionEnv(env)) {
+      errors.push(
+        "TRUSTED_PROXY_IPS is missing in production. Set it to a " +
+          "comma-separated list of trusted proxy IPs/CIDRs (e.g. 10.0.0.0/8)."
+      );
+    }
+    return errors;
+  }
+
+  for (const entry of raw.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue; // tolerate trailing / double commas
+    if (!isValidIpOrCidr(trimmed)) {
+      errors.push(
+        `TRUSTED_PROXY_IPS contains an invalid IP/CIDR: "${trimmed}".`
+      );
+    }
+  }
+  return errors;
+}
+
+/**
+ * Throws with a loud, actionable message when the trusted-proxy config is
+ * unsafe. Call during startup BEFORE app.listen so a bad deploy never serves
+ * a single request. Non-production absence is allowed (warning logged, proxy
+ * stays untrusted); malformed input throws in every environment.
+ */
+export function assertTrustedProxyEnv(env: EnvLike = process.env): void {
+  const errors = collectTrustedProxyErrors(env);
+  if (errors.length > 0) {
+    const banner = [
+      "═══════════════════════════════════════════════════════════════",
+      "❌ FATAL (SEC-12 trusted proxy): refusing to start.",
+      ...errors.map((e) => `   • ${e}`),
+      "Set TRUSTED_PROXY_IPS to a comma-separated list of trusted proxy IPs/CIDRs.",
+      "═══════════════════════════════════════════════════════════════",
+    ].join("\n");
+    throw new Error(banner);
+  }
+
+  // Non-production with no allowlist: degrade loudly, keep proxy untrusted.
+  if (!isProductionEnv(env)) {
+    const raw = env.TRUSTED_PROXY_IPS;
+    if (!raw || !raw.trim()) {
+      console.warn(
+        "[SEC-12] TRUSTED_PROXY_IPS is not set; proxy is untrusted. IP-derived " +
+          "controls (rate limiting) may be degraded."
+      );
+    }
+  }
 }
 
 /**

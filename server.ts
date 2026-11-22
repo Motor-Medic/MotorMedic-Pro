@@ -90,6 +90,7 @@ import { finalizeMcaFromParses } from "./src/lib/mcaVisionExtractor";
 import { finalizeThermographyFromParses } from "./src/lib/thermographyVisionExtractor";
 import {
   assertProductionAuthEnv,
+  assertTrustedProxyEnv,
   isDevAuthSeedEnabled,
   isProductionEnv,
   hashPassword as bcryptHashPassword,
@@ -225,6 +226,9 @@ dotenv.config();
 // SESSION_SECRET or DATABASE_URL (including CI-mock values). CI only
 // builds, never boots, so this is safe there.
 assertProductionAuthEnv(process.env);
+// SEC-12 — production boot fails fast when TRUSTED_PROXY_IPS is missing;
+// malformed input refuses to boot in any environment.
+assertTrustedProxyEnv(process.env);
 // NOTIFICATIONS-1 �?" production also refuses to boot without the email
 // provider key. Same fail-loud family as the DATABASE_URL/SESSION_SECRET
 // guard above; safe today because nothing deploys until launch, when the key
